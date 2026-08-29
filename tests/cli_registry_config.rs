@@ -2,7 +2,7 @@
 
 use std::collections::VecDeque;
 use std::io::{Read, Write};
-use std::net::TcpListener;
+use std::net::{TcpListener, TcpStream};
 use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
 use std::sync::mpsc;
@@ -542,21 +542,8 @@ fn not_found_server() -> (String, mpsc::Receiver<String>, thread::JoinHandle<()>
                 Err(error) => panic!("registry accept failed: {error}"),
             }
         };
-        stream
-            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
-            .unwrap();
-        let mut request = Vec::new();
-        let mut buffer = [0_u8; 4096];
-        loop {
-            let count = stream.read(&mut buffer).unwrap();
-            request.extend_from_slice(&buffer[..count]);
-            if count == 0 || request.windows(4).any(|window| window == b"\r\n\r\n") {
-                break;
-            }
-        }
-        sender
-            .send(String::from_utf8_lossy(&request).to_ascii_lowercase())
-            .unwrap();
+        let request = read_http_request(&mut stream);
+        sender.send(request.to_ascii_lowercase()).unwrap();
         stream
             .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
             .unwrap();
@@ -581,6 +568,29 @@ fn bound_listener() -> (TcpListener, String) {
     listener.set_nonblocking(true).unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
     (listener, base)
+}
+
+#[test]
+fn http_request_reader_normalizes_an_inherited_nonblocking_stream() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let client = thread::spawn(move || {
+        let mut stream = TcpStream::connect(address).unwrap();
+        thread::sleep(std::time::Duration::from_millis(25));
+        stream
+            .write_all(b"POST /fixture HTTP/1.1\r\nContent-Length: 2\r\n\r\n{}")
+            .unwrap();
+    });
+    let (mut stream, _) = listener.accept().unwrap();
+    stream.set_nonblocking(true).unwrap();
+
+    let request = read_http_request(&mut stream);
+
+    client.join().unwrap();
+    assert_eq!(
+        request,
+        "POST /fixture HTTP/1.1\r\nContent-Length: 2\r\n\r\n{}"
+    );
 }
 
 fn serve_recording(
@@ -627,6 +637,7 @@ fn serve_recording(
 }
 
 fn read_http_request(stream: &mut std::net::TcpStream) -> String {
+    stream.set_nonblocking(false).unwrap();
     stream
         .set_read_timeout(Some(std::time::Duration::from_secs(5)))
         .unwrap();

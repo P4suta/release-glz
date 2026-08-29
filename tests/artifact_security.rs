@@ -97,6 +97,29 @@ fn hex_v3_builder_is_deterministic_bounded_and_rejects_unsafe_paths() {
 }
 
 #[test]
+fn hex_v3_builder_accepts_every_exact_limit_boundary() {
+    let metadata = vec![b'm'; 4_096];
+    let files = BTreeMap::from([
+        ("src/a.gleam".to_owned(), vec![b'a'; metadata.len()]),
+        ("src/b.gleam".to_owned(), vec![b'b'; metadata.len()]),
+        ("src/c.gleam".to_owned(), vec![b'c'; metadata.len()]),
+        ("src/d.gleam".to_owned(), vec![b'd'; metadata.len()]),
+    ]);
+    let package = build_hex_tarball(&metadata, &files, ArchiveLimits::default()).unwrap();
+    let exact = ArchiveLimits {
+        max_entries: files.len(),
+        max_entry_bytes: metadata.len() as u64,
+        max_total_bytes: (files.len() * metadata.len()) as u64,
+        max_archive_bytes: package.len() as u64,
+    };
+
+    assert_eq!(
+        build_hex_tarball(&metadata, &files, exact).unwrap(),
+        package
+    );
+}
+
+#[test]
 fn hex_outer_archive_has_an_exact_bounded_v3_inventory() {
     let contents = tar_gz(&[("gleam.toml", b"name = \"x\"\nversion = \"1.0.0\"\n")]);
     let valid = outer_package(b"3", b"metadata", &contents, None, &[]);
