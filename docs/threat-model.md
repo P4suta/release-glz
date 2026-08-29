@@ -29,6 +29,21 @@ roles. It does not make a compromised maintainer machine or registry reversible.
 | Private artifact disclosure | Raw private Candidate artifacts stay in Actions storage; only explicitly allowed evidence/sidecars can be public assets. |
 | Mutable workflow dependency | Generated and project workflows pin third-party Actions to full commit SHAs and use least job permissions with checkout credentials disabled. |
 
+## Gleam 1.18.1 Windows packaging compatibility
+
+Gleam 1.18.1 has a native Windows path regression in `export hex-tarball`
+([gleam-lang/gleam#6184](https://github.com/gleam-lang/gleam/issues/6184)).
+release-glz attempts the normal compiler export first. It uses its compatibility
+path only on Windows, only for exactly Gleam 1.18.1, and only when both known
+upstream error fragments identify that regression. The compiler validations and
+build have already completed at that point.
+
+The compatibility path calls `export package-information`, inventories the
+compiler outputs, validates Hex-only dependencies, and constructs a
+deterministic Hex v3 package. The ordinary strict archive validator then checks
+the complete result before it can become a Candidate. It does not relax source,
+size, path, file-type, dependency, or checksum policy. All other errors fail closed.
+
 ## Availability and residual risk
 
 Registry, GitHub, runner, and network outages can leave a partial release. The

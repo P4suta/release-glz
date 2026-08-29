@@ -1,12 +1,100 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
 
 use flate2::{Compression, write::GzEncoder};
 use release_glz::artifact::{
-    ArchiveLimits, interface_from_docs_tarball, normalize_package_dir, unpack_hex_source,
-    unpack_tar_bytes, validate_docs_tarball, validate_hex_tarball,
+    ArchiveLimits, build_hex_tarball, interface_from_docs_tarball, normalize_package_dir,
+    package_publish_inputs, unpack_hex_source, unpack_tar_bytes, validate_docs_tarball,
+    validate_hex_tarball,
 };
 use sha2::{Digest, Sha256};
+
+#[test]
+fn hex_v3_builder_is_deterministic_bounded_and_rejects_unsafe_paths() {
+    let files = BTreeMap::from([
+        (
+            "gleam.toml".to_owned(),
+            b"name = \"x\"\nversion = \"1.0.0\"\n".to_vec(),
+        ),
+        ("src/x.gleam".to_owned(), b"pub fn value() { 1 }\n".to_vec()),
+    ]);
+    let metadata = b"{<<\"name\">>, <<\"x\"/utf8>>}.\n";
+
+    let first = build_hex_tarball(metadata, &files, ArchiveLimits::default()).unwrap();
+    let second = build_hex_tarball(metadata, &files, ArchiveLimits::default()).unwrap();
+
+    assert_eq!(first, second);
+    let validation = validate_hex_tarball(&first, ArchiveLimits::default()).unwrap();
+    assert_eq!(validation.content_entries, 2);
+    let temp = tempfile::tempdir().unwrap();
+    unpack_hex_source(&first, temp.path()).unwrap();
+    assert_eq!(
+        fs::read(temp.path().join("src/x.gleam")).unwrap(),
+        files["src/x.gleam"]
+    );
+
+    let unsafe_files = BTreeMap::from([("../escape".to_owned(), b"secret".to_vec())]);
+    assert_error_contains(
+        build_hex_tarball(metadata, &unsafe_files, ArchiveLimits::default()),
+        "safe relative path",
+    );
+    assert_error_contains(
+        build_hex_tarball(
+            metadata,
+            &files,
+            ArchiveLimits {
+                max_total_bytes: 1,
+                ..ArchiveLimits::default()
+            },
+        ),
+        "expanded archive limit",
+    );
+    assert_error_contains(
+        build_hex_tarball(
+            metadata,
+            &files,
+            ArchiveLimits {
+                max_entries: 1,
+                ..ArchiveLimits::default()
+            },
+        ),
+        "entry limit",
+    );
+    assert_error_contains(
+        build_hex_tarball(
+            metadata,
+            &files,
+            ArchiveLimits {
+                max_entry_bytes: 1,
+                ..ArchiveLimits::default()
+            },
+        ),
+        "metadata",
+    );
+    assert_error_contains(
+        build_hex_tarball(
+            b"",
+            &files,
+            ArchiveLimits {
+                max_entry_bytes: 1,
+                ..ArchiveLimits::default()
+            },
+        ),
+        "contents file",
+    );
+    assert_error_contains(
+        build_hex_tarball(
+            metadata,
+            &files,
+            ArchiveLimits {
+                max_archive_bytes: 1,
+                ..ArchiveLimits::default()
+            },
+        ),
+        "generated Hex package failed validation",
+    );
+}
 
 #[test]
 fn hex_outer_archive_has_an_exact_bounded_v3_inventory() {
@@ -299,10 +387,17 @@ fn package_directory_normalization_includes_only_publishable_inputs() {
     fs::write(temp.path().join("NOTICE.md"), "notice").unwrap();
     fs::write(temp.path().join("ignored.txt"), "ignored").unwrap();
     fs::write(temp.path().join("src/nested/x.gleam"), "pub fn x() { 1 }").unwrap();
+    fs::write(temp.path().join("src/nested/x.mjs"), "export const x = 1;").unwrap();
+    fs::write(temp.path().join("src/nested/secret.txt"), "not publishable").unwrap();
     fs::write(temp.path().join("priv/assets/data"), "private asset").unwrap();
     fs::write(temp.path().join("test/x.gleam"), "ignored").unwrap();
     fs::write(temp.path().join("build/output"), "ignored").unwrap();
 
+    let publish_inputs = package_publish_inputs(temp.path()).unwrap();
+    assert!(
+        String::from_utf8_lossy(&publish_inputs["gleam.toml"]).contains("1.2.3"),
+        "raw publish inputs must preserve the candidate version"
+    );
     let normalized = normalize_package_dir(temp.path()).unwrap();
     assert_eq!(
         normalized.keys().map(String::as_str).collect::<Vec<_>>(),
@@ -312,6 +407,7 @@ fn package_directory_normalization_includes_only_publishable_inputs() {
             "gleam.toml",
             "priv/assets/data",
             "src/nested/x.gleam",
+            "src/nested/x.mjs",
         ]
     );
     assert!(

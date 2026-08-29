@@ -4,7 +4,7 @@ use std::io::{Cursor, Read};
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
-use flate2::read::GzDecoder;
+use flate2::{Compression, GzBuilder, read::GzDecoder};
 use sha2::{Digest, Sha256};
 use tar::Archive;
 use toml_edit::{DocumentMut, value};
@@ -36,6 +36,87 @@ pub struct HexTarballValidation {
     pub inner_checksum: String,
     pub content_entries: usize,
     pub expanded_bytes: u64,
+}
+
+pub fn build_hex_tarball(
+    metadata: &[u8],
+    files: &BTreeMap<String, Vec<u8>>,
+    limits: ArchiveLimits,
+) -> Result<Vec<u8>> {
+    if files.len() > limits.max_entries {
+        bail!("Hex contents exceed the archive entry limit");
+    }
+    if metadata.len() as u64 > limits.max_entry_bytes {
+        bail!("Hex metadata exceed the per-entry archive limit");
+    }
+
+    let mut expanded_bytes = 0_u64;
+    for (path, contents) in files {
+        safe_archive_path_value(path.as_bytes())
+            .context("Hex contents path must be a safe relative path")?;
+        if contents.len() as u64 > limits.max_entry_bytes {
+            bail!("Hex contents file `{path}` exceeds the per-entry archive limit");
+        }
+        expanded_bytes = expanded_bytes
+            .checked_add(contents.len() as u64)
+            .context("Hex contents size overflow")?;
+        if expanded_bytes > limits.max_total_bytes {
+            bail!("Hex contents exceed the expanded archive limit");
+        }
+    }
+
+    let encoder = GzBuilder::new()
+        .mtime(0)
+        .write(Vec::new(), Compression::default());
+    let mut contents_tar = tar::Builder::new(encoder);
+    for (path, contents) in files {
+        append_deterministic_file(&mut contents_tar, path, contents)?;
+    }
+    let encoder = contents_tar
+        .into_inner()
+        .context("failed to finish Hex contents tar")?;
+    let contents = encoder
+        .finish()
+        .context("failed to finish Hex contents gzip stream")?;
+
+    const VERSION: &[u8] = b"3";
+    let mut digest = Sha256::new();
+    digest.update(VERSION);
+    digest.update(metadata);
+    digest.update(&contents);
+    let checksum = format!("{:X}", digest.finalize());
+
+    let mut outer = tar::Builder::new(Vec::new());
+    for (path, bytes) in [
+        ("VERSION", VERSION),
+        ("metadata.config", metadata),
+        ("contents.tar.gz", contents.as_slice()),
+        ("CHECKSUM", checksum.as_bytes()),
+    ] {
+        append_deterministic_file(&mut outer, path, bytes)?;
+    }
+    let bytes = outer
+        .into_inner()
+        .context("failed to finish Hex package tarball")?;
+    validate_hex_tarball(&bytes, limits).context("generated Hex package failed validation")?;
+    Ok(bytes)
+}
+
+fn append_deterministic_file<W: std::io::Write>(
+    archive: &mut tar::Builder<W>,
+    path: &str,
+    contents: &[u8],
+) -> Result<()> {
+    let mut header = tar::Header::new_gnu();
+    header.set_size(contents.len() as u64);
+    header.set_mode(0o600);
+    header.set_uid(0);
+    header.set_gid(0);
+    header.set_mtime(0);
+    header.set_cksum();
+    archive
+        .append_data(&mut header, path, contents)
+        .with_context(|| format!("failed to append `{path}` to tar archive"))
 }
 
 pub fn validate_hex_tarball(bytes: &[u8], limits: ArchiveLimits) -> Result<HexTarballValidation> {
@@ -131,14 +212,19 @@ pub fn artifacts_equal(old: &[u8], new: &[u8]) -> Result<bool> {
 /// Normalize the publish inputs in a package directory without invoking the
 /// compiler. This is used to recover a missing release tag from git history.
 pub fn normalize_package_dir(package_dir: &Path) -> Result<NormalizedArtifact> {
-    let mut output = BTreeMap::new();
-    collect_publish_inputs(package_dir, package_dir, &mut output)?;
+    let mut output = package_publish_inputs(package_dir)?;
     if let Some(contents) = output.get_mut("gleam.toml") {
         let source = String::from_utf8(std::mem::take(contents))?;
         let mut document = source.parse::<DocumentMut>()?;
         document["version"] = value("<release-glz-version>");
         *contents = document.to_string().into_bytes();
     }
+    Ok(output)
+}
+
+pub fn package_publish_inputs(package_dir: &Path) -> Result<NormalizedArtifact> {
+    let mut output = BTreeMap::new();
+    collect_publish_inputs(package_dir, package_dir, &mut output)?;
     Ok(output)
 }
 
@@ -178,6 +264,15 @@ pub fn inner_contents(bytes: &[u8]) -> Result<Vec<u8>> {
         .get("contents.tar.gz")
         .cloned()
         .context("Hex package tarball has no `contents.tar.gz`")
+}
+
+#[cfg(test)]
+pub(crate) fn hex_metadata(bytes: &[u8]) -> Result<Vec<u8>> {
+    let files = checked_outer_files(bytes, ArchiveLimits::default())?;
+    files
+        .get("metadata.config")
+        .cloned()
+        .context("Hex package tarball has no `metadata.config`")
 }
 
 pub fn normalize_contents_tar_gz(bytes: &[u8]) -> Result<NormalizedArtifact> {
@@ -452,12 +547,10 @@ fn collect_publish_inputs(
             .to_string_lossy()
             .replace('\\', "/");
         let file_type = entry.file_type()?;
-        let include_dir = relative == "src"
-            || relative == "priv"
-            || relative.starts_with("src/")
-            || relative.starts_with("priv/");
+        let in_source = relative == "src" || relative.starts_with("src/");
+        let in_private = relative == "priv" || relative.starts_with("priv/");
         if file_type.is_dir() {
-            if include_dir {
+            if in_source || in_private {
                 collect_publish_inputs(root, &path, output)?;
             }
             continue;
@@ -466,11 +559,32 @@ fn collect_publish_inputs(
             bail!("publish input `{}` is not a regular file", path.display());
         }
         let root_file = !relative.contains('/') && is_publish_root_file(&relative);
-        if include_dir || root_file {
+        let source_file = in_source && is_publish_source_file(&relative);
+        if in_private || source_file || root_file {
             output.insert(relative, fs::read(path)?);
         }
     }
     Ok(())
+}
+
+fn is_publish_source_file(path: &str) -> bool {
+    matches!(
+        Path::new(path).extension().and_then(|value| value.to_str()),
+        Some(
+            "gleam"
+                | "erl"
+                | "hrl"
+                | "ex"
+                | "js"
+                | "mjs"
+                | "cjs"
+                | "jsx"
+                | "ts"
+                | "mts"
+                | "cts"
+                | "tsx"
+        )
+    )
 }
 
 fn is_publish_root_file(path: &str) -> bool {

@@ -88,3 +88,23 @@ fn operations_and_migration_guides_cover_every_supported_registry_path() {
         assert!(threat.contains(required), "threat model misses {required}");
     }
 }
+
+#[test]
+fn threat_model_documents_the_narrow_gleam_windows_packaging_fallback() {
+    let threat = fs::read_to_string("docs/threat-model.md").unwrap();
+    for required in [
+        "Gleam 1.18.1",
+        "gleam-lang/gleam/issues/6184",
+        "Windows",
+        "export hex-tarball",
+        "export package-information",
+        "compiler validations",
+        "Hex v3",
+        "All other errors fail closed",
+    ] {
+        assert!(
+            threat.contains(required),
+            "threat model misses Windows fallback contract `{required}`"
+        );
+    }
+}
