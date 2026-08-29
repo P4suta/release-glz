@@ -38,7 +38,7 @@ impl Default for Gleam {
 
 impl Gleam {
     pub fn installed_version(&self) -> Result<Version> {
-        let output = self.command(Path::new(".")).arg("--version").output()?;
+        let output = self.command(Path::new("."))?.arg("--version").output()?;
         check_output(&output, "gleam --version", None)?;
         let stdout = String::from_utf8_lossy(&output.stdout);
         stdout
@@ -89,7 +89,7 @@ impl Gleam {
     pub fn export_hex_tarball(&self, package_dir: &Path) -> Result<Vec<u8>> {
         let manifest = Manifest::load(package_dir.join("gleam.toml"))?;
         let output = self
-            .command(package_dir)
+            .command(package_dir)?
             .args(["export", "hex-tarball"])
             .output()?;
         let credential = configured_registry_secret(&manifest);
@@ -104,7 +104,7 @@ impl Gleam {
         let manifest = Manifest::load(package_dir.join("gleam.toml"))?;
         let path = package_dir.join("release-glz-package-interface.json");
         let output = self
-            .command(package_dir)
+            .command(package_dir)?
             .args(["export", "package-interface", "--out"])
             .arg(&path)
             .output()?;
@@ -119,7 +119,10 @@ impl Gleam {
 
     pub fn docs_build(&self, package_dir: &Path) -> Result<()> {
         let manifest = Manifest::load(package_dir.join("gleam.toml"))?;
-        let output = self.command(package_dir).args(["docs", "build"]).output()?;
+        let output = self
+            .command(package_dir)?
+            .args(["docs", "build"])
+            .output()?;
         let credential = configured_registry_secret(&manifest);
         check_output(&output, "gleam docs build", credential.as_deref())
     }
@@ -134,10 +137,16 @@ impl Gleam {
         deterministic_tar_gz(&docs)
     }
 
-    fn command(&self, directory: &Path) -> Command {
+    fn command(&self, directory: &Path) -> Result<Command> {
+        let directory = directory.canonicalize().with_context(|| {
+            format!(
+                "failed to canonicalize Gleam project root `{}`",
+                directory.display()
+            )
+        })?;
         let mut command = Command::new(&self.executable);
         command.current_dir(directory);
-        command
+        Ok(command)
     }
 }
 
@@ -308,6 +317,31 @@ mod tests {
         assert!(error.contains("gleam --version failed"), "{error}");
         assert!(error.contains("failed output"), "{error}");
         assert!(error.contains("failed error"), "{error}");
+    }
+
+    #[test]
+    fn compiler_process_uses_the_canonical_project_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let package = temp.path().join("package");
+        fs::create_dir(&package).unwrap();
+
+        #[cfg(unix)]
+        let directory = {
+            use std::os::unix::fs::symlink;
+
+            let alias = temp.path().join("package-alias");
+            symlink(&package, &alias).unwrap();
+            alias
+        };
+        #[cfg(not(unix))]
+        let directory = package;
+
+        let command = Gleam::default().command(&directory).unwrap();
+
+        assert_eq!(
+            command.get_current_dir(),
+            Some(fs::canonicalize(directory).unwrap().as_path())
+        );
     }
 
     #[cfg(unix)]
