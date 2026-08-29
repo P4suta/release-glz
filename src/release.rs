@@ -338,18 +338,19 @@ impl ReleaseTarget for LiveReleaseTarget {
                 }
             }
             ReconcileEffect::UploadGithubAsset {
+                hook_id,
                 name,
                 sha256: expected_digest,
             } => {
                 let expected = intent
                     .release_assets
                     .iter()
-                    .find(|asset| &asset.name == name)
+                    .find(|asset| &asset.hook_id == hook_id && &asset.name == name)
                     .context("release asset is not sealed in the Candidate intent")?;
                 let payload = payload
                     .release_assets
                     .iter()
-                    .find(|asset| asset.hook_id == expected.hook_id && asset.name == name)
+                    .find(|asset| asset.hook_id == hook_id && asset.name == name)
                     .context("release asset bytes are not sealed in the Candidate")?;
                 if payload.media_type != expected.media_type
                     || payload.bytes.len() as u64 != expected.size

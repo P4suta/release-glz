@@ -111,6 +111,7 @@ fn ci_exercises_minimum_configured_and_current_gleam_versions() {
         "scripts/generate-provenance.test.js",
         "scripts/generate-sbom.test.js",
         "scripts/package-windows.test.js",
+        "scripts/verify-release-assets.test.js",
         "scripts/workflow-tools.test.js",
     ] {
         assert!(yaml.contains(test), "CI does not execute {test}");
@@ -118,6 +119,26 @@ fn ci_exercises_minimum_configured_and_current_gleam_versions() {
 
     let assurance = fs::read_to_string(".github/workflows/assurance.yml").unwrap();
     assert!(assurance.contains("RUST_TEST_THREADS: 1"));
+}
+
+#[test]
+fn coverage_job_installs_current_gleam_before_measuring() {
+    let yaml = fs::read_to_string(".github/workflows/assurance.yml").unwrap();
+    let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
+    let steps = parsed["jobs"]["coverage"]["steps"].as_sequence().unwrap();
+    let setup = steps
+        .iter()
+        .find(|step| {
+            step["uses"]
+                .as_str()
+                .is_some_and(|value| value.starts_with("erlef/setup-beam@"))
+        })
+        .expect("coverage job must install Gleam so compiler smoke tests are measured");
+
+    let reference = setup["uses"].as_str().unwrap().split_once('@').unwrap().1;
+    assert_eq!(reference.len(), 40, "Gleam setup action must be immutable");
+    assert_eq!(setup["with"]["otp-version"].as_str(), Some("28.0"));
+    assert_eq!(setup["with"]["gleam-version"].as_str(), Some("1.18.1"));
 }
 
 #[test]

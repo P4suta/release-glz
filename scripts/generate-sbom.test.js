@@ -141,3 +141,36 @@ test("includes only the union of runtime dependencies for shipped targets", () =
     ["linux-only", "runtime", "windows-only"],
   );
 });
+
+test("compares workspace identity independently of metadata member order", () => {
+  const workspacePackage = (id, name) => ({
+    name,
+    version: "1.0.0",
+    id,
+    license: "MIT",
+    source: null,
+    repository: null,
+  });
+  const snapshot = (members) => ({
+    packages: [workspacePackage("root", "release-glz"), workspacePackage("helper", "z-helper")],
+    workspace_members: members,
+    resolve: {
+      nodes: [
+        { id: "root", deps: [] },
+        { id: "helper", deps: [] },
+      ],
+    },
+  });
+
+  assert.doesNotThrow(() => generateDocuments(
+    [snapshot(["root", "helper"]), snapshot(["helper", "root"])],
+    new Map(),
+  ));
+  assert.throws(
+    () => generateDocuments(
+      [snapshot(["root", "helper"]), snapshot(["root", "different"])],
+      new Map(),
+    ),
+    /disagree on workspace identity/,
+  );
+});

@@ -65,6 +65,10 @@ fn doctor_cli_collects_local_and_github_checks_into_envelope_v2() {
             "GITHUB_GRAPHQL_URL",
             format!("{}/graphql", server.base_url()),
         )
+        .env("HTTP_PROXY", "http://127.0.0.1:9")
+        .env("HTTPS_PROXY", "http://127.0.0.1:9")
+        .env("ALL_PROXY", "http://127.0.0.1:9")
+        .env("NO_PROXY", "")
         .output()
         .unwrap();
     let request_count = server.request_count();

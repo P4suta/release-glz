@@ -376,13 +376,19 @@ impl GitHubClient {
     ) -> Result<Self> {
         validate_github_url(&api_url)?;
         validate_github_url(&graphql_url)?;
+        let loopback_only = [&api_url, &graphql_url]
+            .into_iter()
+            .all(|raw| reqwest::Url::parse(raw).is_ok_and(|url| url_is_http_loopback(&url)));
+        let mut client = reqwest::Client::builder()
+            .user_agent(concat!("release-glz/", env!("CARGO_PKG_VERSION")))
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .timeout(std::time::Duration::from_secs(60))
+            .redirect(reqwest::redirect::Policy::none());
+        if loopback_only {
+            client = client.no_proxy();
+        }
         Ok(Self {
-            client: reqwest::Client::builder()
-                .user_agent(concat!("release-glz/", env!("CARGO_PKG_VERSION")))
-                .connect_timeout(std::time::Duration::from_secs(10))
-                .timeout(std::time::Duration::from_secs(60))
-                .redirect(reqwest::redirect::Policy::none())
-                .build()?,
+            client: client.build()?,
             token,
             api_url: api_url.trim_end_matches('/').to_owned(),
             graphql_url,
@@ -1119,7 +1125,17 @@ impl GitHubClient {
 
     async fn get_response(&self, url: &str) -> Result<reqwest::Response> {
         for attempt in 0..GITHUB_GET_ATTEMPTS {
-            let response = self.request(Method::GET, url).send().await?;
+            let response = match self.request(Method::GET, url).send().await {
+                Ok(response) => response,
+                Err(_) if attempt + 1 < GITHUB_GET_ATTEMPTS => {
+                    tokio::time::sleep(std::time::Duration::from_millis(
+                        100 * (attempt as u64 + 1),
+                    ))
+                    .await;
+                    continue;
+                }
+                Err(error) => return Err(error.into()),
+            };
             if !retryable_status(response.status()) || attempt + 1 == GITHUB_GET_ATTEMPTS {
                 return Ok(response);
             }

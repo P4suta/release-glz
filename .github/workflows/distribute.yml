@@ -223,6 +223,7 @@ jobs:
             echo "Release $TAG already exists and is not a draft" >&2
             exit 1
           fi
+          node scripts/verify-release-assets.js --artifacts dist <<<"$release_json"
           for file in dist/*; do
             name=$(basename "$file")
             expected="sha256:$(sha256sum "$file" | cut -d' ' -f1)"

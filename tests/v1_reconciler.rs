@@ -46,9 +46,15 @@ fn release_assets_upload_to_the_draft_once_and_conflict_instead_of_replacing() {
     }];
     let plan = reconcile(&target, &ExternalReleaseState::default(), &approved()).unwrap();
     let upload = ReconcileEffect::UploadGithubAsset {
+        hook_id: "sbom".into(),
         name: "sbom.cdx.json".into(),
         sha256: "5".repeat(64),
     };
+    assert_eq!(
+        serde_json::to_value(&upload).unwrap()["hook_id"],
+        "sbom",
+        "asset effects must preserve the sealed sidecar identity"
+    );
     assert!(plan.effects.contains(&upload));
     assert!(
         plan.effects

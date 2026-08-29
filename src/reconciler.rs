@@ -117,6 +117,7 @@ pub enum ReconcileEffect {
     PublishPackage,
     PublishDocs,
     UploadGithubAsset {
+        hook_id: String,
         name: String,
         sha256: String,
     },
@@ -207,6 +208,7 @@ pub fn reconcile(
     for asset in &intent.release_assets {
         if !observed.release_assets.contains_key(&asset.name) {
             effects.push(ReconcileEffect::UploadGithubAsset {
+                hook_id: asset.hook_id.clone(),
                 name: asset.name.clone(),
                 sha256: asset.sha256.clone(),
             });

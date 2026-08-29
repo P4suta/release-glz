@@ -421,11 +421,15 @@ impl ReleaseTarget for FakeTarget {
                     sha256: intent.docs_sha256.clone().unwrap(),
                 });
             }
-            ReconcileEffect::UploadGithubAsset { name, sha256 } => {
+            ReconcileEffect::UploadGithubAsset {
+                hook_id,
+                name,
+                sha256,
+            } => {
                 let asset = payload
                     .release_assets
                     .iter()
-                    .find(|asset| asset.name == name.as_str())
+                    .find(|asset| asset.hook_id == hook_id.as_str() && asset.name == name.as_str())
                     .unwrap();
                 assert_eq!(format!("{:x}", Sha256::digest(asset.bytes)), *sha256);
                 inner

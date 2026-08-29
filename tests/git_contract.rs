@@ -137,21 +137,21 @@ fn git_snapshot_resolves_safe_long_paths_from_the_committed_tree() {
     let temp = tempfile::tempdir().unwrap();
     let work = temp.path().join("work");
     init_repo(&work, "main");
-    let relative = Path::new("src").join("a".repeat(120)).join("module.gleam");
+    let relative_git = format!("src/{}/module.gleam", "a".repeat(120));
+    let relative = Path::new(&relative_git);
     fs::create_dir_all(work.join(relative.parent().unwrap())).unwrap();
-    fs::write(work.join(&relative), "pub fn value() { 1 }\n").unwrap();
+    fs::write(work.join(relative), "pub fn value() { 1 }\n").unwrap();
     run_git(&work, &["add", relative.to_str().unwrap()]);
     commit_index(&work, "feat: add deeply nested module", None);
-    fs::write(work.join(&relative), "dirty working tree").unwrap();
+    let object = format!("HEAD:{relative_git}");
+    let committed = git_bytes(&work, &["show", &object]);
+    fs::write(work.join(relative), "dirty working tree").unwrap();
 
     let repo = GitRepo::discover(&work).unwrap();
     let destination = temp.path().join("snapshot");
     repo.archive(&repo.head().unwrap(), &destination).unwrap();
 
-    assert_eq!(
-        fs::read_to_string(destination.join(relative)).unwrap(),
-        "pub fn value() { 1 }\n"
-    );
+    assert_eq!(fs::read(destination.join(relative)).unwrap(), committed);
 }
 
 fn init_repo(path: &Path, branch: &str) {
@@ -195,6 +195,21 @@ fn run_git(path: &Path, args: &[&str]) {
 
 fn git_stdout(path: &Path, args: &[&str]) -> String {
     command_output(Command::new("git").arg("-C").arg(path).args(args))
+}
+
+fn git_bytes(path: &Path, args: &[&str]) -> Vec<u8> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git command failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    output.stdout
 }
 
 fn run_command(command: &mut Command) {

@@ -84,8 +84,10 @@ function generateDocuments(metadataInput, lockChecksums) {
 
   const packages = new Map();
   const runtime = new Set();
+  const workspaceIdentity = (members) => [...members].sort().join("\0");
+  const expectedWorkspace = workspaceIdentity(first.workspace_members);
   for (const metadata of snapshots) {
-    if (metadata.workspace_members.join("\0") !== first.workspace_members.join("\0")) {
+    if (workspaceIdentity(metadata.workspace_members) !== expectedWorkspace) {
       throw new Error("cargo metadata target snapshots disagree on workspace identity");
     }
     for (const pkg of metadata.packages) packages.set(pkg.id, pkg);

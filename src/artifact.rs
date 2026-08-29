@@ -158,7 +158,11 @@ pub fn unpack_hex_source(bytes: &[u8], destination: &Path) -> Result<()> {
     fs::create_dir_all(destination)?;
     let outer = checked_outer_files(bytes, ArchiveLimits::default())?;
     let files = read_tar_gz_files(&outer["contents.tar.gz"], ArchiveLimits::default())?;
+    let generated_erlang = generated_erlang_paths(files.keys());
     for (relative, contents) in files {
+        if generated_erlang.contains(&relative) {
+            continue;
+        }
         let path = destination.join(relative);
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;

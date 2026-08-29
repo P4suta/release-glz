@@ -75,6 +75,7 @@ async fn live_reconciler_recovers_ambiguous_publish_and_second_run_is_a_no_op() 
             ReconcileEffect::PublishPackage,
             ReconcileEffect::PublishDocs,
             ReconcileEffect::UploadGithubAsset {
+                hook_id: "sbom".into(),
                 name: "sbom.cdx.json".into(),
                 sha256: fixture.manifest.sidecars[0].sha256.clone(),
             },

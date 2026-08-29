@@ -46,6 +46,11 @@ fn distribution_is_attested_and_uploaded_to_a_draft_exactly_once() {
     assert!(yaml.contains("asset=$(jq -c"));
     assert!(yaml.contains(".digest // empty"));
     assert!(yaml.contains("exists without a digest"));
+    let inventory_check = yaml
+        .find("node scripts/verify-release-assets.js --artifacts dist")
+        .expect("draft assets must be checked against the sealed dist inventory");
+    let upload_loop = yaml.find("for file in dist/*").unwrap();
+    assert!(inventory_check < upload_loop);
 
     for line in yaml.lines().filter(|line| {
         line.trim_start()

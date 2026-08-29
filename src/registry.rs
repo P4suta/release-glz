@@ -177,12 +177,18 @@ impl HexRegistry {
             "repository_url",
         )?;
         let docs_url = parse_base_url(&config.docs_url, config.allow_http_loopback, "docs_url")?;
-        let client = reqwest::Client::builder()
+        let loopback_only = [&api_url, &repository_url, &docs_url]
+            .into_iter()
+            .all(url_is_http_loopback);
+        let mut client = reqwest::Client::builder()
             .user_agent(concat!("release-glz/", env!("CARGO_PKG_VERSION")))
             .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_secs(60))
-            .redirect(reqwest::redirect::Policy::none())
-            .build()?;
+            .redirect(reqwest::redirect::Policy::none());
+        if loopback_only {
+            client = client.no_proxy();
+        }
+        let client = client.build()?;
         Ok(Self {
             client,
             api_url,

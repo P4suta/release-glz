@@ -112,6 +112,10 @@ jobs:
         with:
           toolchain: nightly-2026-08-22
           components: llvm-tools-preview
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+        with:
+          otp-version: "28.0"
+          gleam-version: "1.18.1"
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: "24"

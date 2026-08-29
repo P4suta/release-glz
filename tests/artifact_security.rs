@@ -253,10 +253,12 @@ fn unpacking_uses_only_validated_relative_regular_files() {
 }
 
 #[test]
-fn validated_hex_source_unpacking_materializes_the_exact_inner_files() {
+fn validated_hex_source_unpacking_omits_generated_erlang_but_keeps_native_ffi() {
     let contents = tar_gz(&[
         ("gleam.toml", b"name = \"x\"\nversion = \"1.0.0\"\n"),
         ("src/x.gleam", b"pub fn value() { 1 }\n"),
+        ("src/x.erl", b"% compiler-generated Erlang\n"),
+        ("src/x_ffi.erl", b"% package-authored native Erlang\n"),
     ]);
     let package = outer_package(b"3", b"metadata", &contents, None, &[]);
     let temp = tempfile::tempdir().unwrap();
@@ -270,6 +272,14 @@ fn validated_hex_source_unpacking_materializes_the_exact_inner_files() {
     assert_eq!(
         fs::read(destination.join("src/x.gleam")).unwrap(),
         b"pub fn value() { 1 }\n"
+    );
+    assert!(
+        !destination.join("src/x.erl").exists(),
+        "paired compiler output must not clash when the source is rebuilt"
+    );
+    assert_eq!(
+        fs::read(destination.join("src/x_ffi.erl")).unwrap(),
+        b"% package-authored native Erlang\n"
     );
 }
 

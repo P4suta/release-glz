@@ -51,6 +51,7 @@ jobs:
           scripts/generate-provenance.test.js
           scripts/generate-sbom.test.js
           scripts/package-windows.test.js
+          scripts/verify-release-assets.test.js
           scripts/workflow-tools.test.js
 
   lint:

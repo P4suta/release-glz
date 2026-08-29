@@ -1260,6 +1260,34 @@ async fn github_get_retries_retry_after_without_reposting_and_bounds_json_bodies
     assert!(error.to_string().contains("size limit"));
 }
 
+#[tokio::test]
+async fn github_get_retries_a_transport_failure_without_reposting() {
+    let server = FakeServer::start(vec![
+        Vec::new(),
+        response(
+            200,
+            r#"{"id":42,"html_url":"https://github.test/o/r/releases/42","tag_name":"v1.2.3","target_commitish":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","draft":true}"#,
+        ),
+    ])
+    .await;
+    let client = test_client(&server, Some("token"));
+
+    assert!(
+        client
+            .release_details_for_tag("v1.2.3")
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(server.requests().len(), 2);
+    assert!(
+        server
+            .requests()
+            .iter()
+            .all(|request| request.starts_with("GET "))
+    );
+}
+
 fn test_client(server: &FakeServer, token: Option<&str>) -> GitHubClient {
     GitHubClient::new(
         GitHubRepository::parse("o/r").unwrap(),
