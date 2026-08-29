@@ -1,0 +1,43 @@
+[package]
+name = "release-glz-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+release-glz = { path = ".." }
+
+[[bin]]
+name = "archive"
+path = "fuzz_targets/archive.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "config"
+path = "fuzz_targets/config.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "pr_marker"
+path = "fuzz_targets/pr_marker.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "api_interface"
+path = "fuzz_targets/api_interface.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+members = ["."]

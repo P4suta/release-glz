@@ -1,0 +1,176 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://p4suta.github.io/release-glz/schema/candidate-v1.json",
+  "title": "release-glz Candidate v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "package", "version", "tag", "source", "compiler", "registry", "private",
+    "github_repository", "release_branch_prefix", "release_notes", "approval", "outputs",
+    "artifacts", "verify_hook_definitions", "sidecar_hook_definitions", "hook_evidence",
+    "sidecars", "notify_hooks", "notify_hook_definitions", "intent_digest", "candidate_digest"
+  ],
+  "properties": {
+    "schema": { "const": "candidate/v1" },
+    "package": { "type": "string", "minLength": 1 },
+    "version": { "$ref": "#/$defs/version" },
+    "tag": { "type": "string", "minLength": 1 },
+    "source": { "$ref": "#/$defs/source" },
+    "compiler": { "$ref": "#/$defs/version" },
+    "registry": { "$ref": "#/$defs/registry" },
+    "private": { "type": "boolean" },
+    "github_repository": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$" },
+    "release_branch_prefix": { "type": "string", "minLength": 1 },
+    "release_notes": { "type": "string", "maxLength": 1048576 },
+    "approval": { "$ref": "#/$defs/approval" },
+    "outputs": { "$ref": "#/$defs/outputs" },
+    "artifacts": { "$ref": "#/$defs/artifacts" },
+    "verify_hook_definitions": { "$ref": "#/$defs/hookDefinitions" },
+    "sidecar_hook_definitions": { "$ref": "#/$defs/hookDefinitions" },
+    "hook_evidence": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/hookEvidence" }
+    },
+    "sidecars": {
+      "type": "array",
+      "maxItems": 64,
+      "items": { "$ref": "#/$defs/sidecar" }
+    },
+    "notify_hooks": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    },
+    "notify_hook_definitions": { "$ref": "#/$defs/hookDefinitions" },
+    "intent_digest": { "$ref": "#/$defs/sha256" },
+    "candidate_digest": { "$ref": "#/$defs/sha256" }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "version": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$"
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commit_sha", "manifest_path"],
+      "properties": {
+        "commit_sha": { "type": "string", "pattern": "^[0-9a-f]{40}$|^[0-9a-f]{64}$" },
+        "manifest_path": { "type": "string", "minLength": 1 }
+      }
+    },
+    "registry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "repository", "api_url", "repository_url", "docs_url", "credential_env", "auth", "allow_http_loopback"],
+      "properties": {
+        "provider": { "enum": ["hexpm", "hex-compatible"] },
+        "repository": { "type": ["string", "null"] },
+        "api_url": { "type": "string", "format": "uri" },
+        "repository_url": { "type": "string", "format": "uri" },
+        "docs_url": { "type": "string", "format": "uri" },
+        "credential_env": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" },
+        "auth": { "enum": ["hex-token", "bearer"] },
+        "allow_http_loopback": { "type": "boolean" }
+      }
+    },
+    "approval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["normal", "manual", "environment", "separation", "manual_refs", "private_repository_fallback"],
+      "properties": {
+        "normal": { "const": "release-pr-and-environment" },
+        "manual": { "const": "environment" },
+        "environment": { "type": "string", "minLength": 1 },
+        "separation": { "enum": ["solo", "strict"] },
+        "manual_refs": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^refs/(heads|tags)/" }
+        },
+        "private_repository_fallback": {
+          "oneOf": [{ "const": "workflow-dispatch-digest" }, { "type": "null" }]
+        }
+      }
+    },
+    "outputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["docs", "github_release", "sbom", "provenance", "signature", "allow_private_evidence_upload"],
+      "properties": {
+        "docs": { "type": "boolean" },
+        "github_release": { "type": "boolean" },
+        "sbom": { "type": "boolean" },
+        "provenance": { "type": "boolean" },
+        "signature": { "type": "boolean" },
+        "allow_private_evidence_upload": { "type": "boolean" }
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "semantic_sha256", "size"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "semantic_sha256": { "$ref": "#/$defs/sha256" },
+        "size": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "artifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["package", "docs", "package_interface"],
+      "properties": {
+        "package": { "$ref": "#/$defs/artifact" },
+        "docs": { "oneOf": [{ "$ref": "#/$defs/artifact" }, { "type": "null" }] },
+        "package_interface": { "$ref": "#/$defs/artifact" }
+      }
+    },
+    "hookDefinition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "argv", "timeout_seconds", "required", "env"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "argv": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+        "timeout_seconds": { "type": "integer", "minimum": 1 },
+        "required": { "type": "boolean" },
+        "env": { "type": "array", "items": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" }, "uniqueItems": true }
+      }
+    },
+    "hookDefinitions": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/hookDefinition" }
+    },
+    "hookEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "id", "kind", "required", "success", "output_sha256"],
+      "properties": {
+        "schema": { "const": "hook/v1" },
+        "id": { "type": "string", "minLength": 1 },
+        "kind": { "enum": ["verify", "sidecar", "notify"] },
+        "required": { "type": "boolean" },
+        "success": { "type": "boolean" },
+        "output_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "sidecar": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["hook_id", "name", "path", "media_type", "sha256", "size", "public"],
+      "properties": {
+        "hook_id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "path": { "type": "string", "minLength": 1 },
+        "media_type": { "type": "string", "minLength": 3 },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "size": { "type": "integer", "minimum": 0, "maximum": 67108864 },
+        "public": { "type": "boolean" }
+      }
+    }
+  }
+}

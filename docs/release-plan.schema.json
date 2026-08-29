@@ -1,0 +1,161 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/P4suta/release-glz/blob/main/docs/release-plan.schema.json",
+  "title": "release-glz ReleasePlan v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "state", "package", "manifest_path", "published_version",
+    "manifest_version", "version", "bump", "release_required",
+    "artifacts_changed", "prerelease", "tag", "baseline", "reasons",
+    "api", "changes", "warnings", "required_approvals", "stages",
+    "intent_digest", "pr_url", "hex_url", "github_release_url"
+  ],
+  "properties": {
+    "schema": { "const": "plan/v2" },
+    "state": { "$ref": "#/$defs/state" },
+    "package": { "type": "string", "minLength": 1 },
+    "manifest_path": { "$ref": "#/$defs/path" },
+    "published_version": { "$ref": "#/$defs/nullableVersion" },
+    "manifest_version": { "$ref": "#/$defs/version" },
+    "version": { "$ref": "#/$defs/version" },
+    "bump": { "$ref": "#/$defs/bump" },
+    "release_required": { "type": "boolean" },
+    "artifacts_changed": { "type": "boolean" },
+    "prerelease": { "enum": ["alpha", "beta", "rc", null] },
+    "tag": { "type": "string", "minLength": 1 },
+    "baseline": { "$ref": "#/$defs/baseline" },
+    "reasons": { "type": "array", "items": { "$ref": "#/$defs/reason" } },
+    "api": { "$ref": "#/$defs/api" },
+    "changes": { "type": "array", "items": { "$ref": "#/$defs/change" } },
+    "warnings": { "type": "array", "items": { "$ref": "#/$defs/diagnostic" } },
+    "required_approvals": { "type": "array", "items": { "$ref": "#/$defs/approval" } },
+    "stages": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/stage" },
+      "uniqueItems": true
+    },
+    "intent_digest": { "$ref": "#/$defs/nullableSha256" },
+    "pr_url": { "$ref": "#/$defs/nullableString" },
+    "hex_url": { "$ref": "#/$defs/nullableString" },
+    "github_release_url": { "$ref": "#/$defs/nullableString" }
+  },
+  "$defs": {
+    "version": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$"
+    },
+    "nullableVersion": {
+      "anyOf": [{ "$ref": "#/$defs/version" }, { "type": "null" }]
+    },
+    "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "nullableSha256": {
+      "anyOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }]
+    },
+    "nullableString": { "type": ["string", "null"] },
+    "path": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\).+$"
+    },
+    "state": {
+      "enum": [
+        "up_to_date", "planned", "candidate_ready", "awaiting_approval",
+        "partially_released", "released", "conflict", "blocked"
+      ]
+    },
+    "stage": {
+      "enum": [
+        "verify_hooks", "prepare_git_tag", "prepare_github_draft",
+        "publish_package", "publish_docs", "finalize_github_release", "notify_hooks"
+      ]
+    },
+    "bump": { "enum": ["none", "patch", "minor", "major"] },
+    "baseline": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "git_ref", "sha", "source", "retired"],
+      "properties": {
+        "version": { "$ref": "#/$defs/nullableVersion" },
+        "git_ref": { "type": ["string", "null"] },
+        "sha": {
+          "anyOf": [
+            { "type": "string", "pattern": "^(?:[a-f0-9]{40}|[a-f0-9]{64})$" },
+            { "type": "null" }
+          ]
+        },
+        "source": { "enum": ["tag", "artifact_fingerprint", "config", "initial"] },
+        "retired": { "type": "boolean" }
+      }
+    },
+    "reason": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "bump", "summary"],
+      "properties": {
+        "kind": {
+          "enum": [
+            "initial_release", "artifact_changed", "conventional_commit", "api_added",
+            "api_breaking", "explicit_version", "prerelease", "retired_baseline"
+          ]
+        },
+        "bump": { "$ref": "#/$defs/bump" },
+        "summary": { "type": "string" }
+      }
+    },
+    "api": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "impact", "changes"],
+      "properties": {
+        "status": { "enum": ["not_checked", "compatible", "changed", "unknown_allowed"] },
+        "impact": { "$ref": "#/$defs/bump" },
+        "changes": { "type": "array", "items": { "$ref": "#/$defs/apiChange" } }
+      }
+    },
+    "apiChange": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "path", "breaking", "summary"],
+      "properties": {
+        "kind": { "enum": ["added", "removed", "changed", "constructor_added"] },
+        "path": { "type": "string" },
+        "breaking": { "type": "boolean" },
+        "summary": { "type": "string" }
+      }
+    },
+    "change": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["title", "pull_request", "author", "url", "labels", "category"],
+      "properties": {
+        "title": { "type": "string" },
+        "pull_request": { "type": ["integer", "null"], "minimum": 1 },
+        "author": { "type": ["string", "null"] },
+        "url": { "type": ["string", "null"] },
+        "labels": { "type": "array", "items": { "type": "string" } },
+        "category": { "type": "string" }
+      }
+    },
+    "diagnostic": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "level", "message", "detail"],
+      "properties": {
+        "code": { "type": "string" },
+        "level": { "enum": ["info", "warning", "error"] },
+        "message": { "type": "string" },
+        "detail": { "type": ["string", "null"] }
+      }
+    },
+    "approval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "environment"],
+      "properties": {
+        "kind": { "enum": ["release_pr", "environment", "candidate_digest"] },
+        "environment": { "type": ["string", "null"] }
+      }
+    }
+  }
+}

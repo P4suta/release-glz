@@ -1,0 +1,15 @@
+{
+  "modules": {
+    "gleam_mutants": {
+      "functions": {
+        "mutate": {
+          "parameters": [],
+          "return": {"kind": "named", "package": "gleam", "module": "gleam", "name": "Int", "parameters": []}
+        }
+      },
+      "constants": {},
+      "type-aliases": {},
+      "types": {}
+    }
+  }
+}

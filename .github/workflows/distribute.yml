@@ -1,0 +1,255 @@
+name: Distribute binaries
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Stable vX.Y.Z version whose checksums will be prepared
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: distribute-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate immutable release tag
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.value }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Match tag, Cargo, and Action versions exactly
+        id: version
+        shell: bash
+        env:
+          REQUESTED_VERSION: ${{ github.event_name == 'push' && github.ref_name || inputs.version }}
+        run: |
+          set -euo pipefail
+          [[ "$REQUESTED_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "$(sed -n 's/^version = "\([0-9][0-9.]*\)"$/v\1/p' Cargo.toml | head -n1)" = "$REQUESTED_VERSION"
+          test "$(node -p "'v'+require('./action/package.json').version")" = "$REQUESTED_VERSION"
+          printf 'value=%s\n' "$REQUESTED_VERSION" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build and smoke ${{ matrix.target }}
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+            archive: tar.gz
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            archive: tar.gz
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+            archive: tar.gz
+          - runner: macos-15
+            target: aarch64-apple-darwin
+            archive: tar.gz
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive: zip
+          - runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            archive: zip
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: 1.88.0
+          targets: ${{ matrix.target }}
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      - name: Install musl linker
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install --yes musl-tools
+      - name: Build locked release binary
+        env:
+          TARGET: ${{ matrix.target }}
+          RELEASE_GLZ_ACTION_SHA: ${{ github.sha }}
+        run: cargo build --release --locked --package release-glz --target "$TARGET"
+      - name: Smoke and package Unix binary
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          mkdir staging
+          cp "target/$TARGET/release/release-glz" staging/release-glz
+          chmod 0755 staging/release-glz
+          ./staging/release-glz --version
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            ldd_output=$(ldd staging/release-glz 2>&1 || true)
+            if [[ "$ldd_output" != *"not a dynamic executable"* && "$ldd_output" != *"statically linked"* ]]; then
+              printf '%s\n' "$ldd_output"
+              exit 1
+            fi
+          fi
+          touch -t 197001010000 staging/release-glz
+          tar -C staging -cf "release-glz-$TARGET.tar" release-glz
+          gzip -n -9 "release-glz-$TARGET.tar"
+      - name: Smoke and package Windows binary
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          & "target/$env:TARGET/release/release-glz.exe" --version
+          node scripts/package-windows.js --binary "target/$env:TARGET/release/release-glz.exe" --out "release-glz-$env:TARGET.zip"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: binary-${{ matrix.target }}
+          path: release-glz-${{ matrix.target }}.${{ matrix.archive }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+  prepare:
+    name: Prepare checksum manifest for review
+    if: github.event_name == 'workflow_dispatch'
+    needs: [validate, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: binary-*
+          path: dist
+          merge-multiple: true
+      - name: Seal all six archive checksums
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: node scripts/generate-action-checksums.js --artifacts dist --version "$VERSION" --out action-checksums.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: action-checksums-${{ needs.validate.outputs.version }}
+          path: action-checksums.json
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Attest and finalize immutable Release
+    if: github.event_name == 'push'
+    needs: [validate, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      actions: read
+      attestations: write
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: binary-*
+          path: dist
+          merge-multiple: true
+      - name: Generate CycloneDX SBOM, license inventory, and checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/generate-sbom.js dist
+          node scripts/generate-provenance.js \
+            --artifacts dist \
+            --repository "$GITHUB_REPOSITORY" \
+            --source "$GITHUB_SHA" \
+            --version "$GITHUB_REF_NAME" \
+            --run-id "$GITHUB_RUN_ID"
+          test -s dist/release-glz.cdx.json
+          test -s dist/THIRD_PARTY_LICENSES.json
+          test "$(find dist -maxdepth 1 -type f -name '*.intoto.jsonl' | wc -l)" -eq 6
+          cd dist
+          find . -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort | xargs sha256sum > ../SHA256SUMS.tmp
+          mv ../SHA256SUMS.tmp SHA256SUMS
+      - name: Verify checksums sealed into this Action commit
+        run: node scripts/generate-action-checksums.js --artifacts dist --version "$GITHUB_REF_NAME" --check action/checksums.json
+      - name: Attest binary build provenance
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
+        with:
+          subject-path: |
+            dist/release-glz-*.tar.gz
+            dist/release-glz-*.zip
+      - name: Attest CycloneDX SBOM
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
+        with:
+          subject-path: |
+            dist/release-glz-*.tar.gz
+            dist/release-glz-*.zip
+          sbom-path: dist/release-glz.cdx.json
+      - name: Create draft and upload each immutable asset once
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! release_json=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" 2>/dev/null); then
+            gh release create "$TAG" --draft --verify-tag --generate-notes --title "$TAG"
+            release_json=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG")
+          fi
+          if [[ $(jq -r '.draft' <<<"$release_json") != true ]]; then
+            echo "Release $TAG already exists and is not a draft" >&2
+            exit 1
+          fi
+          for file in dist/*; do
+            name=$(basename "$file")
+            expected="sha256:$(sha256sum "$file" | cut -d' ' -f1)"
+            existing=$(jq -r --arg name "$name" '.assets[] | select(.name == $name) | .digest // "missing"' <<<"$release_json")
+            if [[ -z "$existing" ]]; then
+              gh release upload "$TAG" "$file"
+            elif [[ "$existing" != "$expected" ]]; then
+              echo "Release asset $name already exists with digest $existing, expected $expected" >&2
+              exit 1
+            fi
+          done
+      - name: Re-download and verify release evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir verified
+          gh release download "$TAG" --dir verified
+          cd verified
+          sha256sum --check SHA256SUMS
+          for file in release-glz-*.tar.gz release-glz-*.zip; do
+            gh attestation verify "$file" --repo "$GITHUB_REPOSITORY"
+          done
+      - name: Finalize verified Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: gh release edit "$TAG" --draft=false

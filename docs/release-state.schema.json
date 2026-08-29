@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://p4suta.github.io/release-glz/schema/state-v1.json",
+  "title": "release-glz ReleaseState v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "package", "docs", "tag", "github_release", "release_assets", "notifications"],
+  "properties": {
+    "schema": { "const": "state/v1" },
+    "package": { "oneOf": [{ "$ref": "#/$defs/artifact" }, { "type": "null" }] },
+    "docs": { "oneOf": [{ "$ref": "#/$defs/artifact" }, { "type": "null" }] },
+    "tag": { "oneOf": [{ "$ref": "#/$defs/tag" }, { "type": "null" }] },
+    "github_release": { "oneOf": [{ "$ref": "#/$defs/githubRelease" }, { "type": "null" }] },
+    "release_assets": {
+      "type": "object",
+      "propertyNames": { "type": "string", "minLength": 1 },
+      "additionalProperties": { "$ref": "#/$defs/artifact" }
+    },
+    "notifications": {
+      "type": "object",
+      "propertyNames": { "type": "string", "minLength": 1 },
+      "additionalProperties": { "$ref": "#/$defs/notification" }
+    }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sha256"],
+      "properties": { "sha256": { "$ref": "#/$defs/sha256" } }
+    },
+    "tag": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["target_sha", "annotated"],
+      "properties": {
+        "target_sha": { "type": "string", "pattern": "^[0-9a-f]{40}$|^[0-9a-f]{64}$" },
+        "annotated": { "type": "boolean" }
+      }
+    },
+    "githubRelease": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["target_sha", "candidate_digest", "draft"],
+      "properties": {
+        "target_sha": { "type": "string", "pattern": "^[0-9a-f]{40}$|^[0-9a-f]{64}$" },
+        "candidate_digest": { "$ref": "#/$defs/sha256" },
+        "draft": { "type": "boolean" }
+      }
+    },
+    "notification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["idempotency_key", "complete"],
+      "properties": {
+        "idempotency_key": { "$ref": "#/$defs/sha256" },
+        "complete": { "type": "boolean" }
+      }
+    }
+  }
+}

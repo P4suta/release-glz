@@ -1,0 +1,71 @@
+name: release-glz
+description: Hex-native Release PR and publishing automation for Gleam packages
+author: release-glz contributors
+
+inputs:
+  command:
+    description: One of plan, release-pr, rehearse, verify, release, status, or doctor
+    required: true
+  manifest-path:
+    description: Path to gleam.toml
+    required: false
+    default: gleam.toml
+  dry-run:
+    description: Validate and report without mutating external state
+    required: false
+    default: "false"
+  source-ref:
+    description: Full commit SHA used by rehearse
+    required: false
+  candidate:
+    description: Candidate directory used by rehearse, verify, release, and status
+    required: false
+  online:
+    description: Compare registry and GitHub state during verify or status
+    required: false
+    default: "false"
+  timeout-seconds:
+    description: Maximum runtime for the release-glz subprocess
+    required: false
+    default: "1800"
+  github-token:
+    description: Token used for GitHub API operations
+    required: false
+    default: ${{ github.token }}
+  version:
+    description: release-glz binary version; defaults to the action ref
+    required: false
+  binary-checksum:
+    description: Required archive SHA-256 when overriding the bundled binary version
+    required: false
+  provenance:
+    description: Required SHA-256 of the archive's in-toto provenance when overriding the bundled version
+    required: false
+
+outputs:
+  state:
+    description: Current release state
+  release-required:
+    description: Whether a release Candidate is required
+  version:
+    description: Selected package version
+  intent-digest:
+    description: Semantic intent digest approved by the Release PR
+  candidate-digest:
+    description: Exact sealed Candidate digest approved by the Environment
+  pr-url:
+    description: Rolling Release PR URL
+  hex-url:
+    description: Hex package release URL
+  github-release-url:
+    description: GitHub Release URL
+  next-action:
+    description: Next safe command for the current state
+
+runs:
+  using: node24
+  main: action/index.js
+
+branding:
+  icon: package
+  color: purple

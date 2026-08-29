@@ -1,0 +1,28 @@
+name = "kangaroo"
+version = "1.0.0"
+description = "Dogfood snapshot for release-glz"
+licences = ["Apache-2.0"]
+
+[repository]
+type = "github"
+user = "P4suta"
+repo = "kangaroo"
+
+[tools.release-glz]
+schema = 2
+compiler = "1.18.1"
+
+[tools.release-glz.registry]
+provider = "hexpm"
+api_url = "https://hex.pm/api"
+repository_url = "https://repo.hex.pm"
+docs_url = "https://repo.hex.pm/docs"
+credential_env = "HEXPM_API_KEY"
+auth = "hex-token"
+
+[tools.release-glz.approval]
+normal = "release-pr-and-environment"
+manual = "environment"
+environment = "release"
+separation = "solo"
+manual_refs = ["refs/heads/main"]
