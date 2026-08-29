@@ -195,6 +195,7 @@ impl GitRepo {
         // path extensions for long names and rejects all global metadata.
         let tree = format!("{sha}^{{tree}}");
         let output = Command::new("git")
+            .args(["-c", "core.autocrlf=false", "-c", "core.eol=lf"])
             .arg("-C")
             .arg(&self.root)
             .args(["archive", "--format=tar", &tree])

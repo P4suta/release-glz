@@ -137,6 +137,7 @@ fn git_snapshot_resolves_safe_long_paths_from_the_committed_tree() {
     let temp = tempfile::tempdir().unwrap();
     let work = temp.path().join("work");
     init_repo(&work, "main");
+    run_git(&work, &["config", "core.autocrlf", "true"]);
     let relative_git = format!("src/{}/module.gleam", "a".repeat(120));
     let relative = Path::new(&relative_git);
     fs::create_dir_all(work.join(relative.parent().unwrap())).unwrap();

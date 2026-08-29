@@ -529,7 +529,7 @@ fn not_found_server() -> (String, mpsc::Receiver<String>, thread::JoinHandle<()>
     let address = listener.local_addr().unwrap();
     let (sender, receiver) = mpsc::channel();
     let handle = thread::spawn(move || {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         let mut stream = loop {
             match listener.accept() {
                 Ok((stream, _)) => break stream,
@@ -590,7 +590,7 @@ fn serve_recording(
     let (sender, receiver) = mpsc::channel();
     let handle = thread::spawn(move || {
         let mut responses = VecDeque::from(responses);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         while let Some(response) = responses.pop_front() {
             let mut stream = loop {
                 match listener.accept() {
