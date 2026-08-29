@@ -85,18 +85,39 @@ fn dependency_policy_is_explicit_and_deny_by_default() {
 #[test]
 fn ci_exercises_minimum_configured_and_current_gleam_versions() {
     let yaml = fs::read_to_string(".github/workflows/ci.yml").unwrap();
+    let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
+    let matrix = parsed["jobs"]["test"]["strategy"]["matrix"]["gleam"]
+        .as_sequence()
+        .unwrap()
+        .iter()
+        .map(|value| value.as_str().unwrap())
+        .collect::<Vec<_>>();
     for version in ["1.9.0", "1.12.0", "1.18.1"] {
         assert!(
-            yaml.contains(version),
+            matrix.contains(&version),
             "Gleam compatibility matrix is missing {version}"
         );
     }
     assert!(
-        !yaml.contains("1.12.3"),
+        !matrix.contains(&"1.12.3"),
         "matrix must contain published releases"
     );
     assert!(yaml.contains("gleam-version: ${{ matrix.gleam }}"));
     assert!(yaml.contains("matrix.gleam"));
+    assert!(yaml.contains("RUST_TEST_THREADS: 1"));
+    for test in [
+        "scripts/check-coverage.test.js",
+        "scripts/generate-action-checksums.test.js",
+        "scripts/generate-provenance.test.js",
+        "scripts/generate-sbom.test.js",
+        "scripts/package-windows.test.js",
+        "scripts/workflow-tools.test.js",
+    ] {
+        assert!(yaml.contains(test), "CI does not execute {test}");
+    }
+
+    let assurance = fs::read_to_string(".github/workflows/assurance.yml").unwrap();
+    assert!(assurance.contains("RUST_TEST_THREADS: 1"));
 }
 
 #[test]
@@ -117,4 +138,17 @@ fn every_repository_workflow_is_valid_yaml_and_includes_assurance() {
     }
     names.sort();
     assert_eq!(names, ["assurance.yml", "ci.yml", "distribute.yml"]);
+}
+
+#[test]
+fn local_assurance_outputs_cannot_be_committed_accidentally() {
+    let ignore = fs::read_to_string(".gitignore").unwrap();
+    let patterns = ignore.lines().collect::<std::collections::HashSet<_>>();
+
+    for required in ["/coverage.json", "/mutants.out*/"] {
+        assert!(
+            patterns.contains(required),
+            "missing assurance output ignore: {required}"
+        );
+    }
 }

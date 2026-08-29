@@ -2,7 +2,16 @@ use std::fs;
 
 use release_glz::changelog::load_structured_notes;
 use release_glz::config::Manifest;
-use release_glz::migrate::Migration;
+use release_glz::migrate::Migration as PreparedMigration;
+use semver::Version;
+
+struct Migration;
+
+impl Migration {
+    fn prepare(path: impl AsRef<std::path::Path>) -> anyhow::Result<PreparedMigration> {
+        PreparedMigration::prepare_with_compiler(path, Version::new(1, 17, 2))
+    }
+}
 
 fn schema_two_manifest() -> &'static str {
     r#"name = "widget"
@@ -63,6 +72,7 @@ custom_legacy_key = "preserve me"
     assert_eq!(migration.legacy_source(), Some(legacy));
     let migrated = Manifest::parse(path.clone(), migration.rendered().to_owned()).unwrap();
     assert_eq!(migrated.release.schema, 2);
+    assert_eq!(migrated.release.compiler, Version::new(1, 17, 2));
     assert_eq!(migrated.release.changelog.path.to_string_lossy(), "NEWS.md");
     assert_eq!(migrated.release.release_branch_prefix, "ship/");
     assert!(migrated.release.allow_version_zero);
@@ -78,6 +88,70 @@ custom_legacy_key = "preserve me"
         legacy
     );
     assert_eq!(Manifest::load(&path).unwrap().release.schema, 2);
+}
+
+#[test]
+fn migration_preserves_other_inline_tools_while_expanding_release_config() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("gleam.toml");
+    fs::write(
+        &path,
+        r#"name = "widget"
+version = "0.4.0"
+tools = { formatter = { width = 100 }, release-glz = { allow_version_zero = true } }
+"#,
+    )
+    .unwrap();
+
+    let migration = Migration::prepare(&path).unwrap();
+    let rendered = migration.rendered();
+    let document = rendered.parse::<toml_edit::DocumentMut>().unwrap();
+
+    assert_eq!(
+        document["tools"]["formatter"]["width"].as_integer(),
+        Some(100)
+    );
+    let migrated = Manifest::parse(path, rendered.to_owned()).unwrap();
+    assert_eq!(migrated.release.schema, 2);
+    assert_eq!(migrated.release.compiler, Version::new(1, 17, 2));
+    assert!(migrated.release.allow_version_zero);
+}
+
+#[test]
+fn legacy_unknown_api_overrides_are_never_silently_weakened() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("gleam.toml");
+    let legacy = r#"name = "widget"
+version = "1.0.0"
+
+[tools.release-glz]
+allow_unknown_api_for = ["1.1.0"]
+"#;
+    fs::write(&path, legacy).unwrap();
+
+    let error = Migration::prepare(&path).unwrap_err().to_string();
+
+    assert!(error.contains("api_exceptions"), "{error}");
+    assert!(error.contains("1.1.0"), "{error}");
+    assert_eq!(fs::read_to_string(&path).unwrap(), legacy);
+    assert!(!temp.path().join(".release-glz").exists());
+}
+
+#[test]
+fn injected_migration_compiler_must_meet_the_supported_floor() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("gleam.toml");
+    fs::write(&path, "name = \"widget\"\nversion = \"1.0.0\"\n").unwrap();
+
+    let error = PreparedMigration::prepare_with_compiler(&path, Version::new(1, 8, 9))
+        .unwrap_err()
+        .to_string();
+
+    assert!(error.contains("1.9"), "{error}");
+    assert_eq!(
+        fs::read_to_string(path).unwrap(),
+        "name = \"widget\"\nversion = \"1.0.0\"\n"
+    );
 }
 
 #[test]

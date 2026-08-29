@@ -72,6 +72,43 @@ async fn required_hook_timeout_is_bounded_and_fails_closed() {
 }
 
 #[tokio::test]
+async fn hook_timeout_also_bounds_pipe_drains_held_open_by_a_grandchild() {
+    let temp = tempfile::tempdir().unwrap();
+    fs::write(temp.path().join("source.gleam"), "before").unwrap();
+    let hook = script(
+        temp.path(),
+        "inherited-pipe.sh",
+        r#"sleep 5 >&1 2>&2 &
+printf '%s' '{"schema":"hook/v1","success":true,"summary":"direct child exited","evidence":{}}'
+"#,
+    );
+    let started = Instant::now();
+    let error = HookRunner::default()
+        .run_verify(
+            &[required("inherited-pipe", &hook, 1)],
+            temp.path(),
+            &context(),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(started.elapsed() < Duration::from_secs(3));
+    assert!(error.contains("timed out"), "{error}");
+}
+
+#[tokio::test]
+async fn optional_notify_execution_errors_are_observed_as_incomplete() {
+    let temp = tempfile::tempdir().unwrap();
+    let hook = temp.path().join("missing-optional-notify");
+    assert!(
+        !HookRunner::default()
+            .observe_notify(&optional("notify", &hook, 5), temp.path(), &context())
+            .await
+            .unwrap()
+    );
+}
+
+#[tokio::test]
 async fn undeclared_environment_is_not_forwarded() {
     let temp = tempfile::tempdir().unwrap();
     fs::write(temp.path().join("source.gleam"), "before").unwrap();

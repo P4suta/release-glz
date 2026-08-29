@@ -148,6 +148,27 @@ async fn optional_notify_is_attempted_once_but_failure_does_not_make_release_par
 }
 
 #[tokio::test]
+async fn public_release_asset_bytes_are_bound_to_their_sidecar_hook_and_name() {
+    let fixture = candidate_fixture_with_options(true, true);
+    let target = FakeTarget::default();
+
+    let report = CandidateReleaseRunner::new(target.clone())
+        .run(
+            &fixture.directory,
+            &approved(&fixture.manifest),
+            ReleaseExecutionOptions::default(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(report.state, ReleaseState::Released);
+    assert_eq!(
+        target.asset_payloads(),
+        vec![("sbom.cdx.json".into(), br#"{"bom":"sealed"}"#.to_vec())]
+    );
+}
+
+#[tokio::test]
 async fn missing_approval_is_reported_without_applying_a_single_effect() {
     let fixture = candidate_fixture();
     let target = FakeTarget::default();
@@ -453,9 +474,62 @@ fn candidate_fixture() -> Fixture {
 }
 
 fn candidate_fixture_with_notify(notify_required: bool) -> Fixture {
+    candidate_fixture_with_options(notify_required, false)
+}
+
+fn candidate_fixture_with_options(notify_required: bool, duplicate_private_asset: bool) -> Fixture {
     let temp = tempfile::tempdir().unwrap();
     let directory = temp.path().join("candidate");
     let package = hex_package();
+    let mut sidecar_hook_definitions = Vec::new();
+    let mut hook_evidence = Vec::new();
+    let mut sidecars = Vec::new();
+    if duplicate_private_asset {
+        sidecar_hook_definitions.push(HookConfig {
+            id: "private-evidence".into(),
+            argv: vec!["/bin/true".into()],
+            timeout_seconds: 10,
+            required: true,
+            env: vec![],
+        });
+        hook_evidence.push(HookEvidence {
+            schema: "hook/v1".into(),
+            id: "private-evidence".into(),
+            kind: HookKind::Sidecar,
+            required: true,
+            success: true,
+            output_sha256: "8".repeat(64),
+        });
+        sidecars.push(SidecarArtifact {
+            hook_id: "private-evidence".into(),
+            name: "sbom.cdx.json".into(),
+            media_type: "application/vnd.cyclonedx+json".into(),
+            bytes: br#"{"bom":"private"}"#.to_vec(),
+            public: false,
+        });
+    }
+    sidecar_hook_definitions.push(HookConfig {
+        id: "sbom".into(),
+        argv: vec!["/bin/true".into()],
+        timeout_seconds: 10,
+        required: true,
+        env: vec![],
+    });
+    hook_evidence.push(HookEvidence {
+        schema: "hook/v1".into(),
+        id: "sbom".into(),
+        kind: HookKind::Sidecar,
+        required: true,
+        success: true,
+        output_sha256: "9".repeat(64),
+    });
+    sidecars.push(SidecarArtifact {
+        hook_id: "sbom".into(),
+        name: "sbom.cdx.json".into(),
+        media_type: "application/vnd.cyclonedx+json".into(),
+        bytes: br#"{"bom":"sealed"}"#.to_vec(),
+        public: true,
+    });
     let manifest = Candidate::seal(
         &directory,
         CandidateInput {
@@ -491,28 +565,9 @@ fn candidate_fixture_with_notify(notify_required: bool) -> Fixture {
             docs_tarball: Some(fixture_docs()),
             package_interface: br#"{"modules":{}}"#.to_vec(),
             verify_hook_definitions: vec![],
-            sidecar_hook_definitions: vec![HookConfig {
-                id: "sbom".into(),
-                argv: vec!["/bin/true".into()],
-                timeout_seconds: 10,
-                required: true,
-                env: vec![],
-            }],
-            hook_evidence: vec![HookEvidence {
-                schema: "hook/v1".into(),
-                id: "sbom".into(),
-                kind: HookKind::Sidecar,
-                required: true,
-                success: true,
-                output_sha256: "9".repeat(64),
-            }],
-            sidecars: vec![SidecarArtifact {
-                hook_id: "sbom".into(),
-                name: "sbom.cdx.json".into(),
-                media_type: "application/vnd.cyclonedx+json".into(),
-                bytes: br#"{"bom":"sealed"}"#.to_vec(),
-                public: true,
-            }],
+            sidecar_hook_definitions,
+            hook_evidence,
+            sidecars,
             notify_hooks: vec!["announce".into()],
             notify_hook_definitions: vec![release_glz::config::HookConfig {
                 id: "announce".into(),

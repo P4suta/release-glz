@@ -17,8 +17,9 @@ const archives = [
   "release-glz-aarch64-pc-windows-msvc.zip",
 ];
 
-test("generates one deterministic SLSA statement for every supported archive", () => {
+test("generates one deterministic SLSA statement for every supported archive", (context) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "release-glz-provenance-"));
+  context.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const left = path.join(root, "left");
   const right = path.join(root, "right");
   populate(left);
@@ -57,9 +58,13 @@ test("generates one deterministic SLSA statement for every supported archive", (
   }
 });
 
-test("rejects ambiguous source identity and incomplete archive sets", () => {
+test("rejects ambiguous source identity and incomplete archive sets", (context) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "release-glz-provenance-invalid-"));
+  const complete = fs.mkdtempSync(path.join(os.tmpdir(), "release-glz-provenance-identity-"));
+  context.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  context.after(() => fs.rmSync(complete, { recursive: true, force: true }));
   populate(root);
+  populate(complete);
   fs.unlinkSync(path.join(root, archives[0]));
   const incomplete = run([
     "--artifacts", root,
@@ -72,7 +77,7 @@ test("rejects ambiguous source identity and incomplete archive sets", () => {
   assert.match(incomplete.stderr, /bounded regular release archive|ENOENT/);
 
   const unsafe = run([
-    "--artifacts", root,
+    "--artifacts", complete,
     "--repository", "owner/repo?token=secret",
     "--source", "not-a-full-sha",
     "--version", "main",

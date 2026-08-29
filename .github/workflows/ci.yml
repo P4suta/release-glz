@@ -7,6 +7,9 @@ on:
 
 permissions: {}
 
+env:
+  RUST_TEST_THREADS: 1
+
 jobs:
   test:
     name: Test (${{ matrix.os }}, Gleam ${{ matrix.gleam }})
@@ -41,7 +44,14 @@ jobs:
       - name: Action wrapper tests
         run: npm test --prefix action
       - name: Distribution evidence tests
-        run: node --test scripts/generate-sbom.test.js scripts/generate-action-checksums.test.js scripts/generate-provenance.test.js scripts/package-windows.test.js
+        run: >-
+          node --test
+          scripts/check-coverage.test.js
+          scripts/generate-action-checksums.test.js
+          scripts/generate-provenance.test.js
+          scripts/generate-sbom.test.js
+          scripts/package-windows.test.js
+          scripts/workflow-tools.test.js
 
   lint:
     name: Formatting and lints

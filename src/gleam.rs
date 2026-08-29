@@ -39,7 +39,7 @@ impl Default for Gleam {
 impl Gleam {
     pub fn installed_version(&self) -> Result<Version> {
         let output = self.command(Path::new(".")).arg("--version").output()?;
-        check_output(&output, "gleam --version")?;
+        check_output(&output, "gleam --version", None)?;
         let stdout = String::from_utf8_lossy(&output.stdout);
         stdout
             .split_whitespace()
@@ -92,7 +92,8 @@ impl Gleam {
             .command(package_dir)
             .args(["export", "hex-tarball"])
             .output()?;
-        check_output(&output, "gleam export hex-tarball")?;
+        let credential = configured_registry_secret(&manifest);
+        check_output(&output, "gleam export hex-tarball", credential.as_deref())?;
         let path = package_dir
             .join("build")
             .join(format!("{}-{}.tar", manifest.package, manifest.version));
@@ -100,19 +101,27 @@ impl Gleam {
     }
 
     pub fn export_package_interface(&self, package_dir: &Path) -> Result<Vec<u8>> {
+        let manifest = Manifest::load(package_dir.join("gleam.toml"))?;
         let path = package_dir.join("release-glz-package-interface.json");
         let output = self
             .command(package_dir)
             .args(["export", "package-interface", "--out"])
             .arg(&path)
             .output()?;
-        check_output(&output, "gleam export package-interface")?;
+        let credential = configured_registry_secret(&manifest);
+        check_output(
+            &output,
+            "gleam export package-interface",
+            credential.as_deref(),
+        )?;
         fs::read(&path).with_context(|| format!("Gleam did not create `{}`", path.display()))
     }
 
     pub fn docs_build(&self, package_dir: &Path) -> Result<()> {
+        let manifest = Manifest::load(package_dir.join("gleam.toml"))?;
         let output = self.command(package_dir).args(["docs", "build"]).output()?;
-        check_output(&output, "gleam docs build")
+        let credential = configured_registry_secret(&manifest);
+        check_output(&output, "gleam docs build", credential.as_deref())
     }
 
     pub fn export_docs_tarball(&self, package_dir: &Path) -> Result<Vec<u8>> {
@@ -203,12 +212,18 @@ fn collect_regular_files(
     Ok(())
 }
 
-fn check_output(output: &Output, action: &str) -> Result<()> {
+fn configured_registry_secret(manifest: &Manifest) -> Option<String> {
+    std::env::var(&manifest.release.registry.credential_env).ok()
+}
+
+fn check_output(output: &Output, action: &str, configured_secret: Option<&str>) -> Result<()> {
     if output.status.success() {
         return Ok(());
     }
-    let stdout = crate::secrets::redact(&String::from_utf8_lossy(&output.stdout));
-    let stderr = crate::secrets::redact(&String::from_utf8_lossy(&output.stderr));
+    let stdout =
+        crate::secrets::redact_with(&String::from_utf8_lossy(&output.stdout), configured_secret);
+    let stderr =
+        crate::secrets::redact_with(&String::from_utf8_lossy(&output.stderr), configured_secret);
     bail!("{action} failed\n{stdout}{stderr}")
 }
 

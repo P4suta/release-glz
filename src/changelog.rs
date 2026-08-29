@@ -4,7 +4,7 @@ use std::ops::Range;
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use chrono::Utc;
+use chrono::{NaiveDate, Utc};
 use serde::Deserialize;
 
 use crate::model::ChangeEntry;
@@ -99,13 +99,22 @@ impl ReleaseNotesConfig {
                         .any(|label| self.exclude.labels.contains(label))
             })
             .map(|mut entry| {
-                if let Some(category) = self.categories.iter().find(|category| {
-                    category.labels.contains("*")
-                        || entry
-                            .labels
+                let category = self
+                    .categories
+                    .iter()
+                    .find(|category| {
+                        !category.labels.contains("*")
+                            && entry
+                                .labels
+                                .iter()
+                                .any(|label| category.labels.contains(label))
+                    })
+                    .or_else(|| {
+                        self.categories
                             .iter()
-                            .any(|label| category.labels.contains(label))
-                }) {
+                            .find(|category| category.labels.contains("*"))
+                    });
+                if let Some(category) = category {
                     entry.category.clone_from(&category.title);
                 }
                 entry
@@ -231,8 +240,10 @@ pub fn render(existing: Option<&str>, version: &str, entries: &[ChangeEntry]) ->
         changelog = format!("{PREAMBLE}\n{rest}");
     }
 
-    let section = render_section(version, entries);
     if let Some(range) = release_section_range(&changelog, version) {
+        let date = release_section_date(&changelog[range.clone()], version)
+            .unwrap_or_else(|| Utc::now().date_naive());
+        let section = render_section_on(version, entries, date);
         changelog.replace_range(range, section.trim_end());
         if !changelog.ends_with('\n') {
             changelog.push('\n');
@@ -240,6 +251,7 @@ pub fn render(existing: Option<&str>, version: &str, entries: &[ChangeEntry]) ->
         return changelog;
     }
 
+    let section = render_section(version, entries);
     let marker = "## [Unreleased]";
     let insertion = changelog
         .find(marker)
@@ -255,7 +267,10 @@ pub fn render(existing: Option<&str>, version: &str, entries: &[ChangeEntry]) ->
 }
 
 pub fn render_section(version: &str, entries: &[ChangeEntry]) -> String {
-    let date = Utc::now().date_naive();
+    render_section_on(version, entries, Utc::now().date_naive())
+}
+
+fn render_section_on(version: &str, entries: &[ChangeEntry], date: NaiveDate) -> String {
     let mut groups: Vec<(&str, Vec<&ChangeEntry>)> = Vec::new();
     for entry in entries {
         if let Some((_, entries)) = groups
@@ -289,6 +304,12 @@ pub fn render_section(version: &str, entries: &[ChangeEntry]) -> String {
         }
     }
     output
+}
+
+fn release_section_date(section: &str, version: &str) -> Option<NaiveDate> {
+    let prefix = format!("## [{version}] - ");
+    let raw = section.lines().next()?.strip_prefix(&prefix)?;
+    NaiveDate::parse_from_str(raw, "%Y-%m-%d").ok()
 }
 
 pub fn release_section(changelog: &str, version: &str) -> Option<String> {
@@ -471,6 +492,41 @@ mod tests {
             no_categories.apply([entry(None, &[], "unchanged")])[0].category,
             "Changed"
         );
+
+        fs::write(
+            temp.path().join("wildcard-first.yml"),
+            r#"changelog:
+  categories:
+    - title: Everything else
+      labels: ["*"]
+    - title: Security
+      labels: [security]
+"#,
+        )
+        .unwrap();
+        let wildcard_first =
+            ReleaseNotesConfig::load(&temp.path().join("wildcard-first.yml")).unwrap();
+        let categorized = wildcard_first.apply([entry(None, &["security"], "security")]);
+        assert_eq!(categorized[0].category, "Security");
+    }
+
+    #[test]
+    fn rerendering_an_existing_release_preserves_its_original_date() {
+        let existing =
+            "# Changelog\n\n## [Unreleased]\n\n## [1.2.3] - 2024-02-29\n\n### Fixed\n\n- old\n";
+        let entries = [ChangeEntry {
+            title: "replacement".into(),
+            pull_request: None,
+            author: None,
+            url: None,
+            labels: vec![],
+            category: "Fixed".into(),
+        }];
+
+        let rendered = render(Some(existing), "1.2.3", &entries);
+
+        assert!(rendered.contains("## [1.2.3] - 2024-02-29"));
+        assert_eq!(render(Some(&rendered), "1.2.3", &entries), rendered);
     }
 
     #[test]

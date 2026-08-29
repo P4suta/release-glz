@@ -132,6 +132,28 @@ fn git_effect_failures_are_errors_and_never_report_success() {
     assert!(GitRepo::discover(Path::new("/definitely/not/a/repository")).is_err());
 }
 
+#[test]
+fn git_snapshot_resolves_safe_long_paths_from_the_committed_tree() {
+    let temp = tempfile::tempdir().unwrap();
+    let work = temp.path().join("work");
+    init_repo(&work, "main");
+    let relative = Path::new("src").join("a".repeat(120)).join("module.gleam");
+    fs::create_dir_all(work.join(relative.parent().unwrap())).unwrap();
+    fs::write(work.join(&relative), "pub fn value() { 1 }\n").unwrap();
+    run_git(&work, &["add", relative.to_str().unwrap()]);
+    commit_index(&work, "feat: add deeply nested module", None);
+    fs::write(work.join(&relative), "dirty working tree").unwrap();
+
+    let repo = GitRepo::discover(&work).unwrap();
+    let destination = temp.path().join("snapshot");
+    repo.archive(&repo.head().unwrap(), &destination).unwrap();
+
+    assert_eq!(
+        fs::read_to_string(destination.join(relative)).unwrap(),
+        "pub fn value() { 1 }\n"
+    );
+}
+
 fn init_repo(path: &Path, branch: &str) {
     fs::create_dir_all(path).unwrap();
     run_command(Command::new("git").args(["init", "-b", branch]).arg(path));

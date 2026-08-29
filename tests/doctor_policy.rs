@@ -175,6 +175,13 @@ fn missing_compiler_and_every_approval_plan_boundary_are_diagnosed_exactly() {
             .count(),
         1
     );
+    assert!(
+        !report
+            .next_actions
+            .iter()
+            .any(|action| action.command == "configure GitHub Environment protections"),
+        "unrelated compiler failures must not imply broken Environment protections"
+    );
 
     let mut strict_private_without_reviewers = input();
     let environment = strict_private_without_reviewers
@@ -252,4 +259,16 @@ fn missing_compiler_and_every_approval_plan_boundary_are_diagnosed_exactly() {
         assess(&solo_private_enterprise).state,
         ReleaseState::UpToDate
     );
+
+    for unsupported in ["free", "pro", "team"] {
+        let mut private = input();
+        private.github_environment.as_mut().unwrap().plan = Some(unsupported.into());
+        assert!(
+            assess(&private)
+                .diagnostics
+                .iter()
+                .any(|diagnostic| { diagnostic.code == "strict_private_plan_unsupported" }),
+            "private {unsupported} unexpectedly exposed required reviewers"
+        );
+    }
 }

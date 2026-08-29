@@ -183,11 +183,17 @@ async fn main() {
     let cli = Cli::parse();
     let output = cli.output;
     let command = cli.command.name();
+    let configured_credential = Manifest::load(&cli.manifest_path)
+        .ok()
+        .and_then(|manifest| std::env::var(manifest.release.registry.credential_env).ok());
     match run(cli).await {
         Ok(code) if code != 0 => std::process::exit(code),
         Ok(_) => {}
         Err(error) => {
-            let message = release_glz::secrets::redact(&format!("{error:#}"));
+            let message = release_glz::secrets::redact_with(
+                &format!("{error:#}"),
+                configured_credential.as_deref(),
+            );
             if matches!(output, Output::Json) {
                 let envelope = release_glz::model::CommandEnvelope::<serde_json::Value>::failure(
                     command,

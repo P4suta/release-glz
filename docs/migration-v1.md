@@ -18,9 +18,11 @@ release-glz init --update
 ```
 
 `migrate --check` exits with the policy code when migration is required.
-`migrate --diff` does not write. `migrate --update` writes only after validating
-the complete generated schema 2 configuration and refuses races or conflicting
-backup/note files.
+`migrate --diff` does not write. `migrate --update` first records the exact
+installed Gleam compiler version, then writes only after validating the complete
+generated schema 2 configuration. It refuses races or conflicting backup/note
+files. Because schema 1 has no compiler field, migration fails with an actionable
+error if the intended supported Gleam executable cannot be observed.
 
 The original manifest is preserved byte-for-byte at
 `.release-glz/legacy-gleam.toml`. An existing different backup is never
@@ -38,9 +40,11 @@ its legacy Unreleased section becomes a deterministic
 | `allow_version_zero` | top-level `allow_version_zero` |
 | `prerelease` | top-level `prerelease` |
 | `baseline_refs` | top-level `baseline_refs` |
-| `allow_unknown_api_for` | one `api_exceptions` record per version, completed with baseline, reason, and expiry before release |
+| `allow_unknown_api_for` | migration pauses until each version is replaced by an `api_exceptions` record with baseline, reason, and expiry |
 
-Migration also materializes the exact compiler, registry identity, approval
+The legacy override cannot be converted losslessly because it does not contain
+the schema 2 audit fields; migration therefore never drops it or invents those
+fields. Migration also materializes the exact compiler, registry identity, approval
 policy, outputs, hooks, and changelog policy so defaults cannot drift after a
 Candidate is approved.
 

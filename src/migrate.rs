@@ -3,10 +3,12 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+use semver::Version;
 use serde::Serialize;
 use toml_edit::{Array, DocumentMut, Item, Table, value};
 
 use crate::config::{ApprovalMode, AuthKind, Manifest, RegistryProvider, SeparationMode};
+use crate::gleam::Gleam;
 
 const LEGACY_BACKUP: &str = ".release-glz/legacy-gleam.toml";
 
@@ -33,6 +35,32 @@ impl Migration {
     pub fn prepare(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
         let manifest = Manifest::load(&path)?;
+        if manifest.release.schema == 2 {
+            return Self::prepare_loaded(path, manifest, None);
+        }
+        let compiler = Gleam::default().ensure_supported().context(
+            "legacy schema does not record its compiler; install the intended Gleam version before migration",
+        )?;
+        Self::prepare_loaded(path, manifest, Some(&compiler))
+    }
+
+    /// Prepare a deterministic migration with a compiler version already
+    /// established by the caller. Production CLI callers use [`Self::prepare`]
+    /// so the version is observed from the installed compiler.
+    pub fn prepare_with_compiler(path: impl AsRef<Path>, compiler: Version) -> Result<Self> {
+        let path = path.as_ref().to_path_buf();
+        let manifest = Manifest::load(&path)?;
+        if manifest.release.schema != 2 && compiler < Version::new(1, 9, 0) {
+            bail!("release-glz requires Gleam 1.9 or newer; found {compiler}");
+        }
+        Self::prepare_loaded(path, manifest, Some(&compiler))
+    }
+
+    fn prepare_loaded(
+        path: PathBuf,
+        manifest: Manifest,
+        legacy_compiler: Option<&Version>,
+    ) -> Result<Self> {
         let original = manifest.original_source().to_owned();
         let backup_path = manifest.package_dir().join(LEGACY_BACKUP);
         let legacy_notes_dir = manifest
@@ -48,15 +76,37 @@ impl Migration {
                 legacy_notes: Vec::new(),
             });
         }
+        let compiler = legacy_compiler.context("legacy migration requires an observed compiler")?;
+        if !manifest.release.allow_unknown_api_for.is_empty() {
+            let versions = manifest
+                .release
+                .allow_unknown_api_for
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+            bail!(
+                "legacy `allow_unknown_api_for` cannot be migrated without weakening policy; replace {versions} with schema 2 `api_exceptions` containing baseline, reason, and expiry"
+            );
+        }
 
         let mut document = original.parse::<DocumentMut>()?;
-        let tools = document
-            .entry("tools")
-            .or_insert(Item::Table(Table::new()))
+        let tools_item = document.entry("tools").or_insert(Item::Table(Table::new()));
+        if !tools_item.is_table() {
+            let original_tools = std::mem::replace(tools_item, Item::None);
+            let table = original_tools
+                .into_table()
+                .map_err(|_| anyhow::anyhow!("`tools` must be a table before migration"))?;
+            *tools_item = Item::Table(table);
+        }
+        let tools = tools_item
             .as_table_mut()
             .context("`tools` must be a table before migration")?;
         tools.remove("release-glz");
-        tools.insert("release-glz", Item::Table(schema_two_table(&manifest)));
+        tools.insert(
+            "release-glz",
+            Item::Table(schema_two_table(&manifest, compiler)),
+        );
         let rendered = document.to_string();
         Manifest::parse(path.clone(), rendered.clone())
             .context("internal migration generated invalid schema 2 configuration")?;
@@ -216,11 +266,11 @@ fn legacy_category(heading: &str) -> &'static str {
     }
 }
 
-fn schema_two_table(manifest: &Manifest) -> Table {
+fn schema_two_table(manifest: &Manifest, compiler: &Version) -> Table {
     let config = &manifest.release;
     let mut release = Table::new();
     release.insert("schema", value(2));
-    release.insert("compiler", value(config.compiler.to_string()));
+    release.insert("compiler", value(compiler.to_string()));
     release.insert(
         "release_branch_prefix",
         value(config.release_branch_prefix.clone()),

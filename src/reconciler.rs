@@ -37,6 +37,7 @@ pub struct NotifyHookIntent {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReleaseAsset {
+    pub hook_id: String,
     pub name: String,
     pub media_type: String,
     pub sha256: String,

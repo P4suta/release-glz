@@ -221,6 +221,7 @@ fn read_tar_files<R: Read>(
 ) -> Result<BTreeMap<String, Vec<u8>>> {
     let mut output = BTreeMap::new();
     let mut total = 0_u64;
+    let mut pending_path = None;
     let mut archive = Archive::new(reader);
     for (index, entry) in archive
         .entries()
@@ -233,22 +234,12 @@ fn read_tar_files<R: Read>(
         }
         let mut entry = entry.context("invalid tar entry")?;
         let kind = entry.header().entry_type();
-        if matches!(kind.as_byte(), b'x' | b'g' | b'L' | b'K') {
+        if matches!(kind.as_byte(), b'g' | b'K') {
             bail!("archive extension headers are not supported");
-        }
-        let path = safe_archive_path(&entry)?;
-        if kind.is_dir() && allow_directories {
-            if entry.size() != 0 {
-                bail!("archive directory `{path}` has content");
-            }
-            continue;
-        }
-        if !kind.is_file() {
-            bail!("archive entry `{path}` is not a regular file");
         }
         let size = entry.size();
         if size > limits.max_entry_bytes {
-            bail!("archive entry `{path}` exceeds the per-file limit");
+            bail!("archive entry exceeds the per-file limit");
         }
         total = total
             .checked_add(size)
@@ -256,25 +247,51 @@ fn read_tar_files<R: Read>(
         if total > limits.max_total_bytes {
             bail!("archive exceeds the expanded byte limit");
         }
+        if matches!(kind.as_byte(), b'x' | b'L') {
+            if pending_path.is_some() {
+                bail!("archive contains consecutive path extension headers");
+            }
+            let contents = read_entry_contents(&mut entry, size, "archive path extension")?;
+            let raw_path = if kind.as_byte() == b'L' {
+                parse_gnu_long_path(&contents)?
+            } else {
+                parse_pax_path(&contents)?
+            };
+            pending_path = Some(safe_archive_path_value(raw_path)?);
+            continue;
+        }
+        let path = match pending_path.take() {
+            Some(path) => path,
+            None => safe_archive_path(&entry)?,
+        };
+        if kind.is_dir() && allow_directories {
+            if size != 0 {
+                bail!("archive directory `{path}` has content");
+            }
+            continue;
+        }
+        if !kind.is_file() {
+            bail!("archive entry `{path}` is not a regular file");
+        }
         if output.contains_key(&path) {
             bail!("archive contains duplicate entry `{path}`");
         }
-        let capacity = usize::try_from(size).context("archive entry does not fit in memory")?;
-        let mut contents = Vec::with_capacity(capacity);
-        entry
-            .read_to_end(&mut contents)
-            .with_context(|| format!("failed to read archive entry `{path}`"))?;
-        if contents.len() as u64 != size {
-            bail!("archive entry `{path}` has an inconsistent size");
-        }
+        let contents = read_entry_contents(&mut entry, size, &format!("archive entry `{path}`"))?;
         output.insert(path, contents);
+    }
+    if pending_path.is_some() {
+        bail!("archive has a dangling path extension header");
     }
     Ok(output)
 }
 
 fn safe_archive_path<R: Read>(entry: &tar::Entry<'_, R>) -> Result<String> {
     let raw = entry.path_bytes();
-    let value = std::str::from_utf8(&raw)
+    safe_archive_path_value(&raw)
+}
+
+fn safe_archive_path_value(raw: &[u8]) -> Result<String> {
+    let value = std::str::from_utf8(raw)
         .context("archive path is not UTF-8")?
         .trim_end_matches('/');
     if value.contains('\\')
@@ -287,6 +304,71 @@ fn safe_archive_path<R: Read>(entry: &tar::Entry<'_, R>) -> Result<String> {
         bail!("archive contains unsafe path `{value}`");
     }
     Ok(value.to_owned())
+}
+
+fn read_entry_contents<R: Read>(
+    entry: &mut tar::Entry<'_, R>,
+    size: u64,
+    description: &str,
+) -> Result<Vec<u8>> {
+    let capacity = usize::try_from(size).context("archive entry does not fit in memory")?;
+    let mut contents = Vec::with_capacity(capacity);
+    entry
+        .read_to_end(&mut contents)
+        .with_context(|| format!("failed to read {description}"))?;
+    if contents.len() as u64 != size {
+        bail!("{description} has an inconsistent size");
+    }
+    Ok(contents)
+}
+
+fn parse_gnu_long_path(contents: &[u8]) -> Result<&[u8]> {
+    let Some((&terminator, path)) = contents.split_last() else {
+        bail!("GNU long path extension is empty");
+    };
+    if terminator != 0 || path.is_empty() || path.contains(&0) {
+        bail!("GNU long path extension is malformed");
+    }
+    Ok(path)
+}
+
+fn parse_pax_path(contents: &[u8]) -> Result<&[u8]> {
+    let space = contents
+        .iter()
+        .position(|byte| *byte == b' ')
+        .context("PAX record has no length separator")?;
+    let length_bytes = &contents[..space];
+    if length_bytes.is_empty()
+        || length_bytes.first() == Some(&b'0')
+        || !length_bytes.iter().all(u8::is_ascii_digit)
+    {
+        bail!("PAX record has an invalid length");
+    }
+    let length = std::str::from_utf8(length_bytes)?
+        .parse::<usize>()
+        .context("PAX record length is too large")?;
+    if length != contents.len() || contents.last() != Some(&b'\n') {
+        bail!("PAX record length is inconsistent");
+    }
+    let record_start = space
+        .checked_add(1)
+        .context("PAX record length is inconsistent")?;
+    let record_end = contents
+        .len()
+        .checked_sub(1)
+        .context("PAX record length is inconsistent")?;
+    let record = contents
+        .get(record_start..record_end)
+        .context("PAX record length is inconsistent")?;
+    let equals = record
+        .iter()
+        .position(|byte| *byte == b'=')
+        .context("PAX record has no key/value separator")?;
+    let key = std::str::from_utf8(&record[..equals]).context("PAX key is not UTF-8")?;
+    if key != "path" {
+        bail!("unsupported PAX key `{key}`");
+    }
+    Ok(&record[equals + 1..])
 }
 
 fn fingerprint_files(files: BTreeMap<String, Vec<u8>>) -> Result<String> {
@@ -479,5 +561,29 @@ mod tests {
         let mut extra = [0_u8; 1];
         let error = reader.read(&mut extra).unwrap_err();
         assert!(error.to_string().contains("limit exceeded"));
+    }
+
+    #[test]
+    fn gnu_long_path_rejects_each_malformed_terminator_and_path_boundary() {
+        for malformed in [
+            b"safe".as_slice(),
+            b"\0".as_slice(),
+            b"safe\0tail\0".as_slice(),
+        ] {
+            assert!(parse_gnu_long_path(malformed).is_err(), "{malformed:?}");
+        }
+        assert_eq!(parse_gnu_long_path(b"safe\0").unwrap(), b"safe");
+    }
+
+    #[test]
+    fn pax_length_rejects_a_leading_zero_independently_of_digit_validation() {
+        assert!(parse_pax_path(b"011 path=a\n").is_err());
+        assert_eq!(parse_pax_path(b"10 path=a\n").unwrap(), b"a");
+        assert_eq!(parse_pax_path(b"8 path=\n").unwrap(), b"");
+        assert!(parse_pax_path(b"10 path=ab").is_err());
+        assert!(parse_pax_path(b"10 path=a\n10 path=b\n").is_err());
+
+        let zero = parse_pax_path(b"0 ").unwrap_err().to_string();
+        assert!(zero.contains("invalid length"), "{zero}");
     }
 }

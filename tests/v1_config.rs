@@ -116,6 +116,43 @@ fn an_explicit_schema_is_never_silently_reinterpreted_as_legacy() {
 }
 
 #[test]
+fn structured_configuration_requires_an_explicit_schema_two_marker() {
+    for key in [
+        "registry",
+        "approval",
+        "outputs",
+        "hooks",
+        "changelog",
+        "api_exceptions",
+    ] {
+        let mut source = complete_config("").replace("schema = 2\n", "");
+        if !source.contains(&format!("tools.release-glz.{key}")) {
+            source.push_str(&format!("\n[tools.release-glz.{key}]\n"));
+        }
+        let error = Manifest::parse(PathBuf::from("gleam.toml"), source)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("schema = 2"), "{key}: {error}");
+    }
+}
+
+#[test]
+fn schema_two_does_not_silently_enable_zero_major_versions() {
+    let omitted = Manifest::parse(PathBuf::from("gleam.toml"), complete_config("")).unwrap();
+    assert!(!omitted.release.allow_version_zero);
+    let explicit = complete_config("").replace(
+        "release_branch_prefix = \"release-glz/\"",
+        "release_branch_prefix = \"release-glz/\"\nallow_version_zero = true",
+    );
+    assert!(
+        Manifest::parse(PathBuf::from("gleam.toml"), explicit)
+            .unwrap()
+            .release
+            .allow_version_zero
+    );
+}
+
+#[test]
 fn paths_refs_and_hook_ids_are_safe() {
     for (from, to) in [
         ("path = \"CHANGELOG.md\"", "path = \"../CHANGELOG.md\""),
@@ -506,9 +543,10 @@ expires = "2999-12-31"
             .contains(&"1.2.3".parse().unwrap())
     );
 
-    for (name, invalid) in [
+    for (name, expected, invalid) in [
         (
             "empty reason",
+            "requires a reason",
             exception.replace(
                 "reason = \"The historical compiler is unavailable\"",
                 "reason = \"  \"",
@@ -516,6 +554,7 @@ expires = "2999-12-31"
         ),
         (
             "unsafe baseline",
+            "api_exceptions.baseline contains an unsafe git ref",
             exception.replace(
                 "baseline = \"refs/tags/v1.2.3\"",
                 "baseline = \"refs/tags/../secret\"",
@@ -523,14 +562,19 @@ expires = "2999-12-31"
         ),
         (
             "invalid expiry",
+            "must use YYYY-MM-DD",
             exception.replace("expires = \"2999-12-31\"", "expires = \"tomorrow\""),
         ),
-        ("duplicate version", format!("{exception}{exception}")),
+        (
+            "duplicate version",
+            "duplicate API exception",
+            format!("{exception}{exception}"),
+        ),
     ] {
         let error = Manifest::parse(PathBuf::from("gleam.toml"), complete_config(&invalid))
             .unwrap_err()
             .to_string();
-        assert!(!error.is_empty(), "{name}");
+        assert!(error.contains(expected), "{name}: {error}");
     }
 }
 

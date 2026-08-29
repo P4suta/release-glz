@@ -5,7 +5,10 @@ fn cargo_cli_and_action_are_the_v1_release_line() {
     let action: serde_json::Value =
         serde_json::from_str(include_str!("../action/package.json")).unwrap();
 
-    assert_eq!(cargo_version, "1.0.0");
+    assert!(
+        cargo_version.starts_with("1."),
+        "expected the v1 release line, found {cargo_version}"
+    );
     assert_eq!(env!("CARGO_PKG_VERSION"), cargo_version);
     assert_eq!(action["version"], cargo_version);
 }

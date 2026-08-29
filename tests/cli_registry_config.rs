@@ -443,6 +443,39 @@ fn update_closes_a_stale_verified_managed_pr_when_no_release_is_required() {
     assert_eq!(envelope["result"]["state"], "up_to_date");
 }
 
+#[test]
+fn top_level_diagnostics_redact_the_configured_registry_credential() {
+    let temp = tempfile::tempdir().unwrap();
+    let secret = "custom-registry-value-that-must-never-escape";
+    let source = manifest("https://registry.example.test")
+        .replace("TEST_REGISTRY_TOKEN", "CUSTOM_REGISTRY_CREDENTIAL");
+    std::fs::write(temp.path().join("gleam.toml"), source).unwrap();
+    let gleam = temp.path().join("failing-gleam");
+    std::fs::write(
+        &gleam,
+        format!("#!/bin/sh\nprintf '%s' '{secret}' >&2\nexit 9\n"),
+    )
+    .unwrap();
+    let mut permissions = std::fs::metadata(&gleam).unwrap().permissions();
+    permissions.set_mode(0o700);
+    std::fs::set_permissions(&gleam, permissions).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_release-glz"))
+        .current_dir(temp.path())
+        .env("RELEASE_GLZ_GLEAM", &gleam)
+        .env("CUSTOM_REGISTRY_CREDENTIAL", secret)
+        .args(["--output", "json", "plan"])
+        .output()
+        .unwrap();
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!combined.contains(secret), "{combined}");
+    assert!(combined.contains("[REDACTED]"), "{combined}");
+}
+
 fn manifest(base: &str) -> String {
     r#"name = "widget"
 version = "1.0.0"

@@ -191,9 +191,8 @@ impl GitRepo {
 
     pub fn archive(&self, sha: &str, destination: &Path) -> Result<()> {
         // Archiving the tree object avoids Git's commit-only global PAX
-        // `comment` header. The extracted bytes are identical, while the
-        // strict snapshot parser can continue rejecting every extension
-        // header that could alter tar path interpretation.
+        // `comment` header. The strict snapshot parser resolves only safe
+        // path extensions for long names and rejects all global metadata.
         let tree = format!("{sha}^{{tree}}");
         let output = Command::new("git")
             .arg("-C")

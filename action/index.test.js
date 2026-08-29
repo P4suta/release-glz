@@ -10,6 +10,7 @@ const zlib = require("node:zlib");
 const {
   expectedChecksum,
   inventoryTarGz,
+  isAllowedDownloadRedirect,
   buildCommandArgs,
   bundledChecksum,
   download,
@@ -22,6 +23,8 @@ const {
   validateArchiveInventory,
   verifyChecksum,
   verifyProvenance,
+  windowsZipExtractScript,
+  windowsZipInventoryScript,
   zipEntryKind,
 } = require("./index.js");
 
@@ -155,6 +158,36 @@ test("download follows only same-origin redirects and enforces the byte limit", 
     }),
     /limit/,
   );
+});
+
+test("download permits only GitHub's exact HTTPS release asset redirect hosts", () => {
+  const github = "https://github.com/P4suta/release-glz/releases/download/v1.0.0/release-glz.tar.gz";
+  assert.equal(isAllowedDownloadRedirect(github, "https://release-assets.githubusercontent.com/signed?token=x"), true);
+  assert.equal(isAllowedDownloadRedirect(github, "https://objects.githubusercontent.com/github-production-release-asset/x"), true);
+  assert.equal(isAllowedDownloadRedirect(github, "https://github.com/another/path"), true);
+  for (const target of [
+    "http://release-assets.githubusercontent.com/file",
+    "https://release-assets.githubusercontent.com.evil.test/file",
+    "https://githubusercontent.com/file",
+    "https://release-assets.githubusercontent.com:444/file",
+    "https://example.test/file",
+  ]) {
+    assert.equal(isAllowedDownloadRedirect(github, target), false, target);
+  }
+  assert.equal(
+    isAllowedDownloadRedirect("https://example.test/file", "https://release-assets.githubusercontent.com/file"),
+    false,
+  );
+});
+
+test("Windows ZIP scripts use environment-bound paths instead of positional PowerShell args", () => {
+  const inventory = windowsZipInventoryScript();
+  const extract = windowsZipExtractScript();
+  assert.match(inventory, /RELEASE_GLZ_ARCHIVE/);
+  assert.match(inventory, /\[char\]9/);
+  assert.match(extract, /RELEASE_GLZ_ARCHIVE/);
+  assert.match(extract, /RELEASE_GLZ_DESTINATION/);
+  assert.doesNotMatch(`${inventory}\n${extract}`, /\$args\[/);
 });
 
 test("streaming subprocess execution is bounded and times out", async () => {

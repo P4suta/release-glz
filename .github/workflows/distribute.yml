@@ -60,7 +60,7 @@ jobs:
           - runner: macos-15
             target: aarch64-apple-darwin
             archive: tar.gz
-          - runner: windows-latest
+          - runner: windows-2025
             target: x86_64-pc-windows-msvc
             archive: zip
           - runner: windows-11-arm
@@ -226,9 +226,15 @@ jobs:
           for file in dist/*; do
             name=$(basename "$file")
             expected="sha256:$(sha256sum "$file" | cut -d' ' -f1)"
-            existing=$(jq -r --arg name "$name" '.assets[] | select(.name == $name) | .digest // "missing"' <<<"$release_json")
-            if [[ -z "$existing" ]]; then
+            asset=$(jq -c --arg name "$name" '[.assets[] | select(.name == $name)] | if length == 0 then empty elif length == 1 then .[0] else error("duplicate release asset") end' <<<"$release_json")
+            if [[ -z "$asset" ]]; then
               gh release upload "$TAG" "$file"
+              continue
+            fi
+            existing=$(jq -r '.digest // empty' <<<"$asset")
+            if [[ -z "$existing" ]]; then
+              echo "Release asset $name exists without a digest; refusing to replace it" >&2
+              exit 1
             elif [[ "$existing" != "$expected" ]]; then
               echo "Release asset $name already exists with digest $existing, expected $expected" >&2
               exit 1

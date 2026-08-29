@@ -7,6 +7,9 @@ on:
 
 permissions: {}
 
+env:
+  RUST_TEST_THREADS: 1
+
 jobs:
   dependencies:
     name: Dependency and Rust assurance

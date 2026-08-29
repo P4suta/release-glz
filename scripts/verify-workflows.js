@@ -31,10 +31,17 @@ function jobBlocks(source) {
   return blocks;
 }
 
+function rejectQuotedMappingKeys(filename, source) {
+  if (/^\s*(?:-\s*)?(?:"(?:[^"\\]|\\.)*"|'[^']*')\s*:/m.test(source)) {
+    throw new Error(`${filename}: quoted YAML mapping keys are forbidden by the security verifier`);
+  }
+}
+
 function verifyWorkflow(filename, source) {
   if (typeof source !== "string" || Buffer.byteLength(source) > MAX_WORKFLOW_BYTES) {
     throw new Error(`${filename}: workflow exceeds its size limit`);
   }
+  rejectQuotedMappingKeys(filename, source);
   if (/^\s*pull_request_target\s*:/m.test(source)) {
     throw new Error(`${filename}: pull_request_target is forbidden`);
   }
@@ -120,4 +127,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { jobBlocks, main, verifyWorkflow, workflowFiles };
+module.exports = { jobBlocks, main, rejectQuotedMappingKeys, verifyWorkflow, workflowFiles };

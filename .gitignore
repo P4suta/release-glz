@@ -3,6 +3,8 @@
 /fuzz/artifacts/
 /fuzz/corpus/
 /dist/
+/coverage.json
+/mutants.out*/
 node_modules/
 *.log
 .DS_Store

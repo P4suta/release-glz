@@ -207,6 +207,8 @@ fn assess_approval(
     diagnostics: &mut Vec<Diagnostic>,
     next_actions: &mut Vec<NextAction>,
 ) {
+    let diagnostics_start = diagnostics.len();
+
     match approval.separation {
         SeparationMode::Strict => {
             if environment.required_reviewers == 0 {
@@ -284,7 +286,7 @@ fn assess_approval(
         }
     }
 
-    if diagnostics
+    if diagnostics[diagnostics_start..]
         .iter()
         .any(|diagnostic| diagnostic.level == DiagnosticLevel::Error)
     {

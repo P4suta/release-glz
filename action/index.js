@@ -143,12 +143,29 @@ function isLoopback(hostname) {
   return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
 }
 
+const GITHUB_RELEASE_ASSET_HOSTS = new Set([
+  "objects.githubusercontent.com",
+  "release-assets.githubusercontent.com",
+]);
+
+function isAllowedDownloadRedirect(initial, target) {
+  const initialUrl = initial instanceof URL ? initial : new URL(initial);
+  const targetUrl = target instanceof URL ? target : new URL(target);
+  if (targetUrl.origin === initialUrl.origin) return true;
+  return initialUrl.protocol === "https:" &&
+    initialUrl.hostname === "github.com" &&
+    initialUrl.port === "" &&
+    targetUrl.protocol === "https:" &&
+    targetUrl.port === "" &&
+    GITHUB_RELEASE_ASSET_HOSTS.has(targetUrl.hostname);
+}
+
 function download(url, destination, options = {}) {
   const maxBytes = options.maxBytes ?? DOWNLOAD_LIMIT;
   const timeoutMs = options.timeoutMs ?? 60_000;
   const allowHttpLoopback = options.allowHttpLoopback === true;
   const redirects = options.redirects ?? 0;
-  const initialOrigin = options.initialOrigin ?? new URL(url).origin;
+  const initialUrl = options.initialUrl ?? url;
   if (redirects > 8) return Promise.reject(new Error(`Too many redirects downloading ${url}`));
 
   const parsed = new URL(url);
@@ -158,7 +175,7 @@ function download(url, destination, options = {}) {
   if (parsed.protocol !== "https:" && !(allowHttpLoopback && parsed.protocol === "http:" && isLoopback(parsed.hostname))) {
     return Promise.reject(new Error(`Download URL must use HTTPS: ${url}`));
   }
-  if (parsed.origin !== initialOrigin) {
+  if (!isAllowedDownloadRedirect(initialUrl, parsed)) {
     return Promise.reject(new Error(`Refusing cross-origin redirect to ${parsed.origin}`));
   }
   const transport = parsed.protocol === "https:" ? https : http;
@@ -180,7 +197,7 @@ function download(url, destination, options = {}) {
       if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
         response.resume();
         const next = new URL(response.headers.location, parsed);
-        if (next.origin !== initialOrigin) {
+        if (!isAllowedDownloadRedirect(initialUrl, next)) {
           fail(new Error(`Refusing cross-origin redirect from ${parsed.origin} to ${next.origin}`));
           return;
         }
@@ -190,7 +207,7 @@ function download(url, destination, options = {}) {
           timeoutMs,
           allowHttpLoopback,
           redirects: redirects + 1,
-          initialOrigin,
+          initialUrl,
         }).then(resolve, reject);
         return;
       }
@@ -453,14 +470,28 @@ function zipEntryKind(entryPath, externalAttributes) {
   return "file";
 }
 
+function windowsZipInventoryScript() {
+  return [
+    "$a=[IO.Compression.ZipFile]::OpenRead($env:RELEASE_GLZ_ARCHIVE);",
+    "try {$a.Entries | ForEach-Object { Write-Output ($_.FullName+[char]9+$_.Length+[char]9+$_.ExternalAttributes) }} finally {$a.Dispose()}",
+  ].join(" ");
+}
+
+function windowsZipExtractScript() {
+  return "[IO.Compression.ZipFile]::ExtractToDirectory($env:RELEASE_GLZ_ARCHIVE,$env:RELEASE_GLZ_DESTINATION,$false)";
+}
+
 async function extract(archive, extension, destination) {
   fs.mkdirSync(destination, { recursive: false, mode: 0o700 });
   if (extension === "zip") {
-    const inventoryScript = [
-      "$a=[IO.Compression.ZipFile]::OpenRead($args[0]);",
-      "try {$a.Entries | ForEach-Object { Write-Output ($_.FullName+'`t'+$_.Length+'`t'+$_.ExternalAttributes) }} finally {$a.Dispose()}",
-    ].join(" ");
-    const inventory = await runProcess("powershell", ["-NoProfile", "-NonInteractive", "-Command", inventoryScript, archive]);
+    const powershellEnvironment = {
+      ...process.env,
+      RELEASE_GLZ_ARCHIVE: archive,
+      RELEASE_GLZ_DESTINATION: destination,
+    };
+    const inventory = await runProcess("powershell", [
+      "-NoProfile", "-NonInteractive", "-Command", windowsZipInventoryScript(),
+    ], { env: powershellEnvironment });
     const entries = inventory.stdout.split(/\r?\n/).filter(Boolean).map((line) => {
       const [entryPath, size, externalAttributes] = line.split("\t");
       return {
@@ -471,9 +502,8 @@ async function extract(archive, extension, destination) {
     });
     validateArchiveInventory(entries);
     await runProcess("powershell", [
-      "-NoProfile", "-NonInteractive", "-Command",
-      "[IO.Compression.ZipFile]::ExtractToDirectory($args[0],$args[1],$false)", archive, destination,
-    ]);
+      "-NoProfile", "-NonInteractive", "-Command", windowsZipExtractScript(),
+    ], { env: powershellEnvironment });
   } else {
     await inventoryTarGz(archive);
     await runProcess("tar", ["--extract", "--gzip", "--file", archive, "--directory", destination, "--no-same-owner", "--no-same-permissions"]);
@@ -656,6 +686,7 @@ module.exports = {
   download,
   expectedChecksum,
   inventoryTarGz,
+  isAllowedDownloadRedirect,
   main,
   normalizedVersion,
   parseCommandEnvelope,
@@ -667,5 +698,7 @@ module.exports = {
   validateArchiveInventory,
   verifyChecksum,
   verifyProvenance,
+  windowsZipExtractScript,
+  windowsZipInventoryScript,
   zipEntryKind,
 };

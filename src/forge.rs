@@ -18,6 +18,8 @@ use crate::model::{ChangeEntry, ReleasePlan};
 const MAX_GITHUB_JSON_BYTES: usize = 4 * 1024 * 1024;
 const MAX_GITHUB_ERROR_BYTES: usize = 64 * 1024;
 const GITHUB_GET_ATTEMPTS: usize = 3;
+const OPEN_PULL_REQUEST_PAGE_SIZE: usize = 100;
+const MAX_OPEN_PULL_REQUEST_PAGES: usize = 100;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitHubRepository {
@@ -405,7 +407,7 @@ impl GitHubClient {
         let mut output = Vec::new();
         for commit in commits {
             let path = format!("commits/{}/pulls", commit.sha);
-            let pulls: Vec<PullRequest> = self.get(&path).await.unwrap_or_default();
+            let pulls: Vec<PullRequest> = self.get(&path).await?;
             if let Some(pull) = pulls.into_iter().find(|pull| pull.merged_at.is_some()) {
                 if seen.insert(pull.number) {
                     output.push(ChangeEntry {
@@ -523,7 +525,7 @@ impl GitHubClient {
     ) -> Result<String> {
         self.require_token()?;
         let digest = files_digest(files);
-        let pulls: Vec<PullRequest> = self.get("pulls?state=open&per_page=100").await?;
+        let pulls = self.open_pull_requests().await?;
         let mut managed = pulls.into_iter().find(|pull| {
             pull.body
                 .as_deref()
@@ -649,7 +651,7 @@ impl GitHubClient {
         branch_prefix: &str,
     ) -> Result<bool> {
         self.require_token()?;
-        let pulls: Vec<PullRequest> = self.get("pulls?state=open&per_page=100").await?;
+        let pulls = self.open_pull_requests().await?;
         for pull in pulls {
             let Some(marker) = pull.body.as_deref().and_then(parse_marker) else {
                 continue;
@@ -729,7 +731,7 @@ impl GitHubClient {
         if !valid_sha256(intent_digest) {
             bail!("Candidate intent digest is not a lowercase SHA-256 digest");
         }
-        let pulls: Vec<PullRequest> = self.get("pulls?state=open&per_page=100").await?;
+        let pulls = self.open_pull_requests().await?;
         for pull in pulls {
             let Some(mut marker) = pull.body.as_deref().and_then(parse_marker) else {
                 continue;
@@ -772,6 +774,27 @@ impl GitHubClient {
             return Ok(updated.html_url);
         }
         bail!("no matching open verified managed Release PR exists for this Candidate")
+    }
+
+    async fn open_pull_requests(&self) -> Result<Vec<PullRequest>> {
+        let mut pulls = Vec::new();
+        for page in 1..=MAX_OPEN_PULL_REQUEST_PAGES {
+            let path = if page == 1 {
+                format!("pulls?state=open&per_page={OPEN_PULL_REQUEST_PAGE_SIZE}")
+            } else {
+                format!("pulls?state=open&per_page={OPEN_PULL_REQUEST_PAGE_SIZE}&page={page}")
+            };
+            let page_pulls: Vec<PullRequest> = self.get(&path).await?;
+            if page_pulls.len() > OPEN_PULL_REQUEST_PAGE_SIZE {
+                bail!("GitHub returned an oversized open pull-request page");
+            }
+            let complete = page_pulls.len() < OPEN_PULL_REQUEST_PAGE_SIZE;
+            pulls.extend(page_pulls);
+            if complete {
+                return Ok(pulls);
+            }
+        }
+        bail!("GitHub open pull-request search exceeded its bounded page limit")
     }
 
     pub async fn release_for_tag(&self, tag: &str) -> Result<Option<String>> {

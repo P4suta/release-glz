@@ -13,12 +13,13 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use crate::candidate::{HookEvidence, HookKind};
 use crate::canonical::canonical_json_bytes;
 use crate::config::HookConfig;
+use crate::sidecar::{
+    MAX_ARTIFACT_BYTES as SIDECAR_ARTIFACT_LIMIT, MAX_COUNT as SIDECAR_COUNT_LIMIT,
+    MAX_TOTAL_BYTES as SIDECAR_TOTAL_LIMIT, validate_media_type, validate_name,
+};
 
 const STDOUT_LIMIT: usize = 1024 * 1024;
 const STDERR_LIMIT: usize = 256 * 1024;
-const SIDECAR_ARTIFACT_LIMIT: usize = 64 * 1024 * 1024;
-const SIDECAR_TOTAL_LIMIT: usize = 128 * 1024 * 1024;
-const SIDECAR_COUNT_LIMIT: usize = 64;
 const HOOK_SPAWN_ATTEMPTS: usize = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -158,7 +159,7 @@ impl HookRunner {
         let mut evidence = Vec::new();
         let mut artifacts = Vec::new();
         let mut names = std::collections::BTreeSet::new();
-        let mut total_size = 0_usize;
+        let mut total_size = 0_u64;
         for hook in hooks {
             let before = tree_digest(snapshot)?;
             let result = self.run_one(hook, snapshot, "sidecar", context).await;
@@ -176,7 +177,7 @@ impl HookRunner {
                         if artifacts.len() >= SIDECAR_COUNT_LIMIT {
                             bail!("sidecar hooks exceeded the artifact count limit");
                         }
-                        validate_sidecar_name(&artifact.name)?;
+                        validate_name(&artifact.name)?;
                         validate_media_type(&artifact.media_type)?;
                         let key = format!("{}/{}", hook.id, artifact.name);
                         if !names.insert(key) {
@@ -194,12 +195,13 @@ impl HookRunner {
                                     hook.id, artifact.name
                                 )
                             })?;
-                        if bytes.len() > SIDECAR_ARTIFACT_LIMIT
-                            || total_size.saturating_add(bytes.len()) > SIDECAR_TOTAL_LIMIT
+                        let size = bytes.len() as u64;
+                        if size > SIDECAR_ARTIFACT_LIMIT
+                            || total_size.saturating_add(size) > SIDECAR_TOTAL_LIMIT
                         {
                             bail!("sidecar hook artifacts exceed their size limit");
                         }
-                        total_size += bytes.len();
+                        total_size += size;
                         artifacts.push(SidecarArtifact {
                             hook_id: hook.id.clone(),
                             name: artifact.name,
@@ -237,7 +239,11 @@ impl HookRunner {
         directory: &Path,
         context: &HookContext,
     ) -> Result<bool> {
-        let output = self.run_one(hook, directory, "observe", context).await?;
+        let output = match self.run_one(hook, directory, "observe", context).await {
+            Ok(output) => output,
+            Err(_) if !hook.required => return Ok(false),
+            Err(error) => return Err(error),
+        };
         if !output.success {
             if hook.required {
                 bail!(
@@ -306,33 +312,36 @@ impl HookRunner {
         let mut stdin = child.stdin.take().context("hook stdin was not piped")?;
         let stdout = child.stdout.take().context("hook stdout was not piped")?;
         let stderr = child.stderr.take().context("hook stderr was not piped")?;
-        let input_task = tokio::spawn(async move {
+        let mut input_task = tokio::spawn(async move {
             stdin.write_all(&input).await?;
             stdin.shutdown().await
         });
-        let stdout_task = tokio::spawn(drain_limited(stdout, self.stdout_limit));
-        let stderr_task = tokio::spawn(drain_limited(stderr, self.stderr_limit));
-        let status =
-            match tokio::time::timeout(Duration::from_secs(hook.timeout_seconds), child.wait())
-                .await
-            {
-                Ok(status) => status?,
-                Err(_) => {
-                    let _ = child.kill().await;
-                    let _ = child.wait().await;
-                    input_task.abort();
-                    stdout_task.abort();
-                    stderr_task.abort();
-                    bail!(
-                        "hook `{}` timed out after {} seconds",
-                        hook.id,
-                        hook.timeout_seconds
-                    );
-                }
-            };
-        let _ = input_task.await;
-        let (stdout, stdout_exceeded) = stdout_task.await??;
-        let (_, stderr_exceeded) = stderr_task.await??;
+        let mut stdout_task = tokio::spawn(drain_limited(stdout, self.stdout_limit));
+        let mut stderr_task = tokio::spawn(drain_limited(stderr, self.stderr_limit));
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(hook.timeout_seconds);
+        let completed = tokio::time::timeout_at(deadline, async {
+            let status = child.wait().await?;
+            let _ = (&mut input_task).await;
+            let stdout = (&mut stdout_task).await??;
+            let stderr = (&mut stderr_task).await??;
+            Ok::<_, anyhow::Error>((status, stdout, stderr))
+        })
+        .await;
+        let (status, (stdout, stdout_exceeded), (_, stderr_exceeded)) = match completed {
+            Ok(result) => result?,
+            Err(_) => {
+                input_task.abort();
+                stdout_task.abort();
+                stderr_task.abort();
+                let _ = child.kill().await;
+                let _ = tokio::time::timeout(Duration::from_secs(1), child.wait()).await;
+                bail!(
+                    "hook `{}` timed out after {} seconds",
+                    hook.id,
+                    hook.timeout_seconds
+                );
+            }
+        };
         if stdout_exceeded || stderr_exceeded {
             bail!("hook `{}` exceeded its output limit", hook.id);
         }
@@ -449,33 +458,6 @@ fn collect_tree(root: &Path, directory: &Path, output: &mut Vec<(String, PathBuf
         } else {
             bail!("snapshot contains non-regular entry `{}`", path.display());
         }
-    }
-    Ok(())
-}
-
-fn validate_sidecar_name(name: &str) -> Result<()> {
-    if name.is_empty()
-        || name.len() > 256
-        || name.contains(['/', '\\', '\n', '\r', '\0'])
-        || Path::new(name).is_absolute()
-        || Path::new(name)
-            .components()
-            .any(|component| !matches!(component, std::path::Component::Normal(_)))
-    {
-        bail!("sidecar artifact name `{name}` is not a safe asset name");
-    }
-    Ok(())
-}
-
-fn validate_media_type(media_type: &str) -> Result<()> {
-    if media_type.is_empty()
-        || media_type.len() > 128
-        || !media_type.contains('/')
-        || !media_type
-            .bytes()
-            .all(|byte| byte.is_ascii_graphic() && byte != b'"' && byte != b'\\')
-    {
-        bail!("sidecar artifact media type is invalid");
     }
     Ok(())
 }

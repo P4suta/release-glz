@@ -23,6 +23,7 @@ pub mod registry;
 pub mod rehearse;
 pub mod release;
 pub mod secrets;
+mod sidecar;
 pub mod version;
 pub mod workflow;
 

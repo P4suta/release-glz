@@ -39,3 +39,13 @@ test("de-shell rejects expression interpolation inside command text", () => {
   const unsafe = safe.replace("printf '%s\\n' \"$VALUE\"", "echo \${{ github.event.pull_request.title }}");
   assert.throws(() => rejectExpressionInterpolation("unsafe.yml", unsafe), /expression.*run/i);
 });
+
+test("both workflow validators reject quoted mapping keys before regex inspection", () => {
+  for (const key of ["uses", "run", "permissions", "pull_request_target"]) {
+    const quoted = key === "pull_request_target"
+      ? `"pull_request_target":\n${safe}`
+      : safe.replace(new RegExp(`^(\\s*(?:-\\s*)?)${key}:`, "m"), `$1"${key}":`);
+    assert.throws(() => verifyWorkflow(`${key}.yml`, quoted), /quoted.*key/i, key);
+    assert.throws(() => rejectExpressionInterpolation(`${key}.yml`, quoted), /quoted.*key/i, key);
+  }
+});

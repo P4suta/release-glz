@@ -110,19 +110,52 @@ fn archives_reject_links_devices_and_nonempty_directories() {
 }
 
 #[test]
-fn archives_reject_parser_affecting_extension_headers() {
-    for kind in [
-        tar::EntryType::GNULongName,
-        tar::EntryType::GNULongLink,
-        tar::EntryType::XHeader,
-        tar::EntryType::XGlobalHeader,
-    ] {
-        let archive = extension_tar_gz(kind);
+fn archives_accept_path_only_long_names_and_reject_unsafe_extensions() {
+    for kind in [tar::EntryType::GNULongName, tar::EntryType::XHeader] {
+        validate_docs_tarball(&extension_tar_gz(kind), ArchiveLimits::default()).unwrap();
+    }
+
+    let long_path = format!("nested/{}/index.html", "a".repeat(140));
+    validate_docs_tarball(
+        &tar_gz(&[(long_path.as_str(), b"generated docs")]),
+        ArchiveLimits::default(),
+    )
+    .unwrap();
+
+    for kind in [tar::EntryType::GNULongLink, tar::EntryType::XGlobalHeader] {
         assert_error_contains(
-            validate_docs_tarball(&archive, ArchiveLimits::default()),
+            validate_docs_tarball(&extension_tar_gz(kind), ArchiveLimits::default()),
             "extension",
         );
     }
+
+    let unsafe_long_name =
+        extension_tar_gz_with_contents(tar::EntryType::GNULongName, b"../outside\0");
+    assert_error_contains(
+        validate_docs_tarball(&unsafe_long_name, ArchiveLimits::default()),
+        "unsafe",
+    );
+
+    let unsafe_pax =
+        extension_tar_gz_with_contents(tar::EntryType::XHeader, &pax_record("path", "../outside"));
+    assert_error_contains(
+        validate_docs_tarball(&unsafe_pax, ArchiveLimits::default()),
+        "unsafe",
+    );
+
+    let unsupported_pax =
+        extension_tar_gz_with_contents(tar::EntryType::XHeader, &pax_record("mtime", "1.5"));
+    assert_error_contains(
+        validate_docs_tarball(&unsupported_pax, ArchiveLimits::default()),
+        "PAX",
+    );
+
+    let malformed_pax =
+        extension_tar_gz_with_contents(tar::EntryType::XHeader, b"99 path=safe.txt\n");
+    assert_error_contains(
+        validate_docs_tarball(&malformed_pax, ArchiveLimits::default()),
+        "PAX",
+    );
 }
 
 #[test]
@@ -354,19 +387,35 @@ fn special_tar_gz(kind: tar::EntryType, contents: &[u8]) -> Vec<u8> {
 }
 
 fn extension_tar_gz(kind: tar::EntryType) -> Vec<u8> {
-    let encoder = GzEncoder::new(Vec::new(), Compression::default());
-    let mut archive = tar::Builder::new(encoder);
     let contents = match kind {
-        tar::EntryType::GNULongName => b"nested/extended.txt\0".as_slice(),
-        tar::EntryType::GNULongLink => b"outside\0".as_slice(),
+        tar::EntryType::GNULongName => b"nested/extended.txt\0".to_vec(),
+        tar::EntryType::GNULongLink => b"outside\0".to_vec(),
         tar::EntryType::XHeader | tar::EntryType::XGlobalHeader => {
-            b"25 path=nested/file.txt\n".as_slice()
+            pax_record("path", "nested/file.txt")
         }
         _ => unreachable!(),
     };
+    extension_tar_gz_with_contents(kind, &contents)
+}
+
+fn extension_tar_gz_with_contents(kind: tar::EntryType, contents: &[u8]) -> Vec<u8> {
+    let encoder = GzEncoder::new(Vec::new(), Compression::default());
+    let mut archive = tar::Builder::new(encoder);
     append(&mut archive, "extension", contents, kind);
     append(&mut archive, "short.txt", b"safe", tar::EntryType::Regular);
     archive.into_inner().unwrap().finish().unwrap()
+}
+
+fn pax_record(key: &str, value: &str) -> Vec<u8> {
+    let body = format!("{key}={value}\n");
+    let mut length = body.len() + 2;
+    loop {
+        let next = body.len() + length.to_string().len() + 1;
+        if next == length {
+            return format!("{length} {body}").into_bytes();
+        }
+        length = next;
+    }
 }
 
 fn tar_gz_with_rewritten_first_path(path: &[u8]) -> Vec<u8> {

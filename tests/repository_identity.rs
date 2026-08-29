@@ -11,10 +11,6 @@ fn every_project_owned_identity_points_at_the_published_repository() {
             "distribution provenance",
             include_str!("../scripts/generate-provenance.js"),
         ),
-        (
-            "release plan schema",
-            include_str!("../docs/release-plan.schema.json"),
-        ),
     ];
     for (name, contents) in exact_repository_files {
         assert!(
@@ -28,6 +24,10 @@ fn every_project_owned_identity_points_at_the_published_repository() {
     }
 
     for (name, schema) in [
+        (
+            "release plan schema",
+            include_str!("../docs/release-plan.schema.json"),
+        ),
         (
             "command envelope schema",
             include_str!("../docs/command-envelope.schema.json"),

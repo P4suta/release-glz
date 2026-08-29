@@ -1,5 +1,8 @@
 use std::process::Command;
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
 fn binary() -> Command {
     Command::new(env!("CARGO_BIN_EXE_release-glz"))
 }
@@ -41,11 +44,13 @@ fn init_check_is_non_mutating_and_fails_when_the_managed_workflow_is_stale() {
 fn migrate_check_is_non_mutating_and_fails_when_schema_two_is_required() {
     let temp = tempfile::tempdir().unwrap();
     let manifest = temp.path().join("gleam.toml");
+    let gleam = fake_gleam(temp.path(), "1.17.2");
     let legacy = "name = \"widget\"\nversion = \"1.0.0\"\n";
     std::fs::write(&manifest, legacy).unwrap();
 
     let output = binary()
         .current_dir(temp.path())
+        .env("RELEASE_GLZ_GLEAM", &gleam)
         .args(["--output", "json", "migrate", "--check"])
         .output()
         .unwrap();
@@ -136,6 +141,7 @@ fn init_diff_update_and_check_form_a_non_destructive_managed_file_lifecycle() {
 fn migrate_diff_dry_run_update_and_check_preserve_the_legacy_source() {
     let temp = tempfile::tempdir().unwrap();
     let manifest = temp.path().join("gleam.toml");
+    let gleam = fake_gleam(temp.path(), "1.17.2");
     let legacy = r#"name = "widget"
 version = "0.4.2"
 description = "legacy fixture"
@@ -153,6 +159,7 @@ allow_version_zero = true
 
     let diff = binary()
         .current_dir(temp.path())
+        .env("RELEASE_GLZ_GLEAM", &gleam)
         .args(["migrate", "--diff"])
         .output()
         .unwrap();
@@ -164,6 +171,7 @@ allow_version_zero = true
 
     let dry_run = binary()
         .current_dir(temp.path())
+        .env("RELEASE_GLZ_GLEAM", &gleam)
         .args(["--output", "json", "--dry-run", "migrate", "--update"])
         .output()
         .unwrap();
@@ -175,6 +183,7 @@ allow_version_zero = true
 
     let update = binary()
         .current_dir(temp.path())
+        .env("RELEASE_GLZ_GLEAM", &gleam)
         .args(["--output", "json", "migrate", "--update"])
         .output()
         .unwrap();
@@ -189,6 +198,7 @@ allow_version_zero = true
     assert_eq!(update["result"]["written"], true);
     let migrated = std::fs::read_to_string(&manifest).unwrap();
     assert!(migrated.contains("schema = 2"));
+    assert!(migrated.contains("compiler = \"1.17.2\""));
     assert!(migrated.contains("allow_version_zero = true"));
     assert_eq!(
         std::fs::read_to_string(temp.path().join(".release-glz/legacy-gleam.toml")).unwrap(),
@@ -197,6 +207,7 @@ allow_version_zero = true
 
     let check = binary()
         .current_dir(temp.path())
+        .env("RELEASE_GLZ_GLEAM", &gleam)
         .args(["--output", "json", "migrate", "--check"])
         .output()
         .unwrap();
@@ -207,12 +218,39 @@ allow_version_zero = true
 
     let conflicting = binary()
         .current_dir(temp.path())
+        .env("RELEASE_GLZ_GLEAM", &gleam)
         .args(["--output", "json", "migrate", "--diff", "--update"])
         .output()
         .unwrap();
     assert_eq!(conflicting.status.code(), Some(2));
     let conflicting: serde_json::Value = serde_json::from_slice(&conflicting.stdout).unwrap();
     assert_eq!(conflicting["diagnostics"][0]["code"], "usage_or_config");
+}
+
+fn fake_gleam(directory: &std::path::Path, version: &str) -> std::path::PathBuf {
+    #[cfg(unix)]
+    {
+        let executable = directory.join("fake-gleam");
+        std::fs::write(
+            &executable,
+            format!("#!/bin/sh\nprintf '%s\\n' 'gleam {version}'\n"),
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&executable).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&executable, permissions).unwrap();
+        executable
+    }
+    #[cfg(windows)]
+    {
+        let executable = directory.join("fake-gleam.cmd");
+        std::fs::write(
+            &executable,
+            format!("@echo off\r\necho gleam {version}\r\n"),
+        )
+        .unwrap();
+        executable
+    }
 }
 
 fn schema_two_manifest() -> &'static str {

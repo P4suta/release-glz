@@ -17,6 +17,8 @@ fn distribution_builds_and_smokes_every_supported_native_target() {
             "missing {target}"
         );
     }
+    assert!(yaml.contains("runner: windows-2025"));
+    assert!(!yaml.contains("runner: windows-latest"));
     assert!(yaml.contains("runner: windows-11-arm"));
     assert!(yaml.contains("release-glz --version"));
     assert!(yaml.contains("ldd") && yaml.contains("not a dynamic executable"));
@@ -41,6 +43,9 @@ fn distribution_is_attested_and_uploaded_to_a_draft_exactly_once() {
     assert!(yaml.contains("SHA256SUMS"));
     assert!(yaml.contains("release-glz.cdx.json"));
     assert!(yaml.contains("THIRD_PARTY_LICENSES.json"));
+    assert!(yaml.contains("asset=$(jq -c"));
+    assert!(yaml.contains(".digest // empty"));
+    assert!(yaml.contains("exists without a digest"));
 
     for line in yaml.lines().filter(|line| {
         line.trim_start()

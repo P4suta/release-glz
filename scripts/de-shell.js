@@ -2,13 +2,14 @@
 "use strict";
 
 const fs = require("node:fs");
-const { workflowFiles } = require("./verify-workflows.js");
+const { rejectQuotedMappingKeys, workflowFiles } = require("./verify-workflows.js");
 
 function indentation(line) {
   return line.length - line.trimStart().length;
 }
 
 function rejectExpressionInterpolation(filename, source) {
+  rejectQuotedMappingKeys(filename, source);
   const lines = source.split(/\r?\n/);
   for (let index = 0; index < lines.length; index += 1) {
     const match = lines[index].match(/^(\s*)(?:-\s*)?run:\s*(.*)$/);

@@ -38,6 +38,7 @@ fn intent() -> ReleaseIntent {
 fn release_assets_upload_to_the_draft_once_and_conflict_instead_of_replacing() {
     let mut target = intent();
     target.release_assets = vec![ReleaseAsset {
+        hook_id: "sbom".into(),
         name: "sbom.cdx.json".into(),
         media_type: "application/vnd.cyclonedx+json".into(),
         sha256: "5".repeat(64),
@@ -649,6 +650,7 @@ fn output_policy_and_candidate_asset_identity_fail_closed_before_effects() {
     let mut disabled = intent();
     disabled.github_release = false;
     disabled.release_assets = vec![ReleaseAsset {
+        hook_id: "sbom".into(),
         name: "sbom.cdx.json".into(),
         media_type: "application/vnd.cyclonedx+json".into(),
         sha256: "5".repeat(64),
@@ -663,6 +665,7 @@ fn output_policy_and_candidate_asset_identity_fail_closed_before_effects() {
 
     let mut duplicate = intent();
     let asset = ReleaseAsset {
+        hook_id: "evidence".into(),
         name: "same.bin".into(),
         media_type: "application/octet-stream".into(),
         sha256: "6".repeat(64),

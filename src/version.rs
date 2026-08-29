@@ -69,15 +69,20 @@ pub fn next_prerelease_with_core(
     }
 
     let number = if target_core == published_core {
-        prerelease_parts(published)
-            .filter(|(current, _)| *current == channel.as_str())
-            .map(|(_, number)| number + 1)
-            .unwrap_or(1)
+        match prerelease_parts(published) {
+            Some((current, number)) if current == channel.as_str() => number + 1,
+            _ => 1,
+        }
     } else {
         1
     };
     let mut next = target_core;
     next.pre = Prerelease::new(&format!("{}.{number}", channel.as_str()))?;
+    if next <= *published {
+        bail!(
+            "selected prerelease {next} does not sort after published {published}; choose an explicitly higher core version"
+        );
+    }
     Ok(next)
 }
 
@@ -121,7 +126,7 @@ pub fn select_version(
             Some(channel) if explicit.pre.is_empty() => {
                 next_prerelease_with_core(published, explicit, channel, explicit_higher_core)?
             }
-            Some(channel) if !explicit.pre.as_str().starts_with(channel.as_str()) => {
+            Some(channel) if explicit.pre.as_str().split('.').next() != Some(channel.as_str()) => {
                 bail!(
                     "explicit version {explicit} does not belong to the configured {} prerelease train",
                     channel.as_str()
@@ -296,18 +301,12 @@ mod tests {
     #[test]
     fn every_forward_train_transition_and_same_channel_increment_is_defined() {
         let cases = [
-            ("1.2.0", PrereleaseChannel::Alpha, "1.2.0-alpha.1"),
             ("1.2.0-alpha.7", PrereleaseChannel::Alpha, "1.2.0-alpha.8"),
             ("1.2.0-alpha.7", PrereleaseChannel::Beta, "1.2.0-beta.1"),
             ("1.2.0-alpha.7", PrereleaseChannel::Rc, "1.2.0-rc.1"),
             ("1.2.0-beta.3", PrereleaseChannel::Beta, "1.2.0-beta.4"),
             ("1.2.0-beta.3", PrereleaseChannel::Rc, "1.2.0-rc.1"),
             ("1.2.0-rc.2", PrereleaseChannel::Rc, "1.2.0-rc.3"),
-            (
-                "1.2.0-alpha.preview",
-                PrereleaseChannel::Alpha,
-                "1.2.0-alpha.1",
-            ),
         ];
         for (published, channel, expected) in cases {
             assert_eq!(
@@ -316,6 +315,26 @@ mod tests {
                 "{published} -> {channel:?}"
             );
         }
+
+        let non_numeric = next_prerelease_with_core(
+            &v("1.2.0-alpha.preview"),
+            &v("1.2.0"),
+            PrereleaseChannel::Alpha,
+            false,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(non_numeric.contains("higher core"), "{non_numeric}");
+        let stable_core_reuse =
+            next_prerelease_with_core(&v("1.2.0"), &v("1.2.0"), PrereleaseChannel::Alpha, false)
+                .unwrap_err()
+                .to_string();
+        assert!(stable_core_reuse.contains("does not sort after"));
+        assert_eq!(
+            next_prerelease_with_core(&v("1.2.0"), &v("1.2.1"), PrereleaseChannel::Alpha, false,)
+                .unwrap(),
+            v("1.2.1-alpha.1")
+        );
     }
 
     #[test]
@@ -475,6 +494,16 @@ mod tests {
         )
         .unwrap_err();
         assert!(wrong_train.to_string().contains("does not belong"));
+
+        let prefixed_train = select_version(
+            &v("1.2.0-alpha.1"),
+            Some(&v("1.1.0")),
+            Bump::Minor,
+            Some(&v("1.3.0-alphax.1")),
+            Some(PrereleaseChannel::Alpha),
+        )
+        .unwrap_err();
+        assert!(prefixed_train.to_string().contains("does not belong"));
     }
 
     #[test]

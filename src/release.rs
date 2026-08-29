@@ -40,6 +40,7 @@ pub struct ReleasePayload<'a> {
 
 #[derive(Debug, Clone, Copy)]
 pub struct ReleaseAssetPayload<'a> {
+    pub hook_id: &'a str,
     pub name: &'a str,
     pub media_type: &'a str,
     pub bytes: &'a [u8],
@@ -348,7 +349,7 @@ impl ReleaseTarget for LiveReleaseTarget {
                 let payload = payload
                     .release_assets
                     .iter()
-                    .find(|asset| asset.name == name)
+                    .find(|asset| asset.hook_id == expected.hook_id && asset.name == name)
                     .context("release asset bytes are not sealed in the Candidate")?;
                 if payload.media_type != expected.media_type
                     || payload.bytes.len() as u64 != expected.size
@@ -473,12 +474,12 @@ where
         let release_assets = sidecars
             .iter()
             .filter(|(descriptor, _)| {
-                intent
-                    .release_assets
-                    .iter()
-                    .any(|asset| asset.name == descriptor.name)
+                intent.release_assets.iter().any(|asset| {
+                    asset.hook_id == descriptor.hook_id && asset.name == descriptor.name
+                })
             })
             .map(|(descriptor, bytes)| ReleaseAssetPayload {
+                hook_id: &descriptor.hook_id,
                 name: &descriptor.name,
                 media_type: &descriptor.media_type,
                 bytes,
@@ -591,6 +592,7 @@ fn release_intent(manifest: &CandidateManifest) -> ReleaseIntent {
                     && (!manifest.private || manifest.outputs.allow_private_evidence_upload)
             })
             .map(|artifact| crate::reconciler::ReleaseAsset {
+                hook_id: artifact.hook_id.clone(),
                 name: artifact.name.clone(),
                 media_type: artifact.media_type.clone(),
                 sha256: artifact.sha256.clone(),
@@ -632,231 +634,5 @@ fn state_label(state: ReleaseState) -> &'static str {
         ReleaseState::PartiallyReleased => "partial release",
         ReleaseState::Blocked => "release blocked",
         _ => "release failed",
-    }
-}
-
-#[cfg(any())]
-#[derive(Default)]
-pub struct ReleaseRunner {
-    registry: HexRegistry,
-    gleam: Gleam,
-}
-
-#[cfg(any())]
-impl ReleaseRunner {
-    /// Reconcile all release stages. Every externally visible stage is checked
-    /// before it is performed, so a retry resumes after the last completed one.
-    pub async fn run(
-        &self,
-        manifest: &Manifest,
-        github: &GitHubClient,
-        mut plan: ReleasePlan,
-        options: ReleaseOptions,
-    ) -> Result<ReleasePlan> {
-        let repo = GitRepo::discover(manifest.package_dir())?;
-        let head = repo.head()?;
-        let target = manifest.version.clone();
-        let approved_intent_digest = plan
-            .intent_digest
-            .as_deref()
-            .context("legacy release runner requires an approved intent digest")?;
-        let Some(release_pr) = github
-            .merged_release_pr_for_head(
-                &head,
-                &manifest.package,
-                &target.to_string(),
-                &manifest.release.release_branch_prefix,
-                approved_intent_digest,
-            )
-            .await?
-        else {
-            // The generated workflow invokes `release` for all pushes. A normal
-            // push is deliberately a successful no-op, never an implicit publish.
-            return Ok(plan);
-        };
-        if plan.version != target {
-            bail!(
-                "release plan selected {} but the merged Release PR contains {}; the approved release is internally inconsistent",
-                plan.version,
-                target
-            );
-        }
-        plan.pr_url = Some(release_pr.html_url);
-
-        let changelog_path = manifest
-            .package_dir()
-            .join(&manifest.release.changelog_path);
-        let changelog_source = fs::read_to_string(&changelog_path)
-            .with_context(|| format!("merged Release PR has no `{}`", changelog_path.display()))?;
-        let release_notes = changelog::release_section(&changelog_source, &target.to_string())
-            .with_context(|| format!("CHANGELOG has no section for {target}"))?;
-
-        // Validate a conflicting tag before anything irreversible is published.
-        let local_tag = repo.tag_sha(&plan.tag)?;
-        validate_tag_target(&plan.tag, local_tag.as_deref(), &head)?;
-        let remote_tag = repo.remote_tag_sha(&plan.tag)?;
-        validate_tag_target(&plan.tag, remote_tag.as_deref(), &head)
-            .context("remote tag validation failed")?;
-
-        let state = self.registry.package(&manifest.package).await?;
-        let target_release = state.as_ref().and_then(|state| state.release(&target));
-        let github_release = github.release_for_tag(&plan.tag).await?;
-        if target_release.is_some_and(|release| release.has_docs)
-            && remote_tag.as_deref() == Some(&head)
-            && let Some(url) = github_release
-        {
-            plan.github_release_url = Some(url);
-            plan.state = ReleaseState::Released;
-            return Ok(plan);
-        }
-
-        // Preflight in a snapshot ensures it cannot dirty the checked-out tree.
-        let snapshot = self.gleam.snapshot(manifest.package_dir())?;
-        self.gleam.export_hex_tarball(snapshot.package_dir())?;
-        self.gleam.docs_build(snapshot.package_dir())?;
-        if options.dry_run {
-            return Ok(plan);
-        }
-
-        let mut state = state;
-        if state
-            .as_ref()
-            .and_then(|state| state.release(&target))
-            .is_none()
-        {
-            let publish = self.gleam.publish(manifest.package_dir());
-            match self
-                .registry
-                .wait_for(&manifest.package, &target, false)
-                .await
-            {
-                Ok(observed) => state = Some(observed),
-                Err(observation) => match publish {
-                    Ok(()) => return Err(observation),
-                    Err(publish) => {
-                        return Err(publish.context(format!(
-                            "the package was not visible on Hex after the publish command failed: {observation:#}"
-                        )));
-                    }
-                },
-            }
-        }
-        if !state
-            .as_ref()
-            .and_then(|state| state.release(&target))
-            .is_some_and(|release| release.has_docs)
-        {
-            let publish = self.gleam.publish_docs(manifest.package_dir());
-            match self
-                .registry
-                .wait_for(&manifest.package, &target, true)
-                .await
-            {
-                Ok(observed) => state = Some(observed),
-                Err(observation) => match publish {
-                    Ok(()) => return Err(observation),
-                    Err(publish) => {
-                        return Err(publish.context(format!(
-                            "documentation was not visible on HexDocs after the publish command failed: {observation:#}"
-                        )));
-                    }
-                },
-            }
-        }
-        if !state
-            .as_ref()
-            .and_then(|state| state.release(&target))
-            .is_some_and(|release| release.has_docs)
-        {
-            bail!(
-                "Hex package or HexDocs did not converge for {} {target}",
-                manifest.package
-            );
-        }
-
-        if remote_tag.is_none() {
-            if local_tag.is_none() {
-                repo.create_tag(&plan.tag, &head)?;
-            }
-            repo.push_tag(&plan.tag)?;
-        }
-
-        plan.github_release_url = match github.release_for_tag(&plan.tag).await? {
-            Some(url) => Some(url),
-            None => Some(
-                github
-                    .create_release(&plan.tag, &head, &release_notes, !target.pre.is_empty())
-                    .await?,
-            ),
-        };
-        plan.state = ReleaseState::Released;
-        Ok(plan)
-    }
-}
-
-#[cfg(all(test, any()))]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn retries_only_missing_release_stages() {
-        let cases = [
-            (
-                ReconciliationState::default(),
-                vec![
-                    ReleaseStage::PublishPackage,
-                    ReleaseStage::PublishDocs,
-                    ReleaseStage::CreateTag,
-                    ReleaseStage::CreateGitHubRelease,
-                ],
-            ),
-            (
-                ReconciliationState {
-                    package: true,
-                    ..Default::default()
-                },
-                vec![
-                    ReleaseStage::PublishDocs,
-                    ReleaseStage::CreateTag,
-                    ReleaseStage::CreateGitHubRelease,
-                ],
-            ),
-            (
-                ReconciliationState {
-                    package: true,
-                    docs: true,
-                    ..Default::default()
-                },
-                vec![ReleaseStage::CreateTag, ReleaseStage::CreateGitHubRelease],
-            ),
-            (
-                ReconciliationState {
-                    package: true,
-                    docs: true,
-                    tag: true,
-                    ..Default::default()
-                },
-                vec![ReleaseStage::CreateGitHubRelease],
-            ),
-            (
-                ReconciliationState {
-                    package: true,
-                    docs: true,
-                    tag: true,
-                    github_release: true,
-                },
-                vec![],
-            ),
-        ];
-        for (state, expected) in cases {
-            assert_eq!(remaining_stages(state), expected);
-        }
-    }
-
-    #[test]
-    fn a_tag_at_the_wrong_sha_stops_reconciliation() {
-        assert!(validate_tag_target("v1.0.0", Some("wrong"), "merge").is_err());
-        assert!(validate_tag_target("v1.0.0", Some("merge"), "merge").is_ok());
-        assert!(validate_tag_target("v1.0.0", None, "merge").is_ok());
     }
 }

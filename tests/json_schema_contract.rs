@@ -15,34 +15,12 @@ use semver::Version;
 
 #[test]
 fn checked_in_plan_schema_exactly_covers_the_serialized_v2_surface() {
-    let schema: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string("docs/release-plan.schema.json").unwrap())
-            .unwrap();
-    assert_eq!(schema["title"], "release-glz ReleasePlan v2");
-    assert_eq!(schema["properties"]["schema"]["const"], "plan/v2");
-    assert_eq!(schema["additionalProperties"], false);
-
-    let actual = serde_json::to_value(plan()).unwrap();
-    let actual_keys = actual
-        .as_object()
-        .unwrap()
-        .keys()
-        .cloned()
-        .collect::<BTreeSet<_>>();
-    let property_keys = schema["properties"]
-        .as_object()
-        .unwrap()
-        .keys()
-        .cloned()
-        .collect::<BTreeSet<_>>();
-    let required_keys = schema["required"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|value| value.as_str().unwrap().to_owned())
-        .collect::<BTreeSet<_>>();
-    assert_eq!(property_keys, actual_keys);
-    assert_eq!(required_keys, actual_keys);
+    assert_schema_surface(
+        "docs/release-plan.schema.json",
+        "release-glz ReleasePlan v2",
+        "plan/v2",
+        serde_json::to_value(plan()).unwrap(),
+    );
 }
 
 #[test]
@@ -141,6 +119,26 @@ fn every_public_serializer_validates_against_its_complete_draft_2020_schema() {
         serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
     let validator = jsonschema::validator_for(&schema).unwrap();
     assert!(!validator.is_valid(candidate));
+}
+
+#[test]
+fn every_public_schema_has_a_stable_pages_identifier() {
+    for path in [
+        "docs/release-plan.schema.json",
+        "docs/candidate.schema.json",
+        "docs/release-state.schema.json",
+        "docs/hook.schema.json",
+        "docs/command-envelope.schema.json",
+    ] {
+        let schema: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+        let id = schema["$id"].as_str().unwrap();
+        assert!(
+            id.starts_with("https://p4suta.github.io/release-glz/schema/"),
+            "unstable schema identifier in {path}: {id}"
+        );
+        assert!(id.ends_with(".json"), "invalid schema identifier: {id}");
+    }
 }
 
 fn assert_schema_surface(path: &str, title: &str, schema_id: &str, actual: serde_json::Value) {

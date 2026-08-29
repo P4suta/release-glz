@@ -135,6 +135,11 @@ impl Default for HexRegistry {
             .unwrap_or_else(|_| "https://repo.hex.pm".to_owned());
         let docs = std::env::var("RELEASE_GLZ_HEX_DOCS_URL")
             .unwrap_or_else(|_| format!("{}/docs", repository.trim_end_matches('/')));
+        let allow_http_loopback = allow_environment_http_loopback(
+            std::env::var("RELEASE_GLZ_ALLOW_HTTP_LOOPBACK")
+                .ok()
+                .as_deref(),
+        );
         let config = RegistryConfig {
             provider: RegistryProvider::HexPm,
             repository: None,
@@ -143,7 +148,7 @@ impl Default for HexRegistry {
             docs_url: docs,
             credential_env: "HEXPM_API_KEY".into(),
             auth: AuthKind::HexToken,
-            allow_http_loopback: true,
+            allow_http_loopback,
         };
         Self::from_config(&config, std::env::var("HEXPM_API_KEY").ok().as_deref())
             .expect("valid Hex registry environment URLs")
@@ -600,6 +605,10 @@ impl Registry for HexRegistry {
     }
 }
 
+fn allow_environment_http_loopback(value: Option<&str>) -> bool {
+    value == Some("1")
+}
+
 fn append_segments(base: &Url, segments: &[&str]) -> Result<Url> {
     let mut url = base.clone();
     {
@@ -788,6 +797,21 @@ mod tests {
         assert_eq!(transport_retry_delay(0), Duration::from_millis(100));
         assert_eq!(transport_retry_delay(1), Duration::from_millis(200));
         assert_eq!(transport_retry_delay(2), Duration::from_millis(300));
+    }
+
+    #[test]
+    fn environment_registry_http_requires_an_exact_test_opt_in() {
+        for value in [
+            None,
+            Some(""),
+            Some("0"),
+            Some("true"),
+            Some("yes"),
+            Some("01"),
+        ] {
+            assert!(!allow_environment_http_loopback(value));
+        }
+        assert!(allow_environment_http_loopback(Some("1")));
     }
 
     #[test]

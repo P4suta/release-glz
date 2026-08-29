@@ -17,15 +17,17 @@ use crate::config::{
     validate_registry_repository, validate_relative_path,
 };
 use crate::hooks::SidecarArtifact;
+use crate::sidecar::{
+    MAX_ARTIFACT_BYTES as MAX_SIDECAR_BYTES, MAX_COUNT as MAX_SIDECAR_COUNT,
+    MAX_TOTAL_BYTES as MAX_TOTAL_SIDECAR_BYTES, validate_hook_id as validate_sidecar_hook_id,
+    validate_media_type as validate_sidecar_media_type, validate_name as validate_sidecar_name,
+};
 
 const MANIFEST_FILE: &str = "candidate.json";
 const PACKAGE_FILE: &str = "artifacts/package.tar";
 const DOCS_FILE: &str = "artifacts/docs.tar.gz";
 const INTERFACE_FILE: &str = "artifacts/package-interface.json";
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
-const MAX_SIDECAR_COUNT: usize = 64;
-const MAX_SIDECAR_BYTES: u64 = 64 * 1024 * 1024;
-const MAX_TOTAL_SIDECAR_BYTES: u64 = 128 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1076,32 +1078,9 @@ fn validate_standard_output_artifacts(
 }
 
 fn validate_sidecar_identity(hook_id: &str, name: &str, media_type: &str) -> Result<()> {
-    let valid_hook_id = !hook_id.is_empty()
-        && hook_id.bytes().enumerate().all(|(index, byte)| match byte {
-            b'a'..=b'z' | b'A'..=b'Z' => true,
-            b'0'..=b'9' | b'_' | b'-' | b'.' => index > 0,
-            _ => false,
-        });
-    if !valid_hook_id
-        || name.is_empty()
-        || name.len() > 256
-        || name.contains(['/', '\\', '\n', '\r', '\0'])
-        || Path::new(name).is_absolute()
-        || Path::new(name)
-            .components()
-            .any(|component| !matches!(component, std::path::Component::Normal(_)))
-    {
-        bail!("candidate sidecar identity is unsafe");
-    }
-    if media_type.is_empty()
-        || media_type.len() > 128
-        || !media_type.contains('/')
-        || !media_type
-            .bytes()
-            .all(|byte| byte.is_ascii_graphic() && byte != b'"' && byte != b'\\')
-    {
-        bail!("candidate sidecar media type is invalid");
-    }
+    validate_sidecar_hook_id(hook_id)?;
+    validate_sidecar_name(name)?;
+    validate_sidecar_media_type(media_type)?;
     Ok(())
 }
 

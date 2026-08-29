@@ -34,6 +34,21 @@ test("generates deterministic CycloneDX and third-party license documents", () =
       },
     ],
     workspace_members: ["path+file:///repo#release-glz@1.0.0"],
+    resolve: {
+      nodes: [{
+        id: "path+file:///repo#release-glz@1.0.0",
+        deps: [
+          { pkg: "registry+zeta@2.0.0", dep_kinds: [{ kind: null, target: null }] },
+          { pkg: "registry+alpha@1.2.3", dep_kinds: [{ kind: null, target: null }] },
+        ],
+      }, {
+        id: "registry+zeta@2.0.0",
+        deps: [],
+      }, {
+        id: "registry+alpha@1.2.3",
+        deps: [],
+      }],
+    },
   };
   const lock = `
 [[package]]
@@ -61,5 +76,68 @@ checksum = "${"a".repeat(64)}"
   assert.equal(
     JSON.stringify(documents),
     JSON.stringify(generateDocuments(metadata, parseLockChecksums(lock))),
+  );
+});
+
+test("includes only the union of runtime dependencies for shipped targets", () => {
+  const root = {
+    name: "release-glz",
+    version: "1.0.0",
+    id: "root",
+    license: "MIT",
+    source: null,
+    repository: null,
+  };
+  const pkg = (name) => ({
+    name,
+    version: "1.0.0",
+    id: name,
+    license: "MIT",
+    source: `registry+${name}`,
+    repository: null,
+  });
+  const packages = [
+    root,
+    pkg("runtime"),
+    pkg("linux-only"),
+    pkg("windows-only"),
+    pkg("dev-only"),
+    pkg("build-only"),
+    pkg("unsupported-target"),
+  ];
+  const snapshot = (targetDependency) => ({
+    packages,
+    workspace_members: ["root"],
+    resolve: {
+      nodes: [{
+        id: "root",
+        deps: [
+          { pkg: "runtime", dep_kinds: [{ kind: null, target: null }] },
+          { pkg: targetDependency, dep_kinds: [{ kind: null, target: "filtered" }] },
+          { pkg: "dev-only", dep_kinds: [{ kind: "dev", target: null }] },
+          { pkg: "build-only", dep_kinds: [{ kind: "build", target: null }] },
+        ],
+      }, {
+        id: "runtime",
+        deps: [],
+      }, {
+        id: targetDependency,
+        deps: [],
+      }],
+    },
+  });
+
+  const documents = generateDocuments(
+    [snapshot("linux-only"), snapshot("windows-only")],
+    new Map(),
+  );
+
+  assert.deepEqual(
+    documents.sbom.components.map((component) => component.name),
+    ["linux-only", "runtime", "windows-only"],
+  );
+  assert.deepEqual(
+    documents.licenses.packages.map((entry) => entry.name),
+    ["linux-only", "runtime", "windows-only"],
   );
 });

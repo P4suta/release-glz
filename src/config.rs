@@ -232,7 +232,7 @@ impl Default for ReleaseConfig {
             changelog: ChangelogConfig::default(),
             api_exceptions: Vec::new(),
             compatibility_warnings: vec![
-                "legacy release-glz configuration; run `release-glz migrate --write`".into(),
+                "legacy release-glz configuration; run `release-glz migrate --update`".into(),
             ],
             changelog_path: PathBuf::from("CHANGELOG.md"),
             release_branch_prefix: "release-glz/".to_owned(),
@@ -310,12 +310,16 @@ impl Manifest {
 
     pub fn set_prerelease(&mut self, channel: Option<PrereleaseChannel>) {
         ensure_release_table(&mut self.document);
-        let release = self.document["tools"]["release-glz"]
-            .as_table_mut()
-            .expect("release-glz table");
+        let release = self
+            .document
+            .get_mut("tools")
+            .and_then(Item::as_table_like_mut)
+            .and_then(|tools| tools.get_mut("release-glz"))
+            .and_then(Item::as_table_like_mut)
+            .expect("validated release-glz table");
         match channel {
             Some(channel) => {
-                release["prerelease"] = value(channel.as_str());
+                release.insert("prerelease", value(channel.as_str()));
             }
             None => {
                 release.remove("prerelease");
@@ -373,12 +377,16 @@ fn parse_repository(document: &DocumentMut) -> Result<RepositoryConfig> {
 
 fn parse_release_config(document: &DocumentMut) -> Result<ReleaseConfig> {
     let mut output = ReleaseConfig::default();
-    let Some(table) = document
-        .get("tools")
-        .and_then(|tools| tools.get("release-glz"))
-    else {
+    let Some(tools) = document.get("tools") else {
         return Ok(output);
     };
+    let tools = tools.as_table_like().context("`tools` must be a table")?;
+    let Some(table) = tools.get("release-glz") else {
+        return Ok(output);
+    };
+    if !table.is_table_like() {
+        bail!("`tools.release-glz` must be a table");
+    }
 
     if let Some(schema) = table.get("schema") {
         match schema.as_integer() {
@@ -389,6 +397,20 @@ fn parse_release_config(document: &DocumentMut) -> Result<ReleaseConfig> {
             }
             None => bail!("release-glz schema must be an integer"),
         }
+    }
+    if [
+        "compiler",
+        "registry",
+        "approval",
+        "outputs",
+        "hooks",
+        "changelog",
+        "api_exceptions",
+    ]
+    .iter()
+    .any(|key| table.get(key).is_some())
+    {
+        bail!("structured release-glz configuration requires explicit `schema = 2`");
     }
 
     if let Some(path) = table.get("changelog_path").and_then(Item::as_str) {
@@ -459,7 +481,7 @@ struct V2ReleaseConfig {
     changelog: ChangelogConfig,
     #[serde(default = "default_release_branch_prefix")]
     release_branch_prefix: String,
-    #[serde(default = "default_true")]
+    #[serde(default)]
     allow_version_zero: bool,
     #[serde(default)]
     prerelease: Option<PrereleaseChannel>,
@@ -756,11 +778,21 @@ fn ensure_release_table(document: &mut DocumentMut) {
     if !document.as_table().contains_key("tools") {
         document["tools"] = Item::Table(Table::new());
     }
-    if !document["tools"].is_table() {
-        document["tools"] = Item::Table(Table::new());
-    }
-    if document["tools"].get("release-glz").is_none() {
-        document["tools"]["release-glz"] = Item::Table(Table::new());
+    let inline = document
+        .get("tools")
+        .and_then(Item::as_inline_table)
+        .is_some();
+    let tools = document
+        .get_mut("tools")
+        .and_then(Item::as_table_like_mut)
+        .expect("validated tools table");
+    if tools.get("release-glz").is_none() {
+        let release = if inline {
+            Item::Value(toml_edit::Value::InlineTable(toml_edit::InlineTable::new()))
+        } else {
+            Item::Table(Table::new())
+        };
+        tools.insert("release-glz", release);
     }
 }
 
@@ -829,5 +861,28 @@ repository = { type = "github", user = "owner", repo = "x", tag_prefix = "x-" }
             manifest.repository.tag_for(&Version::new(1, 2, 3)),
             "x-v1.2.3"
         );
+    }
+
+    #[test]
+    fn prerelease_edits_preserve_inline_tools_and_release_tables() {
+        let source = r#"name = "x"
+version = "1.0.0"
+tools = { other = { keep = true }, "release-glz" = { prerelease = "alpha" } }
+"#;
+        let mut manifest = Manifest::parse(PathBuf::from("gleam.toml"), source.into()).unwrap();
+        manifest.set_prerelease(Some(PrereleaseChannel::Rc));
+        let rendered = manifest.render();
+        assert!(rendered.contains("keep = true"), "{rendered}");
+        assert!(rendered.contains("prerelease = \"rc\""), "{rendered}");
+
+        let source = r#"name = "x"
+version = "1.0.0"
+tools = { other = "preserve" }
+"#;
+        let mut manifest = Manifest::parse(PathBuf::from("gleam.toml"), source.into()).unwrap();
+        manifest.set_prerelease(Some(PrereleaseChannel::Beta));
+        let rendered = manifest.render();
+        assert!(rendered.contains("other = \"preserve\""), "{rendered}");
+        assert!(rendered.contains("prerelease = \"beta\""), "{rendered}");
     }
 }
