@@ -63,7 +63,8 @@ jobs:
           tar --extract --gzip --file "$TOOL_DIR/actionlint.tar.gz" --directory "$TOOL_DIR" actionlint
           chmod 0755 "$TOOL_DIR/actionlint"
           printf '%s\n' "$TOOL_DIR" >> "$GITHUB_PATH"
-          cargo install --locked zizmor --version 1.29.0
+          rustup toolchain install 1.97.0 --profile minimal
+          cargo +1.97.0 install --locked zizmor --version 1.29.0
       - name: Render the exact managed workflow into an isolated repository
         env:
           ACTION_SHA: ${{ github.sha }}

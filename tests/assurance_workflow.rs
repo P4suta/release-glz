@@ -25,6 +25,8 @@ fn assurance_workflow_has_fixed_fail_closed_shipping_gates() {
         "src/reconciler.rs",
         "actionlint",
         "zizmor",
+        "rustup toolchain install 1.97.0 --profile minimal",
+        "cargo +1.97.0 install --locked zizmor --version 1.29.0",
         "scripts/verify-workflows.js",
         "scripts/de-shell.js",
         "tests/fixtures/workflow/gleam.toml",
@@ -40,6 +42,7 @@ fn assurance_workflow_has_fixed_fail_closed_shipping_gates() {
     assert!(!yaml.contains("nightly-2026-07-15"));
     assert!(yaml.contains("permissions: {}"));
     assert!(!yaml.contains("cargo mutants --jobs 2"));
+    assert!(!yaml.contains("cargo install --locked zizmor --version 1.29.0"));
     assert!(!yaml.contains("continue-on-error: true"));
     assert!(Path::new("tests/fixtures/workflow/gleam.toml").is_file());
 
@@ -82,12 +85,16 @@ fn dependency_policy_is_explicit_and_deny_by_default() {
 #[test]
 fn ci_exercises_minimum_configured_and_current_gleam_versions() {
     let yaml = fs::read_to_string(".github/workflows/ci.yml").unwrap();
-    for version in ["1.9.0", "1.12.3", "1.18.1"] {
+    for version in ["1.9.0", "1.12.0", "1.18.1"] {
         assert!(
             yaml.contains(version),
             "Gleam compatibility matrix is missing {version}"
         );
     }
+    assert!(
+        !yaml.contains("1.12.3"),
+        "matrix must contain published releases"
+    );
     assert!(yaml.contains("gleam-version: ${{ matrix.gleam }}"));
     assert!(yaml.contains("matrix.gleam"));
 }

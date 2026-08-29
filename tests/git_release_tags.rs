@@ -10,6 +10,7 @@ fn release_tags_are_annotated_and_observable_after_push() {
     let work = temp.path().join("work");
     git(temp.path(), &["init", "--bare", remote.to_str().unwrap()]);
     git(temp.path(), &["init", work.to_str().unwrap()]);
+    git(&work, &["config", "core.hooksPath", ".git/no-hooks"]);
     git(&work, &["config", "user.name", "Test"]);
     git(&work, &["config", "user.email", "test@example.invalid"]);
     git(&work, &["config", "commit.gpgsign", "false"]);
@@ -32,10 +33,10 @@ fn release_tags_are_annotated_and_observable_after_push() {
     assert_eq!(local.target_sha, head);
     assert!(local.annotated);
 
-    let pushed = Command::new("/usr/bin/git")
+    let pushed = Command::new("git")
         .arg("-C")
         .arg(&work)
-        .args(["push", "--no-verify", "origin", "refs/tags/v1.2.3"])
+        .args(["push", "origin", "refs/tags/v1.2.3"])
         .output()
         .unwrap();
     assert!(

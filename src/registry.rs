@@ -302,7 +302,7 @@ impl HexRegistry {
                 Ok(GetResult::Value(value)) => return Ok(value),
                 Ok(GetResult::Retry(delay)) => {
                     if !retry_available(attempt, self.retries) {
-                        bail!("registry GET {} remained temporarily unavailable", url);
+                        bail!("registry GET {url} remained temporarily unavailable");
                     }
                     tokio::time::sleep(delay).await;
                 }

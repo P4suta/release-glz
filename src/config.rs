@@ -606,7 +606,7 @@ fn validate_registry(registry: &RegistryConfig) -> Result<()> {
         }
         let secure = url.scheme() == "https";
         let loopback = url_is_http_loopback(&url);
-        if !secure && !(registry.allow_http_loopback && loopback) {
+        if !(secure || registry.allow_http_loopback && loopback) {
             bail!("registry.{name} must use HTTPS (HTTP is test-only on loopback)");
         }
     }

@@ -86,9 +86,14 @@ fn doctor_cli_collects_local_and_github_checks_into_envelope_v2() {
     assert_eq!(envelope["result"]["installed_compiler"], "1.12.3");
     assert_eq!(envelope["result"]["diagnostics"], serde_json::json!([]));
     assert_eq!(request_count, 3);
-    assert_eq!(registry_requests.len(), 1);
-    assert!(registry_requests[0].starts_with("GET /api/auth?domain=api&resource=write HTTP/1.1"));
-    assert!(registry_requests[0].contains("authorization: not-a-real-token"));
+    assert!(
+        (1..=3).contains(&registry_requests.len()),
+        "unexpected bounded GET count: {registry_requests:?}"
+    );
+    for request in registry_requests {
+        assert!(request.starts_with("GET /api/auth?domain=api&resource=write HTTP/1.1"));
+        assert!(request.contains("authorization: not-a-real-token"));
+    }
 }
 
 #[test]

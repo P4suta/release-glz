@@ -19,6 +19,7 @@ const STDERR_LIMIT: usize = 256 * 1024;
 const SIDECAR_ARTIFACT_LIMIT: usize = 64 * 1024 * 1024;
 const SIDECAR_TOTAL_LIMIT: usize = 128 * 1024 * 1024;
 const SIDECAR_COUNT_LIMIT: usize = 64;
+const HOOK_SPAWN_ATTEMPTS: usize = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HookContext {
@@ -301,9 +302,7 @@ impl HookRunner {
                 command.env(name, value);
             }
         }
-        let mut child = command
-            .spawn()
-            .with_context(|| format!("failed to start hook `{}`", hook.id))?;
+        let mut child = spawn_hook(&mut command, &hook.id).await?;
         let mut stdin = child.stdin.take().context("hook stdin was not piped")?;
         let stdout = child.stdout.take().context("hook stdout was not piped")?;
         let stderr = child.stderr.take().context("hook stderr was not piped")?;
@@ -366,6 +365,33 @@ impl HookRunner {
             evidence: output.evidence,
         })
     }
+}
+
+async fn spawn_hook(
+    command: &mut tokio::process::Command,
+    hook_id: &str,
+) -> Result<tokio::process::Child> {
+    for attempt in 0..HOOK_SPAWN_ATTEMPTS {
+        match command.spawn() {
+            Ok(child) => return Ok(child),
+            Err(error) if retryable_spawn_error(&error) && attempt + 1 < HOOK_SPAWN_ATTEMPTS => {
+                tokio::time::sleep(Duration::from_millis(10 * (attempt as u64 + 1))).await;
+            }
+            Err(error) => {
+                return Err(error).with_context(|| format!("failed to start hook `{hook_id}`"));
+            }
+        }
+    }
+    unreachable!("the final hook spawn attempt always returns")
+}
+
+fn retryable_spawn_error(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::Interrupted
+            | std::io::ErrorKind::WouldBlock
+            | std::io::ErrorKind::ExecutableFileBusy
+    )
 }
 
 async fn drain_limited<R: AsyncRead + Unpin>(
@@ -452,4 +478,28 @@ fn validate_media_type(media_type: &str) -> Result<()> {
         bail!("sidecar artifact media type is invalid");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::retryable_spawn_error;
+    use std::io::{Error, ErrorKind};
+
+    #[test]
+    fn hook_spawn_retries_only_errors_that_cannot_have_started_a_process() {
+        for kind in [
+            ErrorKind::Interrupted,
+            ErrorKind::WouldBlock,
+            ErrorKind::ExecutableFileBusy,
+        ] {
+            assert!(retryable_spawn_error(&Error::from(kind)), "{kind:?}");
+        }
+        for kind in [
+            ErrorKind::NotFound,
+            ErrorKind::PermissionDenied,
+            ErrorKind::Other,
+        ] {
+            assert!(!retryable_spawn_error(&Error::from(kind)), "{kind:?}");
+        }
+    }
 }

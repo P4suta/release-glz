@@ -200,6 +200,11 @@ async fn rehearsal_rejects_missing_symbolic_legacy_and_wrong_compiler_sources_wi
     assert!(legacy.contains("schema = 2"), "{legacy}");
     assert!(!legacy_output.exists());
 
+    if installed_gleam_version().is_none() {
+        eprintln!("skipping compiler mismatch subcase because Gleam is not installed");
+        return Ok(());
+    }
+
     fs::write(
         &manifest_path,
         v2_manifest("rehearse_guard", "99.0.0", "hexpm", None, true),

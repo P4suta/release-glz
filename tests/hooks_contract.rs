@@ -274,8 +274,15 @@ async fn hook_output_protocol_is_strict_at_every_field() {
     let runner = HookRunner::default();
     for (name, output, expected) in cases {
         let hook = script(temp.path(), name, &format!("printf '%s' '{output}'\n"));
+        let hook = HookConfig {
+            id: "protocol".into(),
+            argv: vec!["/bin/sh".into(), hook.to_string_lossy().into_owned()],
+            timeout_seconds: 5,
+            required: true,
+            env: vec![],
+        };
         let error = runner
-            .run_verify(&[required("protocol", &hook, 5)], temp.path(), &context())
+            .run_verify(&[hook], temp.path(), &context())
             .await
             .unwrap_err()
             .to_string();
