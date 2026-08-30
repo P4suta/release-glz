@@ -304,7 +304,7 @@ jobs:
   publish:
     name: Publish approved Candidate
     needs: [prepare, validate-promotion, authorize]
-    if: ${{{{ always() && ((github.event_name == 'workflow_dispatch' && inputs.operation == 'promote' && needs.validate-promotion.result == 'success') || (github.event_name == 'push' && needs.prepare.result == 'success' && needs.prepare.outputs.candidate-digest != '' && needs.authorize.result == 'success' && needs.authorize.outputs.state == 'awaiting_approval')) }}}}
+    if: ${{{{ !cancelled() && always() && ((github.event_name == 'workflow_dispatch' && inputs.operation == 'promote' && needs.validate-promotion.result == 'success') || (github.event_name == 'push' && needs.prepare.result == 'success' && needs.prepare.outputs.candidate-digest != '' && needs.authorize.result == 'success' && needs.authorize.outputs.state == 'awaiting_approval')) }}}}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     environment: {environment}
@@ -648,6 +648,10 @@ mod tests {
             .next()
             .unwrap();
         assert!(publish.contains("needs: [prepare, validate-promotion, authorize]"));
+        assert!(
+            publish.contains("if: ${{ !cancelled() && always() &&"),
+            "publish must never run after workflow cancellation"
+        );
         assert!(publish.contains("needs.authorize.outputs.state == 'awaiting_approval'"));
         assert!(publish.contains("github.event_name == 'workflow_dispatch'"));
         assert!(publish.contains(
