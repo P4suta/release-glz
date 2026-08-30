@@ -128,11 +128,17 @@ jobs:
         run: node scripts/check-coverage.js --lines 90 --branches 85
 
   mutation:
-    name: Critical-path mutation testing
+    name: Critical-path mutation testing (${{ matrix.shard }})
     runs-on: ubuntu-24.04
     timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ["0/2", "1/2"]
     permissions:
       contents: read
+    env:
+      MUTATION_SHARD: ${{ matrix.shard }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -140,11 +146,25 @@ jobs:
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
         with:
           toolchain: 1.88.0
-      - name: Install fixed mutation tool
-        run: cargo install --locked cargo-mutants --version 27.1.0
+      - name: Install fixed mutation tools
+        env:
+          NEXTEST_ARCHIVE: ${{ runner.temp }}/cargo-nextest.tar.gz
+          NEXTEST_DIR: ${{ runner.temp }}/cargo-nextest
+        run: |
+          cargo install --locked cargo-mutants --version 27.1.0
+          mkdir -p "$NEXTEST_DIR"
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
+            --output "$NEXTEST_ARCHIVE" \
+            https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.140/cargo-nextest-0.9.140-x86_64-unknown-linux-gnu.tar.gz
+          printf '%s  %s\n' 4ee9aaa0d0171a985a5d0eb735b87355894c1c455972e9674fb9fdbd1387c9a3 "$NEXTEST_ARCHIVE" \
+            | sha256sum --check -
+          tar --extract --gzip --file "$NEXTEST_ARCHIVE" --directory "$NEXTEST_DIR" cargo-nextest
+          chmod 0755 "$NEXTEST_DIR/cargo-nextest"
+          printf '%s\n' "$NEXTEST_DIR" >> "$GITHUB_PATH"
       - name: Require every viable critical mutation to be caught
         run: >-
-          cargo mutants --jobs 1 --timeout 300 --cargo-arg=--locked
+          cargo mutants --in-place --test-tool nextest
+          --shard "$MUTATION_SHARD" --timeout 300 --cargo-arg=--locked
           --file src/version.rs --file src/registry.rs
           --file src/artifact.rs --file src/reconciler.rs
 

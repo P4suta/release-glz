@@ -10,6 +10,8 @@ fn assurance_workflow_has_fixed_fail_closed_shipping_gates() {
         "cargo-audit --version 0.22.2",
         "cargo-machete --version 0.9.2",
         "cargo-mutants --version 27.1.0",
+        "cargo-nextest-0.9.140-x86_64-unknown-linux-gnu.tar.gz",
+        "4ee9aaa0d0171a985a5d0eb735b87355894c1c455972e9674fb9fdbd1387c9a3",
         "cargo-llvm-cov --version 0.9.0",
         "cargo-fuzz --version 0.13.2",
         "cargo deny check -D warnings",
@@ -18,7 +20,7 @@ fn assurance_workflow_has_fixed_fail_closed_shipping_gates() {
         "cargo llvm-cov",
         "--branch --json",
         "scripts/check-coverage.js --lines 90 --branches 85",
-        "cargo mutants --jobs 1",
+        "cargo mutants --in-place --test-tool nextest",
         "src/version.rs",
         "src/registry.rs",
         "src/artifact.rs",
@@ -41,7 +43,7 @@ fn assurance_workflow_has_fixed_fail_closed_shipping_gates() {
     assert!(yaml.contains("nightly-2026-08-22"));
     assert!(!yaml.contains("nightly-2026-07-15"));
     assert!(yaml.contains("permissions: {}"));
-    assert!(!yaml.contains("cargo mutants --jobs 2"));
+    assert!(!yaml.contains("cargo mutants --jobs"));
     assert!(!yaml.contains("cargo install --locked zizmor --version 1.29.0"));
     assert!(!yaml.contains("continue-on-error: true"));
     assert!(Path::new("tests/fixtures/workflow/gleam.toml").is_file());
@@ -61,6 +63,42 @@ fn assurance_workflow_has_fixed_fail_closed_shipping_gates() {
         assert_eq!(reference.len(), 40, "mutable action reference: {line}");
         assert!(reference.bytes().all(|byte| byte.is_ascii_hexdigit()));
     }
+}
+
+#[test]
+fn mutation_gate_uses_two_explicit_fail_closed_shards() {
+    let yaml = fs::read_to_string(".github/workflows/assurance.yml").unwrap();
+    let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
+    let mutation = &parsed["jobs"]["mutation"];
+    let shards = mutation["strategy"]["matrix"]["shard"]
+        .as_sequence()
+        .expect("mutation gate must declare an explicit shard matrix")
+        .iter()
+        .map(|value| value.as_str().unwrap())
+        .collect::<Vec<_>>();
+
+    assert_eq!(shards, ["0/2", "1/2"]);
+    assert_eq!(mutation["strategy"]["fail-fast"].as_bool(), Some(false));
+    assert!(
+        mutation["name"]
+            .as_str()
+            .is_some_and(|name| name.contains("matrix.shard"))
+    );
+
+    let command = mutation["steps"]
+        .as_sequence()
+        .unwrap()
+        .iter()
+        .filter_map(|step| step["run"].as_str())
+        .find(|run| run.contains("cargo mutants"))
+        .expect("mutation command is missing");
+    assert!(command.contains("--in-place --test-tool nextest"));
+    assert_eq!(
+        mutation["env"]["MUTATION_SHARD"].as_str(),
+        Some("${{ matrix.shard }}")
+    );
+    assert!(command.contains("--shard \"$MUTATION_SHARD\""));
+    assert!(!command.contains("continue-on-error"));
 }
 
 #[test]
