@@ -4,6 +4,15 @@ This is the final, fail-closed checklist for publishing the first immutable
 release-glz version. Complete it from a clean protected branch. Do not create a
 GitHub Release, move a tag, or publish any package while an item is unresolved.
 
+## 0. Confirm repository protections
+
+- Confirm the active repository rulesets match
+  [the checked-in ruleset contract](repository-rulesets.md).
+- Confirm `Protect main` requires the `Required CI` and `CodeRabbit` checks and
+  has no bypass actors.
+- Confirm `Protect release tags` covers `refs/tags/v*` before creating the first
+  release tag.
+
 ## 1. Prepare reproducible archives
 
 - Run **Distribute binaries** manually with the exact stable `vX.Y.Z` in its
