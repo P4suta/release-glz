@@ -16,7 +16,7 @@ fn rule<'a>(ruleset: &'a Value, kind: &str) -> &'a Value {
 }
 
 #[test]
-fn default_branch_requires_checked_signed_linear_changes() {
+fn default_branch_requires_checked_linear_changes() {
     let ruleset = load(".github/rulesets/main.json");
     assert_eq!(ruleset["name"], "Protect main");
     assert_eq!(ruleset["target"], "branch");
@@ -27,14 +27,22 @@ fn default_branch_requires_checked_signed_linear_changes() {
         json!({"include": ["~DEFAULT_BRANCH"], "exclude": []})
     );
 
-    for kind in [
-        "deletion",
-        "non_fast_forward",
-        "required_linear_history",
-        "required_signatures",
-    ] {
-        rule(&ruleset, kind);
-    }
+    let rule_types = ruleset["rules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|rule| rule["type"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        rule_types,
+        [
+            "deletion",
+            "non_fast_forward",
+            "required_linear_history",
+            "pull_request",
+            "required_status_checks"
+        ]
+    );
 
     let pull_request = &rule(&ruleset, "pull_request")["parameters"];
     assert_eq!(pull_request["allowed_merge_methods"], json!(["squash"]));

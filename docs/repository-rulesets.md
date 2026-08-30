@@ -14,11 +14,11 @@ conditions with the files above.
 
 ## Default branch policy
 
-`Protect main` rejects deletion and force pushes, requires signed linear
-history, and permits squash merges only through pull requests. The repository
-is intentionally operable by its sole maintainer, so it requires no separate
-human approval. Unresolved review threads still block merging. `Required CI`
-and `CodeRabbit` are bound to their GitHub App IDs so a same-named status from
+`Protect main` rejects deletion and force pushes, requires linear history, and
+permits squash merges only through pull requests. The repository is
+intentionally operable by its sole maintainer, so it requires no separate human
+approval. Unresolved review threads still block merging. `Required CI` and
+`CodeRabbit` are bound to their GitHub App IDs so a same-named status from
 another source cannot satisfy the rule.
 
 `Required CI` is the stable aggregate job for the complete supported
@@ -27,9 +27,12 @@ PR merge check: its coverage, fuzzing, dependency audit, and mutation jobs run
 manually before a release and once after changes reach `main`. This avoids
 restarting the expensive mutation matrix after every review fix.
 
-There are no bypass actors. The owner follows the same PR, status-check, signed
-commit, linear-history, and thread-resolution rules as every contributor, but
-does not need a second maintainer merely to provide an approval click.
+There are no bypass actors. The owner follows the same PR, status-check,
+linear-history, and thread-resolution rules as every contributor, but does not
+need a second maintainer merely to provide an approval click. Commit signatures
+are not a ruleset requirement because GitHub App-created topic commits are not
+signed and would otherwise make the PR path unusable. Release identity remains
+protected by the annotated-tag checklist and immutable `v*` tag ruleset.
 
 ## Accepted solo-maintainer risk
 
@@ -37,9 +40,9 @@ While this remains a one-person project, the owner explicitly accepts that
 merges have no independent human approval. Requiring one would make normal
 operation impossible rather than add a usable control. The compensating
 controls are a mandatory pull request, source-bound `Required CI` and
-`CodeRabbit` checks, resolved review threads, signed squash commits, linear
-history, and immutable release tags. Revisit the approval count when a second
-maintainer with write access is available.
+`CodeRabbit` checks, resolved review threads, squash-only linear history, and
+immutable release tags. Revisit the approval count when a second maintainer
+with write access is available.
 
 ## Release tag policy
 
