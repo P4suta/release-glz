@@ -53,11 +53,22 @@ fn distribution_is_attested_and_uploaded_to_a_draft_exactly_once() {
         .expect("draft assets must be checked against the sealed dist inventory");
     let upload_loop = yaml.find("for file in dist/*").unwrap();
     assert!(inventory_check < upload_loop);
+    let complete_inventory = "node scripts/verify-release-assets.js --artifacts dist --complete";
+    let complete_checks = yaml
+        .match_indices(complete_inventory)
+        .map(|(position, _)| position)
+        .collect::<Vec<_>>();
     assert_eq!(
-        yaml.matches("node scripts/verify-release-assets.js --artifacts dist --complete")
-            .count(),
+        complete_checks.len(),
         2,
         "the complete asset inventory must be checked after upload and immediately before finalization"
+    );
+    let finalize = yaml.find("gh release edit \"$TAG\" --draft=false").unwrap();
+    assert!(
+        upload_loop < complete_checks[0]
+            && complete_checks[0] < complete_checks[1]
+            && complete_checks[1] < finalize,
+        "complete inventory checks must bracket post-upload verification and release finalization"
     );
     assert!(yaml.contains("diff -u \\\n"));
 
