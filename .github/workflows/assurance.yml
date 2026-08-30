@@ -134,7 +134,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: ["0/2", "1/2"]
+        shard: ["0/4", "1/4", "2/4", "3/4"]
     permissions:
       contents: read
     env:

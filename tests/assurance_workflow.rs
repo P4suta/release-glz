@@ -66,7 +66,7 @@ fn assurance_workflow_has_fixed_fail_closed_shipping_gates() {
 }
 
 #[test]
-fn mutation_gate_uses_two_explicit_fail_closed_shards() {
+fn mutation_gate_uses_four_explicit_fail_closed_shards() {
     let yaml = fs::read_to_string(".github/workflows/assurance.yml").unwrap();
     let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
     let mutation = &parsed["jobs"]["mutation"];
@@ -77,7 +77,7 @@ fn mutation_gate_uses_two_explicit_fail_closed_shards() {
         .map(|value| value.as_str().unwrap())
         .collect::<Vec<_>>();
 
-    assert_eq!(shards, ["0/2", "1/2"]);
+    assert_eq!(shards, ["0/4", "1/4", "2/4", "3/4"]);
     assert_eq!(mutation["strategy"]["fail-fast"].as_bool(), Some(false));
     assert!(
         mutation["name"]
