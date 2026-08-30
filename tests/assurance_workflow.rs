@@ -171,8 +171,8 @@ fn ci_exercises_minimum_configured_and_current_gleam_versions() {
         ["test", "lint"]
     );
     let required_run = required["steps"][0]["run"].as_str().unwrap();
-    assert!(required_run.contains("TEST_RESULT"));
-    assert!(required_run.contains("LINT_RESULT"));
+    assert!(required_run.contains(r#"test "$TEST_RESULT" = success"#));
+    assert!(required_run.contains(r#"test "$LINT_RESULT" = success"#));
     for test in [
         "scripts/check-coverage.test.js",
         "scripts/generate-action-checksums.test.js",

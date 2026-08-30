@@ -16,10 +16,10 @@ conditions with the files above.
 
 `Protect main` rejects deletion and force pushes, requires signed linear
 history, and permits squash merges only through pull requests. The repository
-is maintained by one person, so the approval count is intentionally zero;
-unresolved review threads still block merging. `Required CI` and `CodeRabbit`
-are bound to their GitHub App IDs so a same-named status from another source
-cannot satisfy the rule.
+requires one independent approval, dismisses that approval after a new push,
+and blocks unresolved review threads. `Required CI` and `CodeRabbit` are bound
+to their GitHub App IDs so a same-named status from another source cannot
+satisfy the rule.
 
 `Required CI` is the stable aggregate job for the complete supported
 OS/compiler matrix and lints. Shipping assurance is intentionally not a normal
@@ -27,8 +27,10 @@ PR merge check: its coverage, fuzzing, dependency audit, and mutation jobs run
 manually before a release and once after changes reach `main`. This avoids
 restarting the expensive mutation matrix after every review fix.
 
-There are no bypass actors. In an emergency, an administrator must explicitly
-disable the affected ruleset, perform the audited recovery, and re-enable it.
+The repository owner is the only bypass actor, and the bypass mode is limited
+to pull requests. This keeps the solo-maintainer recovery path in the PR audit
+trail without allowing direct pushes to `main`. Use the bypass only when no
+independent maintainer is available, and record the reason in the PR.
 
 ## Release tag policy
 
