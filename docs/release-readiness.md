@@ -21,7 +21,7 @@ GitHub Release, move a tag, or publish any package while an item is unresolved.
   x86_64/arm64, and Windows x86_64/arm64.
 - Download the checksum preparation artifact by the run ID and artifact ID
   shown in the workflow summary. Verify its server-reported artifact digest.
-- Confirm `action-checksums.json` contains exactly the six expected archive
+- Confirm `action/checksums.json` contains exactly the six expected archive
   names, six distinct real SHA-256 values where appropriate, and no all-zero
   placeholder.
 - Replace only `action/checksums.json`. The distribution workflow deliberately

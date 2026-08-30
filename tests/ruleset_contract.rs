@@ -68,3 +68,14 @@ fn release_tags_are_immutable_after_creation() {
     rule(&ruleset, "non_fast_forward");
     assert_eq!(ruleset["rules"].as_array().unwrap().len(), 2);
 }
+
+#[test]
+fn repository_policy_records_the_solo_review_tradeoff_and_real_checksum_path() {
+    let policy = fs::read_to_string("docs/repository-rulesets.md").unwrap();
+    assert!(policy.contains("## Accepted solo-maintainer risk"));
+    assert!(policy.contains("no independent human approval"));
+
+    let readiness = fs::read_to_string("docs/release-readiness.md").unwrap();
+    assert!(readiness.contains("`action/checksums.json` contains"));
+    assert!(!readiness.contains("`action-checksums.json` contains"));
+}

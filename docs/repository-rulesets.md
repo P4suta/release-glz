@@ -31,6 +31,16 @@ There are no bypass actors. The owner follows the same PR, status-check, signed
 commit, linear-history, and thread-resolution rules as every contributor, but
 does not need a second maintainer merely to provide an approval click.
 
+## Accepted solo-maintainer risk
+
+While this remains a one-person project, the owner explicitly accepts that
+merges have no independent human approval. Requiring one would make normal
+operation impossible rather than add a usable control. The compensating
+controls are a mandatory pull request, source-bound `Required CI` and
+`CodeRabbit` checks, resolved review threads, signed squash commits, linear
+history, and immutable release tags. Revisit the approval count when a second
+maintainer with write access is available.
+
 ## Release tag policy
 
 `Protect release tags` allows the first creation of a matching tag, then rejects
