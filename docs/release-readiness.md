@@ -8,8 +8,8 @@ GitHub Release, move a tag, or publish any package while an item is unresolved.
 
 - Confirm the active repository rulesets match
   [the checked-in ruleset contract](repository-rulesets.md).
-- Confirm `Protect main` requires one current approval plus the `Required CI`
-  and `CodeRabbit` checks, and that its sole bypass is the owner's PR-only path.
+- Confirm `Protect main` requires the `Required CI` and `CodeRabbit` checks,
+  thread resolution, and no separate approval or bypass actor.
 - Confirm `Protect release tags` covers `refs/tags/v*` before creating the first
   release tag.
 

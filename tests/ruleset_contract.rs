@@ -16,19 +16,12 @@ fn rule<'a>(ruleset: &'a Value, kind: &str) -> &'a Value {
 }
 
 #[test]
-fn default_branch_requires_reviewed_signed_linear_changes() {
+fn default_branch_requires_checked_signed_linear_changes() {
     let ruleset = load(".github/rulesets/main.json");
     assert_eq!(ruleset["name"], "Protect main");
     assert_eq!(ruleset["target"], "branch");
     assert_eq!(ruleset["enforcement"], "active");
-    assert_eq!(
-        ruleset["bypass_actors"],
-        json!([{
-            "actor_id": 42543015,
-            "actor_type": "User",
-            "bypass_mode": "pull_request"
-        }])
-    );
+    assert_eq!(ruleset["bypass_actors"], json!([]));
     assert_eq!(
         ruleset["conditions"]["ref_name"],
         json!({"include": ["~DEFAULT_BRANCH"], "exclude": []})
@@ -45,8 +38,8 @@ fn default_branch_requires_reviewed_signed_linear_changes() {
 
     let pull_request = &rule(&ruleset, "pull_request")["parameters"];
     assert_eq!(pull_request["allowed_merge_methods"], json!(["squash"]));
-    assert_eq!(pull_request["dismiss_stale_reviews_on_push"], true);
-    assert_eq!(pull_request["required_approving_review_count"], 1);
+    assert_eq!(pull_request["dismiss_stale_reviews_on_push"], false);
+    assert_eq!(pull_request["required_approving_review_count"], 0);
     assert_eq!(pull_request["required_review_thread_resolution"], true);
 
     let checks = &rule(&ruleset, "required_status_checks")["parameters"];
