@@ -10,7 +10,9 @@ use release_glz::authorization::{
 use release_glz::candidate::Candidate;
 use release_glz::config::{
     AuthKind, InitializationSettings, Manifest, RegistryConfig, RegistryProvider,
+    validate_registry_repository,
 };
+use release_glz::diff::unified_diff;
 use release_glz::doctor::{
     DoctorInput, DoctorReport, assess as assess_doctor, assess_local as assess_doctor_local,
 };
@@ -323,7 +325,8 @@ fn requested_json_output(arguments: &[std::ffi::OsString]) -> bool {
         .any(|argument| argument == std::ffi::OsStr::new("--output=json"))
 }
 
-fn requested_command(arguments: &[std::ffi::OsString]) -> &'static str {
+fn requested_command(arguments: &[std::ffi::OsString]) -> String {
+    let definition = Cli::command();
     let mut skip_value = false;
     for argument in arguments.iter().skip(1) {
         if skip_value {
@@ -340,28 +343,14 @@ fn requested_command(arguments: &[std::ffi::OsString]) -> &'static str {
         if argument.starts_with('-') {
             continue;
         }
-        if let Some(command) = [
-            "plan",
-            "rehearse",
-            "verify",
-            "update",
-            "release-pr",
-            "release",
-            "status",
-            "doctor",
-            "init",
-            "migrate",
-            "set-version",
-            "prerelease",
-            "completion",
-        ]
-        .into_iter()
-        .find(|command| argument == *command)
+        if let Some(command) = definition
+            .get_subcommands()
+            .find(|command| argument == command.get_name())
         {
-            return command;
+            return command.get_name().to_owned();
         }
     }
-    "cli"
+    "cli".into()
 }
 
 fn exit_code(error: &anyhow::Error) -> i32 {
@@ -519,7 +508,8 @@ async fn run(cli: Cli) -> Result<i32> {
                     GitHubRepository::parse(&sealed.github_repository).map_err(|error| {
                         default_failure_class(error, FailureClass::ImmutableStateConflict)
                     })?,
-                );
+                )
+                .map_err(|error| classified(FailureClass::UsageOrConfig, error))?;
                 let merged = github
                     .merged_release_pr_for_head(
                         &sealed.source.commit_sha,
@@ -710,6 +700,8 @@ struct InitOutcome {
     workflow_changed: bool,
     changed: bool,
     written: bool,
+    manifest_diff: Option<String>,
+    workflow_diff: Option<String>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -820,22 +812,24 @@ async fn run_init(
     let manifest_changed = initialized_source
         .as_deref()
         .is_some_and(|source| source != manifest.original_source());
+    let manifest_diff = if diff && manifest_changed {
+        initialized_source.as_deref().map(|source| {
+            unified_diff(
+                &manifest.path().to_string_lossy(),
+                manifest.original_source(),
+                source,
+            )
+        })
+    } else {
+        None
+    };
+    let workflow_diff = if diff { workflow.diff.clone() } else { None };
 
     if diff && matches!(output, Output::Human) {
-        if let Some(source) = &initialized_source
-            && manifest_changed
-        {
-            print!(
-                "{}",
-                text_diff(
-                    &manifest.path().to_string_lossy(),
-                    manifest.original_source(),
-                    source,
-                    "schema 2",
-                )
-            );
+        if let Some(manifest_diff) = &manifest_diff {
+            print!("{manifest_diff}");
         }
-        if let Some(workflow_diff) = &workflow.diff {
+        if let Some(workflow_diff) = &workflow_diff {
             print!("{workflow_diff}");
         }
         return Ok(0);
@@ -861,6 +855,8 @@ async fn run_init(
         workflow_changed: workflow.changed,
         changed,
         written: workflow.written || manifest_written,
+        manifest_diff,
+        workflow_diff,
     };
     let stale = check && changed;
     let next_action = stale.then(|| {
@@ -997,6 +993,8 @@ fn initialization_registry(
                         "the organization profile requires --organization",
                     )
                 })?;
+            validate_registry_repository(RegistryProvider::HexPm, Some(organization))
+                .map_err(|error| classified(FailureClass::UsageOrConfig, error))?;
             Ok(RegistryConfig {
                 repository: Some(organization.to_owned()),
                 api_url: "https://hex.pm/api".into(),
@@ -1052,7 +1050,8 @@ async fn resolve_action_sha(explicit: Option<&str>) -> Result<String> {
         return Ok(sha.to_owned());
     }
     let repository = GitHubRepository::parse("P4suta/release-glz")?;
-    let client = GitHubClient::from_environment(repository);
+    let client = GitHubClient::from_environment(repository)
+        .map_err(|error| classified(FailureClass::UsageOrConfig, error))?;
     let tag = format!("v{}", env!("CARGO_PKG_VERSION"));
     let state = client
         .tag_state(&tag)
@@ -1120,17 +1119,6 @@ fn append_profile_argv(
     }
 }
 
-fn text_diff(path: &str, current: &str, rendered: &str, label: &str) -> String {
-    let mut output = format!("--- {path}\n+++ {path} ({label})\n");
-    for line in current.lines() {
-        output.push_str(&format!("-{line}\n"));
-    }
-    for line in rendered.lines() {
-        output.push_str(&format!("+{line}\n"));
-    }
-    output
-}
-
 fn run_migrate(
     manifest_path: &Path,
     output: Output,
@@ -1152,7 +1140,11 @@ fn run_migrate(
             .apply()
             .map_err(|error| classified(FailureClass::ImmutableStateConflict, error))?
     } else {
-        migration.outcome(false)
+        let mut outcome = migration.outcome(false);
+        if diff {
+            outcome.diff = migration.diff();
+        }
+        outcome
     };
     let stale = check && outcome.changed;
     print_checked_result(
@@ -1498,7 +1490,8 @@ async fn approval_from_environment(
         ));
     }
     let repository = GitHubRepository::parse(&manifest.github_repository)?;
-    let github = GitHubClient::from_environment(repository);
+    let github = GitHubClient::from_environment(repository)
+        .map_err(|error| classified(FailureClass::UsageOrConfig, error))?;
     github
         .verify_actions_artifact(
             artifact_id,
@@ -1740,7 +1733,7 @@ fn github_client(manifest: &Manifest) -> Result<GitHubClient> {
             "set GITHUB_REPOSITORY or configure a GitHub `[repository]` in gleam.toml",
         )?)?,
     };
-    Ok(GitHubClient::from_environment(repository))
+    GitHubClient::from_environment(repository)
 }
 
 fn print_plan(plan: &ReleasePlan, output: Output, command: &str) -> Result<()> {
@@ -1855,6 +1848,19 @@ mod tests {
             pr_url: Some("https://github.test/acme/widget/pull/1".into()),
             hex_url: Some("https://hex.pm/packages/widget".into()),
             github_release_url: Some("https://github.test/acme/widget/releases/v1.1.0".into()),
+        }
+    }
+
+    #[test]
+    fn usage_error_command_detection_tracks_every_clap_subcommand() {
+        let definition = Cli::command();
+        for subcommand in definition.get_subcommands() {
+            let arguments = vec![
+                std::ffi::OsString::from("release-glz"),
+                std::ffi::OsString::from(subcommand.get_name()),
+                std::ffi::OsString::from("--definitely-invalid"),
+            ];
+            assert_eq!(requested_command(&arguments), subcommand.get_name());
         }
     }
 

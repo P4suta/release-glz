@@ -8,6 +8,7 @@ use serde::Serialize;
 use toml_edit::{Array, DocumentMut, Item, Table, value};
 
 use crate::config::{ApprovalMode, AuthKind, Manifest, RegistryProvider, SeparationMode};
+use crate::diff::unified_diff;
 use crate::gleam::Gleam;
 
 const LEGACY_BACKUP: &str = ".release-glz/legacy-gleam.toml";
@@ -29,6 +30,7 @@ pub struct MigrationOutcome {
     pub written: bool,
     pub manifest_path: String,
     pub legacy_backup_path: Option<String>,
+    pub diff: Option<String>,
 }
 
 impl Migration {
@@ -142,18 +144,11 @@ impl Migration {
 
     pub fn diff(&self) -> Option<String> {
         self.changed().then(|| {
-            let mut output = format!(
-                "--- {}\n+++ {} (schema 2)\n",
-                self.manifest_path.display(),
-                self.manifest_path.display()
-            );
-            for line in self.original.lines() {
-                output.push_str(&format!("-{line}\n"));
-            }
-            for line in self.rendered.lines() {
-                output.push_str(&format!("+{line}\n"));
-            }
-            output
+            unified_diff(
+                &self.manifest_path.to_string_lossy(),
+                &self.original,
+                &self.rendered,
+            )
         })
     }
 
@@ -167,6 +162,7 @@ impl Migration {
                 .legacy
                 .as_ref()
                 .map(|_| self.backup_path.to_string_lossy().replace('\\', "/")),
+            diff: None,
         }
     }
 
@@ -397,6 +393,13 @@ fn atomic_replace(path: &Path, bytes: &[u8]) -> Result<()> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
     temporary.write_all(bytes)?;
+    let permissions = fs::metadata(path)
+        .with_context(|| format!("failed to inspect `{}` permissions", path.display()))?
+        .permissions();
+    temporary
+        .as_file()
+        .set_permissions(permissions)
+        .with_context(|| format!("failed to preserve `{}` permissions", path.display()))?;
     temporary.as_file().sync_all()?;
     temporary
         .persist(path)

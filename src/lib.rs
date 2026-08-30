@@ -10,6 +10,7 @@ pub mod candidate;
 pub mod canonical;
 pub mod changelog;
 pub mod config;
+pub mod diff;
 pub mod doctor;
 pub mod failure;
 pub mod forge;

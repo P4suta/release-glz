@@ -79,7 +79,7 @@ impl LiveReleaseTarget {
             );
         }
         let repository = GitHubRepository::parse(&manifest.github_repository)?;
-        let github = GitHubClient::from_environment(repository);
+        let github = GitHubClient::from_environment(repository)?;
         let registry_config = RegistryConfig {
             provider: manifest.registry.provider,
             repository: manifest.registry.repository.clone(),

@@ -193,6 +193,18 @@ fn assess_mode(input: &DoctorInput, online: bool) -> DoctorReport {
                 );
             }
         }
+    } else {
+        diagnostics.push(Diagnostic {
+            code: "online_checks_skipped".into(),
+            level: DiagnosticLevel::Info,
+            message: "registry credentials and GitHub release protections were not checked".into(),
+            detail: Some("run `release-glz doctor --online` before a release".into()),
+        });
+        action(
+            &mut next_actions,
+            "release-glz doctor --online",
+            "Verify registry credentials and GitHub release protections.",
+        );
     }
 
     let state = if diagnostics

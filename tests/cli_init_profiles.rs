@@ -44,7 +44,11 @@ fn init(root: &Path, gleam: &Path, arguments: &[&str]) -> std::process::Output {
 #[test]
 fn public_profile_check_then_update_generates_complete_schema_two_configuration() {
     let (temp, gleam) = package("1.0.0");
-    let original = std::fs::read_to_string(temp.path().join("gleam.toml")).unwrap();
+    let manifest_path = temp.path().join("gleam.toml");
+    let original = std::fs::read_to_string(&manifest_path).unwrap();
+    let mut permissions = std::fs::metadata(&manifest_path).unwrap().permissions();
+    permissions.set_mode(0o640);
+    std::fs::set_permissions(&manifest_path, permissions).unwrap();
     let check = init(temp.path(), &gleam, &["--profile", "public", "--check"]);
     assert_eq!(check.status.code(), Some(3));
     assert_eq!(
@@ -84,6 +88,14 @@ fn public_profile_check_then_update_generates_complete_schema_two_configuration(
     assert_eq!(manifest.release.compiler.to_string(), "1.18.1");
     assert_eq!(manifest.release.registry, Default::default());
     assert_eq!(manifest.release.approval.manual_refs, ["refs/heads/trunk"]);
+    assert_eq!(
+        std::fs::metadata(&manifest_path)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o640
+    );
     let workflow =
         std::fs::read_to_string(temp.path().join(".github/workflows/release-glz.yml")).unwrap();
     assert!(workflow.contains(&format!("P4suta/release-glz@{ACTION_SHA}")));
@@ -98,6 +110,23 @@ fn organization_and_private_profiles_require_exact_non_secret_inputs() {
         &["--profile", "organization", "--check"],
     );
     assert_eq!(missing.status.code(), Some(2));
+    let unsafe_name = init(
+        organization.path(),
+        &gleam,
+        &[
+            "--profile",
+            "organization",
+            "--organization",
+            "acme/../../other",
+            "--update",
+        ],
+    );
+    assert_eq!(unsafe_name.status.code(), Some(2));
+    assert!(
+        !std::fs::read_to_string(organization.path().join("gleam.toml"))
+            .unwrap()
+            .contains("release-glz")
+    );
     let check = init(
         organization.path(),
         &gleam,
@@ -216,6 +245,28 @@ fn organization_and_private_profiles_require_exact_non_secret_inputs() {
         configured.release.registry.credential_env,
         "PRIVATE_HEX_TOKEN"
     );
+}
+
+#[test]
+fn malformed_github_environment_urls_return_a_usage_envelope_instead_of_panicking() {
+    for variable in ["GITHUB_API_URL", "GITHUB_GRAPHQL_URL"] {
+        let (temp, gleam) = package("1.0.0");
+        let output = Command::new(env!("CARGO_BIN_EXE_release-glz"))
+            .current_dir(temp.path())
+            .env("RELEASE_GLZ_GLEAM", &gleam)
+            .env(variable, "not-a-valid-github-url")
+            .args(["--output", "json", "init", "--profile", "public", "--check"])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2), "{variable}");
+        assert!(output.stderr.is_empty(), "{variable}");
+        let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(envelope["ok"], false, "{variable}");
+        assert_eq!(
+            envelope["diagnostics"][0]["code"], "usage_or_config",
+            "{variable}"
+        );
+    }
 }
 
 #[test]

@@ -229,7 +229,15 @@ fn candidate_build_reports_the_original_isolated_failure_without_claiming_creden
             .unwrap()
             .contains("injected compiler failure")
     );
-    assert_ne!(diagnostic["code"], "candidate_build_credentials_required");
+    assert!(
+        envelope["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|diagnostic| diagnostic["code"] != "candidate_build_credentials_required"),
+        "{}",
+        envelope["diagnostics"]
+    );
 }
 
 #[test]

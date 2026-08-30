@@ -1,7 +1,7 @@
 use semver::Version;
 
 use release_glz::config::{ApprovalConfig, SeparationMode};
-use release_glz::doctor::{DoctorInput, assess};
+use release_glz::doctor::{DoctorInput, assess, assess_local};
 use release_glz::forge::GitHubEnvironmentAudit;
 use release_glz::model::{DiagnosticLevel, ReleaseState};
 use release_glz::registry::RegistryCredentialAudit;
@@ -72,6 +72,21 @@ fn strict_mode_requires_separate_review_protected_branch_and_exact_tooling() {
             report.diagnostics
         );
     }
+}
+
+#[test]
+fn local_assessment_explicitly_reports_skipped_protection_checks() {
+    let report = assess_local(&input());
+    assert_eq!(report.state, ReleaseState::UpToDate);
+    assert!(report.diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == "online_checks_skipped" && diagnostic.level == DiagnosticLevel::Info
+    }));
+    assert!(
+        report
+            .next_actions
+            .iter()
+            .any(|action| { action.argv == ["release-glz", "doctor", "--online"] })
+    );
 }
 
 #[test]

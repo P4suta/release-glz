@@ -352,7 +352,6 @@ schema = 2\n\
 compiler = {}\n\
 release_branch_prefix = \"release-glz/\"\n\
 allow_version_zero = {}\n\
-prerelease = \"\"\n\
 api_exceptions = []\n\n\
 [tools.release-glz.registry]\n\
 provider = {}\n{}\
@@ -406,8 +405,6 @@ notes_dir = \".release-glz/notes\"\n\n\
             registry.allow_http_loopback,
             toml_string(&format!("refs/heads/{}", settings.default_branch)),
         ));
-        // An absent prerelease is semantically different from an empty value.
-        rendered = rendered.replace("prerelease = \"\"\n", "");
         Self::parse(self.path.clone(), rendered.clone())
             .context("generated schema 2 configuration did not validate")?;
         Ok(rendered)
@@ -426,6 +423,13 @@ notes_dir = \".release-glz/notes\"\n\n\
         let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
         use std::io::Write as _;
         temporary.write_all(rendered.as_bytes())?;
+        let permissions = fs::metadata(&self.path)
+            .with_context(|| format!("failed to inspect `{}` permissions", self.path.display()))?
+            .permissions();
+        temporary
+            .as_file()
+            .set_permissions(permissions)
+            .with_context(|| format!("failed to preserve `{}` permissions", self.path.display()))?;
         temporary.as_file().sync_all()?;
         temporary
             .persist(&self.path)
@@ -1066,6 +1070,28 @@ tools = { other = "preserve" }
         let rendered = manifest.render();
         assert!(rendered.contains("other = \"preserve\""), "{rendered}");
         assert!(rendered.contains("prerelease = \"beta\""), "{rendered}");
+    }
+
+    #[test]
+    fn initialization_preserves_unrelated_empty_prerelease_values() {
+        let source = r#"name = "x"
+version = "1.0.0"
+
+[tools.other]
+prerelease = ""
+"#;
+        let manifest = Manifest::parse(PathBuf::from("gleam.toml"), source.into()).unwrap();
+        let rendered = manifest
+            .render_initialized(&InitializationSettings {
+                compiler: Version::new(1, 18, 1),
+                default_branch: "main".into(),
+                registry: RegistryConfig::default(),
+                allow_version_zero: false,
+            })
+            .unwrap();
+        assert!(rendered.contains("[tools.other]\nprerelease = \"\""));
+        let parsed = Manifest::parse(PathBuf::from("gleam.toml"), rendered).unwrap();
+        assert_eq!(parsed.release.prerelease, None);
     }
 
     #[test]

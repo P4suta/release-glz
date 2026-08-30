@@ -422,7 +422,7 @@ impl GitHubClient {
         })
     }
 
-    pub fn from_environment(repository: GitHubRepository) -> Self {
+    pub fn from_environment(repository: GitHubRepository) -> Result<Self> {
         let token = std::env::var("GITHUB_TOKEN")
             .or_else(|_| std::env::var("GH_TOKEN"))
             .ok();
@@ -431,7 +431,6 @@ impl GitHubClient {
         let graphql_url = std::env::var("GITHUB_GRAPHQL_URL")
             .unwrap_or_else(|_| "https://api.github.com/graphql".into());
         Self::new(repository, api_url, graphql_url, token)
-            .expect("valid GitHub API environment URLs")
     }
 
     pub async fn changes_for_commits(&self, commits: &[Commit]) -> Result<Vec<ChangeEntry>> {

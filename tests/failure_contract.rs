@@ -15,13 +15,13 @@ fn an_explicit_internal_class_is_never_replaced_by_a_boundary_default() {
 
 #[tokio::test]
 async fn connection_errors_are_classified_by_type_not_message_text() {
-    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
-    let address = listener.local_addr().unwrap();
-    drop(listener);
-
-    let error = reqwest::get(format!("http://{address}/"))
-        .await
-        .unwrap_err();
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .connect_timeout(std::time::Duration::from_secs(2))
+        .timeout(std::time::Duration::from_secs(2))
+        .build()
+        .unwrap();
+    let error = client.get("http://127.0.0.1:1/").send().await.unwrap_err();
     assert!(error.is_connect());
     assert_eq!(
         classify(&anyhow::Error::new(error)),
