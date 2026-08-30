@@ -21,11 +21,71 @@ fn readme_documents_the_v1_candidate_first_contract() {
         "hex-compatible",
         "Exit code",
         "partially_released",
+        "GitHub Release",
+        "gh attestation verify",
+        "To update",
+        "To uninstall",
+        "--profile public",
+        "--profile organization",
+        "--profile private",
+        "doctor --online",
+        "doctor --candidate-build",
+        "next-action-argv",
+        "prepare",
+        "promote",
     ] {
         assert!(readme.contains(required), "README is missing `{required}`");
     }
     assert!(!readme.contains("merged Release PR is the only publication approval"));
     assert!(!readme.contains("run `gleam publish --yes`"));
+}
+
+#[test]
+fn registry_guides_and_release_checklist_preserve_the_v1_operational_boundary() {
+    let organization = fs::read_to_string("docs/quickstart-organization.md").unwrap();
+    for required in [
+        "--profile organization",
+        "api_url = \"https://hex.pm/api\"",
+        "repository_url = \"https://repo.hex.pm/repos/acme\"",
+        "GitHub applies it only to the publish job",
+    ] {
+        assert!(
+            organization.contains(required),
+            "Organization guide misses {required}"
+        );
+    }
+
+    let private = fs::read_to_string("docs/quickstart-private.md").unwrap();
+    for required in [
+        "--profile private",
+        "doctor --candidate-build",
+        "private dependencies",
+        "are not",
+        "Candidate digest",
+        "artifact digest",
+        "source SHA",
+    ] {
+        assert!(
+            private.contains(required),
+            "private guide misses {required}"
+        );
+    }
+
+    let readiness = fs::read_to_string("docs/release-readiness.md").unwrap();
+    for required in [
+        "all six",
+        "checksum-only commit",
+        "CycloneDX",
+        "provenance",
+        "attestations",
+        "annotated",
+        "Re-download every asset",
+    ] {
+        assert!(
+            readiness.contains(required),
+            "release checklist misses {required}"
+        );
+    }
 }
 
 #[test]

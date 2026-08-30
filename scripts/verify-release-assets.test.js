@@ -26,6 +26,15 @@ test("accepts only unique existing assets drawn from the expected inventory", ()
     /duplicate asset `SHA256SUMS`/,
   );
   assert.throws(() => validateInventory(expected, {}), /assets array/);
+  assert.doesNotThrow(() => validateInventory(expected, {
+    assets: [{ name: "release-glz.tar.gz" }, { name: "SHA256SUMS" }],
+  }, true));
+  assert.throws(
+    () => validateInventory(expected, {
+      assets: [{ name: "release-glz.tar.gz" }],
+    }, true),
+    /complete sealed inventory/,
+  );
 });
 
 test("CLI derives the expected flat regular-file inventory from dist", () => {
@@ -39,6 +48,27 @@ test("CLI derives the expected flat regular-file inventory from dist", () => {
     { encoding: "utf8", input: JSON.stringify(body) },
   );
   assert.equal(run({ assets: [{ name: "SHA256SUMS" }] }).status, 0);
+  const incomplete = childProcess.spawnSync(
+    process.execPath,
+    [script, "--artifacts", root, "--complete"],
+    {
+      encoding: "utf8",
+      input: JSON.stringify({ assets: [{ name: "SHA256SUMS" }] }),
+    },
+  );
+  assert.equal(incomplete.status, 1);
+  assert.match(incomplete.stderr, /complete sealed inventory/);
+  const complete = childProcess.spawnSync(
+    process.execPath,
+    [script, "--artifacts", root, "--complete"],
+    {
+      encoding: "utf8",
+      input: JSON.stringify({
+        assets: [{ name: "SHA256SUMS" }, { name: "release-glz.tar.gz" }],
+      }),
+    },
+  );
+  assert.equal(complete.status, 0, complete.stderr);
   const unexpected = run({ assets: [{ name: "old-release.zip" }] });
   assert.equal(unexpected.status, 1);
   assert.match(unexpected.stderr, /unsealed asset/);

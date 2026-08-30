@@ -72,13 +72,12 @@ jobs:
         env:
           ACTION_SHA: ${{ github.sha }}
           GENERATED_ROOT: ${{ runner.temp }}/release-glz-generated
-          RELEASE_GLZ_ACTION_SHA: ${{ github.sha }}
         run: |
           mkdir -p "$GENERATED_ROOT"
           cp tests/fixtures/workflow/gleam.toml "$GENERATED_ROOT/gleam.toml"
           git -C "$GENERATED_ROOT" init --initial-branch=main
           cargo run --locked --manifest-path Cargo.toml -- \
-            --manifest-path "$GENERATED_ROOT/gleam.toml" init --update
+            --manifest-path "$GENERATED_ROOT/gleam.toml" init --update --action-sha "$ACTION_SHA"
           test -s "$GENERATED_ROOT/.github/workflows/release-glz.yml"
           grep -F "P4suta/release-glz@$ACTION_SHA" "$GENERATED_ROOT/.github/workflows/release-glz.yml"
       - name: Validate GitHub workflow syntax

@@ -1,7 +1,15 @@
+const STANDARD_SECRET_ENV_NAMES: [&str; 5] = [
+    "HEXPM_API_KEY",
+    "GITHUB_TOKEN",
+    "GH_TOKEN",
+    "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+    "ACTIONS_RUNTIME_TOKEN",
+];
+
 pub fn redact(input: &str) -> String {
     redact_values(
         input,
-        ["HEXPM_API_KEY", "GITHUB_TOKEN", "GH_TOKEN"]
+        STANDARD_SECRET_ENV_NAMES
             .into_iter()
             .filter_map(|name| std::env::var(name).ok()),
     )
@@ -54,5 +62,11 @@ mod tests {
         let text = "custom-value and custom-value again";
         let redacted = redact_with(text, ["custom-value"]);
         assert_eq!(redacted, "[REDACTED] and [REDACTED] again");
+    }
+
+    #[test]
+    fn github_oidc_and_actions_runtime_tokens_are_standard_secrets() {
+        assert!(STANDARD_SECRET_ENV_NAMES.contains(&"ACTIONS_ID_TOKEN_REQUEST_TOKEN"));
+        assert!(STANDARD_SECRET_ENV_NAMES.contains(&"ACTIONS_RUNTIME_TOKEN"));
     }
 }

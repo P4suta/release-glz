@@ -74,6 +74,11 @@ async fn organization_registry_uses_repos_prefix_and_publishes_exact_bytes() {
     let mut config = custom_config(&base);
     config.provider = RegistryProvider::HexPm;
     config.repository = Some("acme".into());
+    // Hex's API root remains global. Repository-scoped API operations add
+    // `/repos/REPO`, while `/auth` remains directly under this root.
+    config.api_url = format!("{base}/api");
+    config.repository_url = format!("{base}/repo/repos/acme");
+    config.docs_url = format!("{base}/repo/repos/acme/docs");
     config.auth = AuthKind::HexToken;
     let registry = HexRegistry::from_config(&config, Some("org-token")).unwrap();
     assert_eq!(

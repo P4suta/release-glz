@@ -1,14 +1,20 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
+use clap_complete::{generate, shells};
 use release_glz::ReleasePlan;
 use release_glz::authorization::{
     GithubOidcClaims, GithubOidcVerifier, OidcAudience, OidcExpectation, validate_github_claims,
 };
 use release_glz::candidate::Candidate;
-use release_glz::config::Manifest;
-use release_glz::doctor::{DoctorInput, DoctorReport, assess as assess_doctor};
+use release_glz::config::{
+    AuthKind, InitializationSettings, Manifest, RegistryConfig, RegistryProvider,
+};
+use release_glz::doctor::{
+    DoctorInput, DoctorReport, assess as assess_doctor, assess_local as assess_doctor_local,
+};
+use release_glz::failure::{FailureClass, classified};
 use release_glz::forge::{GitHubClient, GitHubRepository};
 use release_glz::git::GitRepo;
 use release_glz::gleam::Gleam;
@@ -38,10 +44,6 @@ struct Cli {
     /// Select human-readable or stable machine-readable output.
     #[arg(long, global = true, value_enum, default_value_t = Output::Human)]
     output: Output,
-
-    /// Validate and describe mutations without performing them.
-    #[arg(long, global = true)]
-    dry_run: bool,
 
     #[command(subcommand)]
     command: Command,
@@ -74,18 +76,28 @@ enum Command {
         #[arg(long)]
         online: bool,
     },
-    /// Update gleam.toml and CHANGELOG.md locally.
-    Update,
+    /// Create or update the rolling GitHub Release PR.
+    Update {
+        /// Validate and describe changes without mutating the repository or GitHub.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Create or update the rolling GitHub Release PR.
     ReleasePr {
         /// Bind a sealed Candidate intent to the verified managed PR head.
         #[arg(long)]
         candidate: Option<PathBuf>,
+        /// Validate and describe changes without mutating GitHub.
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Reconcile Hex, HexDocs, git tag, and GitHub Release.
     Release {
         #[arg(long)]
         candidate: PathBuf,
+        /// Observe and report every remaining effect without publishing.
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Report partial release state and the next safe operation.
     Status {
@@ -95,9 +107,43 @@ enum Command {
         online: bool,
     },
     /// Diagnose compiler, configuration, workflow, environment, and credentials.
-    Doctor,
+    Doctor {
+        /// Also audit registry credentials and GitHub protection settings.
+        #[arg(long)]
+        online: bool,
+        /// Build HEAD in an isolated, credential-free cache.
+        #[arg(long)]
+        candidate_build: bool,
+    },
     /// Generate the recommended GitHub Actions workflow.
     Init {
+        /// Configure a previously unconfigured package for a supported target.
+        #[arg(long, value_enum)]
+        profile: Option<InitProfile>,
+        /// Hex.pm Organization name (required by `--profile organization`).
+        #[arg(long)]
+        organization: Option<String>,
+        /// Private Hex API base URL.
+        #[arg(long)]
+        api_url: Option<String>,
+        /// Private Hex repository base URL.
+        #[arg(long)]
+        repository_url: Option<String>,
+        /// Private Hex documentation base URL.
+        #[arg(long)]
+        docs_url: Option<String>,
+        /// Name of the protected registry credential environment variable.
+        #[arg(long)]
+        credential_env: Option<String>,
+        /// Private registry authentication scheme.
+        #[arg(long, value_enum)]
+        auth: Option<InitAuth>,
+        /// Explicitly opt a 0.x package into the release policy.
+        #[arg(long)]
+        allow_version_zero: bool,
+        /// Offline override for the immutable release-glz Action commit.
+        #[arg(long)]
+        action_sha: Option<String>,
         #[arg(long)]
         check: bool,
         #[arg(long)]
@@ -115,7 +161,12 @@ enum Command {
         update: bool,
     },
     /// Raise the automatically selected version.
-    SetVersion { version: Version },
+    SetVersion {
+        version: Version,
+        /// Validate the selected version without writing the manifest.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Start, move, or promote a prerelease train.
     Prerelease {
         #[arg(value_enum)]
@@ -123,6 +174,9 @@ enum Command {
         /// Explicit higher core version required for a backward channel move.
         #[arg(long)]
         version: Option<Version>,
+        /// Validate the transition without writing the manifest.
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Generate shell completion source.
     Completion {
@@ -137,11 +191,11 @@ impl Command {
             Self::Plan => "plan",
             Self::Rehearse { .. } => "rehearse",
             Self::Verify { .. } => "verify",
-            Self::Update => "update",
+            Self::Update { .. } => "update",
             Self::ReleasePr { .. } => "release-pr",
             Self::Release { .. } => "release",
             Self::Status { .. } => "status",
-            Self::Doctor => "doctor",
+            Self::Doctor { .. } => "doctor",
             Self::Init { .. } => "init",
             Self::Migrate { .. } => "migrate",
             Self::SetVersion { .. } => "set-version",
@@ -157,6 +211,19 @@ enum CompletionShell {
     Zsh,
     Fish,
     Powershell,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
+enum InitProfile {
+    Public,
+    Organization,
+    Private,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
+enum InitAuth {
+    HexToken,
+    Bearer,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -180,7 +247,37 @@ impl Train {
 
 #[tokio::main]
 async fn main() {
-    let cli = Cli::parse();
+    let arguments = std::env::args_os().collect::<Vec<_>>();
+    let cli = match Cli::try_parse_from(arguments.clone()) {
+        Ok(cli) => cli,
+        Err(error) => {
+            let exit = error.exit_code();
+            if exit == 0 {
+                let _ = error.print();
+                return;
+            }
+            if requested_json_output(&arguments) {
+                let command = requested_command(&arguments);
+                let envelope = release_glz::model::CommandEnvelope::<serde_json::Value>::failure(
+                    command,
+                    vec![Diagnostic {
+                        code: FailureClass::UsageOrConfig.diagnostic_code().into(),
+                        level: DiagnosticLevel::Error,
+                        message: error.to_string(),
+                        detail: None,
+                    }],
+                    vec![],
+                );
+                println!(
+                    "{}",
+                    serde_json::to_string(&envelope).expect("usage envelope is serializable")
+                );
+            } else {
+                let _ = error.print();
+            }
+            std::process::exit(FailureClass::UsageOrConfig.exit_code());
+        }
+    };
     let output = cli.output;
     let command = cli.command.name();
     let configured_credential = Manifest::load(&cli.manifest_path)
@@ -210,61 +307,69 @@ async fn main() {
                     serde_json::to_string(&envelope).expect("error envelope is serializable")
                 );
             } else {
-                eprintln!("error: {message}");
+                eprintln!("{command}: failed");
+                eprintln!("  Error [{}]: {message}", error_code(&error));
             }
             std::process::exit(exit_code(&error));
         }
     }
 }
 
-fn exit_code(error: &anyhow::Error) -> i32 {
-    if let Some(release) = error.downcast_ref::<release_glz::release::ReleaseRunError>() {
-        return match release.state() {
-            ReleaseState::Conflict => 4,
-            ReleaseState::PartiallyReleased => 7,
-            ReleaseState::AwaitingApproval | ReleaseState::Blocked => 3,
-            _ => 1,
+fn requested_json_output(arguments: &[std::ffi::OsString]) -> bool {
+    arguments.windows(2).any(|pair| {
+        pair[0] == std::ffi::OsStr::new("--output") && pair[1] == std::ffi::OsStr::new("json")
+    }) || arguments
+        .iter()
+        .any(|argument| argument == std::ffi::OsStr::new("--output=json"))
+}
+
+fn requested_command(arguments: &[std::ffi::OsString]) -> &'static str {
+    let mut skip_value = false;
+    for argument in arguments.iter().skip(1) {
+        if skip_value {
+            skip_value = false;
+            continue;
+        }
+        let Some(argument) = argument.to_str() else {
+            continue;
         };
+        if matches!(argument, "--manifest-path" | "--output") {
+            skip_value = true;
+            continue;
+        }
+        if argument.starts_with('-') {
+            continue;
+        }
+        if let Some(command) = [
+            "plan",
+            "rehearse",
+            "verify",
+            "update",
+            "release-pr",
+            "release",
+            "status",
+            "doctor",
+            "init",
+            "migrate",
+            "set-version",
+            "prerelease",
+            "completion",
+        ]
+        .into_iter()
+        .find(|command| argument == *command)
+        {
+            return command;
+        }
     }
-    let message = format!("{error:#}").to_ascii_lowercase();
-    if message.contains("hook") {
-        6
-    } else if message.contains("approval") || message.contains("policy") {
-        3
-    } else if message.contains("conflict")
-        || message.contains("checksum mismatch")
-        || message.contains("refusing to overwrite")
-    {
-        4
-    } else if message.contains("timed out")
-        || message.contains("temporarily")
-        || message.contains("rate limit")
-        || message.contains("connection")
-    {
-        5
-    } else if message.contains("invalid toml")
-        || message.contains("missing string")
-        || message.contains("schema 2 configuration")
-        || message.contains("choose only one")
-        || message.contains("must be")
-        || message.contains("unsupported release-glz schema")
-    {
-        2
-    } else {
-        1
-    }
+    "cli"
+}
+
+fn exit_code(error: &anyhow::Error) -> i32 {
+    release_glz::failure::classify(error).exit_code()
 }
 
 fn error_code(error: &anyhow::Error) -> &'static str {
-    match exit_code(error) {
-        2 => "usage_or_config",
-        3 => "policy_or_approval",
-        4 => "immutable_state_conflict",
-        5 => "temporary_external_failure",
-        6 => "hook_failure",
-        7 => "partial_release",
-        _ => "internal_failure",
-    }
+    release_glz::failure::classify(error).diagnostic_code()
 }
 
 async fn run(cli: Cli) -> Result<i32> {
@@ -281,9 +386,60 @@ async fn run(cli: Cli) -> Result<i32> {
         }
         return Ok(0);
     }
-    let planning_manifest = Manifest::load(&cli.manifest_path)?;
+    if let Command::Init {
+        profile,
+        organization,
+        api_url,
+        repository_url,
+        docs_url,
+        credential_env,
+        auth,
+        allow_version_zero,
+        action_sha,
+        check,
+        diff,
+        update,
+    } = &cli.command
+    {
+        return run_init(
+            &cli.manifest_path,
+            cli.output,
+            *profile,
+            organization.as_deref(),
+            api_url.as_deref(),
+            repository_url.as_deref(),
+            docs_url.as_deref(),
+            credential_env.as_deref(),
+            *auth,
+            *allow_version_zero,
+            action_sha.as_deref(),
+            *check,
+            *diff,
+            *update,
+        )
+        .await;
+    }
+    if let Command::Migrate {
+        check,
+        diff,
+        update,
+    } = &cli.command
+    {
+        return run_migrate(&cli.manifest_path, cli.output, *check, *diff, *update);
+    }
+    if let Command::Doctor {
+        online,
+        candidate_build,
+    } = &cli.command
+    {
+        return run_doctor(&cli.manifest_path, cli.output, *online, *candidate_build).await;
+    }
+
+    let planning_manifest = Manifest::load(&cli.manifest_path)
+        .map_err(|error| classified(FailureClass::UsageOrConfig, error))?;
     let planner = Planner::new(
-        HexRegistry::from_environment(&planning_manifest.release.registry)?,
+        HexRegistry::from_environment(&planning_manifest.release.registry)
+            .map_err(|error| default_failure_class(error, FailureClass::UsageOrConfig))?,
         Gleam::default(),
     );
     let base_options = PlanOptions {
@@ -292,7 +448,10 @@ async fn run(cli: Cli) -> Result<i32> {
     };
 
     let plan = match cli.command {
-        Command::Plan => planner.plan(&base_options).await?,
+        Command::Plan => planner
+            .plan(&base_options)
+            .await
+            .map_err(|error| default_failure_class(error, FailureClass::UsageOrConfig))?,
         Command::Rehearse { source_ref, out } => {
             let candidate = Rehearsal::default()
                 .run(&RehearseOptions {
@@ -300,12 +459,14 @@ async fn run(cli: Cli) -> Result<i32> {
                     source_ref,
                     output: out,
                 })
-                .await?;
+                .await
+                .map_err(|error| default_failure_class(error, FailureClass::UsageOrConfig))?;
             print_result("rehearse", &candidate, cli.output)?;
             return Ok(0);
         }
         Command::Verify { candidate, online } => {
-            let sealed = Candidate::verify(&candidate)?;
+            let sealed = Candidate::verify(&candidate)
+                .map_err(|error| classified(FailureClass::ImmutableStateConflict, error))?;
             if online {
                 let report = online_candidate_report(
                     &candidate,
@@ -325,26 +486,40 @@ async fn run(cli: Cli) -> Result<i32> {
             }
             return Ok(0);
         }
-        Command::Update => {
-            sync_rolling_release_pr(&planner, &base_options, &cli.manifest_path, cli.dry_run)
-                .await?
+        Command::Update { dry_run } => {
+            sync_rolling_release_pr(&planner, &base_options, &cli.manifest_path, dry_run).await?
         }
-        Command::ReleasePr { candidate } => {
+        Command::ReleasePr { candidate, dry_run } => {
             if let Some(candidate_directory) = candidate {
-                let sealed = Candidate::verify(&candidate_directory)?;
-                let checkout_manifest = Manifest::load(&cli.manifest_path)?;
+                let sealed = Candidate::verify(&candidate_directory)
+                    .map_err(|error| classified(FailureClass::ImmutableStateConflict, error))?;
+                let checkout_manifest = Manifest::load(&cli.manifest_path)
+                    .map_err(|error| default_failure_class(error, FailureClass::UsageOrConfig))?;
                 if checkout_manifest.package != sealed.package
                     || checkout_manifest.version != sealed.version
                 {
-                    bail!("Candidate package and version do not match the managed PR checkout");
+                    return Err(classified(
+                        FailureClass::ImmutableStateConflict,
+                        "Candidate package and version do not match the managed PR checkout",
+                    ));
                 }
-                let repo = GitRepo::discover(checkout_manifest.package_dir())?;
-                if repo.head()? != sealed.source.commit_sha {
-                    bail!("Candidate source is not the checked-out managed PR head");
+                let repo = GitRepo::discover(checkout_manifest.package_dir())
+                    .map_err(|error| default_failure_class(error, FailureClass::UsageOrConfig))?;
+                if repo
+                    .head()
+                    .map_err(|error| default_failure_class(error, FailureClass::UsageOrConfig))?
+                    != sealed.source.commit_sha
+                {
+                    return Err(classified(
+                        FailureClass::ImmutableStateConflict,
+                        "Candidate source is not the checked-out managed PR head",
+                    ));
                 }
-                let github = GitHubClient::from_environment(GitHubRepository::parse(
-                    &sealed.github_repository,
-                )?);
+                let github = GitHubClient::from_environment(
+                    GitHubRepository::parse(&sealed.github_repository).map_err(|error| {
+                        default_failure_class(error, FailureClass::ImmutableStateConflict)
+                    })?,
+                );
                 let merged = github
                     .merged_release_pr_for_head(
                         &sealed.source.commit_sha,
@@ -353,10 +528,13 @@ async fn run(cli: Cli) -> Result<i32> {
                         &sealed.release_branch_prefix,
                         &sealed.intent_digest,
                     )
-                    .await?;
+                    .await
+                    .map_err(|error| {
+                        default_failure_class(error, FailureClass::TemporaryExternal)
+                    })?;
                 let (state, pr_url) = if let Some(pull) = merged {
                     (ReleaseState::AwaitingApproval, Some(pull.html_url))
-                } else if cli.dry_run {
+                } else if dry_run {
                     (ReleaseState::Blocked, None)
                 } else {
                     (
@@ -370,7 +548,10 @@ async fn run(cli: Cli) -> Result<i32> {
                                     &sealed.release_branch_prefix,
                                     &sealed.intent_digest,
                                 )
-                                .await?,
+                                .await
+                                .map_err(|error| {
+                                    default_failure_class(error, FailureClass::TemporaryExternal)
+                                })?,
                         ),
                     )
                 };
@@ -388,30 +569,35 @@ async fn run(cli: Cli) -> Result<i32> {
                 )?;
                 return Ok(0);
             }
-            sync_rolling_release_pr(&planner, &base_options, &cli.manifest_path, cli.dry_run)
-                .await?
+            sync_rolling_release_pr(&planner, &base_options, &cli.manifest_path, dry_run).await?
         }
-        Command::Release { candidate } => {
-            let sealed = Candidate::verify(&candidate)?;
-            let approval = if cli.dry_run {
+        Command::Release { candidate, dry_run } => {
+            let sealed = Candidate::verify(&candidate)
+                .map_err(|error| classified(FailureClass::ImmutableStateConflict, error))?;
+            let approval = if dry_run {
                 approved_for_inspection(&sealed)?
             } else {
-                approval_from_environment(&sealed).await?
+                approval_from_environment(&sealed)
+                    .await
+                    .map_err(|error| default_failure_class(error, FailureClass::PolicyOrApproval))?
             };
-            let report =
-                online_candidate_report(&candidate, &sealed, approval, cli.dry_run).await?;
-            if report.state == ReleaseState::AwaitingApproval && !cli.dry_run {
-                bail!(
-                    "release approval is not bound to Candidate {}; set the approved digest evidence",
-                    sealed.candidate_digest
-                );
+            let report = online_candidate_report(&candidate, &sealed, approval, dry_run).await?;
+            if report.state == ReleaseState::AwaitingApproval && !dry_run {
+                return Err(classified(
+                    FailureClass::PolicyOrApproval,
+                    format!(
+                        "release approval is not bound to Candidate {}; set the approved digest evidence",
+                        sealed.candidate_digest
+                    ),
+                ));
             }
             print_result("release", &report, cli.output)?;
             return Ok(0);
         }
         Command::Status { candidate, online } => {
             if let Some(candidate) = candidate {
-                let sealed = Candidate::verify(&candidate)?;
+                let sealed = Candidate::verify(&candidate)
+                    .map_err(|error| classified(FailureClass::ImmutableStateConflict, error))?;
                 if online {
                     let report = online_candidate_report(
                         &candidate,
@@ -422,192 +608,66 @@ async fn run(cli: Cli) -> Result<i32> {
                     .await?;
                     print_result("status", &report, cli.output)?;
                 } else {
+                    let next_action = manifest_executable_action(
+                        &base_options.manifest_path,
+                        [
+                            "release".to_owned(),
+                            "--candidate".to_owned(),
+                            candidate.to_string_lossy().into_owned(),
+                        ],
+                        "Publish or dry-run the verified Candidate.",
+                    );
                     let result = serde_json::json!({
                         "schema": "status/v1",
                         "state": ReleaseState::CandidateReady,
                         "candidate_digest": sealed.candidate_digest,
-                        "next_action": format!("release-glz release --candidate {}", candidate.display()),
                     });
-                    print_result("status", &result, cli.output)?;
+                    print_result_with_actions("status", &result, vec![next_action], cli.output)?;
                 }
                 return Ok(0);
             }
-            planner.plan(&base_options).await?
+            planner
+                .plan(&base_options)
+                .await
+                .map_err(|error| default_failure_class(error, FailureClass::UsageOrConfig))?
         }
-        Command::Doctor => {
-            let manifest = Manifest::load(&cli.manifest_path)?;
-            let installed_compiler = Gleam::default().installed_version().ok();
-            let workflow_current = managed_workflow_is_current(&manifest).unwrap_or(false);
-            let registry_credential =
-                if std::env::var_os(&manifest.release.registry.credential_env).is_none() {
-                    RegistryCredentialAudit::Missing
-                } else {
-                    match HexRegistry::from_environment(&manifest.release.registry) {
-                        Ok(registry) => registry
-                            .audit_credential()
-                            .await
-                            .unwrap_or(RegistryCredentialAudit::Unavailable),
-                        Err(_) => RegistryCredentialAudit::Unavailable,
-                    }
-                };
-            let github_environment = match github_client(&manifest) {
-                Ok(client) => client
-                    .environment_audit(&manifest.release.approval.environment)
-                    .await
-                    .ok(),
-                Err(_) => None,
-            };
-            let report = assess_doctor(&DoctorInput {
-                config_schema: manifest.release.schema,
-                package_version: manifest.version.clone(),
-                required_compiler: manifest.release.compiler.clone(),
-                installed_compiler,
-                registry_credential,
-                workflow_current,
-                approval: manifest.release.approval.clone(),
-                github_environment,
-            });
-            print_doctor(&report, cli.output)?;
-            return Ok(if report.state == ReleaseState::Blocked {
-                3
-            } else {
-                0
-            });
+        Command::Doctor { .. } | Command::Init { .. } | Command::Migrate { .. } => {
+            unreachable!("handled before planning")
         }
-        Command::Init {
-            check,
-            diff,
-            update,
-        } => {
-            if [check, diff, update]
-                .into_iter()
-                .filter(|selected| *selected)
-                .count()
-                > 1
-            {
-                bail!("choose only one of --check, --diff, or --update");
-            }
-            let manifest = Manifest::load(&cli.manifest_path)?;
-            let repo = GitRepo::discover(manifest.package_dir())?;
-            let relative_manifest = absolute_or_join(manifest.path())?
-                .strip_prefix(repo.root().canonicalize()?)
-                .context("manifest is outside the git repository")?
-                .to_path_buf();
-            let mode = if diff {
-                release_glz::workflow::WorkflowMode::Diff
-            } else if check || cli.dry_run {
-                release_glz::workflow::WorkflowMode::Check
-            } else {
-                let _ = update;
-                release_glz::workflow::WorkflowMode::Update
-            };
-            let settings = release_glz::workflow::WorkflowSettings {
-                default_branch: repo.default_branch()?,
-                manifest_path: relative_manifest,
-                compiler: manifest.release.compiler.to_string(),
-                environment: manifest.release.approval.environment.clone(),
-                registry_credential_env: manifest.release.registry.credential_env.clone(),
-                release_branch_prefix: manifest.release.release_branch_prefix.clone(),
-                action_sha: std::env::var("RELEASE_GLZ_ACTION_SHA")
-                    .unwrap_or_else(|_| release_glz::workflow::default_action_sha().to_owned()),
-            };
-            let outcome = release_glz::workflow::sync(repo.root(), &settings, mode)?;
-            if let Some(diff) = &outcome.diff
-                && matches!(cli.output, Output::Human)
-            {
-                print!("{diff}");
-            } else {
-                let changed = check && outcome.changed;
-                print_checked_result(
-                    "init",
-                    &outcome,
-                    !changed,
-                    changed.then(|| Diagnostic {
-                        code: "managed_file_outdated".into(),
-                        level: DiagnosticLevel::Error,
-                        message: "the managed workflow differs from the required workflow".into(),
-                        detail: None,
-                    }),
-                    changed.then(|| NextAction {
-                        command: "release-glz init --update".into(),
-                        description: "Review and update the managed workflow.".into(),
-                    }),
-                    cli.output,
-                )?;
-                if changed {
-                    return Ok(3);
-                }
-            }
-            return Ok(0);
-        }
-        Command::Migrate {
-            check,
-            diff,
-            update,
-        } => {
-            if [check, diff, update]
-                .into_iter()
-                .filter(|selected| *selected)
-                .count()
-                > 1
-            {
-                bail!("choose only one of --check, --diff, or --update");
-            }
-            let migration = release_glz::migrate::Migration::prepare(&cli.manifest_path)?;
-            if diff && matches!(cli.output, Output::Human) {
-                if let Some(diff) = migration.diff() {
-                    print!("{diff}");
-                }
-                return Ok(0);
-            }
-            let outcome = if update && !cli.dry_run {
-                migration.apply()?
-            } else {
-                migration.outcome(false)
-            };
-            let changed = check && outcome.changed;
-            print_checked_result(
-                "migrate",
-                &outcome,
-                !changed,
-                changed.then(|| Diagnostic {
-                    code: "migration_required".into(),
-                    level: DiagnosticLevel::Error,
-                    message: "legacy configuration must be migrated to schema 2".into(),
-                    detail: None,
-                }),
-                changed.then(|| NextAction {
-                    command: "release-glz migrate --update".into(),
-                    description: "Review and apply the lossless schema 2 migration.".into(),
-                }),
-                cli.output,
-            )?;
-            if changed {
-                return Ok(3);
-            }
-            return Ok(0);
-        }
-        Command::SetVersion { version } => {
+        Command::SetVersion { version, dry_run } => {
             let options = PlanOptions {
                 version_override: Some(version.clone()),
                 ..base_options
             };
-            let mut plan = planner.plan(&options).await?;
+            let mut plan = planner
+                .plan(&options)
+                .await
+                .map_err(|error| default_failure_class(error, FailureClass::UsageOrConfig))?;
             if plan.version != version {
-                bail!(
-                    "{version} is below the automatically required version {}",
-                    plan.version
-                );
+                return Err(classified(
+                    FailureClass::PolicyOrApproval,
+                    format!(
+                        "{version} is below the automatically required version {}",
+                        plan.version
+                    ),
+                ));
             }
-            if !cli.dry_run {
-                let mut manifest = Manifest::load(&cli.manifest_path)?;
+            if !dry_run {
+                let mut manifest = Manifest::load(&cli.manifest_path)
+                    .map_err(|error| default_failure_class(error, FailureClass::UsageOrConfig))?;
                 manifest.set_version(version.clone());
-                manifest.write()?;
+                manifest.write().map_err(|error| {
+                    default_failure_class(error, FailureClass::ImmutableStateConflict)
+                })?;
             }
             plan.manifest_version = version;
             plan
         }
-        Command::Prerelease { channel, version } => {
+        Command::Prerelease {
+            channel,
+            version,
+            dry_run,
+        } => {
             let selected_channel = channel.channel();
             let options = PlanOptions {
                 prerelease_override: Some(selected_channel),
@@ -615,14 +675,20 @@ async fn run(cli: Cli) -> Result<i32> {
                 ignore_manifest_version: true,
                 ..base_options
             };
-            let mut plan = planner.plan(&options).await?;
-            if !cli.dry_run {
-                let mut manifest = Manifest::load(&cli.manifest_path)?;
+            let mut plan = planner
+                .plan(&options)
+                .await
+                .map_err(|error| default_failure_class(error, FailureClass::UsageOrConfig))?;
+            if !dry_run {
+                let mut manifest = Manifest::load(&cli.manifest_path)
+                    .map_err(|error| default_failure_class(error, FailureClass::UsageOrConfig))?;
                 manifest.set_prerelease(selected_channel);
                 if plan.release_required {
                     manifest.set_version(plan.version.clone());
                 }
-                manifest.write()?;
+                manifest.write().map_err(|error| {
+                    default_failure_class(error, FailureClass::ImmutableStateConflict)
+                })?;
             }
             plan.prerelease = selected_channel;
             plan
@@ -634,19 +700,652 @@ async fn run(cli: Cli) -> Result<i32> {
     Ok(0)
 }
 
+#[derive(Debug, serde::Serialize)]
+struct InitOutcome {
+    schema: &'static str,
+    manifest_path: String,
+    workflow_path: &'static str,
+    action_sha: String,
+    manifest_changed: bool,
+    workflow_changed: bool,
+    changed: bool,
+    written: bool,
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_init(
+    manifest_path: &Path,
+    output: Output,
+    profile: Option<InitProfile>,
+    organization: Option<&str>,
+    api_url: Option<&str>,
+    repository_url: Option<&str>,
+    docs_url: Option<&str>,
+    credential_env: Option<&str>,
+    auth: Option<InitAuth>,
+    allow_version_zero: bool,
+    explicit_action_sha: Option<&str>,
+    check: bool,
+    diff: bool,
+    update: bool,
+) -> Result<i32> {
+    require_one_mode(check, diff, update)?;
+    let mut manifest = Manifest::load(manifest_path)
+        .map_err(|error| classified(FailureClass::UsageOrConfig, error))?;
+    let repo = GitRepo::discover(manifest.package_dir())
+        .map_err(|error| classified(FailureClass::UsageOrConfig, error))?;
+    let default_branch = repo
+        .default_branch()
+        .map_err(|error| classified(FailureClass::UsageOrConfig, error))?;
+
+    let profile_fields_present = organization.is_some()
+        || api_url.is_some()
+        || repository_url.is_some()
+        || docs_url.is_some()
+        || credential_env.is_some()
+        || auth.is_some()
+        || allow_version_zero;
+    let initialized_source = if manifest.has_release_config() {
+        if manifest.release.schema != 2 {
+            return Err(classified(
+                FailureClass::UsageOrConfig,
+                "legacy release-glz configuration must use migrate before init",
+            ));
+        }
+        if profile.is_some() || profile_fields_present {
+            return Err(classified(
+                FailureClass::UsageOrConfig,
+                "--profile and profile configuration are forbidden for an existing schema 2 package",
+            ));
+        }
+        None
+    } else {
+        let profile = profile.ok_or_else(|| {
+            classified(
+                FailureClass::UsageOrConfig,
+                "an unconfigured package requires --profile public, organization, or private",
+            )
+        })?;
+        let registry = initialization_registry(
+            profile,
+            organization,
+            api_url,
+            repository_url,
+            docs_url,
+            credential_env,
+            auth,
+        )?;
+        let compiler = Gleam::default()
+            .installed_version()
+            .map_err(|error| classified(FailureClass::UsageOrConfig, error))?;
+        let rendered = manifest
+            .render_initialized(&InitializationSettings {
+                compiler,
+                default_branch: default_branch.clone(),
+                registry,
+                allow_version_zero,
+            })
+            .map_err(|error| classified(FailureClass::UsageOrConfig, error))?;
+        Some(rendered)
+    };
+
+    let configured = match &initialized_source {
+        Some(source) => Manifest::parse(manifest.path().to_path_buf(), source.clone())
+            .map_err(|error| classified(FailureClass::UsageOrConfig, error))?,
+        None => manifest.clone(),
+    };
+    let action_sha = resolve_action_sha(explicit_action_sha).await?;
+    let relative_manifest = absolute_or_join(configured.path())?
+        .strip_prefix(repo.root().canonicalize()?)
+        .context("manifest is outside the git repository")?
+        .to_path_buf();
+    let workflow_settings = release_glz::workflow::WorkflowSettings {
+        default_branch,
+        manifest_path: relative_manifest,
+        compiler: configured.release.compiler.to_string(),
+        environment: configured.release.approval.environment.clone(),
+        registry_credential_env: configured.release.registry.credential_env.clone(),
+        release_branch_prefix: configured.release.release_branch_prefix.clone(),
+        action_sha: action_sha.clone(),
+    };
+    let workflow_mode = if check {
+        release_glz::workflow::WorkflowMode::Check
+    } else if diff {
+        release_glz::workflow::WorkflowMode::Diff
+    } else {
+        release_glz::workflow::WorkflowMode::Update
+    };
+    let workflow = release_glz::workflow::sync(repo.root(), &workflow_settings, workflow_mode)
+        .map_err(|error| classified(FailureClass::ImmutableStateConflict, error))?;
+    let manifest_changed = initialized_source
+        .as_deref()
+        .is_some_and(|source| source != manifest.original_source());
+
+    if diff && matches!(output, Output::Human) {
+        if let Some(source) = &initialized_source
+            && manifest_changed
+        {
+            print!(
+                "{}",
+                text_diff(
+                    &manifest.path().to_string_lossy(),
+                    manifest.original_source(),
+                    source,
+                    "schema 2",
+                )
+            );
+        }
+        if let Some(workflow_diff) = &workflow.diff {
+            print!("{workflow_diff}");
+        }
+        return Ok(0);
+    }
+
+    let mut manifest_written = false;
+    if update
+        && let Some(source) = initialized_source
+        && manifest_changed
+    {
+        manifest
+            .replace_source(source)
+            .map_err(|error| classified(FailureClass::ImmutableStateConflict, error))?;
+        manifest_written = true;
+    }
+    let changed = manifest_changed || workflow.changed;
+    let outcome = InitOutcome {
+        schema: "init/v1",
+        manifest_path: manifest.path().to_string_lossy().replace('\\', "/"),
+        workflow_path: release_glz::workflow::WORKFLOW_PATH,
+        action_sha,
+        manifest_changed,
+        workflow_changed: workflow.changed,
+        changed,
+        written: workflow.written || manifest_written,
+    };
+    let stale = check && changed;
+    let next_action = stale.then(|| {
+        let mut argv = vec!["release-glz".to_owned()];
+        if manifest_path != Path::new("gleam.toml") {
+            argv.extend([
+                "--manifest-path".to_owned(),
+                manifest_path.to_string_lossy().into_owned(),
+            ]);
+        }
+        argv.extend(["init".to_owned(), "--update".to_owned()]);
+        if let Some(sha) = explicit_action_sha {
+            argv.extend(["--action-sha".to_owned(), sha.to_owned()]);
+        }
+        if let Some(profile) = profile {
+            argv.extend(["--profile".to_owned(), profile_name(profile).to_owned()]);
+            append_profile_argv(
+                &mut argv,
+                organization,
+                api_url,
+                repository_url,
+                docs_url,
+                credential_env,
+                auth,
+                allow_version_zero,
+            );
+        }
+        NextAction::executable(
+            argv,
+            "Review and apply the generated configuration and workflow.",
+        )
+    });
+    print_checked_result(
+        "init",
+        &outcome,
+        !stale,
+        stale.then(|| Diagnostic {
+            code: "managed_file_outdated".into(),
+            level: DiagnosticLevel::Error,
+            message: "the manifest or managed workflow differs from the required state".into(),
+            detail: None,
+        }),
+        next_action,
+        output,
+    )?;
+    Ok(if stale { 3 } else { 0 })
+}
+
+fn require_one_mode(check: bool, diff: bool, update: bool) -> Result<()> {
+    if [check, diff, update]
+        .into_iter()
+        .filter(|selected| *selected)
+        .count()
+        != 1
+    {
+        return Err(classified(
+            FailureClass::UsageOrConfig,
+            "choose exactly one of --check, --diff, or --update",
+        ));
+    }
+    Ok(())
+}
+
+fn manifest_executable_action(
+    manifest_path: &Path,
+    arguments: impl IntoIterator<Item = impl Into<String>>,
+    description: impl Into<String>,
+) -> NextAction {
+    let mut argv = vec!["release-glz".to_owned()];
+    if manifest_path != Path::new("gleam.toml") {
+        argv.extend([
+            "--manifest-path".to_owned(),
+            manifest_path.to_string_lossy().into_owned(),
+        ]);
+    }
+    argv.extend(arguments.into_iter().map(Into::into));
+    NextAction::executable(argv, description)
+}
+
+fn scope_manifest_actions(actions: &mut [NextAction], manifest_path: &Path) {
+    if manifest_path == Path::new("gleam.toml") {
+        return;
+    }
+    for action in actions {
+        if action
+            .argv
+            .first()
+            .is_some_and(|value| value == "release-glz")
+            && !action.argv.iter().any(|value| value == "--manifest-path")
+        {
+            let arguments = action.argv.iter().skip(1).cloned().collect::<Vec<_>>();
+            *action =
+                manifest_executable_action(manifest_path, arguments, action.description.clone());
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn initialization_registry(
+    profile: InitProfile,
+    organization: Option<&str>,
+    api_url: Option<&str>,
+    repository_url: Option<&str>,
+    docs_url: Option<&str>,
+    credential_env: Option<&str>,
+    auth: Option<InitAuth>,
+) -> Result<RegistryConfig> {
+    let private_fields = [api_url, repository_url, docs_url, credential_env]
+        .into_iter()
+        .any(|value| value.is_some())
+        || auth.is_some();
+    match profile {
+        InitProfile::Public => {
+            if organization.is_some() || private_fields {
+                return Err(classified(
+                    FailureClass::UsageOrConfig,
+                    "the public profile does not accept organization or private registry options",
+                ));
+            }
+            Ok(RegistryConfig::default())
+        }
+        InitProfile::Organization => {
+            if private_fields {
+                return Err(classified(
+                    FailureClass::UsageOrConfig,
+                    "the organization profile accepts only --organization",
+                ));
+            }
+            let organization = organization
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| {
+                    classified(
+                        FailureClass::UsageOrConfig,
+                        "the organization profile requires --organization",
+                    )
+                })?;
+            Ok(RegistryConfig {
+                repository: Some(organization.to_owned()),
+                api_url: "https://hex.pm/api".into(),
+                repository_url: format!("https://repo.hex.pm/repos/{organization}"),
+                docs_url: format!("https://repo.hex.pm/repos/{organization}/docs"),
+                ..RegistryConfig::default()
+            })
+        }
+        InitProfile::Private => {
+            if organization.is_some() {
+                return Err(classified(
+                    FailureClass::UsageOrConfig,
+                    "the private profile does not accept --organization",
+                ));
+            }
+            let required = |value: Option<&str>, option: &str| {
+                value
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_owned)
+                    .ok_or_else(|| {
+                        classified(
+                            FailureClass::UsageOrConfig,
+                            format!("the private profile requires --{option}"),
+                        )
+                    })
+            };
+            Ok(RegistryConfig {
+                provider: RegistryProvider::HexCompatible,
+                repository: None,
+                api_url: required(api_url, "api-url")?,
+                repository_url: required(repository_url, "repository-url")?,
+                docs_url: required(docs_url, "docs-url")?,
+                credential_env: required(credential_env, "credential-env")?,
+                auth: match auth.ok_or_else(|| {
+                    classified(
+                        FailureClass::UsageOrConfig,
+                        "the private profile requires --auth",
+                    )
+                })? {
+                    InitAuth::HexToken => AuthKind::HexToken,
+                    InitAuth::Bearer => AuthKind::Bearer,
+                },
+                allow_http_loopback: false,
+            })
+        }
+    }
+}
+
+async fn resolve_action_sha(explicit: Option<&str>) -> Result<String> {
+    if let Some(sha) = explicit {
+        release_glz::workflow::validate_action_sha(sha)
+            .map_err(|error| classified(FailureClass::UsageOrConfig, error))?;
+        return Ok(sha.to_owned());
+    }
+    let repository = GitHubRepository::parse("P4suta/release-glz")?;
+    let client = GitHubClient::from_environment(repository);
+    let tag = format!("v{}", env!("CARGO_PKG_VERSION"));
+    let state = client
+        .tag_state(&tag)
+        .await
+        .map_err(|error| classified(FailureClass::TemporaryExternal, error))?
+        .ok_or_else(|| {
+            classified(
+                FailureClass::UsageOrConfig,
+                format!("official Action tag {tag} does not exist; use --action-sha only for offline development"),
+            )
+        })?;
+    if !state.annotated {
+        return Err(classified(
+            FailureClass::ImmutableStateConflict,
+            format!("official Action tag {tag} is not annotated"),
+        ));
+    }
+    release_glz::workflow::validate_action_sha(&state.target_sha)
+        .map_err(|error| classified(FailureClass::ImmutableStateConflict, error))?;
+    Ok(state.target_sha)
+}
+
+fn profile_name(profile: InitProfile) -> &'static str {
+    match profile {
+        InitProfile::Public => "public",
+        InitProfile::Organization => "organization",
+        InitProfile::Private => "private",
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_profile_argv(
+    argv: &mut Vec<String>,
+    organization: Option<&str>,
+    api_url: Option<&str>,
+    repository_url: Option<&str>,
+    docs_url: Option<&str>,
+    credential_env: Option<&str>,
+    auth: Option<InitAuth>,
+    allow_version_zero: bool,
+) {
+    for (option, value) in [
+        ("--organization", organization),
+        ("--api-url", api_url),
+        ("--repository-url", repository_url),
+        ("--docs-url", docs_url),
+        ("--credential-env", credential_env),
+    ] {
+        if let Some(value) = value {
+            argv.extend([option.to_owned(), value.to_owned()]);
+        }
+    }
+    if let Some(auth) = auth {
+        argv.extend([
+            "--auth".to_owned(),
+            match auth {
+                InitAuth::HexToken => "hex-token",
+                InitAuth::Bearer => "bearer",
+            }
+            .to_owned(),
+        ]);
+    }
+    if allow_version_zero {
+        argv.push("--allow-version-zero".to_owned());
+    }
+}
+
+fn text_diff(path: &str, current: &str, rendered: &str, label: &str) -> String {
+    let mut output = format!("--- {path}\n+++ {path} ({label})\n");
+    for line in current.lines() {
+        output.push_str(&format!("-{line}\n"));
+    }
+    for line in rendered.lines() {
+        output.push_str(&format!("+{line}\n"));
+    }
+    output
+}
+
+fn run_migrate(
+    manifest_path: &Path,
+    output: Output,
+    check: bool,
+    diff: bool,
+    update: bool,
+) -> Result<i32> {
+    require_one_mode(check, diff, update)?;
+    let migration = release_glz::migrate::Migration::prepare(manifest_path)
+        .map_err(|error| classified(FailureClass::UsageOrConfig, error))?;
+    if diff && matches!(output, Output::Human) {
+        if let Some(diff) = migration.diff() {
+            print!("{diff}");
+        }
+        return Ok(0);
+    }
+    let outcome = if update {
+        migration
+            .apply()
+            .map_err(|error| classified(FailureClass::ImmutableStateConflict, error))?
+    } else {
+        migration.outcome(false)
+    };
+    let stale = check && outcome.changed;
+    print_checked_result(
+        "migrate",
+        &outcome,
+        !stale,
+        stale.then(|| Diagnostic {
+            code: "migration_required".into(),
+            level: DiagnosticLevel::Error,
+            message: "legacy configuration must be migrated to schema 2".into(),
+            detail: None,
+        }),
+        stale.then(|| {
+            manifest_executable_action(
+                manifest_path,
+                ["migrate", "--update"],
+                "Review and apply the lossless schema 2 migration.",
+            )
+        }),
+        output,
+    )?;
+    Ok(if stale { 3 } else { 0 })
+}
+
+async fn run_doctor(
+    manifest_path: &Path,
+    output: Output,
+    online: bool,
+    candidate_build: bool,
+) -> Result<i32> {
+    let manifest = Manifest::load(manifest_path)
+        .map_err(|error| classified(FailureClass::UsageOrConfig, error))?;
+    let installed_compiler = Gleam::default().installed_version().ok();
+    let action_sha = GitRepo::discover(manifest.package_dir())
+        .ok()
+        .and_then(|repo| release_glz::workflow::action_sha_from_workflow(repo.root()).ok());
+    let workflow_current = action_sha
+        .as_deref()
+        .is_some_and(|sha| managed_workflow_is_current(&manifest, sha).unwrap_or(false));
+    let (registry_credential, github_environment) = if online {
+        let registry = if std::env::var_os(&manifest.release.registry.credential_env).is_none() {
+            RegistryCredentialAudit::Missing
+        } else {
+            match HexRegistry::from_environment(&manifest.release.registry) {
+                Ok(registry) => registry
+                    .audit_credential()
+                    .await
+                    .unwrap_or(RegistryCredentialAudit::Unavailable),
+                Err(_) => RegistryCredentialAudit::Unavailable,
+            }
+        };
+        let github = match github_client(&manifest) {
+            Ok(client) => client
+                .environment_audit(&manifest.release.approval.environment)
+                .await
+                .ok(),
+            Err(_) => None,
+        };
+        (registry, github)
+    } else {
+        (RegistryCredentialAudit::Missing, None)
+    };
+    let input = DoctorInput {
+        config_schema: manifest.release.schema,
+        package_version: manifest.version.clone(),
+        required_compiler: manifest.release.compiler.clone(),
+        installed_compiler,
+        registry_credential,
+        workflow_current,
+        approval: manifest.release.approval.clone(),
+        github_environment,
+    };
+    let mut report = if online {
+        assess_doctor(&input)
+    } else {
+        assess_doctor_local(&input)
+    };
+    scope_manifest_actions(&mut report.next_actions, manifest_path);
+
+    if candidate_build {
+        match credential_free_candidate_build(&manifest).await {
+            Ok(()) => report.diagnostics.push(Diagnostic {
+                code: "candidate_build_succeeded".into(),
+                level: DiagnosticLevel::Info,
+                message: "HEAD builds as a Candidate with isolated caches and no credentials"
+                    .into(),
+                detail: None,
+            }),
+            Err(error) => {
+                report.state = ReleaseState::Blocked;
+                report.diagnostics.push(Diagnostic {
+                    code: "candidate_build_failed".into(),
+                    level: DiagnosticLevel::Error,
+                    message: "the isolated v1 Candidate build failed without credentials".into(),
+                    detail: Some(format!(
+                        "{error}. If this is a dependency authentication failure, note that private dependencies are not supported in v1 Candidates; make them credential-free, replace/vendor them, or build outside the v1 publication path."
+                    )),
+                });
+                report.next_actions.push(NextAction::guidance(
+                    "fix the isolated Candidate build",
+                    "Resolve the reported compiler or dependency error; every Candidate dependency must be available without registry credentials.",
+                ));
+            }
+        }
+    }
+    print_doctor(&report, output)?;
+    Ok(if report.state == ReleaseState::Blocked {
+        3
+    } else {
+        0
+    })
+}
+
+async fn credential_free_candidate_build(manifest: &Manifest) -> Result<()> {
+    let repo = GitRepo::discover(manifest.package_dir())?;
+    let source = repo.head()?;
+    let temporary = tempfile::tempdir()?;
+    let candidate = temporary.path().join("candidate");
+    let cache = temporary.path().join("cache");
+    std::fs::create_dir_all(&cache)?;
+    let executable = std::env::current_exe()?;
+    let mut command = tokio::process::Command::new(executable);
+    command
+        .env_clear()
+        .current_dir(repo.root())
+        .args(["--manifest-path"])
+        .arg(absolute_or_join(manifest.path())?)
+        .args(["--output", "json", "rehearse", "--ref"])
+        .arg(source)
+        .arg("--out")
+        .arg(candidate)
+        .env("GLEAM_HOME", &cache)
+        .env("XDG_CACHE_HOME", &cache);
+    for name in [
+        "PATH",
+        "RELEASE_GLZ_GLEAM",
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+        "SYSTEMROOT",
+        "WINDIR",
+        "PATHEXT",
+        "TMPDIR",
+        "TEMP",
+        "TMP",
+    ] {
+        if let Some(value) = std::env::var_os(name) {
+            command.env(name, value);
+        }
+    }
+    let output = tokio::time::timeout(std::time::Duration::from_secs(1_800), command.output())
+        .await
+        .context("isolated Candidate build timed out")??;
+    if output.status.success() {
+        return Ok(());
+    }
+    let detail = serde_json::from_slice::<serde_json::Value>(&output.stdout)
+        .ok()
+        .and_then(|envelope| {
+            envelope["diagnostics"].as_array().map(|diagnostics| {
+                diagnostics
+                    .iter()
+                    .filter_map(|diagnostic| diagnostic["message"].as_str())
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            })
+        })
+        .filter(|detail| !detail.is_empty())
+        .unwrap_or_else(|| "isolated Candidate subprocess failed".into());
+    bail!("{detail}")
+}
+
 async fn sync_rolling_release_pr(
     planner: &Planner<HexRegistry>,
     options: &PlanOptions,
     manifest_path: &Path,
     dry_run: bool,
 ) -> Result<ReleasePlan> {
-    let mut plan = planner.plan(options).await?;
-    let manifest = Manifest::load(manifest_path)?;
-    let repo = GitRepo::discover(manifest.package_dir())?;
-    let github = github_client(&manifest)?;
+    let mut plan = planner
+        .plan(options)
+        .await
+        .map_err(|error| default_failure_class(error, FailureClass::UsageOrConfig))?;
+    let manifest = Manifest::load(manifest_path)
+        .map_err(|error| default_failure_class(error, FailureClass::UsageOrConfig))?;
+    let repo = GitRepo::discover(manifest.package_dir())
+        .map_err(|error| default_failure_class(error, FailureClass::UsageOrConfig))?;
+    let github = github_client(&manifest)
+        .map_err(|error| default_failure_class(error, FailureClass::UsageOrConfig))?;
     if plan.release_required {
         let commits = repo.commits_since(plan.baseline.sha.as_deref())?;
-        plan.changes = github.changes_for_commits(&commits).await?;
+        plan.changes = github
+            .changes_for_commits(&commits)
+            .await
+            .map_err(|error| default_failure_class(error, FailureClass::TemporaryExternal))?;
         let files = prepare_release_files(&manifest, &repo, &plan, &plan.changes)?;
         if !dry_run {
             let base = repo.default_branch()?;
@@ -658,13 +1357,17 @@ async fn sync_rolling_release_pr(
                         &manifest.release.release_branch_prefix,
                         &files,
                     )
-                    .await?,
+                    .await
+                    .map_err(|error| {
+                        default_failure_class(error, FailureClass::TemporaryExternal)
+                    })?,
             );
         }
     } else if !dry_run {
         github
             .close_managed_release_pr(&manifest.package, &manifest.release.release_branch_prefix)
-            .await?;
+            .await
+            .map_err(|error| default_failure_class(error, FailureClass::TemporaryExternal))?;
     }
     Ok(plan)
 }
@@ -675,8 +1378,22 @@ async fn online_candidate_report(
     approval: ApprovalEvidence,
     dry_run: bool,
 ) -> Result<ReleaseReport> {
-    let repo = GitRepo::discover(&std::env::current_dir()?)?;
-    let target = LiveReleaseTarget::from_candidate(manifest.clone(), repo)?;
+    let current = std::env::current_dir()
+        .map_err(|error| default_failure_class(error.into(), FailureClass::UsageOrConfig))?;
+    let repo = GitRepo::discover(&current)
+        .map_err(|error| default_failure_class(error, FailureClass::UsageOrConfig))?;
+    if repo
+        .head()
+        .map_err(|error| default_failure_class(error, FailureClass::UsageOrConfig))?
+        != manifest.source.commit_sha
+    {
+        return Err(classified(
+            FailureClass::ImmutableStateConflict,
+            "checked-out commit does not match the sealed Candidate source",
+        ));
+    }
+    let target = LiveReleaseTarget::from_candidate(manifest.clone(), repo)
+        .map_err(|error| default_failure_class(error, FailureClass::PolicyOrApproval))?;
     CandidateReleaseRunner::new(target)
         .run(
             candidate_directory,
@@ -685,6 +1402,10 @@ async fn online_candidate_report(
         )
         .await
         .map_err(Into::into)
+}
+
+fn default_failure_class(error: anyhow::Error, fallback: FailureClass) -> anyhow::Error {
+    release_glz::failure::with_default_class(error, fallback)
 }
 
 fn approved_for_inspection(
@@ -768,13 +1489,21 @@ async fn approval_from_environment(
     let artifact_digest = artifact_digest
         .strip_prefix("sha256:")
         .unwrap_or(&artifact_digest);
+    let artifact_run_id = std::env::var("RELEASE_GLZ_ACTIONS_RUN_ID")
+        .context("release approval requires the Candidate-generating Actions run ID")?;
+    if github_oidc.event_name() == "workflow_dispatch" && artifact_run_id == github_oidc.run_id() {
+        return Err(classified(
+            FailureClass::PolicyOrApproval,
+            "manual promotion must consume a Candidate from a completed prior prepare run",
+        ));
+    }
     let repository = GitHubRepository::parse(&manifest.github_repository)?;
     let github = GitHubClient::from_environment(repository);
     github
         .verify_actions_artifact(
             artifact_id,
             artifact_digest,
-            github_oidc.run_id(),
+            &artifact_run_id,
             &manifest.source.commit_sha,
         )
         .await
@@ -804,17 +1533,28 @@ async fn approval_from_environment(
 }
 
 fn print_result<T: serde::Serialize>(command: &str, result: &T, output: Output) -> Result<()> {
+    print_result_with_actions(command, result, Vec::new(), output)
+}
+
+fn print_result_with_actions<T: serde::Serialize>(
+    command: &str,
+    result: &T,
+    next_actions: Vec<NextAction>,
+    output: Output,
+) -> Result<()> {
     match output {
         Output::Json => {
             let envelope = release_glz::model::CommandEnvelope::success(
                 command,
                 serde_json::to_value(result)?,
                 vec![],
-                vec![],
+                next_actions,
             );
             println!("{}", serde_json::to_string(&envelope)?);
         }
-        Output::Human => println!("{}", serde_json::to_string_pretty(result)?),
+        Output::Human => {
+            render_human_result(command, &serde_json::to_value(result)?, &[], &next_actions)
+        }
     }
     Ok(())
 }
@@ -839,7 +1579,16 @@ fn print_checked_result<T: serde::Serialize>(
             };
             println!("{}", serde_json::to_string(&envelope)?);
         }
-        Output::Human => println!("{}", serde_json::to_string_pretty(result)?),
+        Output::Human => {
+            let diagnostics = diagnostic.into_iter().collect::<Vec<_>>();
+            let actions = next_action.into_iter().collect::<Vec<_>>();
+            render_human_result(
+                command,
+                &serde_json::to_value(result)?,
+                &diagnostics,
+                &actions,
+            );
+        }
     }
     Ok(())
 }
@@ -857,12 +1606,88 @@ fn print_doctor(report: &DoctorReport, output: Output) -> Result<()> {
             };
             println!("{}", serde_json::to_string(&envelope)?);
         }
-        Output::Human => println!("{}", serde_json::to_string_pretty(report)?),
+        Output::Human => render_human_result(
+            "doctor",
+            &serde_json::to_value(report)?,
+            &report.diagnostics,
+            &report.next_actions,
+        ),
     }
     Ok(())
 }
 
-fn managed_workflow_is_current(manifest: &Manifest) -> Result<bool> {
+fn render_human_result(
+    command: &str,
+    result: &serde_json::Value,
+    diagnostics: &[Diagnostic],
+    next_actions: &[NextAction],
+) {
+    let state = result
+        .get("state")
+        .or_else(|| result.get("candidate").and_then(|value| value.get("state")))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("completed");
+    println!("{command}: {state}");
+    for (label, key) in [
+        ("Version", "version"),
+        ("Candidate digest", "candidate_digest"),
+        ("Intent digest", "intent_digest"),
+        ("PR", "pr_url"),
+        ("Hex", "hex_url"),
+        ("GitHub Release", "github_release_url"),
+    ] {
+        let value = result.get(key).or_else(|| {
+            result
+                .get("candidate")
+                .and_then(|candidate| candidate.get(key))
+        });
+        if let Some(value) = value.and_then(serde_json::Value::as_str)
+            && !value.is_empty()
+        {
+            println!("  {label}: {value}");
+        }
+    }
+    for (label, key) in [
+        ("Changed", "changed"),
+        ("Written", "written"),
+        ("Manifest changed", "manifest_changed"),
+        ("Workflow changed", "workflow_changed"),
+    ] {
+        if let Some(value) = result.get(key).and_then(serde_json::Value::as_bool) {
+            println!("  {label}: {value}");
+        }
+    }
+    for (label, key) in [("Applied", "applied"), ("Remaining", "remaining")] {
+        if let Some(values) = result.get(key).and_then(serde_json::Value::as_array) {
+            println!("  {label}: {}", values.len());
+            for value in values {
+                let kind = value
+                    .get("kind")
+                    .and_then(serde_json::Value::as_str)
+                    .or_else(|| value.as_str())
+                    .unwrap_or("effect");
+                println!("    - {kind}");
+            }
+        }
+    }
+    for diagnostic in diagnostics {
+        println!(
+            "  {:?} [{}]: {}",
+            diagnostic.level, diagnostic.code, diagnostic.message
+        );
+        if let Some(detail) = &diagnostic.detail {
+            println!("    {detail}");
+        }
+    }
+    for action in next_actions {
+        println!("  Next: {}", action.command);
+        if !action.description.is_empty() {
+            println!("    {}", action.description);
+        }
+    }
+}
+
+fn managed_workflow_is_current(manifest: &Manifest, action_sha: &str) -> Result<bool> {
     let repo = GitRepo::discover(manifest.package_dir())?;
     let relative_manifest = absolute_or_join(manifest.path())?
         .strip_prefix(repo.root().canonicalize()?)
@@ -875,8 +1700,7 @@ fn managed_workflow_is_current(manifest: &Manifest) -> Result<bool> {
         environment: manifest.release.approval.environment.clone(),
         registry_credential_env: manifest.release.registry.credential_env.clone(),
         release_branch_prefix: manifest.release.release_branch_prefix.clone(),
-        action_sha: std::env::var("RELEASE_GLZ_ACTION_SHA")
-            .unwrap_or_else(|_| release_glz::workflow::default_action_sha().to_owned()),
+        action_sha: action_sha.to_owned(),
     };
     let outcome = release_glz::workflow::sync(
         repo.root(),
@@ -887,22 +1711,17 @@ fn managed_workflow_is_current(manifest: &Manifest) -> Result<bool> {
 }
 
 fn completion_source(shell: CompletionShell) -> String {
-    const COMMANDS: &str = "plan rehearse verify release status doctor release-pr update prerelease set-version init migrate completion";
+    let mut command = Cli::command();
+    let mut source = Vec::new();
     match shell {
-        CompletionShell::Bash => format!(
-            "_release_glz() {{ COMPREPLY=( $(compgen -W '{COMMANDS}' -- \"${{COMP_WORDS[1]}}\") ); }}\ncomplete -F _release_glz release-glz\n"
-        ),
-        CompletionShell::Zsh => {
-            format!("#compdef release-glz\n_arguments '1:command:({COMMANDS})'\n")
+        CompletionShell::Bash => generate(shells::Bash, &mut command, "release-glz", &mut source),
+        CompletionShell::Zsh => generate(shells::Zsh, &mut command, "release-glz", &mut source),
+        CompletionShell::Fish => generate(shells::Fish, &mut command, "release-glz", &mut source),
+        CompletionShell::Powershell => {
+            generate(shells::PowerShell, &mut command, "release-glz", &mut source)
         }
-        CompletionShell::Fish => COMMANDS
-            .split_whitespace()
-            .map(|command| format!("complete -c release-glz -f -a {command}\n"))
-            .collect(),
-        CompletionShell::Powershell => format!(
-            "Register-ArgumentCompleter -Native -CommandName release-glz -ScriptBlock {{ param($wordToComplete) '{COMMANDS}'.Split(' ') | Where-Object {{ $_ -like \"$wordToComplete*\" }} }}\n"
-        ),
     }
+    String::from_utf8(source).expect("clap completion generators emit UTF-8")
 }
 
 fn shell_name(shell: CompletionShell) -> &'static str {
@@ -1057,11 +1876,18 @@ mod tests {
                 },
                 "verify",
             ),
-            (Command::Update, "update"),
-            (Command::ReleasePr { candidate: None }, "release-pr"),
+            (Command::Update { dry_run: false }, "update"),
+            (
+                Command::ReleasePr {
+                    candidate: None,
+                    dry_run: false,
+                },
+                "release-pr",
+            ),
             (
                 Command::Release {
                     candidate: "candidate".into(),
+                    dry_run: false,
                 },
                 "release",
             ),
@@ -1072,9 +1898,24 @@ mod tests {
                 },
                 "status",
             ),
-            (Command::Doctor, "doctor"),
+            (
+                Command::Doctor {
+                    online: false,
+                    candidate_build: false,
+                },
+                "doctor",
+            ),
             (
                 Command::Init {
+                    profile: None,
+                    organization: None,
+                    api_url: None,
+                    repository_url: None,
+                    docs_url: None,
+                    credential_env: None,
+                    auth: None,
+                    allow_version_zero: false,
+                    action_sha: None,
                     check: true,
                     diff: false,
                     update: false,
@@ -1092,6 +1933,7 @@ mod tests {
             (
                 Command::SetVersion {
                     version: Version::new(2, 0, 0),
+                    dry_run: false,
                 },
                 "set-version",
             ),
@@ -1099,6 +1941,7 @@ mod tests {
                 Command::Prerelease {
                     channel: Train::Rc,
                     version: None,
+                    dry_run: false,
                 },
                 "prerelease",
             ),
@@ -1120,18 +1963,50 @@ mod tests {
 
     #[test]
     fn exit_codes_and_machine_codes_cover_every_public_failure_class() {
-        for (message, expected_exit, expected_code) in [
-            ("required hook failed", 6, "hook_failure"),
-            ("approval is missing", 3, "policy_or_approval"),
-            ("checksum mismatch", 4, "immutable_state_conflict"),
-            ("connection timed out", 5, "temporary_external_failure"),
-            ("field must be present", 2, "usage_or_config"),
-            ("unexpected implementation error", 1, "internal_failure"),
+        for (class, expected_exit, expected_code) in [
+            (FailureClass::Hook, 6, "hook_failure"),
+            (FailureClass::PolicyOrApproval, 3, "policy_or_approval"),
+            (
+                FailureClass::ImmutableStateConflict,
+                4,
+                "immutable_state_conflict",
+            ),
+            (
+                FailureClass::TemporaryExternal,
+                5,
+                "temporary_external_failure",
+            ),
+            (FailureClass::UsageOrConfig, 2, "usage_or_config"),
+            (FailureClass::PartialRelease, 7, "partial_release"),
+            (FailureClass::Internal, 1, "internal_failure"),
         ] {
-            let error = anyhow::anyhow!(message);
-            assert_eq!(exit_code(&error), expected_exit, "{message}");
-            assert_eq!(error_code(&error), expected_code, "{message}");
+            let error = classified(class, "message text is not classification");
+            assert_eq!(exit_code(&error), expected_exit);
+            assert_eq!(error_code(&error), expected_code);
         }
+        let misleading = anyhow::anyhow!("hook approval conflict connection must be fixed");
+        assert_eq!(exit_code(&misleading), 1);
+    }
+
+    #[test]
+    fn manifest_scoping_preserves_non_shell_path_arguments() {
+        let path = Path::new("package with space\nand newline/gleam.toml");
+        let mut actions = vec![
+            NextAction::executable(["release-glz", "migrate", "--update"], "Migrate."),
+            NextAction::guidance("install Gleam", "Install it."),
+        ];
+        scope_manifest_actions(&mut actions, path);
+        assert_eq!(
+            actions[0].argv,
+            [
+                "release-glz",
+                "--manifest-path",
+                "package with space\nand newline/gleam.toml",
+                "migrate",
+                "--update",
+            ]
+        );
+        assert!(actions[1].argv.is_empty());
     }
 
     #[test]
@@ -1172,10 +2047,10 @@ mod tests {
                 message: "migration required".into(),
                 detail: None,
             }),
-            Some(NextAction {
-                command: "release-glz migrate --update".into(),
-                description: "migrate".into(),
-            }),
+            Some(NextAction::executable(
+                ["release-glz", "migrate", "--update"],
+                "migrate",
+            )),
             Output::Json,
         )
         .unwrap();

@@ -122,7 +122,7 @@ fn every_public_serializer_validates_against_its_complete_draft_2020_schema() {
 }
 
 #[test]
-fn every_public_schema_has_a_stable_pages_identifier() {
+fn every_public_schema_is_bound_to_the_immutable_v1_tag() {
     for path in [
         "docs/release-plan.schema.json",
         "docs/candidate.schema.json",
@@ -134,10 +134,10 @@ fn every_public_schema_has_a_stable_pages_identifier() {
             serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
         let id = schema["$id"].as_str().unwrap();
         assert!(
-            id.starts_with("https://p4suta.github.io/release-glz/schema/"),
+            id.starts_with("https://raw.githubusercontent.com/P4suta/release-glz/v1.0.0/docs/"),
             "unstable schema identifier in {path}: {id}"
         );
-        assert!(id.ends_with(".json"), "invalid schema identifier: {id}");
+        assert_eq!(id.rsplit('/').next(), path.rsplit('/').next());
     }
 }
 

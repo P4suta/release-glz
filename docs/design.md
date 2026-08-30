@@ -56,6 +56,12 @@ Hex.pm, `/repos/ORG`, standard Hex-compatible endpoints, and GitHub.com. Tests
 use loopback fake services, local bare git repositories, and fake argv-based
 hooks; no test publishes a real user package.
 
+For a Hex.pm Organization, `api_url` remains the global HTTP API root while
+repository-scoped package operations add `/repos/ORG`. The credential audit
+continues to use the root `/auth` endpoint. `repository_url` and `docs_url` are
+the explicit Organization-scoped download bases, so URL composition can neither
+drop nor duplicate the repository namespace.
+
 Registry credentials are allowed on reads because private package metadata and
 artifacts require them. Redirects must remain on the configured origin. HTTPS
 is mandatory except for explicit loopback tests. Responses have time and size

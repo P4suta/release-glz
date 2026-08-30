@@ -4,21 +4,20 @@ This path publishes one public package to Hex.pm and HexDocs.
 
 ## Configure the package
 
-Add the following to `gleam.toml`, choosing the exact Gleam compiler used by
-your project:
+Preview and generate the complete configuration and managed workflow. The CLI
+detects the exact installed Gleam compiler and git default branch:
+
+```console
+release-glz init --profile public --diff
+release-glz init --profile public --update
+release-glz doctor
+release-glz doctor --online
+release-glz doctor --candidate-build
+```
+
+The generated registry section is:
 
 ```toml
-[repository]
-type = "github"
-user = "acme"
-repo = "widget"
-
-[tools.release-glz]
-schema = 2
-compiler = "1.18.1"
-release_branch_prefix = "release-glz/"
-allow_version_zero = true
-
 [tools.release-glz.registry]
 provider = "hexpm"
 api_url = "https://hex.pm/api"
@@ -27,16 +26,11 @@ docs_url = "https://repo.hex.pm/docs"
 credential_env = "HEXPM_API_KEY"
 auth = "hex-token"
 
-[tools.release-glz.approval]
-normal = "release-pr-and-environment"
-manual = "environment"
-environment = "release"
-separation = "solo"
-manual_refs = ["refs/heads/main"]
 ```
 
-Run `release-glz doctor`, review `release-glz init --diff`, then apply
-`release-glz init --update`. Commit the manifest and generated workflow.
+Packages already on schema 2 omit `--profile` when refreshing the workflow.
+For a deliberate 0.x package add `--allow-version-zero` to both init commands.
+Commit the manifest and generated workflow.
 
 ## Configure GitHub
 
@@ -46,7 +40,7 @@ Environment secret `HEXPM_API_KEY`; do not put it in repository variables or
 the Candidate job.
 
 For strict separation set `separation = "strict"`, enable prevent-self-review,
-and require a reviewer other than the release author. Run `doctor` again to
+and require a reviewer other than the release author. Run `doctor --online` again to
 verify the effective server-side policy and registry permission.
 
 ## Operate

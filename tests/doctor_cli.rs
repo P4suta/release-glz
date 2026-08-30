@@ -34,7 +34,7 @@ fn doctor_cli_collects_local_and_github_checks_into_envelope_v2() {
             environment: "release".into(),
             registry_credential_env: "TEST_HEX_TOKEN".into(),
             release_branch_prefix: "release-glz/".into(),
-            action_sha: workflow::default_action_sha().into(),
+            action_sha: "abcdef0123456789abcdef0123456789abcdef01".into(),
         },
         WorkflowMode::Update,
     )
@@ -54,7 +54,7 @@ fn doctor_cli_collects_local_and_github_checks_into_envelope_v2() {
 
     let output = Command::new(env!("CARGO_BIN_EXE_release-glz"))
         .current_dir(temp.path())
-        .args(["--output", "json", "doctor"])
+        .args(["--output", "json", "doctor", "--online"])
         .env("RELEASE_GLZ_GLEAM", &gleam)
         .env("TEST_HEX_TOKEN", "not-a-real-token")
         .env("GITHUB_TOKEN", "not-a-real-token")
@@ -101,6 +101,138 @@ fn doctor_cli_collects_local_and_github_checks_into_envelope_v2() {
 }
 
 #[test]
+fn doctor_defaults_to_local_checks_without_contacting_registry_or_github() {
+    let temp = tempfile::tempdir().unwrap();
+    let registry = FakeGitHub::start(vec![]);
+    std::fs::write(
+        temp.path().join("gleam.toml"),
+        manifest(&registry.base_url()),
+    )
+    .unwrap();
+    Command::new("git")
+        .args(["init", "--initial-branch=main"])
+        .current_dir(temp.path())
+        .output()
+        .unwrap();
+    workflow::sync(
+        temp.path(),
+        &WorkflowSettings {
+            default_branch: "main".into(),
+            manifest_path: "gleam.toml".into(),
+            compiler: "1.12.3".into(),
+            environment: "release".into(),
+            registry_credential_env: "TEST_HEX_TOKEN".into(),
+            release_branch_prefix: "release-glz/".into(),
+            action_sha: "abcdef0123456789abcdef0123456789abcdef01".into(),
+        },
+        WorkflowMode::Update,
+    )
+    .unwrap();
+    let gleam = temp.path().join("fake-gleam");
+    std::fs::write(&gleam, "#!/bin/sh\nprintf '%s\\n' 'gleam 1.12.3'\n").unwrap();
+    let mut permissions = std::fs::metadata(&gleam).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&gleam, permissions).unwrap();
+    let github = FakeGitHub::start(vec![]);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_release-glz"))
+        .current_dir(temp.path())
+        .args(["--output", "json", "doctor"])
+        .env("RELEASE_GLZ_GLEAM", &gleam)
+        .env("TEST_HEX_TOKEN", "must-not-be-sent")
+        .env("GITHUB_TOKEN", "must-not-be-sent")
+        .env("GITHUB_REPOSITORY", "acme/widget")
+        .env("GITHUB_API_URL", github.base_url())
+        .env(
+            "GITHUB_GRAPHQL_URL",
+            format!("{}/graphql", github.base_url()),
+        )
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert_eq!(registry.request_count(), 0);
+    assert_eq!(github.request_count(), 0);
+    let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(envelope["result"]["state"], "up_to_date");
+    registry.stop();
+    github.stop();
+}
+
+#[test]
+fn candidate_build_reports_the_original_isolated_failure_without_claiming_credential_cause() {
+    let temp = tempfile::tempdir().unwrap();
+    let registry = FakeGitHub::start(vec![]);
+    std::fs::write(
+        temp.path().join("gleam.toml"),
+        manifest(&registry.base_url()),
+    )
+    .unwrap();
+    std::fs::create_dir(temp.path().join("src")).unwrap();
+    std::fs::write(
+        temp.path().join("src/widget.gleam"),
+        "pub fn value() -> Int { 1 }\n",
+    )
+    .unwrap();
+    for args in [
+        vec!["init", "--initial-branch=main"],
+        vec!["config", "user.email", "release-glz@example.test"],
+        vec!["config", "user.name", "release-glz test"],
+        vec!["add", "."],
+        vec!["commit", "-m", "initial"],
+    ] {
+        assert!(
+            Command::new("git")
+                .args(args)
+                .current_dir(temp.path())
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+    }
+
+    let gleam = temp.path().join("failing-gleam");
+    std::fs::write(
+        &gleam,
+        "#!/bin/sh\nset -eu\nif [ \"${1:-}\" = --version ]; then printf '%s\\n' 'gleam 1.12.3'; exit 0; fi\ntest -z \"${TEST_HEX_TOKEN-}\"\nprintf '%s\\n' 'injected compiler failure' >&2\nexit 9\n",
+    )
+    .unwrap();
+    let mut permissions = std::fs::metadata(&gleam).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&gleam, permissions).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_release-glz"))
+        .current_dir(temp.path())
+        .args(["--output", "json", "doctor", "--candidate-build"])
+        .env("RELEASE_GLZ_GLEAM", &gleam)
+        .env("TEST_HEX_TOKEN", "must-not-reach-the-build")
+        .output()
+        .unwrap();
+    registry.stop();
+
+    assert_eq!(output.status.code(), Some(3));
+    let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let diagnostic = envelope["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|diagnostic| diagnostic["code"] == "candidate_build_failed")
+        .expect("candidate build failure diagnostic");
+    assert!(
+        diagnostic["detail"]
+            .as_str()
+            .unwrap()
+            .contains("injected compiler failure")
+    );
+    assert_ne!(diagnostic["code"], "candidate_build_credentials_required");
+}
+
+#[test]
 fn doctor_cli_uses_policy_exit_and_unsuccessful_envelope_when_blocked() {
     let temp = tempfile::tempdir().unwrap();
     let registry = FakeGitHub::start(vec![""]);
@@ -123,7 +255,7 @@ fn doctor_cli_uses_policy_exit_and_unsuccessful_envelope_when_blocked() {
             environment: "release".into(),
             registry_credential_env: "TEST_HEX_TOKEN".into(),
             release_branch_prefix: "release-glz/".into(),
-            action_sha: workflow::default_action_sha().into(),
+            action_sha: "abcdef0123456789abcdef0123456789abcdef01".into(),
         },
         WorkflowMode::Update,
     )
@@ -142,7 +274,7 @@ fn doctor_cli_uses_policy_exit_and_unsuccessful_envelope_when_blocked() {
 
     let output = Command::new(env!("CARGO_BIN_EXE_release-glz"))
         .current_dir(temp.path())
-        .args(["--output", "json", "doctor"])
+        .args(["--output", "json", "doctor", "--online"])
         .env("RELEASE_GLZ_GLEAM", &gleam)
         .env("TEST_HEX_TOKEN", "not-a-real-token")
         .env("GITHUB_TOKEN", "not-a-real-token")

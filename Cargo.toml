@@ -5,6 +5,7 @@ version = "1.0.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/P4suta/release-glz"
+publish = false
 rust-version = "1.88"
 readme = "README.md"
 keywords = ["gleam", "hex", "release", "automation"]
@@ -16,6 +17,7 @@ async-trait = "0.1.91"
 base64 = "0.22.1"
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 clap = { version = "4.6.6", features = ["derive"] }
+clap_complete = "4.6.6"
 flate2 = "1.1.10"
 reqwest = { version = "0.12.28", default-features = false, features = ["json", "rustls-tls"] }
 ring = "0.17.14"

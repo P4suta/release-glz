@@ -25,7 +25,7 @@ roles. It does not make a compromised maintainer machine or registry reversible.
 | Compiler or source drift | The Candidate seals an exact compiler version and committed source SHA. Release performs no rebuild. |
 | Registry race or ambiguous response | Every stage observes first; unknown POST results are polled by checksum instead of automatically repeated. |
 | Replacement of immutable public state | Existing package, docs, tag, GitHub Release, and asset values must match exactly; no replace, clobber, or automatic revert operation exists. |
-| Hook command injection | Hooks are argv arrays with timeouts, JSON I/O, environment allowlists, sealed definitions, and phase-specific capabilities; shell strings are rejected. |
+| Hook command injection or release-credential theft | Hooks are argv arrays with timeouts, JSON I/O, environment allowlists, sealed definitions, and phase-specific capabilities; shell strings are rejected. Registry publication credentials, GitHub/OIDC authorization tokens, and GitHub control-file paths cannot be forwarded even when explicitly named. |
 | Private artifact disclosure | Raw private Candidate artifacts stay in Actions storage; only explicitly allowed evidence/sidecars can be public assets. |
 | Mutable workflow dependency | Generated and project workflows pin third-party Actions to full commit SHAs and use least job permissions with checkout credentials disabled. |
 

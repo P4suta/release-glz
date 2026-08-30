@@ -248,7 +248,12 @@ impl ReleaseTarget for LiveReleaseTarget {
                 {
                     Ok(complete) => complete,
                     Err(_) if !hook.required => false,
-                    Err(error) => return Err(error),
+                    Err(error) => {
+                        return Err(crate::failure::classified(
+                            crate::failure::FailureClass::Hook,
+                            error,
+                        ));
+                    }
                 };
                 notifications.insert(
                     hook.id.clone(),
@@ -397,7 +402,10 @@ impl ReleaseTarget for LiveReleaseTarget {
                 let context = self.hook_context(intent, Some(idempotency_key.clone()));
                 self.hooks
                     .apply_notify(hook, self.repo.root(), &context)
-                    .await?;
+                    .await
+                    .map_err(|error| {
+                        crate::failure::classified(crate::failure::FailureClass::Hook, error)
+                    })?;
             }
         }
         Ok(())
@@ -424,12 +432,17 @@ fn is_sha256(value: &str) -> bool {
 #[derive(Debug)]
 pub struct ReleaseRunError {
     state: ReleaseState,
+    class: crate::failure::FailureClass,
     source: anyhow::Error,
 }
 
 impl ReleaseRunError {
     pub fn state(&self) -> ReleaseState {
         self.state
+    }
+
+    pub fn failure_class(&self) -> crate::failure::FailureClass {
+        self.class
     }
 }
 
@@ -463,15 +476,45 @@ where
         approval: &ApprovalEvidence,
         options: ReleaseExecutionOptions,
     ) -> std::result::Result<ReleaseReport, ReleaseRunError> {
-        let manifest = Candidate::verify(candidate_directory)
-            .map_err(|source| run_error(ReleaseState::Blocked, source))?;
-        let package = Candidate::package_bytes(candidate_directory, &manifest)
-            .map_err(|source| run_error(ReleaseState::Blocked, source))?;
-        let docs = Candidate::docs_bytes(candidate_directory, &manifest)
-            .map_err(|source| run_error(ReleaseState::Blocked, source))?;
+        let manifest = Candidate::verify(candidate_directory).map_err(|source| {
+            run_error(
+                ReleaseState::Blocked,
+                crate::failure::classified(
+                    crate::failure::FailureClass::ImmutableStateConflict,
+                    source,
+                ),
+            )
+        })?;
+        let package =
+            Candidate::package_bytes(candidate_directory, &manifest).map_err(|source| {
+                run_error(
+                    ReleaseState::Blocked,
+                    crate::failure::classified(
+                        crate::failure::FailureClass::ImmutableStateConflict,
+                        source,
+                    ),
+                )
+            })?;
+        let docs = Candidate::docs_bytes(candidate_directory, &manifest).map_err(|source| {
+            run_error(
+                ReleaseState::Blocked,
+                crate::failure::classified(
+                    crate::failure::FailureClass::ImmutableStateConflict,
+                    source,
+                ),
+            )
+        })?;
         let intent = release_intent(&manifest);
-        let sidecars = Candidate::sidecar_bytes(candidate_directory, &manifest)
-            .map_err(|source| run_error(ReleaseState::Blocked, source))?;
+        let sidecars =
+            Candidate::sidecar_bytes(candidate_directory, &manifest).map_err(|source| {
+                run_error(
+                    ReleaseState::Blocked,
+                    crate::failure::classified(
+                        crate::failure::FailureClass::ImmutableStateConflict,
+                        source,
+                    ),
+                )
+            })?;
         let release_assets = sidecars
             .iter()
             .filter(|(descriptor, _)| {
@@ -560,7 +603,10 @@ where
         }
         Err(run_error(
             ReleaseState::Blocked,
-            anyhow::anyhow!("release reconciliation did not converge"),
+            crate::failure::classified(
+                crate::failure::FailureClass::Internal,
+                "release reconciliation did not converge",
+            ),
         ))
     }
 }
@@ -626,7 +672,24 @@ fn report(
 }
 
 fn run_error(state: ReleaseState, source: anyhow::Error) -> ReleaseRunError {
-    ReleaseRunError { state, source }
+    let source_class = crate::failure::classify(&source);
+    let explicitly_classified = source
+        .downcast_ref::<crate::failure::ClassifiedFailure>()
+        .is_some();
+    let class = match state {
+        ReleaseState::Conflict => crate::failure::FailureClass::ImmutableStateConflict,
+        ReleaseState::PartiallyReleased => crate::failure::FailureClass::PartialRelease,
+        ReleaseState::AwaitingApproval => crate::failure::FailureClass::PolicyOrApproval,
+        _ if source_class == crate::failure::FailureClass::Internal && !explicitly_classified => {
+            crate::failure::FailureClass::TemporaryExternal
+        }
+        _ => source_class,
+    };
+    ReleaseRunError {
+        state,
+        class,
+        source,
+    }
 }
 
 fn state_label(state: ReleaseState) -> &'static str {

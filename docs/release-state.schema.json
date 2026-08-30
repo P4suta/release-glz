@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://p4suta.github.io/release-glz/schema/state-v1.json",
+  "$id": "https://raw.githubusercontent.com/P4suta/release-glz/v1.0.0/docs/release-state.schema.json",
   "title": "release-glz ReleaseState v1",
   "type": "object",
   "additionalProperties": false,

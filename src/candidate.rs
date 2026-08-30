@@ -245,6 +245,7 @@ impl Candidate {
             &input.verify_hook_definitions,
             &input.sidecar_hook_definitions,
             &input.notify_hook_definitions,
+            &input.registry.credential_env,
         )?;
         validate_notify_hooks(&input.notify_hooks)?;
         validate_notify_hook_definitions(&input.notify_hooks, &input.notify_hook_definitions)?;
@@ -286,6 +287,7 @@ impl Candidate {
             &input.verify_hook_definitions,
             &input.sidecar_hook_definitions,
             &input.notify_hook_definitions,
+            &input.registry.credential_env,
         )?;
         validate_evidenced_hooks(
             &input.verify_hook_definitions,
@@ -388,6 +390,7 @@ impl Candidate {
             &manifest.verify_hook_definitions,
             &manifest.sidecar_hook_definitions,
             &manifest.notify_hook_definitions,
+            &manifest.registry.credential_env,
         )?;
         validate_evidenced_hooks(
             &manifest.verify_hook_definitions,
@@ -936,10 +939,21 @@ fn validate_candidate_hook_definitions(
     verify: &[HookConfig],
     sidecar: &[HookConfig],
     notify: &[HookConfig],
+    registry_credential_env: &str,
 ) -> Result<()> {
     let mut ids = std::collections::BTreeSet::new();
     for hook in verify.iter().chain(sidecar).chain(notify) {
         validate_hook_config(hook)?;
+        if hook
+            .env
+            .iter()
+            .any(|name| crate::config::protected_hook_environment(name, registry_credential_env))
+        {
+            bail!(
+                "sealed hook `{}` may not receive release-glz authorization or registry credentials",
+                hook.id
+            );
+        }
         if !ids.insert(&hook.id) {
             bail!("duplicate sealed hook id `{}`", hook.id);
         }

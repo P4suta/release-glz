@@ -15,6 +15,8 @@ release-glz migrate --update
 release-glz doctor
 release-glz init --diff
 release-glz init --update
+release-glz doctor --online
+release-glz doctor --candidate-build
 ```
 
 `migrate --check` exits with the policy code when migration is required.

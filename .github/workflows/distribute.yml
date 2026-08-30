@@ -28,6 +28,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 2
           persist-credentials: false
       - name: Match tag, Cargo, and Action versions exactly
         id: version
@@ -39,6 +40,11 @@ jobs:
           [[ "$REQUESTED_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
           test "$(sed -n 's/^version = "\([0-9][0-9.]*\)"$/v\1/p' Cargo.toml | head -n1)" = "$REQUESTED_VERSION"
           test "$(node -p "'v'+require('./action/package.json').version")" = "$REQUESTED_VERSION"
+          if [[ "$GITHUB_EVENT_NAME" == push ]]; then
+            test "$(git cat-file -t "$GITHUB_REF")" = tag
+            test "$(git rev-parse "$GITHUB_REF^{}")" = "$GITHUB_SHA"
+            test "$(git diff --name-only "$GITHUB_SHA^" "$GITHUB_SHA")" = action/checksums.json
+          fi
           printf 'value=%s\n' "$REQUESTED_VERSION" >> "$GITHUB_OUTPUT"
 
   build:
@@ -88,7 +94,6 @@ jobs:
       - name: Build locked release binary
         env:
           TARGET: ${{ matrix.target }}
-          RELEASE_GLZ_ACTION_SHA: ${{ github.sha }}
         run: cargo build --release --locked --package release-glz --target "$TARGET"
       - name: Smoke and package Unix binary
         if: runner.os != 'Windows'
@@ -150,11 +155,24 @@ jobs:
           VERSION: ${{ needs.validate.outputs.version }}
         run: node scripts/generate-action-checksums.js --artifacts dist --version "$VERSION" --out action-checksums.json
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        id: upload_checksums
         with:
           name: action-checksums-${{ needs.validate.outputs.version }}
           path: action-checksums.json
           if-no-files-found: error
           retention-days: 7
+      - name: Print checksum preparation evidence
+        env:
+          ARTIFACT_ID: ${{ steps.upload_checksums.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ steps.upload_checksums.outputs.artifact-digest }}
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          {
+            printf '## Checksum preparation %s\n' "$VERSION"
+            printf -- '- run-id: %s\n' "$GITHUB_RUN_ID"
+            printf -- '- artifact-id: %s\n' "$ARTIFACT_ID"
+            printf -- '- artifact-digest: %s\n' "$ARTIFACT_DIGEST"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   release:
     name: Attest and finalize immutable Release
@@ -241,6 +259,8 @@ jobs:
               exit 1
             fi
           done
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" |
+            node scripts/verify-release-assets.js --artifacts dist --complete
       - name: Re-download and verify release evidence
         env:
           GH_TOKEN: ${{ github.token }}
@@ -251,6 +271,9 @@ jobs:
           mkdir verified
           gh release download "$TAG" --dir verified
           cd verified
+          diff -u \
+            <(find ../dist -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort) \
+            <(find . -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort)
           sha256sum --check SHA256SUMS
           for file in release-glz-*.tar.gz release-glz-*.zip; do
             gh attestation verify "$file" --repo "$GITHUB_REPOSITORY"
@@ -259,4 +282,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
-        run: gh release edit "$TAG" --draft=false
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" |
+            node scripts/verify-release-assets.js --artifacts dist --complete
+          gh release edit "$TAG" --draft=false

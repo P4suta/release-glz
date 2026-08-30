@@ -245,6 +245,17 @@ fn credential_configuration_names_an_environment_variable_not_a_secret() {
         let source = complete_config("").replace("HEXPM_API_KEY", invalid);
         assert!(Manifest::parse(PathBuf::from("gleam.toml"), source).is_err());
     }
+
+    let custom_credential = complete_config("")
+        .replace(
+            "credential_env = \"HEXPM_API_KEY\"",
+            "credential_env = \"PRIVATE_REGISTRY_TOKEN\"",
+        )
+        .replace("env = [\"CI\"]", "env = [\"PRIVATE_REGISTRY_TOKEN\"]");
+    assert!(
+        Manifest::parse(PathBuf::from("gleam.toml"), custom_credential).is_err(),
+        "hooks must not receive the configured publication credential"
+    );
 }
 
 #[test]
@@ -310,6 +321,26 @@ fn package_environment_hook_path_and_ref_lexers_cover_every_boundary() {
                 env,
             })
             .is_err()
+        );
+    }
+    for protected in [
+        "HEXPM_API_KEY",
+        "GITHUB_TOKEN",
+        "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+        "ACTIONS_RUNTIME_TOKEN",
+        "GITHUB_ENV",
+        "GITHUB_OUTPUT",
+    ] {
+        assert!(
+            validate_hook_config(&HookConfig {
+                id: "protected".into(),
+                argv: vec!["program".into()],
+                timeout_seconds: 30,
+                required: true,
+                env: vec![protected.into()],
+            })
+            .is_err(),
+            "hook accepted protected environment {protected}"
         );
     }
 

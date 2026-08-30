@@ -75,8 +75,52 @@ pub struct Diagnostic {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NextAction {
+    /// Canonical process argv. Consumers must execute this array directly and
+    /// must never parse `command` as shell input.
+    pub argv: Vec<String>,
+    /// Human-readable rendering only.
     pub command: String,
     pub description: String,
+}
+
+impl NextAction {
+    pub fn executable(
+        argv: impl IntoIterator<Item = impl Into<String>>,
+        description: impl Into<String>,
+    ) -> Self {
+        let argv = argv.into_iter().map(Into::into).collect::<Vec<_>>();
+        let command = display_argv(&argv);
+        Self {
+            argv,
+            command,
+            description: description.into(),
+        }
+    }
+
+    pub fn guidance(command: impl Into<String>, description: impl Into<String>) -> Self {
+        Self {
+            argv: Vec::new(),
+            command: command.into(),
+            description: description.into(),
+        }
+    }
+}
+
+fn display_argv(argv: &[String]) -> String {
+    argv.iter()
+        .map(|argument| {
+            if !argument.is_empty()
+                && argument.bytes().all(|byte| {
+                    byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'.' | b'_' | b'-')
+                })
+            {
+                argument.clone()
+            } else {
+                format!("{:?}", argument)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -313,4 +357,25 @@ pub struct ReleasePlan {
 
 impl ReleasePlan {
     pub const SCHEMA: &'static str = "plan/v2";
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn executable_next_actions_quote_empty_and_unsafe_display_arguments() {
+        let action = NextAction::executable(
+            ["release-glz", "", "path with space", "safe/path-1.0"],
+            "Retry safely.",
+        );
+        assert_eq!(
+            action.argv,
+            ["release-glz", "", "path with space", "safe/path-1.0"]
+        );
+        assert_eq!(
+            action.command,
+            "release-glz \"\" \"path with space\" safe/path-1.0"
+        );
+    }
 }

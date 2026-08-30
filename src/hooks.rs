@@ -12,7 +12,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 
 use crate::candidate::{HookEvidence, HookKind};
 use crate::canonical::canonical_json_bytes;
-use crate::config::HookConfig;
+use crate::config::{HookConfig, validate_hook_config};
 use crate::sidecar::{
     MAX_ARTIFACT_BYTES as SIDECAR_ARTIFACT_LIMIT, MAX_COUNT as SIDECAR_COUNT_LIMIT,
     MAX_TOTAL_BYTES as SIDECAR_TOTAL_LIMIT, validate_media_type, validate_name,
@@ -285,6 +285,7 @@ impl HookRunner {
         phase: &'static str,
         context: &HookContext,
     ) -> Result<ExecutedHook> {
+        validate_hook_config(hook)?;
         let executable = hook
             .argv
             .first()

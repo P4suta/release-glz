@@ -44,6 +44,7 @@ fn assurance_workflow_has_fixed_fail_closed_shipping_gates() {
     assert!(!yaml.contains("nightly-2026-07-15"));
     assert!(yaml.contains("permissions: {}"));
     assert!(!yaml.contains("cargo mutants --jobs"));
+    assert!(!yaml.contains("RELEASE_GLZ_ACTION_SHA"));
     assert!(!yaml.contains("cargo install --locked zizmor --version 1.29.0"));
     assert!(!yaml.contains("continue-on-error: true"));
     assert!(Path::new("tests/fixtures/workflow/gleam.toml").is_file());

@@ -11,6 +11,7 @@ pub mod canonical;
 pub mod changelog;
 pub mod config;
 pub mod doctor;
+pub mod failure;
 pub mod forge;
 pub mod git;
 pub mod gleam;

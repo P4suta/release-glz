@@ -244,12 +244,30 @@ struct ActionsArtifactWorkflowRunResponse {
     head_sha: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+struct ActionsWorkflowRunResponse {
+    id: u64,
+    path: String,
+    head_sha: String,
+    status: String,
+    #[serde(default)]
+    conclusion: Option<String>,
+    repository: ActionsWorkflowRepositoryResponse,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ActionsWorkflowRepositoryResponse {
+    full_name: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifiedActionsArtifact {
     id: u64,
     sha256: String,
     run_id: String,
     source_sha: String,
+    repository: String,
+    workflow_path: String,
 }
 
 impl VerifiedActionsArtifact {
@@ -267,6 +285,14 @@ impl VerifiedActionsArtifact {
 
     pub fn source_sha(&self) -> &str {
         &self.source_sha
+    }
+
+    pub fn repository(&self) -> &str {
+        &self.repository
+    }
+
+    pub fn workflow_path(&self) -> &str {
+        &self.workflow_path
     }
 }
 
@@ -514,11 +540,26 @@ impl GitHubClient {
                 "GitHub Actions Candidate artifact does not match its sealed run, source, and digest"
             );
         }
+        let run: ActionsWorkflowRunResponse =
+            self.get(&format!("actions/runs/{expected_run_id}")).await?;
+        if run.id != expected_run_number
+            || run.repository.full_name != self.repository.full_name()
+            || run.path != crate::workflow::WORKFLOW_PATH
+            || run.head_sha != expected_source_sha
+            || run.status != "completed"
+            || run.conclusion.as_deref() != Some("success")
+        {
+            bail!(
+                "GitHub Actions Candidate run does not match the repository, managed workflow, source, and successful conclusion"
+            );
+        }
         Ok(VerifiedActionsArtifact {
             id: artifact.id,
             sha256: expected_sha256.to_owned(),
             run_id: expected_run_id.to_owned(),
             source_sha: expected_source_sha.to_owned(),
+            repository: run.repository.full_name,
+            workflow_path: run.path,
         })
     }
 

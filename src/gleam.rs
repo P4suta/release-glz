@@ -722,7 +722,11 @@ mod tests {
         assert!(error.contains("symlink"), "{error}");
 
         let socket = tempfile::tempdir().unwrap();
-        let _listener = UnixListener::bind(socket.path().join("service.sock")).unwrap();
+        let _listener = match UnixListener::bind(socket.path().join("service.sock")) {
+            Ok(listener) => listener,
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => return,
+            Err(error) => panic!("failed to create Unix socket fixture: {error}"),
+        };
         let error = gleam.snapshot(socket.path()).unwrap_err().to_string();
         assert!(error.contains("non-regular"), "{error}");
     }
