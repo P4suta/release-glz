@@ -44,9 +44,21 @@ fn assurance_workflow_has_fixed_fail_closed_shipping_gates() {
     assert!(!yaml.contains("nightly-2026-07-15"));
     assert!(yaml.contains("permissions: {}"));
     assert!(!yaml.contains("cargo mutants --jobs"));
+    assert!(!yaml.contains("RELEASE_GLZ_ACTION_SHA"));
     assert!(!yaml.contains("cargo install --locked zizmor --version 1.29.0"));
     assert!(!yaml.contains("continue-on-error: true"));
     assert!(Path::new("tests/fixtures/workflow/gleam.toml").is_file());
+
+    let triggers = yaml
+        .split_once("permissions:")
+        .expect("assurance workflow must declare permissions")
+        .0;
+    assert!(triggers.contains("workflow_dispatch:"));
+    assert!(triggers.contains("branches: [main]"));
+    assert!(
+        !triggers.contains("pull_request:"),
+        "expensive assurance must be manual before merge or run once after merge"
+    );
 
     for line in yaml.lines().filter(|line| {
         line.trim_start()
@@ -143,6 +155,24 @@ fn ci_exercises_minimum_configured_and_current_gleam_versions() {
     assert!(yaml.contains("gleam-version: ${{ matrix.gleam }}"));
     assert!(yaml.contains("matrix.gleam"));
     assert!(yaml.contains("RUST_TEST_THREADS: 1"));
+    let required = &parsed["jobs"]["required"];
+    assert_eq!(required["name"].as_str(), Some("Required CI"));
+    assert_eq!(
+        required["if"].as_str(),
+        Some("${{ always() && !cancelled() }}")
+    );
+    assert_eq!(
+        required["needs"]
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["test", "lint"]
+    );
+    let required_run = required["steps"][0]["run"].as_str().unwrap();
+    assert!(required_run.contains(r#"test "$TEST_RESULT" = success"#));
+    assert!(required_run.contains(r#"test "$LINT_RESULT" = success"#));
     for test in [
         "scripts/check-coverage.test.js",
         "scripts/generate-action-checksums.test.js",

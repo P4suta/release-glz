@@ -74,3 +74,19 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
         run: cargo doc --workspace --no-deps --locked
+
+  required:
+    name: Required CI
+    if: ${{ always() && !cancelled() }}
+    needs: [test, lint]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Require the complete test matrix and lints
+        env:
+          TEST_RESULT: ${{ needs.test.result }}
+          LINT_RESULT: ${{ needs.lint.result }}
+        run: |
+          test "$TEST_RESULT" = success
+          test "$LINT_RESULT" = success

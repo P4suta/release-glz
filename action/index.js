@@ -348,6 +348,7 @@ function runProcess(executable, args, options = {}) {
       if (code !== 0) {
         const error = new Error(`release-glz exited with status ${code ?? signal}`);
         error.exitCode = Number.isInteger(code) ? code : 1;
+        error.stdout = stdout.toString("utf8");
         error.stderr = stderr.toString("utf8");
         return reject(error);
       }
@@ -516,6 +517,15 @@ function setOutput(name, value, outputFile = process.env.GITHUB_OUTPUT) {
   fs.appendFileSync(outputFile, `${name}<<${delimiter}\n${value ?? ""}\n${delimiter}\n`, { encoding: "utf8" });
 }
 
+function booleanInput(environment, name) {
+  const key = `INPUT_${name.toUpperCase()}`;
+  const value = (environment[key] || "false").toLowerCase();
+  if (value !== "true" && value !== "false") {
+    throw new Error(`${name.toLowerCase()} must be true or false`);
+  }
+  return value === "true";
+}
+
 function buildCommandArgs(command, environment = process.env) {
   if (!SUPPORTED_COMMANDS.has(command)) {
     throw new Error(`command is required and must be one of: ${[...SUPPORTED_COMMANDS].join(", ")}`);
@@ -524,11 +534,29 @@ function buildCommandArgs(command, environment = process.env) {
     "--manifest-path", environment["INPUT_MANIFEST-PATH"] || "gleam.toml",
     "--output", "json",
   ];
-  if ((environment["INPUT_DRY-RUN"] || "false").toLowerCase() === "true") args.push("--dry-run");
   args.push(command);
+  const dryRun = booleanInput(environment, "DRY-RUN");
+  if (dryRun && !new Set(["release", "release-pr"]).has(command)) {
+    throw new Error(`dry-run is not supported by the ${command} command`);
+  }
+  if (dryRun) args.push("--dry-run");
+  const online = booleanInput(environment, "ONLINE");
+  if (online && !new Set(["verify", "status", "doctor"]).has(command)) {
+    throw new Error(`online is not supported by the ${command} command`);
+  }
   const candidate = environment.INPUT_CANDIDATE;
+  const sourceRef = environment["INPUT_SOURCE-REF"];
+  const candidateBuild = booleanInput(environment, "CANDIDATE-BUILD");
+  if (sourceRef && command !== "rehearse") {
+    throw new Error(`source-ref is not supported by the ${command} command`);
+  }
+  if (candidate && !new Set(["rehearse", "verify", "release", "release-pr", "status"]).has(command)) {
+    throw new Error(`candidate is not supported by the ${command} command`);
+  }
+  if (candidateBuild && command !== "doctor") {
+    throw new Error(`candidate-build is not supported by the ${command} command`);
+  }
   if (command === "rehearse") {
-    const sourceRef = environment["INPUT_SOURCE-REF"];
     if (!/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(sourceRef || "")) {
       throw new Error("rehearse requires source-ref to be a full lowercase commit SHA");
     }
@@ -537,14 +565,17 @@ function buildCommandArgs(command, environment = process.env) {
   } else if (["verify", "release"].includes(command)) {
     if (!candidate) throw new Error(`${command} requires the candidate input`);
     args.push("--candidate", candidate);
-    if (command === "verify" && (environment.INPUT_ONLINE || "false").toLowerCase() === "true") {
+    if (command === "verify" && online) {
       args.push("--online");
     }
   } else if (command === "release-pr" && candidate) {
     args.push("--candidate", candidate);
   } else if (command === "status") {
     if (candidate) args.push("--candidate", candidate);
-    if ((environment.INPUT_ONLINE || "false").toLowerCase() === "true") args.push("--online");
+    if (online) args.push("--online");
+  } else if (command === "doctor") {
+    if (online) args.push("--online");
+    if (candidateBuild) args.push("--candidate-build");
   }
   return args;
 }
@@ -560,6 +591,12 @@ function parseCommandEnvelope(stdout) {
     !Array.isArray(value.next_actions)
   ) {
     throw new Error("release-glz output is not command/v2");
+  }
+  for (const action of value.next_actions) {
+    if (!action || typeof action.command !== "string" ||
+        !Array.isArray(action.argv) || action.argv.some((argument) => typeof argument !== "string")) {
+      throw new Error("release-glz next action does not contain canonical argv");
+    }
   }
   return value;
 }
@@ -577,7 +614,15 @@ function resultOutputs(envelope) {
     "hex-url": result.hex_url || "",
     "github-release-url": result.github_release_url || "",
     "next-action": envelope.next_actions[0]?.command || "",
+    "next-action-argv": JSON.stringify(envelope.next_actions[0]?.argv || []),
   };
+}
+
+function emitEnvelope(envelope, environment, stdout = process.stdout) {
+  for (const [name, value] of Object.entries(resultOutputs(envelope))) {
+    setOutput(name, value, environment.GITHUB_OUTPUT);
+  }
+  stdout.write(`${JSON.stringify(envelope)}\n`);
 }
 
 async function acquireBinary(environment = process.env) {
@@ -638,7 +683,7 @@ async function acquireBinary(environment = process.env) {
   }
 }
 
-async function main(environment = process.env) {
+async function main(environment = process.env, stdout = process.stdout) {
   const command = environment.INPUT_COMMAND;
   const args = buildCommandArgs(command, environment);
   const acquired = await acquireBinary(environment);
@@ -653,17 +698,34 @@ async function main(environment = process.env) {
     if (!Number.isSafeInteger(timeoutSeconds) || timeoutSeconds < 1 || timeoutSeconds > 3600) {
       throw new Error("timeout-seconds must be between 1 and 3600");
     }
-    const result = await runProcess(acquired.binary, args, {
-      env: childEnvironment,
-      timeoutMs: timeoutSeconds * 1000,
-      maxOutputBytes: PROCESS_OUTPUT_LIMIT,
-      signal: controller.signal,
-    });
-    const envelope = parseCommandEnvelope(result.stdout);
-    for (const [name, value] of Object.entries(resultOutputs(envelope))) {
-      setOutput(name, value, environment.GITHUB_OUTPUT);
+    let result;
+    try {
+      result = await runProcess(acquired.binary, args, {
+        env: childEnvironment,
+        timeoutMs: timeoutSeconds * 1000,
+        maxOutputBytes: PROCESS_OUTPUT_LIMIT,
+        signal: controller.signal,
+      });
+    } catch (error) {
+      if (typeof error.stdout === "string" && error.stdout.trim()) {
+        const envelope = parseCommandEnvelope(error.stdout);
+        emitEnvelope(envelope, environment, stdout);
+        const diagnostics = envelope.diagnostics
+          .map((diagnostic) => `${diagnostic.code}: ${diagnostic.message}`)
+          .join("; ");
+        const next = envelope.next_actions[0]?.command;
+        const failure = new Error([
+          diagnostics || `release-glz ${command} failed`,
+          next ? `next: ${next}` : "",
+        ].filter(Boolean).join("; "));
+        failure.exitCode = error.exitCode;
+        failure.envelope = envelope;
+        throw failure;
+      }
+      throw error;
     }
-    process.stdout.write(`${JSON.stringify(envelope)}\n`);
+    const envelope = parseCommandEnvelope(result.stdout);
+    emitEnvelope(envelope, environment, stdout);
     return envelope;
   } finally {
     process.removeListener("SIGINT", cancel);
@@ -685,6 +747,7 @@ module.exports = {
   bundledChecksum,
   download,
   expectedChecksum,
+  emitEnvelope,
   inventoryTarGz,
   isAllowedDownloadRedirect,
   main,

@@ -12,7 +12,7 @@ function safeAssetName(name) {
     name !== "." && name !== ".." && !/[\\/\0\r\n]/.test(name);
 }
 
-function validateInventory(expectedNames, release) {
+function validateInventory(expectedNames, release, requireComplete = false) {
   if (!Array.isArray(expectedNames) || expectedNames.length === 0 ||
       expectedNames.length > MAX_ASSET_COUNT) {
     throw new Error("expected release inventory is empty or excessive");
@@ -41,6 +41,9 @@ function validateInventory(expectedNames, release) {
       throw new Error(`GitHub Release contains unsealed asset \`${name}\``);
     }
     existing.add(name);
+  }
+  if (requireComplete && existing.size !== expected.size) {
+    throw new Error("GitHub Release does not contain the complete sealed inventory");
   }
 }
 
@@ -83,8 +86,9 @@ function readBoundedStdin(stream = process.stdin) {
 }
 
 function artifactsArgument(argv) {
-  if (argv.length !== 2 || argv[0] !== "--artifacts" || !argv[1]) {
-    throw new Error("usage: verify-release-assets.js --artifacts DIR");
+  if ((argv.length !== 2 && argv.length !== 3) || argv[0] !== "--artifacts" ||
+      !argv[1] || (argv.length === 3 && argv[2] !== "--complete")) {
+    throw new Error("usage: verify-release-assets.js --artifacts DIR [--complete]");
   }
   return argv[1];
 }
@@ -98,7 +102,7 @@ async function main(argv = process.argv.slice(2)) {
   } catch {
     throw new Error("GitHub Release response is not valid JSON");
   }
-  validateInventory(expectedInventory(path.resolve(directory)), release);
+  validateInventory(expectedInventory(path.resolve(directory)), release, argv.includes("--complete"));
 }
 
 if (require.main === module) {

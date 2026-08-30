@@ -817,7 +817,16 @@ async fn actions_artifact_is_bound_to_the_oidc_run_source_and_server_digest() {
     let body = format!(
         r#"{{"id":91,"name":"release-glz-candidate-42","size_in_bytes":4096,"expired":false,"digest":"sha256:{digest}","workflow_run":{{"id":42,"head_sha":"{source}"}}}}"#
     );
-    let server = FakeServer::start(vec![response(200, &body)]).await;
+    let run = actions_run_value(
+        42,
+        "o/r",
+        ".github/workflows/release-glz.yml",
+        &source,
+        "completed",
+        Some("success"),
+    );
+    let server =
+        FakeServer::start(vec![response(200, &body), response(200, &run.to_string())]).await;
     let client = GitHubClient::new(
         GitHubRepository::parse("o/r").unwrap(),
         server.base_url(),
@@ -834,7 +843,86 @@ async fn actions_artifact_is_bound_to_the_oidc_run_source_and_server_digest() {
     assert_eq!(evidence.sha256(), digest);
     assert_eq!(evidence.run_id(), "42");
     assert_eq!(evidence.source_sha(), source);
-    assert!(server.requests()[0].starts_with("GET /repos/o/r/actions/artifacts/91 "));
+    assert_eq!(evidence.repository(), "o/r");
+    assert_eq!(
+        evidence.workflow_path(),
+        ".github/workflows/release-glz.yml"
+    );
+    let requests = server.requests();
+    assert!(requests[0].starts_with("GET /repos/o/r/actions/artifacts/91 "));
+    assert!(requests[1].starts_with("GET /repos/o/r/actions/runs/42 "));
+}
+
+#[tokio::test]
+async fn actions_artifact_run_requires_the_managed_successful_repository_source() {
+    let source = "a".repeat(40);
+    let digest = "d".repeat(64);
+    let artifact =
+        actions_artifact_value(91, "release-glz-candidate-42", 4096, &digest, 42, &source);
+    let invalid_runs = [
+        actions_run_value(
+            43,
+            "o/r",
+            ".github/workflows/release-glz.yml",
+            &source,
+            "completed",
+            Some("success"),
+        ),
+        actions_run_value(
+            42,
+            "other/r",
+            ".github/workflows/release-glz.yml",
+            &source,
+            "completed",
+            Some("success"),
+        ),
+        actions_run_value(
+            42,
+            "o/r",
+            ".github/workflows/other.yml",
+            &source,
+            "completed",
+            Some("success"),
+        ),
+        actions_run_value(
+            42,
+            "o/r",
+            ".github/workflows/release-glz.yml",
+            &"b".repeat(40),
+            "completed",
+            Some("success"),
+        ),
+        actions_run_value(
+            42,
+            "o/r",
+            ".github/workflows/release-glz.yml",
+            &source,
+            "in_progress",
+            None,
+        ),
+        actions_run_value(
+            42,
+            "o/r",
+            ".github/workflows/release-glz.yml",
+            &source,
+            "completed",
+            Some("failure"),
+        ),
+    ];
+    for invalid in invalid_runs {
+        let server = FakeServer::start(vec![
+            response(200, &artifact.to_string()),
+            response(200, &invalid.to_string()),
+        ])
+        .await;
+        let client = test_client(&server, Some("token"));
+        let error = client
+            .verify_actions_artifact(91, &digest, "42", &source)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("Candidate run does not match"), "{error}");
+    }
 }
 
 #[tokio::test]
@@ -1313,6 +1401,24 @@ fn actions_artifact_value(
         "expired": false,
         "digest": format!("sha256:{digest}"),
         "workflow_run": {"id": run_id, "head_sha": source_sha}
+    })
+}
+
+fn actions_run_value(
+    id: u64,
+    repository: &str,
+    path: &str,
+    source_sha: &str,
+    status: &str,
+    conclusion: Option<&str>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "id": id,
+        "path": path,
+        "head_sha": source_sha,
+        "status": status,
+        "conclusion": conclusion,
+        "repository": {"full_name": repository}
     })
 }
 

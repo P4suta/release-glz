@@ -297,6 +297,148 @@ impl Manifest {
         &self.source
     }
 
+    pub fn has_release_config(&self) -> bool {
+        self.document
+            .get("tools")
+            .and_then(Item::as_table_like)
+            .and_then(|tools| tools.get("release-glz"))
+            .is_some()
+    }
+
+    /// Render a complete schema 2 configuration for a package that has never
+    /// been configured for release-glz. Existing release configuration is
+    /// intentionally handled by migration or workflow refresh instead.
+    pub fn render_initialized(&self, settings: &InitializationSettings) -> Result<String> {
+        if self.has_release_config() {
+            bail!("init profiles are only valid for an unconfigured package");
+        }
+        if self.version.major == 0 && !settings.allow_version_zero {
+            bail!(
+                "initializing a 0.x package requires the explicit --allow-version-zero policy opt-in"
+            );
+        }
+        validate_git_ref(
+            &format!("refs/heads/{}", settings.default_branch),
+            "detected default branch",
+        )?;
+        validate_release_config(&ReleaseConfig {
+            schema: 2,
+            compiler: settings.compiler.clone(),
+            registry: settings.registry.clone(),
+            approval: ApprovalConfig {
+                manual_refs: vec![format!("refs/heads/{}", settings.default_branch)],
+                ..ApprovalConfig::default()
+            },
+            allow_version_zero: settings.allow_version_zero,
+            compatibility_warnings: Vec::new(),
+            ..ReleaseConfig::default()
+        })?;
+        if self
+            .document
+            .get("tools")
+            .is_some_and(|tools| tools.as_table_like().is_none())
+        {
+            bail!("an inline or non-table `tools` value must be expanded before initialization");
+        }
+
+        let mut rendered = self.source.trim_end().to_owned();
+        if !rendered.is_empty() {
+            rendered.push_str("\n\n");
+        }
+        let registry = &settings.registry;
+        rendered.push_str(&format!(
+            "[tools.release-glz]\n\
+schema = 2\n\
+compiler = {}\n\
+release_branch_prefix = \"release-glz/\"\n\
+allow_version_zero = {}\n\
+api_exceptions = []\n\n\
+[tools.release-glz.registry]\n\
+provider = {}\n{}\
+api_url = {}\n\
+repository_url = {}\n\
+docs_url = {}\n\
+credential_env = {}\n\
+auth = {}\n\
+allow_http_loopback = {}\n\n\
+[tools.release-glz.approval]\n\
+normal = \"release-pr-and-environment\"\n\
+manual = \"environment\"\n\
+environment = \"release\"\n\
+separation = \"solo\"\n\
+manual_refs = [{}]\n\n\
+[tools.release-glz.outputs]\n\
+docs = true\n\
+github_release = true\n\
+sbom = true\n\
+provenance = true\n\
+signature = false\n\
+allow_private_evidence_upload = false\n\n\
+[tools.release-glz.hooks]\n\
+verify = []\n\
+sidecar = []\n\
+notify = []\n\n\
+[tools.release-glz.changelog]\n\
+path = \"CHANGELOG.md\"\n\
+managed_block = true\n\
+notes_dir = \".release-glz/notes\"\n\n\
+[tools.release-glz.baseline_refs]\n",
+            toml_string(&settings.compiler.to_string()),
+            settings.allow_version_zero,
+            toml_string(match registry.provider {
+                RegistryProvider::HexPm => "hexpm",
+                RegistryProvider::HexCompatible => "hex-compatible",
+            }),
+            registry
+                .repository
+                .as_ref()
+                .map(|repository| format!("repository = {}\n", toml_string(repository)))
+                .unwrap_or_default(),
+            toml_string(&registry.api_url),
+            toml_string(&registry.repository_url),
+            toml_string(&registry.docs_url),
+            toml_string(&registry.credential_env),
+            toml_string(match registry.auth {
+                AuthKind::HexToken => "hex-token",
+                AuthKind::Bearer => "bearer",
+            }),
+            registry.allow_http_loopback,
+            toml_string(&format!("refs/heads/{}", settings.default_branch)),
+        ));
+        Self::parse(self.path.clone(), rendered.clone())
+            .context("generated schema 2 configuration did not validate")?;
+        Ok(rendered)
+    }
+
+    pub fn replace_source(&mut self, rendered: String) -> Result<()> {
+        let current = fs::read_to_string(&self.path)
+            .with_context(|| format!("failed to re-read `{}`", self.path.display()))?;
+        if current != self.source {
+            bail!("manifest changed after initialization was prepared; refusing to replace it");
+        }
+        if rendered == self.source {
+            return Ok(());
+        }
+        let parent = self.path.parent().unwrap_or_else(|| Path::new("."));
+        let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+        use std::io::Write as _;
+        temporary.write_all(rendered.as_bytes())?;
+        let permissions = fs::metadata(&self.path)
+            .with_context(|| format!("failed to inspect `{}` permissions", self.path.display()))?
+            .permissions();
+        temporary
+            .as_file()
+            .set_permissions(permissions)
+            .with_context(|| format!("failed to preserve `{}` permissions", self.path.display()))?;
+        temporary.as_file().sync_all()?;
+        temporary
+            .persist(&self.path)
+            .map_err(|error| error.error)
+            .with_context(|| format!("failed to atomically write `{}`", self.path.display()))?;
+        self.source = rendered;
+        Ok(())
+    }
+
     pub fn render_with_version(&self, version: &Version) -> String {
         let mut document = self.document.clone();
         document["version"] = value(version.to_string());
@@ -334,13 +476,20 @@ impl Manifest {
 
     pub fn write(&mut self) -> Result<()> {
         let rendered = self.render();
-        if rendered != self.source {
-            fs::write(&self.path, &rendered)
-                .with_context(|| format!("failed to write `{}`", self.path.display()))?;
-            self.source = rendered;
-        }
-        Ok(())
+        self.replace_source(rendered)
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InitializationSettings {
+    pub compiler: Version,
+    pub default_branch: String,
+    pub registry: RegistryConfig,
+    pub allow_version_zero: bool,
+}
+
+fn toml_string(value: &str) -> String {
+    toml_edit::Value::from(value).to_string()
 }
 
 fn required_string<'a>(document: &'a DocumentMut, key: &str) -> Result<&'a str> {
@@ -577,6 +726,16 @@ fn validate_release_config(config: &ReleaseConfig) -> Result<()> {
         .chain(&config.hooks.notify)
     {
         validate_hook_config(hook)?;
+        if hook
+            .env
+            .iter()
+            .any(|name| protected_hook_environment(name, &config.registry.credential_env))
+        {
+            bail!(
+                "hook `{}` may not receive release-glz authorization or registry credentials",
+                hook.id
+            );
+        }
         if !ids.insert(&hook.id) {
             bail!("duplicate hook id `{}`", hook.id);
         }
@@ -701,7 +860,34 @@ pub fn validate_hook_config(hook: &HookConfig) -> Result<()> {
             hook.id
         );
     }
+    if hook
+        .env
+        .iter()
+        .any(|name| protected_hook_environment(name, ""))
+    {
+        bail!(
+            "hook `{}` may not receive release-glz authorization credentials or GitHub control files",
+            hook.id
+        );
+    }
     Ok(())
+}
+
+pub fn protected_hook_environment(name: &str, registry_credential_env: &str) -> bool {
+    (!registry_credential_env.is_empty() && name == registry_credential_env)
+        || matches!(
+            name,
+            "HEXPM_API_KEY"
+                | "GITHUB_TOKEN"
+                | "GH_TOKEN"
+                | "ACTIONS_ID_TOKEN_REQUEST_TOKEN"
+                | "ACTIONS_ID_TOKEN_REQUEST_URL"
+                | "ACTIONS_RUNTIME_TOKEN"
+                | "GITHUB_ENV"
+                | "GITHUB_OUTPUT"
+                | "GITHUB_PATH"
+                | "GITHUB_STEP_SUMMARY"
+        )
 }
 
 pub fn valid_env_name(value: &str) -> bool {
@@ -884,5 +1070,47 @@ tools = { other = "preserve" }
         let rendered = manifest.render();
         assert!(rendered.contains("other = \"preserve\""), "{rendered}");
         assert!(rendered.contains("prerelease = \"beta\""), "{rendered}");
+    }
+
+    #[test]
+    fn initialization_preserves_unrelated_empty_prerelease_values() {
+        let source = r#"name = "x"
+version = "1.0.0"
+
+[tools.other]
+prerelease = ""
+"#;
+        let manifest = Manifest::parse(PathBuf::from("gleam.toml"), source.into()).unwrap();
+        let rendered = manifest
+            .render_initialized(&InitializationSettings {
+                compiler: Version::new(1, 18, 1),
+                default_branch: "main".into(),
+                registry: RegistryConfig::default(),
+                allow_version_zero: false,
+            })
+            .unwrap();
+        assert!(rendered.contains("[tools.other]\nprerelease = \"\""));
+        let parsed = Manifest::parse(PathBuf::from("gleam.toml"), rendered).unwrap();
+        assert_eq!(parsed.release.prerelease, None);
+    }
+
+    #[test]
+    fn manifest_write_is_atomic_and_refuses_a_changed_source() {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("gleam.toml");
+        let source = "name = \"x\"\nversion = \"1.0.0\"\n";
+        fs::write(&path, source).unwrap();
+        let mut manifest = Manifest::load(&path).unwrap();
+        manifest.set_version(Version::new(1, 1, 0));
+
+        let concurrent = "name = \"x\"\nversion = \"1.0.0\"\n# concurrent edit\n";
+        fs::write(&path, concurrent).unwrap();
+        assert!(manifest.write().is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), concurrent);
+
+        let mut current = Manifest::load(&path).unwrap();
+        current.set_version(Version::new(1, 1, 0));
+        current.write().unwrap();
+        assert!(fs::read_to_string(&path).unwrap().contains("1.1.0"));
     }
 }

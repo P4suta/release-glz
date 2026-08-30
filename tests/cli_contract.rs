@@ -50,6 +50,35 @@ fn usage_errors_have_the_stable_exit_code_two() {
 }
 
 #[test]
+fn json_usage_errors_are_machine_readable_and_keep_the_requested_command() {
+    let output = binary()
+        .args(["--output", "json", "release", "--dry-run"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stderr.is_empty());
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["schema"], "command/v2");
+    assert_eq!(value["ok"], false);
+    assert_eq!(value["command"], "release");
+    assert_eq!(value["diagnostics"][0]["code"], "usage_or_config");
+    assert_eq!(value["result"], serde_json::Value::Null);
+}
+
+#[test]
+fn equals_form_json_output_also_preserves_the_usage_error_envelope() {
+    let output = binary()
+        .args(["--output=json", "release", "--dry-run"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stderr.is_empty());
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["schema"], "command/v2");
+    assert_eq!(value["command"], "release");
+}
+
+#[test]
 fn completion_supports_all_documented_shells() {
     for shell in ["bash", "zsh", "fish", "powershell"] {
         let output = binary().args(["completion", shell]).output().unwrap();
@@ -59,6 +88,13 @@ fn completion_supports_all_documented_shells() {
             String::from_utf8_lossy(&output.stderr)
         );
         assert!(!output.stdout.is_empty(), "{shell}");
+        let source = String::from_utf8(output.stdout).unwrap();
+        for generated_from_cli in ["candidate-build", "action-sha", "allow-version-zero"] {
+            assert!(
+                source.contains(generated_from_cli),
+                "{shell} completion omitted {generated_from_cli}"
+            );
+        }
     }
 }
 

@@ -121,8 +121,8 @@ fn sealed_candidate_cli_lifecycle_reuses_one_candidate_without_rebuilding() {
         .args([
             "--output",
             "json",
-            "--dry-run",
             "release",
+            "--dry-run",
             "--candidate",
             candidate.to_str().unwrap(),
         ])
@@ -221,7 +221,7 @@ fn set_version_dry_run_and_apply_only_raise_the_manifest_version() {
     let before = std::fs::read_to_string(temp.path().join("gleam.toml")).unwrap();
 
     let dry_run = candidate_command(temp.path(), &gleam, &package, &interface)
-        .args(["--output", "json", "--dry-run", "set-version", "2.0.0"])
+        .args(["--output", "json", "set-version", "2.0.0", "--dry-run"])
         .output()
         .unwrap();
     assert_success(&dry_run, "set-version --dry-run");

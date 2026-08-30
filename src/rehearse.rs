@@ -74,7 +74,10 @@ impl Rehearsal {
                     idempotency_key: None,
                 },
             )
-            .await?;
+            .await
+            .map_err(|error| {
+                crate::failure::classified(crate::failure::FailureClass::Hook, error)
+            })?;
 
         let package_tarball = self.gleam.export_hex_tarball(snapshot.package_dir())?;
         let package_interface = self
@@ -160,11 +163,16 @@ impl Rehearsal {
                     idempotency_key: None,
                 },
             )
-            .await?;
+            .await
+            .map_err(|error| {
+                crate::failure::classified(crate::failure::FailureClass::Hook, error)
+            })?;
         input.hook_evidence.extend(sidecars.evidence);
         input.sidecars = built_in_evidence;
         input.sidecars.extend(sidecars.artifacts);
-        Candidate::seal(&options.output, input)
+        Candidate::seal(&options.output, input).map_err(|error| {
+            crate::failure::classified(crate::failure::FailureClass::ImmutableStateConflict, error)
+        })
     }
 }
 

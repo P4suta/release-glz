@@ -11,4 +11,5 @@ fn cargo_cli_and_action_are_the_v1_release_line() {
     );
     assert_eq!(env!("CARGO_PKG_VERSION"), cargo_version);
     assert_eq!(action["version"], cargo_version);
+    assert_eq!(cargo["package"]["publish"].as_bool(), Some(false));
 }

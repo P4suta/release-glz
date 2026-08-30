@@ -394,29 +394,22 @@ impl HexRegistry {
     }
 
     fn api_endpoint(&self, segments: &[&str]) -> Result<Url> {
-        let mut all = Vec::new();
-        if let Some(repository) = &self.repository {
-            all.extend(["repos", repository.as_str()]);
+        if let Some(repository) = self.repository.as_deref() {
+            let mut scoped = Vec::with_capacity(segments.len() + 2);
+            scoped.extend(["repos", repository]);
+            scoped.extend_from_slice(segments);
+            append_segments(&self.api_url, &scoped)
+        } else {
+            append_segments(&self.api_url, segments)
         }
-        all.extend_from_slice(segments);
-        append_segments(&self.api_url, &all)
     }
 
     fn repository_endpoint(&self, segments: &[&str]) -> Result<Url> {
-        let mut all = Vec::new();
-        if let Some(repository) = &self.repository {
-            all.extend(["repos", repository.as_str()]);
-        }
-        all.extend_from_slice(segments);
-        append_segments(&self.repository_url, &all)
+        append_segments(&self.repository_url, segments)
     }
 
     fn docs_endpoint(&self, name: &str, version: &Version) -> Result<Url> {
-        if self.repository.is_some() {
-            self.repository_endpoint(&["docs", &format!("{name}-{version}.tar.gz")])
-        } else {
-            append_segments(&self.docs_url, &[&format!("{name}-{version}.tar.gz")])
-        }
+        append_segments(&self.docs_url, &[&format!("{name}-{version}.tar.gz")])
     }
 
     async fn post_bytes(&self, url: Url, bytes: &[u8]) -> Result<PublishOutcome> {

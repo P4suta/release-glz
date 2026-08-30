@@ -14,6 +14,7 @@ use release_glz::candidate::{
     Candidate, CandidateInput, CandidateSource, HookEvidence, HookKind, RegistryIdentity,
 };
 use release_glz::config::{HookConfig, RegistryProvider};
+use release_glz::failure::FailureClass;
 use release_glz::hooks::SidecarArtifact;
 use release_glz::model::ReleaseState;
 use release_glz::reconciler::{
@@ -41,6 +42,7 @@ async fn crash_after_docs_resumes_without_republishing_candidate_bytes() {
         .await
         .unwrap_err();
     assert_eq!(error.state(), ReleaseState::PartiallyReleased);
+    assert_eq!(error.failure_class(), FailureClass::PartialRelease);
 
     let report = runner
         .run(
@@ -199,6 +201,7 @@ async fn an_invalid_candidate_and_an_existing_checksum_conflict_keep_their_exact
         .await
         .unwrap_err();
     assert_eq!(error.state(), ReleaseState::Blocked);
+    assert_eq!(error.failure_class(), FailureClass::ImmutableStateConflict);
     assert!(error.to_string().contains("release blocked"));
     assert!(error.to_string().contains("checksum"));
 

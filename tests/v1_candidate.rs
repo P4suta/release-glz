@@ -615,6 +615,27 @@ fn verify_and_sidecar_hook_definitions_are_sealed_into_the_intent() {
 }
 
 #[test]
+fn candidate_boundary_rejects_core_and_configured_publication_credentials_in_hooks() {
+    let temp = tempfile::tempdir().unwrap();
+    for (case, credential_env, forwarded_env) in [
+        ("github", "PRIVATE_REGISTRY_TOKEN", "GITHUB_TOKEN"),
+        (
+            "registry",
+            "PRIVATE_REGISTRY_TOKEN",
+            "PRIVATE_REGISTRY_TOKEN",
+        ),
+    ] {
+        let mut input = input_with_verify_hook();
+        input.registry.credential_env = credential_env.into();
+        input.verify_hook_definitions[0].env = vec![forwarded_env.into()];
+        let error = Candidate::seal(&temp.path().join(case), input)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("may not receive"), "{case}: {error}");
+    }
+}
+
+#[test]
 fn candidate_hook_evidence_is_strictly_bound_to_ordered_definitions() {
     let temp = tempfile::tempdir().unwrap();
     for case in [

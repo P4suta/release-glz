@@ -73,6 +73,14 @@ fn command_envelope_v2_has_one_stable_shape() {
             detail: None,
         }],
         vec![NextAction {
+            argv: vec![
+                "release-glz".into(),
+                "rehearse".into(),
+                "--ref".into(),
+                "deadbeef".into(),
+                "--out".into(),
+                "candidate".into(),
+            ],
             command: "rehearse --ref deadbeef --out candidate".into(),
             description: "Seal the approved source".into(),
         }],
@@ -87,6 +95,21 @@ fn command_envelope_v2_has_one_stable_shape() {
         value["next_actions"][0]["command"],
         "rehearse --ref deadbeef --out candidate"
     );
+}
+
+#[test]
+fn next_action_argv_preserves_spaces_and_newlines_without_shell_reparsing() {
+    let candidate = "candidate path\nsecond line";
+    let action = NextAction::executable(
+        ["release-glz", "verify", "--candidate", candidate],
+        "Verify the Candidate.",
+    );
+    assert_eq!(
+        action.argv,
+        ["release-glz", "verify", "--candidate", candidate]
+    );
+    assert!(!action.command.contains('\n'));
+    assert!(action.command.contains("\\n"));
 }
 
 #[test]

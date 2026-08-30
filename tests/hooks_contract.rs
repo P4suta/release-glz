@@ -124,6 +124,25 @@ async fn undeclared_environment_is_not_forwarded() {
 }
 
 #[tokio::test]
+async fn protected_authorization_environment_is_rejected_at_the_runner_boundary() {
+    let temp = tempfile::tempdir().unwrap();
+    fs::write(temp.path().join("source.gleam"), "before").unwrap();
+    let hook = script(
+        temp.path(),
+        "protected-env.sh",
+        "printf '%s' '{\"schema\":\"hook/v1\",\"success\":true,\"summary\":\"clean\",\"evidence\":{}}'\n",
+    );
+    let mut configured = required("protected-env", &hook, 5);
+    configured.env = vec!["GITHUB_TOKEN".into()];
+    let error = HookRunner::default()
+        .run_verify(&[configured], temp.path(), &context())
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("may not receive"), "{error}");
+}
+
+#[tokio::test]
 async fn notify_hooks_have_separate_idempotent_observe_and_apply_phases() {
     let temp = tempfile::tempdir().unwrap();
     let hook = script(
@@ -338,7 +357,7 @@ async fn hook_output_protocol_is_strict_at_every_field() {
         .await
         .unwrap_err()
         .to_string();
-    assert!(error.contains("argv unexpectedly empty"), "{error}");
+    assert!(error.contains("non-empty NUL-free argv"), "{error}");
 }
 
 #[tokio::test]
@@ -471,8 +490,23 @@ async fn sidecar_artifact_protocol_rejects_every_unsafe_shape() {
             "safe asset name",
         ),
         (
+            "parent-name.sh",
+            r#"{"artifacts":[{"name":"..","media_type":"application/json","content_base64":"e30="}]}"#,
+            "safe asset name",
+        ),
+        (
             "media.sh",
             r#"{"artifacts":[{"name":"evidence.json","media_type":"json","content_base64":"e30="}]}"#,
+            "media type",
+        ),
+        (
+            "control-media.sh",
+            r#"{"artifacts":[{"name":"evidence.json","media_type":"application/\u007f","content_base64":"e30="}]}"#,
+            "media type",
+        ),
+        (
+            "long-media.sh",
+            r#"{"artifacts":[{"name":"evidence.json","media_type":"application/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx","content_base64":"e30="}]}"#,
             "media type",
         ),
         (

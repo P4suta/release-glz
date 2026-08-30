@@ -45,3 +45,21 @@ pub(crate) fn validate_media_type(media_type: &str) -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sidecar_identifiers_reject_every_path_and_character_boundary() {
+        assert!(validate_hook_id("Upper.case-1").is_ok());
+        assert!(validate_hook_id("bad id").is_err());
+
+        for name in ["/absolute", ".."] {
+            assert!(validate_name(name).is_err(), "accepted {name:?}");
+        }
+
+        assert!(validate_media_type(&format!("application/{}", "x".repeat(128))).is_err());
+        assert!(validate_media_type("application/\u{7f}json").is_err());
+    }
+}

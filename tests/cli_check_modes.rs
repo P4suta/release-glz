@@ -7,6 +7,8 @@ fn binary() -> Command {
     Command::new(env!("CARGO_BIN_EXE_release-glz"))
 }
 
+const ACTION_SHA: &str = "abcdef0123456789abcdef0123456789abcdef01";
+
 #[test]
 fn init_check_is_non_mutating_and_fails_when_the_managed_workflow_is_stale() {
     let temp = tempfile::tempdir().unwrap();
@@ -19,7 +21,14 @@ fn init_check_is_non_mutating_and_fails_when_the_managed_workflow_is_stale() {
 
     let output = binary()
         .current_dir(temp.path())
-        .args(["--output", "json", "init", "--check"])
+        .args([
+            "--output",
+            "json",
+            "init",
+            "--check",
+            "--action-sha",
+            ACTION_SHA,
+        ])
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(3));
@@ -36,7 +45,7 @@ fn init_check_is_non_mutating_and_fails_when_the_managed_workflow_is_stale() {
     assert_eq!(envelope["diagnostics"][0]["code"], "managed_file_outdated");
     assert_eq!(
         envelope["next_actions"][0]["command"],
-        "release-glz init --update"
+        format!("release-glz init --update --action-sha {ACTION_SHA}")
     );
 }
 
@@ -81,29 +90,59 @@ fn init_diff_update_and_check_form_a_non_destructive_managed_file_lifecycle() {
 
     let diff = binary()
         .current_dir(temp.path())
-        .args(["init", "--diff"])
+        .args(["init", "--diff", "--action-sha", ACTION_SHA])
         .output()
         .unwrap();
     assert!(diff.status.success());
     let diff_text = String::from_utf8(diff.stdout).unwrap();
     assert!(diff_text.contains("+++ .github/workflows/release-glz.yml"));
+    assert!(diff_text.contains("@@ "));
     assert!(diff_text.contains("name: release-glz"));
     assert!(!workflow.exists());
 
-    let dry_run = binary()
+    let json_diff = binary()
+        .current_dir(temp.path())
+        .args([
+            "--output",
+            "json",
+            "init",
+            "--diff",
+            "--action-sha",
+            ACTION_SHA,
+        ])
+        .output()
+        .unwrap();
+    assert!(json_diff.status.success());
+    let json_diff: serde_json::Value = serde_json::from_slice(&json_diff.stdout).unwrap();
+    assert_eq!(
+        json_diff["result"]["manifest_diff"],
+        serde_json::Value::Null
+    );
+    assert!(
+        json_diff["result"]["workflow_diff"]
+            .as_str()
+            .unwrap()
+            .contains("@@ ")
+    );
+
+    let unsupported_global_dry_run = binary()
         .current_dir(temp.path())
         .args(["--output", "json", "--dry-run", "init", "--update"])
         .output()
         .unwrap();
-    assert!(dry_run.status.success());
-    let dry_run: serde_json::Value = serde_json::from_slice(&dry_run.stdout).unwrap();
-    assert_eq!(dry_run["result"]["changed"], true);
-    assert_eq!(dry_run["result"]["written"], false);
+    assert_eq!(unsupported_global_dry_run.status.code(), Some(2));
     assert!(!workflow.exists());
 
     let update = binary()
         .current_dir(temp.path())
-        .args(["--output", "json", "init", "--update"])
+        .args([
+            "--output",
+            "json",
+            "init",
+            "--update",
+            "--action-sha",
+            ACTION_SHA,
+        ])
         .output()
         .unwrap();
     assert!(
@@ -118,7 +157,14 @@ fn init_diff_update_and_check_form_a_non_destructive_managed_file_lifecycle() {
 
     let check = binary()
         .current_dir(temp.path())
-        .args(["--output", "json", "init", "--check"])
+        .args([
+            "--output",
+            "json",
+            "init",
+            "--check",
+            "--action-sha",
+            ACTION_SHA,
+        ])
         .output()
         .unwrap();
     assert!(check.status.success());
@@ -129,7 +175,15 @@ fn init_diff_update_and_check_form_a_non_destructive_managed_file_lifecycle() {
 
     let conflicting = binary()
         .current_dir(temp.path())
-        .args(["--output", "json", "init", "--check", "--diff"])
+        .args([
+            "--output",
+            "json",
+            "init",
+            "--check",
+            "--diff",
+            "--action-sha",
+            ACTION_SHA,
+        ])
         .output()
         .unwrap();
     assert_eq!(conflicting.status.code(), Some(2));
@@ -156,6 +210,12 @@ repo = "widget"
 allow_version_zero = true
 "#;
     std::fs::write(&manifest, legacy).unwrap();
+    #[cfg(unix)]
+    {
+        let mut permissions = std::fs::metadata(&manifest).unwrap().permissions();
+        permissions.set_mode(0o640);
+        std::fs::set_permissions(&manifest, permissions).unwrap();
+    }
 
     let diff = binary()
         .current_dir(temp.path())
@@ -165,20 +225,33 @@ allow_version_zero = true
         .unwrap();
     assert!(diff.status.success());
     let diff = String::from_utf8(diff.stdout).unwrap();
-    assert!(diff.contains("+++ gleam.toml (schema 2)"));
+    assert!(diff.contains("+++ gleam.toml"));
+    assert!(diff.contains("@@ "));
     assert!(diff.contains("schema = 2"));
     assert_eq!(std::fs::read_to_string(&manifest).unwrap(), legacy);
 
-    let dry_run = binary()
+    let json_diff = binary()
+        .current_dir(temp.path())
+        .env("RELEASE_GLZ_GLEAM", &gleam)
+        .args(["--output", "json", "migrate", "--diff"])
+        .output()
+        .unwrap();
+    assert!(json_diff.status.success());
+    let json_diff: serde_json::Value = serde_json::from_slice(&json_diff.stdout).unwrap();
+    assert!(
+        json_diff["result"]["diff"]
+            .as_str()
+            .unwrap()
+            .contains("@@ ")
+    );
+
+    let unsupported_global_dry_run = binary()
         .current_dir(temp.path())
         .env("RELEASE_GLZ_GLEAM", &gleam)
         .args(["--output", "json", "--dry-run", "migrate", "--update"])
         .output()
         .unwrap();
-    assert!(dry_run.status.success());
-    let dry_run: serde_json::Value = serde_json::from_slice(&dry_run.stdout).unwrap();
-    assert_eq!(dry_run["result"]["changed"], true);
-    assert_eq!(dry_run["result"]["written"], false);
+    assert_eq!(unsupported_global_dry_run.status.code(), Some(2));
     assert_eq!(std::fs::read_to_string(&manifest).unwrap(), legacy);
 
     let update = binary()
@@ -200,6 +273,11 @@ allow_version_zero = true
     assert!(migrated.contains("schema = 2"));
     assert!(migrated.contains("compiler = \"1.17.2\""));
     assert!(migrated.contains("allow_version_zero = true"));
+    #[cfg(unix)]
+    assert_eq!(
+        std::fs::metadata(&manifest).unwrap().permissions().mode() & 0o777,
+        0o640
+    );
     assert_eq!(
         std::fs::read_to_string(temp.path().join(".release-glz/legacy-gleam.toml")).unwrap(),
         legacy

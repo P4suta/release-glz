@@ -14,8 +14,10 @@ const {
   buildCommandArgs,
   bundledChecksum,
   download,
+  main,
   normalizedVersion,
   parseCommandEnvelope,
+  resultOutputs,
   runProcess,
   setOutput,
   sha256,
@@ -84,6 +86,43 @@ test("accepts only command envelope schema v2 and extracts domain outputs", () =
   }));
   assert.equal(envelope.result.state, "candidate_ready");
   assert.throws(() => parseCommandEnvelope('{"ok":true}'), /command\/v2/);
+  assert.throws(() => parseCommandEnvelope(JSON.stringify({
+    ...envelope,
+    next_actions: [{ command: "release-glz release", description: "release" }],
+  })), /canonical argv/);
+  assert.equal(resultOutputs({
+    ...envelope,
+    next_actions: [{
+      argv: ["release-glz", "release", "--candidate", "path with space"],
+      command: 'release-glz release --candidate "path with space"',
+      description: "release",
+    }],
+  })["next-action-argv"], JSON.stringify([
+    "release-glz", "release", "--candidate", "path with space",
+  ]));
+});
+
+test("rejects dry-run and online inputs for commands that cannot use them", () => {
+  assert.throws(() => buildCommandArgs("plan", { "INPUT_DRY-RUN": "true" }), /dry-run/);
+  assert.throws(() => buildCommandArgs("plan", { INPUT_ONLINE: "tru" }), /true or false/);
+  assert.throws(() => buildCommandArgs("rehearse", {
+    "INPUT_SOURCE-REF": "a".repeat(40),
+    INPUT_CANDIDATE: "candidate",
+    INPUT_ONLINE: "true",
+  }), /online/);
+  assert.throws(() => buildCommandArgs("plan", {
+    "INPUT_CANDIDATE-BUILD": "true",
+  }), /candidate-build/);
+  assert.throws(() => buildCommandArgs("doctor", {
+    "INPUT_SOURCE-REF": "a".repeat(40),
+  }), /source-ref/);
+  assert.throws(() => buildCommandArgs("plan", {
+    INPUT_CANDIDATE: "candidate",
+  }), /candidate/);
+  assert.deepEqual(buildCommandArgs("doctor", {
+    INPUT_ONLINE: "true",
+    "INPUT_CANDIDATE-BUILD": "true",
+  }).slice(-3), ["doctor", "--online", "--candidate-build"]);
 });
 
 test("rejects unsafe, linked, duplicate, or excessive archive inventories", () => {
@@ -223,6 +262,27 @@ test("streaming subprocess execution is bounded and times out", async () => {
     /timed out/,
   );
   assert.ok(Date.now() - started < 400, "SIGTERM-resistant child was not force-killed");
+
+  const failureEnvelope = JSON.stringify({
+    schema: "command/v2",
+    ok: false,
+    command: "release",
+    result: null,
+    diagnostics: [{ code: "immutable_state_conflict", level: "error", message: "different bytes", detail: null }],
+    next_actions: [{ argv: ["release-glz", "status"], command: "release-glz status", description: "inspect" }],
+  });
+  await assert.rejects(
+    runProcess(process.execPath, ["-e", `process.stdout.write(${JSON.stringify(failureEnvelope)});process.exit(4)`], {
+      timeoutMs: 2_000,
+      maxOutputBytes: 10_000,
+      streamStderr: false,
+    }),
+    (error) => {
+      assert.equal(error.exitCode, 4);
+      assert.equal(parseCommandEnvelope(error.stdout).diagnostics[0].code, "immutable_state_conflict");
+      return true;
+    },
+  );
 });
 
 test("accepts only immutable semantic versions", () => {
@@ -268,6 +328,14 @@ test("bundled checksum manifest covers every platform and exact action version",
     artifacts,
   }), "v1.0.0", "release-glz-aarch64-apple-darwin.tar.gz"), /every supported platform/);
   assert.throws(() => bundledChecksum(manifest, "v1.0.1", "release-glz-aarch64-apple-darwin.tar.gz"), /version/);
+  const placeholders = Object.fromEntries(
+    Object.keys(JSON.parse(manifest).artifacts).map((name) => [name, "0".repeat(64)]),
+  );
+  assert.throws(() => bundledChecksum(JSON.stringify({
+    schema: "release-glz-action-checksums/v1",
+    version: "v1.0.0",
+    artifacts: placeholders,
+  }), "v1.0.0", "release-glz-aarch64-apple-darwin.tar.gz"), /SHA-256/);
 });
 
 test("explicit override provenance is content addressed and binds the archive subject", () => {
@@ -306,6 +374,52 @@ test("writes multiline-safe GitHub outputs", () => {
   assert.match(contents, /^pr<<release_glz_[a-f0-9]+\nhttps:\/\/example\.test\/pr\/1\nrelease_glz_[a-f0-9]+\n$/);
   const delimiters = contents.match(/release_glz_[a-f0-9]+/g);
   assert.equal(delimiters[0], delimiters[1]);
+});
+
+test("Action preserves a nonzero command envelope, diagnostics, argv, and exit code", async (t) => {
+  if (process.platform === "win32") return t.skip("Unix executable fixture");
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "release-glz-failure-test-"));
+  const binary = path.join(directory, "release-glz");
+  const output = path.join(directory, "github-output");
+  const envelope = {
+    schema: "command/v2",
+    ok: false,
+    command: "plan",
+    result: null,
+    diagnostics: [{
+      code: "immutable_state_conflict",
+      level: "error",
+      message: "sealed bytes differ",
+      detail: null,
+    }],
+    next_actions: [{
+      argv: ["release-glz", "status", "--candidate", "path with space"],
+      command: 'release-glz status --candidate "path with space"',
+      description: "inspect the Candidate",
+    }],
+  };
+  fs.writeFileSync(binary, `#!/bin/sh\nprintf '%s\\n' '${JSON.stringify(envelope)}'\nexit 4\n`);
+  fs.chmodSync(binary, 0o700);
+  let displayed = "";
+  await assert.rejects(main({
+      ...process.env,
+      INPUT_COMMAND: "plan",
+      RELEASE_GLZ_BINARY: binary,
+      GITHUB_OUTPUT: output,
+      "INPUT_TIMEOUT-SECONDS": "10",
+    }, {
+      write(chunk) { displayed += chunk; return true; },
+    }), (error) => {
+      assert.equal(error.exitCode, 4);
+      assert.equal(error.envelope.diagnostics[0].code, "immutable_state_conflict");
+      assert.match(error.message, /sealed bytes differ/);
+      assert.match(error.message, /next:/);
+      return true;
+    });
+  assert.equal(JSON.parse(displayed).ok, false);
+  const outputs = fs.readFileSync(output, "utf8");
+  assert.match(outputs, /next-action-argv/);
+  assert.match(outputs, /path with space/);
 });
 
 function tarGz(entries) {

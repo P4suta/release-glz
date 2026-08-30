@@ -266,9 +266,10 @@ fn approved(intent: &ReleaseIntent, approval: &ApprovalEvidence) -> bool {
     let environment = approval.environment.as_deref() == Some(intent.approval_environment.as_str());
     let candidate =
         approval.environment_candidate_digest.as_deref() == Some(intent.candidate_digest.as_str());
-    let normal =
+    let intent_approved =
         approval.release_pr_intent_digest.as_deref() == Some(intent.intent_digest.as_str());
-    let manual = approval.source_sha.as_deref() == Some(intent.source_sha.as_str())
+    let manual = intent_approved
+        && approval.source_sha.as_deref() == Some(intent.source_sha.as_str())
         && approval
             .manual_reason
             .as_deref()
@@ -287,7 +288,7 @@ fn approved(intent: &ReleaseIntent, approval: &ApprovalEvidence) -> bool {
             && identity.workflow_ref().starts_with(&workflow_prefix)
     });
     let path_approved = match oidc.map(VerifiedGithubOidc::event_name) {
-        Some("push") => normal,
+        Some("push") => intent_approved,
         Some("workflow_dispatch") => manual,
         _ => false,
     };

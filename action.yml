@@ -21,7 +21,11 @@ inputs:
     description: Candidate directory used by rehearse, verify, release, and status
     required: false
   online:
-    description: Compare registry and GitHub state during verify or status
+    description: Compare registry and GitHub state during verify, status, or doctor
+    required: false
+    default: "false"
+  candidate-build:
+    description: Run doctor's isolated credential-free HEAD Candidate build
     required: false
     default: "false"
   timeout-seconds:
@@ -61,6 +65,8 @@ outputs:
     description: GitHub Release URL
   next-action:
     description: Next safe command for the current state
+  next-action-argv:
+    description: JSON array containing the canonical argv for the next safe command
 
 runs:
   using: node24

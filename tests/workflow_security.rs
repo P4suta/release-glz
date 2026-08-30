@@ -26,7 +26,9 @@ fn distribution_builds_and_smokes_every_supported_native_target() {
 
 #[test]
 fn distribution_is_attested_and_uploaded_to_a_draft_exactly_once() {
-    let yaml = fs::read_to_string(".github/workflows/distribute.yml").unwrap();
+    let yaml = fs::read_to_string(".github/workflows/distribute.yml")
+        .unwrap()
+        .replace("\r\n", "\n");
     assert!(!yaml.contains("--clobber"));
     assert!(yaml.contains("permissions: {}"));
     assert!(yaml.contains("id-token: write"));
@@ -51,6 +53,24 @@ fn distribution_is_attested_and_uploaded_to_a_draft_exactly_once() {
         .expect("draft assets must be checked against the sealed dist inventory");
     let upload_loop = yaml.find("for file in dist/*").unwrap();
     assert!(inventory_check < upload_loop);
+    let complete_inventory = "node scripts/verify-release-assets.js --artifacts dist --complete";
+    let complete_checks = yaml
+        .match_indices(complete_inventory)
+        .map(|(position, _)| position)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        complete_checks.len(),
+        2,
+        "the complete asset inventory must be checked after upload and immediately before finalization"
+    );
+    let finalize = yaml.find("gh release edit \"$TAG\" --draft=false").unwrap();
+    assert!(
+        upload_loop < complete_checks[0]
+            && complete_checks[0] < complete_checks[1]
+            && complete_checks[1] < finalize,
+        "complete inventory checks must bracket post-upload verification and release finalization"
+    );
+    assert!(yaml.contains("diff -u \\\n"));
 
     for line in yaml.lines().filter(|line| {
         line.trim_start()
@@ -81,7 +101,13 @@ fn distribution_prepares_checksums_without_mutating_a_release_before_the_tag() {
     assert!(yaml.contains("path: action-checksums.json"));
     assert!(yaml.contains("github.event_name == 'push'"));
     assert!(yaml.contains("toolchain: 1.88.0"));
-    assert!(yaml.contains("RELEASE_GLZ_ACTION_SHA: ${{ github.sha }}"));
+    assert!(!yaml.contains("RELEASE_GLZ_ACTION_SHA"));
+    assert!(yaml.contains("git cat-file -t \"$GITHUB_REF\""));
+    assert!(yaml.contains("git rev-parse \"$GITHUB_REF^{}\""));
+    assert!(yaml.contains("git diff --name-only \"$GITHUB_SHA^\" \"$GITHUB_SHA\""));
+    assert!(yaml.contains("= action/checksums.json"));
+    assert!(yaml.contains("Print checksum preparation evidence"));
+    assert!(yaml.contains("steps.upload_checksums.outputs.artifact-digest"));
     assert!(yaml.contains("node scripts/package-windows.js"));
     assert!(!yaml.contains("Compress-Archive"));
 }

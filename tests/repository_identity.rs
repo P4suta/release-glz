@@ -42,7 +42,11 @@ fn every_project_owned_identity_points_at_the_published_repository() {
             include_str!("../docs/release-state.schema.json"),
         ),
     ] {
-        assert!(schema.contains("p4suta.github.io/release-glz"), "{name}");
+        assert!(
+            schema.contains("raw.githubusercontent.com/P4suta/release-glz/v1.0.0/"),
+            "{name} is not bound to the immutable v1 repository tag"
+        );
+        assert!(!schema.contains("p4suta.github.io/release-glz"), "{name}");
         assert!(!schema.contains("gleam-releases.github.io"), "{name}");
     }
 }

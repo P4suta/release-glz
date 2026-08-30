@@ -30,6 +30,15 @@ pub struct DoctorReport {
 }
 
 pub fn assess(input: &DoctorInput) -> DoctorReport {
+    assess_mode(input, true)
+}
+
+/// Assess checks that require no network access and no registry credential.
+pub fn assess_local(input: &DoctorInput) -> DoctorReport {
+    assess_mode(input, false)
+}
+
+fn assess_mode(input: &DoctorInput, online: bool) -> DoctorReport {
     let mut diagnostics = Vec::new();
     let mut next_actions = Vec::new();
 
@@ -85,67 +94,69 @@ pub fn assess(input: &DoctorInput) -> DoctorReport {
             );
         }
     }
-    match input.registry_credential {
-        RegistryCredentialAudit::PublishAndReadAllowed => {}
-        RegistryCredentialAudit::Missing => {
-            error(
-                &mut diagnostics,
-                "registry_credential_missing",
-                "the configured registry credential environment variable is not present",
-            );
-            action(
-                &mut next_actions,
-                "configure registry credential",
-                "Add the publish credential only to the protected GitHub Environment.",
-            );
-        }
-        RegistryCredentialAudit::Invalid => {
-            error(
-                &mut diagnostics,
-                "registry_credential_invalid",
-                "the configured registry credential was rejected",
-            );
-            action(
-                &mut next_actions,
-                "replace registry credential",
-                "Configure a currently valid credential in the protected GitHub Environment.",
-            );
-        }
-        RegistryCredentialAudit::PublishPermissionDenied => {
-            error(
-                &mut diagnostics,
-                "registry_publish_permission_missing",
-                "the registry credential does not have API write permission",
-            );
-            action(
-                &mut next_actions,
-                "grant registry api:write",
-                "Grant only the API write capability required to publish the Candidate.",
-            );
-        }
-        RegistryCredentialAudit::RepositoryReadPermissionDenied => {
-            error(
-                &mut diagnostics,
-                "registry_repository_read_permission_missing",
-                "the registry credential cannot read the configured private repository",
-            );
-            action(
-                &mut next_actions,
-                "grant configured repository read access",
-                "Grant read access only to the configured private repository.",
-            );
-        }
-        RegistryCredentialAudit::Unavailable => {
-            error(
-                &mut diagnostics,
-                "registry_credential_unobserved",
-                "registry credential permissions could not be verified",
-            );
-            action(
-                &mut next_actions,
-                "retry release-glz doctor",
-                "Restore registry connectivity before attempting a release.",
-            );
+    if online {
+        match input.registry_credential {
+            RegistryCredentialAudit::PublishAndReadAllowed => {}
+            RegistryCredentialAudit::Missing => {
+                error(
+                    &mut diagnostics,
+                    "registry_credential_missing",
+                    "the configured registry credential environment variable is not present",
+                );
+                action(
+                    &mut next_actions,
+                    "configure registry credential",
+                    "Add the publish credential only to the protected GitHub Environment.",
+                );
+            }
+            RegistryCredentialAudit::Invalid => {
+                error(
+                    &mut diagnostics,
+                    "registry_credential_invalid",
+                    "the configured registry credential was rejected",
+                );
+                action(
+                    &mut next_actions,
+                    "replace registry credential",
+                    "Configure a currently valid credential in the protected GitHub Environment.",
+                );
+            }
+            RegistryCredentialAudit::PublishPermissionDenied => {
+                error(
+                    &mut diagnostics,
+                    "registry_publish_permission_missing",
+                    "the registry credential does not have API write permission",
+                );
+                action(
+                    &mut next_actions,
+                    "grant registry api:write",
+                    "Grant only the API write capability required to publish the Candidate.",
+                );
+            }
+            RegistryCredentialAudit::RepositoryReadPermissionDenied => {
+                error(
+                    &mut diagnostics,
+                    "registry_repository_read_permission_missing",
+                    "the registry credential cannot read the configured private repository",
+                );
+                action(
+                    &mut next_actions,
+                    "grant configured repository read access",
+                    "Grant read access only to the configured private repository.",
+                );
+            }
+            RegistryCredentialAudit::Unavailable => {
+                error(
+                    &mut diagnostics,
+                    "registry_credential_unobserved",
+                    "registry credential permissions could not be verified",
+                );
+                action(
+                    &mut next_actions,
+                    "release-glz doctor --online",
+                    "Restore registry connectivity before attempting a release.",
+                );
+            }
         }
     }
     if !input.workflow_current {
@@ -161,25 +172,39 @@ pub fn assess(input: &DoctorInput) -> DoctorReport {
         );
     }
 
-    match &input.github_environment {
-        Some(environment) => assess_approval(
-            &input.approval,
-            environment,
-            &mut diagnostics,
-            &mut next_actions,
-        ),
-        None => {
-            error(
+    if online {
+        match &input.github_environment {
+            Some(environment) => assess_approval(
+                &input.approval,
+                environment,
                 &mut diagnostics,
-                "github_environment_unobserved",
-                "GitHub Environment and branch protection could not be verified",
-            );
-            action(
                 &mut next_actions,
-                "configure GITHUB_TOKEN",
-                "Provide read access so doctor can verify repository release protections.",
-            );
+            ),
+            None => {
+                error(
+                    &mut diagnostics,
+                    "github_environment_unobserved",
+                    "GitHub Environment and branch protection could not be verified",
+                );
+                action(
+                    &mut next_actions,
+                    "configure GITHUB_TOKEN",
+                    "Provide read access so doctor can verify repository release protections.",
+                );
+            }
         }
+    } else {
+        diagnostics.push(Diagnostic {
+            code: "online_checks_skipped".into(),
+            level: DiagnosticLevel::Info,
+            message: "registry credentials and GitHub release protections were not checked".into(),
+            detail: Some("run `release-glz doctor --online` before a release".into()),
+        });
+        action(
+            &mut next_actions,
+            "release-glz doctor --online",
+            "Verify registry credentials and GitHub release protections.",
+        );
     }
 
     let state = if diagnostics
@@ -332,10 +357,15 @@ fn action(
     if actions.iter().any(|action| action.command == command) {
         return;
     }
-    actions.push(NextAction {
-        command,
-        description: description.into(),
-    });
+    let description = description.into();
+    if command.starts_with("release-glz ") {
+        actions.push(NextAction::executable(
+            command.split_ascii_whitespace(),
+            description,
+        ));
+    } else {
+        actions.push(NextAction::guidance(command, description));
+    }
 }
 
 #[cfg(test)]
@@ -349,5 +379,16 @@ mod tests {
         action(&mut actions, "fix policy", "replacement explanation");
         assert_eq!(actions.len(), 1);
         assert_eq!(actions[0].description, "first explanation");
+    }
+
+    #[test]
+    fn cli_next_actions_are_executable_without_shell_parsing() {
+        let mut actions = Vec::new();
+        action(
+            &mut actions,
+            "release-glz doctor --online",
+            "Retry online diagnostics.",
+        );
+        assert_eq!(actions[0].argv, ["release-glz", "doctor", "--online"]);
     }
 }

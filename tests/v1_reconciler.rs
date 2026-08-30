@@ -469,12 +469,34 @@ fn optional_notifications_are_planned_but_do_not_make_a_published_core_partial()
 #[test]
 fn push_and_manual_workflow_approvals_cannot_be_substituted_for_each_other() {
     let target = intent();
-    let manual = ApprovalEvidence {
+    let missing_intent = ApprovalEvidence {
         release_pr_intent_digest: None,
         source_sha: Some(target.source_sha.clone()),
         manual_reason: Some("Emergency release after incident review".into()),
         github_oidc: Some(oidc_identity("workflow_dispatch")),
         ..approved()
+    };
+    assert_eq!(
+        reconcile(&target, &ExternalReleaseState::default(), &missing_intent)
+            .unwrap()
+            .state,
+        ReleaseState::AwaitingApproval
+    );
+
+    let wrong_intent = ApprovalEvidence {
+        release_pr_intent_digest: Some("0".repeat(64)),
+        ..missing_intent.clone()
+    };
+    assert_eq!(
+        reconcile(&target, &ExternalReleaseState::default(), &wrong_intent)
+            .unwrap()
+            .state,
+        ReleaseState::AwaitingApproval
+    );
+
+    let manual = ApprovalEvidence {
+        release_pr_intent_digest: Some(target.intent_digest.clone()),
+        ..missing_intent
     };
     assert_ne!(
         reconcile(&target, &ExternalReleaseState::default(), &manual)

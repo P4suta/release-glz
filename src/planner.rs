@@ -12,6 +12,7 @@ use crate::api;
 use crate::artifact;
 use crate::changelog::{self, ReleaseNotesConfig};
 use crate::config::{ApprovalMode, Manifest};
+use crate::failure::{FailureClass, classified, with_default_class};
 use crate::git::{Commit, GitRepo};
 use crate::gleam::Gleam;
 use crate::model::{
@@ -152,7 +153,11 @@ impl<R: Registry> Planner<R> {
                 manifest.release.compiler
             );
         }
-        let package_state = self.registry.package(&manifest.package).await?;
+        let package_state = self
+            .registry
+            .package(&manifest.package)
+            .await
+            .map_err(|error| with_default_class(error, FailureClass::TemporaryExternal))?;
 
         let mut plan = match package_state {
             None => self.initial_plan(&manifest, &repo, options).await,
@@ -177,10 +182,13 @@ impl<R: Registry> Planner<R> {
         if let Some(explicit) = &options.version_override
             && explicit < &manifest.version
         {
-            bail!(
-                "release policy forbids lowering the manifest version from {} to {explicit}",
-                manifest.version
-            );
+            return Err(classified(
+                FailureClass::PolicyOrApproval,
+                format!(
+                    "release policy forbids lowering the manifest version from {} to {explicit}",
+                    manifest.version
+                ),
+            ));
         }
         let mut version = options
             .version_override
@@ -262,11 +270,13 @@ impl<R: Registry> Planner<R> {
             .as_ref()
             .unwrap_or(&manifest.version);
         if candidate < &latest.version {
-            bail!(
-                "manifest version {} is behind the latest Hex release {}; run `release-glz update` or set a higher version",
-                candidate,
-                latest.version
-            );
+            return Err(classified(
+                FailureClass::PolicyOrApproval,
+                format!(
+                    "manifest version {} is behind the latest Hex release {}; run `release-glz update` or set a higher version",
+                    candidate, latest.version
+                ),
+            ));
         }
         // Validate a structured escape hatch before any potentially long
         // artifact-fingerprint history scan. An expired or unresolvable
@@ -275,7 +285,8 @@ impl<R: Registry> Planner<R> {
         let source = self
             .registry
             .source_tarball(&manifest.package, &latest.version)
-            .await?;
+            .await
+            .map_err(|error| with_default_class(error, FailureClass::TemporaryExternal))?;
         let published_artifact = artifact::normalize_hex_tarball(&source)?;
         let baseline = self
             .find_baseline(BaselineSearch {
@@ -350,10 +361,13 @@ impl<R: Registry> Planner<R> {
                         ..ApiDiff::default()
                     }
                 } else {
-                    bail!(
-                        "could not determine the public API for baseline {}: {error:#}\nAdd a version-scoped `[[tools.release-glz.api_exceptions]]` entry with a resolvable baseline, reason, and expiry only when reconstruction is impossible",
-                        latest.version,
-                    )
+                    return Err(classified(
+                        FailureClass::PolicyOrApproval,
+                        format!(
+                            "could not determine the public API for baseline {}: {error:#}\nAdd a version-scoped `[[tools.release-glz.api_exceptions]]` entry with a resolvable baseline, reason, and expiry only when reconstruction is impossible",
+                            latest.version,
+                        ),
+                    ));
                 }
             }
         };
@@ -575,15 +589,21 @@ impl<R: Registry> Planner<R> {
         }
 
         if truncated {
-            bail!(
-                "bounded artifact baseline search inspected {} commits without a match; add `[tools.release-glz.baseline_refs]` for {version} instead of expanding an unbounded history scan",
-                self.baseline_search_limit
-            );
+            return Err(classified(
+                FailureClass::PolicyOrApproval,
+                format!(
+                    "bounded artifact baseline search inspected {} commits without a match; add `[tools.release-glz.baseline_refs]` for {version} instead of expanding an unbounded history scan",
+                    self.baseline_search_limit
+                ),
+            ));
         }
 
-        bail!(
-            "the Hex artifact for {version} does not match any commit and tag `{tag}` is missing; add `[tools.release-glz.baseline_refs]` with `\"{version}\" = \"<sha>\"`"
-        )
+        Err(classified(
+            FailureClass::PolicyOrApproval,
+            format!(
+                "the Hex artifact for {version} does not match any commit and tag `{tag}` is missing; add `[tools.release-glz.baseline_refs]` with `\"{version}\" = \"<sha>\"`"
+            ),
+        ))
     }
 
     fn baseline_cache_path(
@@ -690,7 +710,8 @@ impl<R: Registry> Planner<R> {
         if let Some(docs) = self
             .registry
             .docs_tarball(&manifest.package, version)
-            .await?
+            .await
+            .map_err(|error| with_default_class(error, FailureClass::TemporaryExternal))?
             && let Some(interface) = artifact::interface_from_docs_tarball(&docs)?
         {
             return Ok(interface);
@@ -718,10 +739,13 @@ fn validated_api_exception(
         let expires = chrono::NaiveDate::parse_from_str(&exception.expires, "%Y-%m-%d")
             .expect("API exception dates are validated while parsing configuration");
         if expires < chrono::Utc::now().date_naive() {
-            bail!(
-                "API exception for {version} expired on {}; remove it or complete a newly reviewed exception",
-                exception.expires
-            );
+            return Err(classified(
+                FailureClass::PolicyOrApproval,
+                format!(
+                    "API exception for {version} expired on {}; remove it or complete a newly reviewed exception",
+                    exception.expires
+                ),
+            ));
         }
         repo.resolve(&exception.baseline)?.with_context(|| {
             format!(
@@ -875,9 +899,12 @@ pub fn update_local(manifest: &mut Manifest, plan: &ReleasePlan) -> Result<Vec<P
 
 fn enforce_version_zero(version: &Version, manifest: &Manifest) -> Result<()> {
     if version.major == 0 && !manifest.release.allow_version_zero {
-        bail!(
-            "refusing release {version}: set `allow_version_zero = true` under `[tools.release-glz]` to acknowledge Gleam's pre-1.0 warning"
-        );
+        return Err(classified(
+            FailureClass::PolicyOrApproval,
+            format!(
+                "refusing release {version}: set `allow_version_zero = true` under `[tools.release-glz]` to acknowledge Gleam's pre-1.0 warning"
+            ),
+        ));
     }
     Ok(())
 }
