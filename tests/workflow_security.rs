@@ -26,7 +26,9 @@ fn distribution_builds_and_smokes_every_supported_native_target() {
 
 #[test]
 fn distribution_is_attested_and_uploaded_to_a_draft_exactly_once() {
-    let yaml = fs::read_to_string(".github/workflows/distribute.yml").unwrap();
+    let yaml = fs::read_to_string(".github/workflows/distribute.yml")
+        .unwrap()
+        .replace("\r\n", "\n");
     assert!(!yaml.contains("--clobber"));
     assert!(yaml.contains("permissions: {}"));
     assert!(yaml.contains("id-token: write"));

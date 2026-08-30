@@ -116,7 +116,7 @@ fn display_argv(argv: &[String]) -> String {
             {
                 argument.clone()
             } else {
-                format!("{:?}", argument)
+                format!("{argument:?}")
             }
         })
         .collect::<Vec<_>>()
