@@ -1,0 +1,39 @@
+name = "gleam_mutants"
+version = "0.1.0"
+description = "Private prerelease dogfood snapshot for release-glz"
+licences = ["MIT", "Apache-2.0"]
+
+[repository]
+type = "github"
+user = "P4suta"
+repo = "gleam-mutants"
+
+[tools.release-glz]
+schema = 2
+compiler = "1.18.1"
+allow_version_zero = true
+prerelease = "alpha"
+
+[tools.release-glz.registry]
+provider = "hex-compatible"
+api_url = "https://hex.example.test/api"
+repository_url = "https://hex.example.test/repository"
+docs_url = "https://hex.example.test/docs"
+credential_env = "PRIVATE_HEX_TOKEN"
+auth = "bearer"
+
+[tools.release-glz.approval]
+normal = "release-pr-and-environment"
+manual = "environment"
+environment = "release"
+separation = "solo"
+manual_refs = ["refs/heads/main"]
+private_repository_fallback = "workflow-dispatch-digest"
+
+[tools.release-glz.outputs]
+docs = true
+github_release = true
+sbom = true
+provenance = true
+signature = false
+allow_private_evidence_upload = false

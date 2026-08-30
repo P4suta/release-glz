@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://p4suta.github.io/release-glz/schema/hook-v1.json",
+  "title": "release-glz Hook Evidence v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "id", "kind", "required", "success", "output_sha256"],
+  "properties": {
+    "schema": { "const": "hook/v1" },
+    "id": { "type": "string", "minLength": 1 },
+    "kind": { "enum": ["verify", "sidecar", "notify"] },
+    "required": { "type": "boolean" },
+    "success": { "type": "boolean" },
+    "output_sha256": { "$ref": "#/$defs/sha256" }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+  }
+}

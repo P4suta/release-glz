@@ -1,0 +1,14 @@
+{
+  "name": "release-glz-action",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Thin checksum-verifying wrapper for release-glz",
+  "type": "commonjs",
+  "scripts": {
+    "test": "node index.test.js"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "license": "MIT OR Apache-2.0"
+}

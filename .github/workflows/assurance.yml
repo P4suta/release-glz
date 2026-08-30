@@ -1,0 +1,195 @@
+name: Shipping assurance
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions: {}
+
+env:
+  RUST_TEST_THREADS: 1
+
+jobs:
+  dependencies:
+    name: Dependency and Rust assurance
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: 1.88.0
+      - name: Install fixed assurance tools
+        run: |
+          cargo install --locked cargo-deny --version 0.20.2
+          cargo install --locked cargo-audit --version 0.22.2
+          cargo install --locked cargo-machete --version 0.9.2
+      - name: Enforce dependency source, license, and advisory policy
+        run: cargo deny check -D warnings
+      - name: Reject RustSec advisories and warnings
+        run: cargo audit -D warnings
+      - name: Reject unused direct dependencies
+        run: cargo machete --with-metadata
+
+  workflow:
+    name: Workflow authorization and supply-chain assurance
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: 1.88.0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      - name: Install fixed actionlint and zizmor
+        env:
+          TOOL_DIR: ${{ runner.temp }}/release-glz-tools
+        run: |
+          mkdir -p "$TOOL_DIR"
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
+            --output "$TOOL_DIR/actionlint.tar.gz" \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          printf '%s  %s\n' 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8 "$TOOL_DIR/actionlint.tar.gz" \
+            | sha256sum --check -
+          tar --extract --gzip --file "$TOOL_DIR/actionlint.tar.gz" --directory "$TOOL_DIR" actionlint
+          chmod 0755 "$TOOL_DIR/actionlint"
+          printf '%s\n' "$TOOL_DIR" >> "$GITHUB_PATH"
+          rustup toolchain install 1.97.0 --profile minimal
+          cargo +1.97.0 install --locked zizmor --version 1.29.0
+      - name: Render the exact managed workflow into an isolated repository
+        env:
+          ACTION_SHA: ${{ github.sha }}
+          GENERATED_ROOT: ${{ runner.temp }}/release-glz-generated
+          RELEASE_GLZ_ACTION_SHA: ${{ github.sha }}
+        run: |
+          mkdir -p "$GENERATED_ROOT"
+          cp tests/fixtures/workflow/gleam.toml "$GENERATED_ROOT/gleam.toml"
+          git -C "$GENERATED_ROOT" init --initial-branch=main
+          cargo run --locked --manifest-path Cargo.toml -- \
+            --manifest-path "$GENERATED_ROOT/gleam.toml" init --update
+          test -s "$GENERATED_ROOT/.github/workflows/release-glz.yml"
+          grep -F "P4suta/release-glz@$ACTION_SHA" "$GENERATED_ROOT/.github/workflows/release-glz.yml"
+      - name: Validate GitHub workflow syntax
+        env:
+          GENERATED_WORKFLOW: ${{ runner.temp }}/release-glz-generated/.github/workflows/release-glz.yml
+        run: actionlint -color .github/workflows/*.yml "$GENERATED_WORKFLOW"
+      - name: Reject high-severity workflow findings
+        env:
+          GENERATED_WORKFLOW: ${{ runner.temp }}/release-glz-generated/.github/workflows/release-glz.yml
+        run: zizmor --persona auditor --min-severity high --no-online-audits .github/workflows action.yml "$GENERATED_WORKFLOW"
+      - name: Verify least privilege and immutable dependencies
+        env:
+          GENERATED_WORKFLOW: ${{ runner.temp }}/release-glz-generated/.github/workflows/release-glz.yml
+        run: node scripts/verify-workflows.js .github/workflows "$GENERATED_WORKFLOW"
+      - name: Reject expression-to-shell injection paths
+        env:
+          GENERATED_WORKFLOW: ${{ runner.temp }}/release-glz-generated/.github/workflows/release-glz.yml
+        run: node scripts/de-shell.js .github/workflows "$GENERATED_WORKFLOW"
+
+  coverage:
+    name: Line and branch coverage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: nightly-2026-08-22
+          components: llvm-tools-preview
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+        with:
+          otp-version: "28.0"
+          gleam-version: "1.18.1"
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      - name: Install fixed coverage tool
+        run: cargo install --locked cargo-llvm-cov --version 0.9.0
+      - name: Measure every Rust target with branch instrumentation
+        run: cargo llvm-cov --workspace --all-targets --branch --json --output-path coverage.json
+      - name: Enforce release coverage thresholds
+        run: node scripts/check-coverage.js --lines 90 --branches 85
+
+  mutation:
+    name: Critical-path mutation testing (${{ matrix.shard }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ["0/4", "1/4", "2/4", "3/4"]
+    permissions:
+      contents: read
+    env:
+      MUTATION_SHARD: ${{ matrix.shard }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: 1.88.0
+      - name: Install fixed mutation tools
+        env:
+          NEXTEST_ARCHIVE: ${{ runner.temp }}/cargo-nextest.tar.gz
+          NEXTEST_DIR: ${{ runner.temp }}/cargo-nextest
+        run: |
+          cargo install --locked cargo-mutants --version 27.1.0
+          mkdir -p "$NEXTEST_DIR"
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
+            --output "$NEXTEST_ARCHIVE" \
+            https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.140/cargo-nextest-0.9.140-x86_64-unknown-linux-gnu.tar.gz
+          printf '%s  %s\n' 4ee9aaa0d0171a985a5d0eb735b87355894c1c455972e9674fb9fdbd1387c9a3 "$NEXTEST_ARCHIVE" \
+            | sha256sum --check -
+          tar --extract --gzip --file "$NEXTEST_ARCHIVE" --directory "$NEXTEST_DIR" cargo-nextest
+          chmod 0755 "$NEXTEST_DIR/cargo-nextest"
+          printf '%s\n' "$NEXTEST_DIR" >> "$GITHUB_PATH"
+      - name: Require every viable critical mutation to be caught
+        run: >-
+          cargo mutants --in-place --test-tool nextest
+          --shard "$MUTATION_SHARD" --timeout 300 --cargo-arg=--locked
+          --file src/version.rs --file src/registry.rs
+          --file src/artifact.rs --file src/reconciler.rs
+
+  fuzz:
+    name: Bounded parser fuzz smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: nightly-2026-08-22
+      - name: Install fixed fuzz driver
+        run: cargo install --locked cargo-fuzz --version 0.13.2
+      - name: Build every fuzz target
+        run: cargo fuzz build
+      - name: Fuzz archive parser
+        run: cargo fuzz run archive -- -max_total_time=30 -timeout=10 -rss_limit_mb=2048
+      - name: Fuzz strict configuration parser
+        run: cargo fuzz run config -- -max_total_time=30 -timeout=10 -rss_limit_mb=2048
+      - name: Fuzz managed PR marker parser
+        run: cargo fuzz run pr_marker -- -max_total_time=30 -timeout=10 -rss_limit_mb=2048
+      - name: Fuzz package interface parser
+        run: cargo fuzz run api_interface -- -max_total_time=30 -timeout=10 -rss_limit_mb=2048
