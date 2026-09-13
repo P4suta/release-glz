@@ -182,18 +182,22 @@ impl Gleam {
     /// Build the package documentation.
     pub fn docs_build(&self, package_dir: &Path) -> Result<()> {
         let manifest = Manifest::load(package_dir.join("gleam.toml"))?;
+        self.build_docs_with(package_dir, &manifest)
+    }
+
+    fn build_docs_with(&self, package_dir: &Path, manifest: &Manifest) -> Result<()> {
         let output = self
             .command(package_dir)?
             .args(["docs", "build"])
             .output()?;
-        let credential = configured_registry_secret(&manifest);
+        let credential = configured_registry_secret(manifest);
         check_output(&output, "gleam docs build", credential.as_deref())
     }
 
     /// Build the documentation and pack it reproducibly.
     pub fn export_docs_tarball(&self, package_dir: &Path) -> Result<Vec<u8>> {
         let manifest = Manifest::load(package_dir.join("gleam.toml"))?;
-        self.docs_build(package_dir)?;
+        self.build_docs_with(package_dir, &manifest)?;
         let docs = package_dir.join("build/dev/docs").join(&manifest.package);
         if !docs.is_dir() {
             bail!("Gleam did not create documentation at `{}`", docs.display());
