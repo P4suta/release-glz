@@ -1,12 +1,20 @@
+//! Version arithmetic for the planner: core versions, release steps, and
+//! prerelease trains.
+
 use anyhow::{Result, bail};
 use semver::{Prerelease, Version};
 
 use crate::model::{Bump, PrereleaseChannel};
 
+/// Drop the prerelease and build metadata, leaving `major.minor.patch`.
 pub fn core(version: &Version) -> Version {
     Version::new(version.major, version.minor, version.patch)
 }
 
+/// Raise a version by one release step.
+///
+/// The result is always a stable core version; a prerelease train is
+/// started separately by [`next_prerelease_with_core`].
 pub fn apply_bump(version: &Version, bump: Bump) -> Version {
     let mut next = core(version);
     match bump {
@@ -150,6 +158,10 @@ fn prerelease_parts(version: &Version) -> Option<(&str, u64)> {
     Some((label, number.parse().ok()?))
 }
 
+/// Report the release step that separates two versions.
+///
+/// `set-version` uses this to check that an explicitly requested version
+/// is at least as large as the automatically required one.
 pub fn bump_between(from: &Version, to: &Version) -> Bump {
     if to.major != from.major {
         Bump::Major

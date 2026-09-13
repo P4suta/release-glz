@@ -1,3 +1,8 @@
+//! Redaction applied to text that can leave the process.
+//!
+//! Standard credential environment variables are redacted unconditionally;
+//! a manifest also names its own `credential_env`, which the caller adds.
+
 const STANDARD_SECRET_ENV_NAMES: [&str; 5] = [
     "HEXPM_API_KEY",
     "GITHUB_TOKEN",
@@ -6,6 +11,11 @@ const STANDARD_SECRET_ENV_NAMES: [&str; 5] = [
     "ACTIONS_RUNTIME_TOKEN",
 ];
 
+/// Replace every standard credential value found in the environment with
+/// `[REDACTED]`.
+///
+/// Error and log text passes through here before it is shown, so a
+/// credential that was read into memory cannot reach a transcript.
 pub fn redact(input: &str) -> String {
     redact_values(
         input,
@@ -15,6 +25,10 @@ pub fn redact(input: &str) -> String {
     )
 }
 
+/// Redact the standard credentials and the caller's additional secrets.
+///
+/// A manifest names its registry credential through `credential_env`, so
+/// only the caller knows which extra value has to disappear.
 pub fn redact_with<S>(input: &str, secrets: impl IntoIterator<Item = S>) -> String
 where
     S: AsRef<str>,

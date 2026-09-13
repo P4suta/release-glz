@@ -1,3 +1,8 @@
+//! Git access, through the `git` executable rather than a library.
+//!
+//! Only committed objects are read, and snapshots come from the tree object,
+//! so what a reviewer approved is what a Candidate can contain.
+
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -6,33 +11,45 @@ use anyhow::{Context, Result, bail};
 
 use crate::model::Bump;
 
+/// One commit, with the fields release notes and intent are read from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Commit {
+    /// Full commit SHA.
     pub sha: String,
+    /// Author name as recorded by git.
     pub author_name: String,
+    /// Author email as recorded by git.
     pub author_email: String,
+    /// First line of the commit message.
     pub subject: String,
+    /// Remainder of the commit message.
     pub body: String,
 }
 
+/// What a tag points at, and whether it is annotated.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TagState {
+    /// Commit the tag resolves to.
     pub target_sha: String,
+    /// Whether the tag is an annotated tag object.
     pub annotated: bool,
 }
 
 impl Commit {
+    /// The release step this commit's message declares, if any.
     pub fn conventional_bump(&self) -> Bump {
         conventional_bump(&self.subject, &self.body)
     }
 }
 
+/// A git repository, driven through the `git` executable.
 #[derive(Debug, Clone)]
 pub struct GitRepo {
     root: PathBuf,
 }
 
 impl GitRepo {
+    /// Find the repository that contains a directory.
     pub fn discover(from: &Path) -> Result<Self> {
         let root = run(from, ["rev-parse", "--show-toplevel"])?;
         Ok(Self {
@@ -40,14 +57,17 @@ impl GitRepo {
         })
     }
 
+    /// Absolute path of the repository root.
     pub fn root(&self) -> &Path {
         &self.root
     }
 
+    /// Commit that `HEAD` currently resolves to.
     pub fn head(&self) -> Result<String> {
         Ok(self.run(["rev-parse", "HEAD"])?.trim().to_owned())
     }
 
+    /// Best guess at the default branch, falling back to `main`.
     pub fn default_branch(&self) -> Result<String> {
         if let Ok(value) = self.run(["symbolic-ref", "refs/remotes/origin/HEAD"])
             && let Some(branch) = value.trim().strip_prefix("refs/remotes/origin/")
@@ -62,6 +82,7 @@ impl GitRepo {
         Ok("main".to_owned())
     }
 
+    /// Resolve a ref to a commit, or `None` when it does not exist.
     pub fn resolve(&self, git_ref: &str) -> Result<Option<String>> {
         let output = Command::new("git")
             .arg("-C")
@@ -76,10 +97,12 @@ impl GitRepo {
         }
     }
 
+    /// Commit a local tag resolves to, if the tag exists.
     pub fn tag_sha(&self, tag: &str) -> Result<Option<String>> {
         self.resolve(&format!("refs/tags/{tag}"))
     }
 
+    /// Local tag target and whether it is annotated.
     pub fn tag_state(&self, tag: &str) -> Result<Option<TagState>> {
         let Some(target_sha) = self.tag_sha(tag)? else {
             return Ok(None);
@@ -94,10 +117,15 @@ impl GitRepo {
         }))
     }
 
+    /// Commit a tag on `origin` resolves to, if it exists there.
     pub fn remote_tag_sha(&self, tag: &str) -> Result<Option<String>> {
         Ok(self.remote_tag_state(tag)?.map(|state| state.target_sha))
     }
 
+    /// Remote tag target and whether it is annotated.
+    ///
+    /// The peeled ref decides, so an annotated tag reports the commit it
+    /// points at rather than the tag object.
     pub fn remote_tag_state(&self, tag: &str) -> Result<Option<TagState>> {
         let output = Command::new("git")
             .arg("-C")
@@ -143,6 +171,10 @@ impl GitRepo {
             }))
     }
 
+    /// Commits between a baseline and `HEAD`, newest first.
+    ///
+    /// `None` walks the whole history, which only happens before the first
+    /// release.
     pub fn commits_since(&self, sha: Option<&str>) -> Result<Vec<Commit>> {
         let mut args = vec![
             "log".to_owned(),
@@ -189,6 +221,10 @@ impl GitRepo {
         Ok((commits, truncated))
     }
 
+    /// Expand a commit's tree into a directory.
+    ///
+    /// Only the committed tree is expanded, so uncommitted and ignored
+    /// working-tree files cannot reach a Candidate.
     pub fn archive(&self, sha: &str, destination: &Path) -> Result<()> {
         // Archiving the tree object avoids Git's commit-only global PAX
         // `comment` header. The strict snapshot parser resolves only safe
@@ -216,6 +252,7 @@ impl GitRepo {
         Ok(())
     }
 
+    /// Create a lightweight tag at a commit.
     pub fn create_tag(&self, tag: &str, sha: &str) -> Result<()> {
         // A lightweight tag needs no CI git identity and points directly at
         // the approved merge commit, which also simplifies conflict checks.
@@ -223,6 +260,7 @@ impl GitRepo {
         Ok(())
     }
 
+    /// Create an annotated tag at a commit, with a fixed committer identity.
     pub fn create_annotated_tag(&self, tag: &str, sha: &str, message: &str) -> Result<()> {
         let output = Command::new("git")
             .arg("-C")
@@ -244,11 +282,13 @@ impl GitRepo {
         Ok(())
     }
 
+    /// Push one tag to `origin`.
     pub fn push_tag(&self, tag: &str) -> Result<()> {
         self.run(["push", "origin", &format!("refs/tags/{tag}")])?;
         Ok(())
     }
 
+    /// Run a git command in this repository and return its stdout.
     pub fn run<I, S>(&self, args: I) -> Result<String>
     where
         I: IntoIterator<Item = S>,
@@ -284,6 +324,10 @@ fn required_part<'a>(parts: &mut impl Iterator<Item = &'a str>, name: &str) -> R
         .ok_or_else(|| anyhow::anyhow!("git log record has no {name}"))
 }
 
+/// The release step a Conventional Commit message declares.
+///
+/// A `!` marker or a `BREAKING CHANGE:` trailer is major; `feat` is
+/// minor; `fix` and `perf` are patch; anything else requires nothing.
 pub fn conventional_bump(subject: &str, body: &str) -> Bump {
     let header = subject.split(':').next().unwrap_or(subject);
     let breaking = header.ends_with('!')

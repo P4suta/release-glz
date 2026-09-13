@@ -1,3 +1,8 @@
+//! Release planning: deciding whether to release, and as which version.
+//!
+//! The planner only reads. Its output is a `plan/v2`, which later stages
+//! seal and publish, so a decision can be reviewed before anything is built.
+
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
@@ -60,8 +65,10 @@ fn default_baseline_cache_dir() -> Option<PathBuf> {
         .map(|path| path.join(".cache"))
 }
 
+/// What one planning run is asked to consider.
 #[derive(Debug, Clone)]
 pub struct PlanOptions {
+    /// Path of the manifest to plan for.
     pub manifest_path: PathBuf,
     /// Used by `set-version` to validate a proposed value before writing it.
     pub version_override: Option<Version>,
@@ -82,6 +89,10 @@ impl Default for PlanOptions {
     }
 }
 
+/// Produces a [`ReleasePlan`] from git, the registry, and the API.
+///
+/// Planning is read-only: it changes neither external state nor tracked
+/// files, so it can run on every push.
 #[derive(Debug, Clone)]
 pub struct Planner<R = HexRegistry> {
     registry: R,
@@ -102,6 +113,7 @@ impl Default for Planner<HexRegistry> {
 }
 
 impl<R: Registry> Planner<R> {
+    /// Build a planner over a registry and a compiler.
     pub fn new(registry: R, gleam: Gleam) -> Self {
         Self {
             registry,
@@ -111,17 +123,23 @@ impl<R: Registry> Planner<R> {
         }
     }
 
+    /// Bound how far back the artifact baseline search may walk.
+    ///
+    /// The search is bounded rather than unlimited, so a missing baseline
+    /// fails closed instead of turning into a full history scan.
     pub fn with_baseline_search_limit(mut self, limit: usize) -> Self {
         assert!(limit > 0, "baseline search limit must be greater than zero");
         self.baseline_search_limit = limit;
         self
     }
 
+    /// Choose where baseline artifacts are cached, or disable caching.
     pub fn with_baseline_cache_dir(mut self, directory: Option<PathBuf>) -> Self {
         self.baseline_cache_dir = directory;
         self
     }
 
+    /// Decide what, if anything, should be released.
     pub async fn plan(&self, options: &PlanOptions) -> Result<ReleasePlan> {
         let compiler = self.gleam.ensure_supported()?;
         let requested_manifest = if options.manifest_path.is_absolute() {
@@ -828,6 +846,7 @@ fn planned_stages(manifest: &Manifest) -> Vec<ReleaseStage> {
     stages
 }
 
+/// Render the files a Release PR carries, keyed by repository path.
 pub fn prepare_release_files(
     manifest: &Manifest,
     repo: &GitRepo,
@@ -879,6 +898,7 @@ pub fn prepare_release_files(
     ]))
 }
 
+/// Write those same files into the working tree, skipping unchanged ones.
 pub fn update_local(manifest: &mut Manifest, plan: &ReleasePlan) -> Result<Vec<PathBuf>> {
     let repo = GitRepo::discover(manifest.package_dir())?;
     let files = prepare_release_files(manifest, &repo, plan, &plan.changes)?;

@@ -1,3 +1,9 @@
+//! Canonical JSON bytes, and the digests taken over them.
+//!
+//! Every digest in the public contract is produced here rather than from
+//! serde's default output, so two runs on different platforms and two
+//! independent implementations agree byte for byte.
+
 use std::cmp::Ordering;
 
 use anyhow::{Context, Result, bail};
@@ -13,6 +19,10 @@ pub fn canonical_json_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>> {
     Ok(output)
 }
 
+/// Hash the canonical JSON bytes of a value with SHA-256.
+///
+/// The lowercase hexadecimal result is what the public contract calls an
+/// intent or candidate digest.
 pub fn canonical_sha256<T: Serialize>(value: &T) -> Result<String> {
     Ok(format!(
         "{:x}",

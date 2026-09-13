@@ -1,3 +1,8 @@
+//! The managed GitHub Actions workflow that release-glz generates.
+//!
+//! The rendered file is treated as managed state: it records its own digest,
+//! and an update is refused once a maintainer has edited it by hand.
+
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -9,6 +14,7 @@ use sha2::{Digest, Sha256};
 use crate::config::{validate_git_ref, validate_relative_path, validate_release_branch_prefix};
 use crate::diff::unified_diff;
 
+/// Repository-relative path of the managed release workflow.
 pub const WORKFLOW_PATH: &str = ".github/workflows/release-glz.yml";
 
 const CHECKOUT_SHA: &str = "3d3c42e5aac5ba805825da76410c181273ba90b1"; // v7.0.1
@@ -19,30 +25,48 @@ const WORKFLOW_STATE_PATH: &str = ".release-glz/workflow-state.json";
 #[cfg(test)]
 const TEST_ACTION_SHA: &str = "abcdef0123456789abcdef0123456789abcdef01";
 
+/// Everything the managed workflow is rendered from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkflowSettings {
+    /// Branch the rolling Release PR targets.
     pub default_branch: String,
+    /// Repository-relative path of the package manifest.
     pub manifest_path: PathBuf,
+    /// Gleam compiler the generated jobs install.
     pub compiler: String,
+    /// Protected GitHub Environment that gates the publish job.
     pub environment: String,
+    /// Environment variable the publish job reads the credential from.
     pub registry_credential_env: String,
+    /// Branch prefix used for the rolling Release PR.
     pub release_branch_prefix: String,
+    /// Full commit SHA that release-glz itself is pinned to.
     pub action_sha: String,
 }
 
+/// What [`sync`] is allowed to do with the rendered workflow.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkflowMode {
+    /// Report whether the file differs, and change nothing.
     Check,
+    /// Report the difference as a unified diff, and change nothing.
     Diff,
+    /// Write the rendered workflow, if it is still the managed one.
     Update,
 }
 
+/// What one workflow synchronization did.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct WorkflowOutcome {
+    /// Always `workflow/v1`.
     pub schema: String,
+    /// Repository-relative path of the workflow.
     pub path: String,
+    /// Whether the rendered workflow differs from the file on disk.
     pub changed: bool,
+    /// Whether the file was actually replaced.
     pub written: bool,
+    /// Unified diff, in diff mode only.
     pub diff: Option<String>,
 }
 
@@ -54,6 +78,7 @@ struct WorkflowStateFile {
     sha256: String,
 }
 
+/// Render the workflow with the built-in defaults, for tests.
 #[cfg(test)]
 pub fn render(default_branch: &str, manifest_path: &Path) -> String {
     render_configured(
@@ -68,6 +93,11 @@ pub fn render(default_branch: &str, manifest_path: &Path) -> String {
     .expect("built-in workflow settings are valid")
 }
 
+/// Render the managed workflow for one package.
+///
+/// Every input is validated before it reaches the template, and external
+/// Actions as well as release-glz itself are pinned to full commit SHAs,
+/// so the generated file has no floating reference to resolve later.
 pub fn render_configured(
     default_branch: &str,
     manifest_path: &Path,
@@ -374,6 +404,7 @@ jobs:
     ))
 }
 
+/// Reject a release-glz pin that is not a full lowercase commit SHA.
 pub fn validate_action_sha(action_sha: &str) -> Result<()> {
     if action_sha.len() != 40
         || !action_sha
@@ -444,6 +475,7 @@ fn validate_scalar(value: &str, field: &str, slash_allowed: bool) -> Result<()> 
     Ok(())
 }
 
+/// Render and write the workflow in one step, for tests.
 #[cfg(test)]
 pub fn init(
     repo_root: &Path,
@@ -466,6 +498,11 @@ pub fn init(
     Ok(path)
 }
 
+/// Render the workflow and reconcile it with the file on disk.
+///
+/// An update is refused unless the recorded managed-state digest still
+/// matches the current file, so a hand-edited workflow is never
+/// overwritten.
 pub fn sync(
     repo_root: &Path,
     settings: &WorkflowSettings,

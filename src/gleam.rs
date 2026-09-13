@@ -1,3 +1,9 @@
+//! The Gleam compiler as an external process.
+//!
+//! Every invocation runs against a snapshot rather than the working tree, and
+//! output is redacted before it is shown, because compiler errors can echo a
+//! configured registry credential.
+
 #[cfg(any(windows, test))]
 use std::collections::BTreeMap;
 use std::fs;
@@ -13,6 +19,10 @@ use tempfile::TempDir;
 
 use crate::config::Manifest;
 
+/// A package directory in a temporary tree.
+///
+/// The temporary directory is owned by the snapshot, so the files stay
+/// readable exactly as long as the snapshot does.
 #[derive(Debug)]
 pub struct PackageSnapshot {
     _temp: TempDir,
@@ -20,11 +30,13 @@ pub struct PackageSnapshot {
 }
 
 impl PackageSnapshot {
+    /// Path of the package inside the snapshot.
     pub fn package_dir(&self) -> &Path {
         &self.package_dir
     }
 }
 
+/// The Gleam compiler, invoked as an external process.
 #[derive(Debug, Clone)]
 pub struct Gleam {
     executable: PathBuf,
@@ -41,6 +53,7 @@ impl Default for Gleam {
 }
 
 impl Gleam {
+    /// Version of the installed compiler.
     pub fn installed_version(&self) -> Result<Version> {
         let output = self.command(Path::new("."))?.arg("--version").output()?;
         check_output(&output, "gleam --version", None)?;
@@ -51,6 +64,7 @@ impl Gleam {
             .context("could not parse Gleam version")
     }
 
+    /// The installed version, once it is known to be supported.
     pub fn ensure_supported(&self) -> Result<Version> {
         let version = self.installed_version()?;
         if version < Version::new(1, 9, 0) {
@@ -59,6 +73,7 @@ impl Gleam {
         Ok(version)
     }
 
+    /// Copy a package directory into a temporary tree.
     pub fn snapshot(&self, package_dir: &Path) -> Result<PackageSnapshot> {
         let temp = tempfile::tempdir().context("failed to create package snapshot")?;
         let destination = temp.path().join("package");
@@ -69,6 +84,7 @@ impl Gleam {
         })
     }
 
+    /// Expand one commit into a temporary tree and locate the package.
     pub fn snapshot_from_git(
         &self,
         repo: &crate::git::GitRepo,
@@ -90,6 +106,7 @@ impl Gleam {
         })
     }
 
+    /// Export the Hex package tarball for a package directory.
     pub fn export_hex_tarball(&self, package_dir: &Path) -> Result<Vec<u8>> {
         let manifest = Manifest::load(package_dir.join("gleam.toml"))?;
         let output = self
@@ -144,6 +161,7 @@ impl Gleam {
         )
     }
 
+    /// Export `package-interface.json`, the input to API comparison.
     pub fn export_package_interface(&self, package_dir: &Path) -> Result<Vec<u8>> {
         let manifest = Manifest::load(package_dir.join("gleam.toml"))?;
         let path = package_dir.join("release-glz-package-interface.json");
@@ -161,6 +179,7 @@ impl Gleam {
         fs::read(&path).with_context(|| format!("Gleam did not create `{}`", path.display()))
     }
 
+    /// Build the package documentation.
     pub fn docs_build(&self, package_dir: &Path) -> Result<()> {
         let manifest = Manifest::load(package_dir.join("gleam.toml"))?;
         let output = self
@@ -171,6 +190,7 @@ impl Gleam {
         check_output(&output, "gleam docs build", credential.as_deref())
     }
 
+    /// Build the documentation and pack it reproducibly.
     pub fn export_docs_tarball(&self, package_dir: &Path) -> Result<Vec<u8>> {
         let manifest = Manifest::load(package_dir.join("gleam.toml"))?;
         self.docs_build(package_dir)?;

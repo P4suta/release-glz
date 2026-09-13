@@ -1,3 +1,10 @@
+//! Strictly typed `gleam.toml` configuration.
+//!
+//! Unknown keys, wrong types, paths outside the repository, unsafe ref
+//! prefixes, URLs carrying credentials, and non-HTTPS registry origins are
+//! rejected here rather than at the point of use, so an invalid manifest
+//! cannot reach a publication path at all.
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -9,20 +16,28 @@ use toml_edit::{DocumentMut, Item, Table, value};
 
 use crate::model::PrereleaseChannel;
 
+/// The `[repository]` table that names the package's forge.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RepositoryConfig {
+    /// Forge kind; only `github` participates in the v1 release path.
     pub kind: Option<String>,
+    /// Owner of the repository on the forge.
     pub user: Option<String>,
+    /// Repository name on the forge.
     pub repo: Option<String>,
+    /// Package directory inside the repository, for a monorepo.
     pub path: Option<String>,
+    /// Prefix placed before `v<version>` when building the release tag.
     pub tag_prefix: String,
 }
 
 impl RepositoryConfig {
+    /// The release tag for a version, including the configured prefix.
     pub fn tag_for(&self, version: &Version) -> String {
         format!("{}v{version}", self.tag_prefix)
     }
 
+    /// The `owner/name` GitHub slug, when this package lives on GitHub.
     pub fn github_name(&self) -> Option<String> {
         match (&self.kind, &self.user, &self.repo) {
             (Some(kind), Some(user), Some(repo)) if kind == "github" => {
@@ -33,34 +48,55 @@ impl RepositoryConfig {
     }
 }
 
+/// The registry protocol a package publishes through.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum RegistryProvider {
+    /// Public Hex.pm, or a Hex.pm Organization repository.
     #[default]
     #[serde(rename = "hexpm")]
     HexPm,
+    /// A private registry that speaks the Hex API and repository protocol.
     HexCompatible,
 }
 
+/// How the registry credential is presented on a request.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum AuthKind {
+    /// A Hex API key, sent the way Hex.pm expects it.
     #[default]
     HexToken,
+    /// An RFC 6750 bearer token.
     Bearer,
 }
 
+/// The `[tools.release-glz.registry]` table.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RegistryConfig {
+    /// Which registry protocol to use.
     pub provider: RegistryProvider,
+    /// Hex.pm Organization name, for an organization repository.
     #[serde(default)]
     pub repository: Option<String>,
+    /// Base URL of the publish API.
     pub api_url: String,
+    /// Base URL that serves package tarballs.
     pub repository_url: String,
+    /// Base URL that receives documentation tarballs.
     pub docs_url: String,
+    /// Name of the environment variable holding the credential.
+    ///
+    /// This is a variable name, never a credential value, so a manifest can
+    /// be committed and only the protected publish job resolves it.
     pub credential_env: String,
+    /// How to present the credential.
     pub auth: AuthKind,
+    /// Permit plain `http` to a loopback origin.
+    ///
+    /// Exists for the loopback fake registries the tests run against; every
+    /// other origin must be HTTPS.
     #[serde(default)]
     pub allow_http_loopback: bool,
 }
@@ -80,30 +116,44 @@ impl Default for RegistryConfig {
     }
 }
 
+/// Which approvals a release has to collect.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ApprovalMode {
+    /// Both a merged Release PR and a protected environment.
     ReleasePrAndEnvironment,
+    /// A protected environment alone.
     Environment,
 }
 
+/// How strictly the approver has to differ from the author.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SeparationMode {
+    /// A single maintainer may both propose and approve.
     #[default]
     Solo,
+    /// Proposal and approval must come from different identities.
     Strict,
 }
 
+/// The `[tools.release-glz.approval]` table.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApprovalConfig {
+    /// Approvals required for a release driven by the rolling Release PR.
     pub normal: ApprovalMode,
+    /// Approvals required for a manually dispatched release.
     pub manual: ApprovalMode,
+    /// GitHub Environment that gates publication.
     pub environment: String,
+    /// Whether one identity may both propose and approve.
     #[serde(default)]
     pub separation: SeparationMode,
+    /// Refs a manual release may be dispatched from.
     pub manual_refs: Vec<String>,
+    /// Environment used when a private repository cannot run the normal
+    /// protected path.
     #[serde(default)]
     pub private_repository_fallback: Option<String>,
 }
@@ -121,14 +171,24 @@ impl Default for ApprovalConfig {
     }
 }
 
+/// The `[tools.release-glz.outputs]` table: what a release produces.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct OutputConfig {
+    /// Publish the documentation tarball.
     pub docs: bool,
+    /// Create a GitHub Release for the tag.
     pub github_release: bool,
+    /// Attach an SBOM to the GitHub Release.
     pub sbom: bool,
+    /// Attach in-toto provenance to the GitHub Release.
     pub provenance: bool,
+    /// Attach a detached signature to the GitHub Release.
     pub signature: bool,
+    /// Allow evidence to be uploaded from a private repository.
+    ///
+    /// Off by default: evidence describes internal build inputs, and a
+    /// private package should not leak them without an explicit decision.
     pub allow_private_evidence_upload: bool,
 }
 
@@ -145,15 +205,25 @@ impl Default for OutputConfig {
     }
 }
 
+/// One configured hook invocation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HookConfig {
+    /// Identifier reported in hook evidence.
     pub id: String,
+    /// Process arguments. A shell command string is never accepted, so
+    /// there is no quoting boundary for an input to cross.
     pub argv: Vec<String>,
+    /// Wall-clock budget, between 1 and 3600 seconds.
     #[serde(default = "default_hook_timeout")]
     pub timeout_seconds: u64,
+    /// Whether failure of this hook fails the command.
     #[serde(default = "default_true")]
     pub required: bool,
+    /// Environment variable names the hook may receive.
+    ///
+    /// Credentials and the GitHub control files are refused even when they
+    /// are named here.
     #[serde(default)]
     pub env: Vec<String>,
 }
@@ -166,19 +236,27 @@ fn default_true() -> bool {
     true
 }
 
+/// The `[tools.release-glz.hooks]` table, grouped by phase.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct HooksConfig {
+    /// Run against the sealed bytes while the Candidate is built.
     pub verify: Vec<HookConfig>,
+    /// Produce extra evidence that travels with the Candidate.
     pub sidecar: Vec<HookConfig>,
+    /// Run after publication, with a least-privilege credential.
     pub notify: Vec<HookConfig>,
 }
 
+/// The `[tools.release-glz.changelog]` table.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ChangelogConfig {
+    /// Repository-relative path of the changelog.
     pub path: PathBuf,
+    /// Maintain a managed block instead of rewriting the whole file.
     pub managed_block: bool,
+    /// Directory holding per-release note fragments.
     pub notes_dir: PathBuf,
 }
 
@@ -192,31 +270,53 @@ impl Default for ChangelogConfig {
     }
 }
 
+/// An expiring permission to release one version without an API baseline.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApiException {
+    /// The exact version the exception applies to.
     pub version: Version,
+    /// Ref to compare against instead of the missing baseline.
     pub baseline: String,
+    /// Why the exception was granted.
     pub reason: String,
+    /// Date the exception stops being accepted.
     pub expires: String,
 }
 
+/// The `[tools.release-glz]` table, after validation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReleaseConfig {
+    /// Configuration schema version. Only `2` can produce a Candidate.
     pub schema: u32,
+    /// Exact Gleam compiler a Candidate must be built with.
     pub compiler: Version,
+    /// Where the package is published.
     pub registry: RegistryConfig,
+    /// What has to approve a publication.
     pub approval: ApprovalConfig,
+    /// Which artifacts a release produces.
     pub outputs: OutputConfig,
+    /// Hooks to run, by phase.
     pub hooks: HooksConfig,
+    /// How the changelog is maintained.
     pub changelog: ChangelogConfig,
+    /// Expiring API baseline exceptions.
     pub api_exceptions: Vec<ApiException>,
+    /// Warnings raised by the configuration itself, such as a legacy schema.
     pub compatibility_warnings: Vec<String>,
+    /// Legacy flat `changelog_path`, mirrored into [`ChangelogConfig::path`].
     pub changelog_path: PathBuf,
+    /// Branch prefix for the rolling Release PR.
     pub release_branch_prefix: String,
+    /// Permit a deliberate 0.x release line.
     pub allow_version_zero: bool,
+    /// Prerelease channel currently selected, if any.
     pub prerelease: Option<PrereleaseChannel>,
+    /// Legacy schema 1 allowance for versions with no API baseline.
     pub allow_unknown_api_for: BTreeSet<Version>,
+    /// Explicit baseline commit per version, used when the artifact search
+    /// cannot identify one.
     pub baseline_refs: BTreeMap<Version, String>,
 }
 
@@ -244,18 +344,27 @@ impl Default for ReleaseConfig {
     }
 }
 
+/// A parsed `gleam.toml`, kept alongside its original bytes.
+///
+/// Edits go through `toml_edit`, so formatting and comments a
+/// maintainer wrote survive a version bump.
 #[derive(Debug, Clone)]
 pub struct Manifest {
     path: PathBuf,
     source: String,
     document: DocumentMut,
+    /// Package name.
     pub package: String,
+    /// Version currently declared in the manifest.
     pub version: Version,
+    /// The `[repository]` table.
     pub repository: RepositoryConfig,
+    /// The validated `[tools.release-glz]` table.
     pub release: ReleaseConfig,
 }
 
 impl Manifest {
+    /// Read and parse a manifest from disk.
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
         let source = fs::read_to_string(path)
@@ -263,6 +372,7 @@ impl Manifest {
         Self::parse(path.to_path_buf(), source)
     }
 
+    /// Parse manifest bytes that were already read.
     pub fn parse(path: PathBuf, source: String) -> Result<Self> {
         let document = source
             .parse::<DocumentMut>()
@@ -285,18 +395,22 @@ impl Manifest {
         })
     }
 
+    /// Path this manifest was read from.
     pub fn path(&self) -> &Path {
         &self.path
     }
 
+    /// Directory that contains the manifest.
     pub fn package_dir(&self) -> &Path {
         self.path.parent().unwrap_or_else(|| Path::new("."))
     }
 
+    /// The bytes as they were read, before any edit.
     pub fn original_source(&self) -> &str {
         &self.source
     }
 
+    /// Whether a `[tools.release-glz]` table is present at all.
     pub fn has_release_config(&self) -> bool {
         self.document
             .get("tools")
@@ -410,6 +524,10 @@ notes_dir = \".release-glz/notes\"\n\n\
         Ok(rendered)
     }
 
+    /// Atomically replace the manifest on disk with rendered bytes.
+    ///
+    /// The file is re-read first and the write is refused when it changed,
+    /// so a concurrent edit is never silently overwritten.
     pub fn replace_source(&mut self, rendered: String) -> Result<()> {
         let current = fs::read_to_string(&self.path)
             .with_context(|| format!("failed to re-read `{}`", self.path.display()))?;
@@ -439,17 +557,20 @@ notes_dir = \".release-glz/notes\"\n\n\
         Ok(())
     }
 
+    /// Render the manifest with a different version, without mutating it.
     pub fn render_with_version(&self, version: &Version) -> String {
         let mut document = self.document.clone();
         document["version"] = value(version.to_string());
         document.to_string()
     }
 
+    /// Set the manifest version in memory.
     pub fn set_version(&mut self, version: Version) {
         self.document["version"] = value(version.to_string());
         self.version = version;
     }
 
+    /// Select or clear the prerelease channel in memory.
     pub fn set_prerelease(&mut self, channel: Option<PrereleaseChannel>) {
         ensure_release_table(&mut self.document);
         let release = self
@@ -470,21 +591,28 @@ notes_dir = \".release-glz/notes\"\n\n\
         self.release.prerelease = channel;
     }
 
+    /// Render the current in-memory manifest.
     pub fn render(&self) -> String {
         self.document.to_string()
     }
 
+    /// Write the current in-memory manifest back to disk.
     pub fn write(&mut self) -> Result<()> {
         let rendered = self.render();
         self.replace_source(rendered)
     }
 }
 
+/// Everything `init` needs in order to render a first configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InitializationSettings {
+    /// The compiler that is actually installed.
     pub compiler: Version,
+    /// The repository's default branch.
     pub default_branch: String,
+    /// Registry the package will publish to.
     pub registry: RegistryConfig,
+    /// Whether a 0.x release line was explicitly permitted.
     pub allow_version_zero: bool,
 }
 
@@ -794,6 +922,7 @@ fn validate_registry(registry: &RegistryConfig) -> Result<()> {
     Ok(())
 }
 
+/// Whether a host literal is a loopback IP address.
 pub fn host_is_loopback_ip(host: &str) -> bool {
     host.trim_start_matches('[')
         .trim_end_matches(']')
@@ -801,6 +930,7 @@ pub fn host_is_loopback_ip(host: &str) -> bool {
         .is_ok_and(|address| address.is_loopback())
 }
 
+/// Whether a URL is plain `http` to a loopback origin.
 pub fn url_is_http_loopback(url: &reqwest::Url) -> bool {
     url.scheme() == "http"
         && url
@@ -808,6 +938,7 @@ pub fn url_is_http_loopback(url: &reqwest::Url) -> bool {
             .is_some_and(|host| host.eq_ignore_ascii_case("localhost") || host_is_loopback_ip(host))
 }
 
+/// Reject an organization name that is not a safe path segment.
 pub fn validate_registry_repository(
     _provider: RegistryProvider,
     repository: Option<&str>,
@@ -830,6 +961,10 @@ pub fn validate_registry_repository(
     Ok(())
 }
 
+/// Reject a hook that is unsafe to execute.
+///
+/// Covers the id, the argv, the timeout bounds, and the environment
+/// allowlist, which may never name a credential.
 pub fn validate_hook_config(hook: &HookConfig) -> Result<()> {
     let valid_id = !hook.id.is_empty()
         && hook.id.bytes().enumerate().all(|(index, byte)| match byte {
@@ -873,6 +1008,10 @@ pub fn validate_hook_config(hook: &HookConfig) -> Result<()> {
     Ok(())
 }
 
+/// Whether an environment name is one a hook may never receive.
+///
+/// Covers registry and GitHub credentials plus the GitHub control files,
+/// which a hook could otherwise use to rewrite job outputs.
 pub fn protected_hook_environment(name: &str, registry_credential_env: &str) -> bool {
     (!registry_credential_env.is_empty() && name == registry_credential_env)
         || matches!(
@@ -890,6 +1029,7 @@ pub fn protected_hook_environment(name: &str, registry_credential_env: &str) -> 
         )
 }
 
+/// Whether a string is a safe environment variable name.
 pub fn valid_env_name(value: &str) -> bool {
     value.bytes().enumerate().all(|(index, byte)| match byte {
         b'A'..=b'Z' | b'_' => true,
@@ -898,6 +1038,7 @@ pub fn valid_env_name(value: &str) -> bool {
     }) && !value.is_empty()
 }
 
+/// Reject a package name Hex would not accept.
 pub fn validate_package_name(value: &str) -> Result<()> {
     let valid = value.bytes().enumerate().all(|(index, byte)| match byte {
         b'a'..=b'z' => true,
@@ -910,6 +1051,7 @@ pub fn validate_package_name(value: &str) -> Result<()> {
     Ok(())
 }
 
+/// Reject a path that escapes the repository or is not `/`-separated.
 pub fn validate_relative_path(path: &Path, field: &str) -> Result<()> {
     if path.as_os_str().is_empty() || path.to_string_lossy().contains('\\') {
         bail!("{field} must be a non-empty repository-relative `/` path");
@@ -934,10 +1076,12 @@ fn validate_ref_prefix(value: &str, field: &str, empty_allowed: bool) -> Result<
     Ok(())
 }
 
+/// Reject a branch prefix that could produce an unsafe ref.
 pub fn validate_release_branch_prefix(value: &str) -> Result<()> {
     validate_ref_prefix(value, "release_branch_prefix", false)
 }
 
+/// Reject a git ref that is unsafe or that git itself would refuse.
 pub fn validate_git_ref(value: &str, field: &str) -> Result<()> {
     if value.is_empty()
         || value == "@"

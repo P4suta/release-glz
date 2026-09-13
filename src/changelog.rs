@@ -1,3 +1,8 @@
+//! Changelog rendering and the structured notes that feed it.
+//!
+//! Rendering is idempotent, so the rolling Release PR can be regenerated on
+//! every push without producing a new diff each time.
+
 use std::collections::BTreeSet;
 use std::fs;
 use std::ops::Range;
@@ -11,31 +16,42 @@ use crate::model::ChangeEntry;
 
 const PREAMBLE: &str = "# Changelog\n\nAll notable changes to this project will be documented in this file.\n\nThe format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),\nand this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).\n\n## [Unreleased]\n";
 
+/// A `.github/release.yml` file.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct ReleaseNotesFile {
+    /// The `changelog` section of the file.
     #[serde(default)]
     pub changelog: ReleaseNotesConfig,
 }
 
+/// GitHub's release-notes configuration, as far as it is honoured.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct ReleaseNotesConfig {
+    /// Entries to leave out.
     #[serde(default)]
     pub exclude: Exclude,
+    /// Categories, in the order they should appear.
     #[serde(default)]
     pub categories: Vec<Category>,
 }
 
+/// Which entries never reach the notes.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Exclude {
+    /// Labels that exclude an entry.
     #[serde(default)]
     pub labels: BTreeSet<String>,
+    /// Authors whose entries are excluded, such as bots.
     #[serde(default)]
     pub authors: BTreeSet<String>,
 }
 
+/// One section of the generated notes.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Category {
+    /// Section heading.
     pub title: String,
+    /// Labels that place an entry in this section.
     #[serde(default)]
     pub labels: BTreeSet<String>,
 }
@@ -75,6 +91,7 @@ struct StructuredNote {
 }
 
 impl ReleaseNotesConfig {
+    /// Read the configuration, falling back to defaults when absent.
     pub fn load(path: &Path) -> Result<Self> {
         if !path.is_file() {
             return Ok(Self::default());
@@ -85,6 +102,7 @@ impl ReleaseNotesConfig {
             .changelog)
     }
 
+    /// Apply exclusions and categories to a set of entries.
     pub fn apply(&self, entries: impl IntoIterator<Item = ChangeEntry>) -> Vec<ChangeEntry> {
         let mut entries: Vec<_> = entries
             .into_iter()
@@ -132,6 +150,7 @@ impl ReleaseNotesConfig {
     }
 }
 
+/// Read the structured note fragments that have not been released yet.
 pub fn load_structured_notes(
     package_root: &Path,
     notes_directory: &Path,
@@ -189,6 +208,10 @@ pub fn load_structured_notes(
     Ok(entries)
 }
 
+/// Merge note fragments into the collected entries.
+///
+/// A fragment that names a pull request already present is dropped, so a
+/// change is described once rather than twice.
 pub fn merge_supplemental_notes(
     mut entries: Vec<ChangeEntry>,
     notes: Vec<ChangeEntry>,
@@ -233,6 +256,10 @@ fn validate_note(note: &StructuredNote, path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Render a changelog with one version's section inserted.
+///
+/// Rendering is idempotent: repeating it on the result produces the same
+/// bytes, which is what lets the Release PR be updated in place.
 pub fn render(existing: Option<&str>, version: &str, entries: &[ChangeEntry]) -> String {
     let mut changelog = existing.unwrap_or(PREAMBLE).to_owned();
     if !changelog.contains("## [Unreleased]") {
@@ -266,6 +293,7 @@ pub fn render(existing: Option<&str>, version: &str, entries: &[ChangeEntry]) ->
     changelog
 }
 
+/// Render the section for one version, dated today.
 pub fn render_section(version: &str, entries: &[ChangeEntry]) -> String {
     render_section_on(version, entries, Utc::now().date_naive())
 }
@@ -312,6 +340,7 @@ fn release_section_date(section: &str, version: &str) -> Option<NaiveDate> {
     NaiveDate::parse_from_str(raw, "%Y-%m-%d").ok()
 }
 
+/// Extract the section for one version, if the changelog has it.
 pub fn release_section(changelog: &str, version: &str) -> Option<String> {
     let range = release_section_range(changelog, version)?;
     Some(changelog[range].trim().to_owned())
@@ -339,6 +368,7 @@ fn release_section_range(changelog: &str, version: &str) -> Option<Range<usize>>
     Some(start..end)
 }
 
+/// The section a Conventional Commit title belongs in by default.
 pub fn default_category(title: &str) -> String {
     let kind = title.split(':').next().unwrap_or_default();
     if kind.contains('!') {

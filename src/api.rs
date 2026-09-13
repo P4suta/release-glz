@@ -1,3 +1,8 @@
+//! Public API comparison between a Candidate and its baseline.
+//!
+//! Comparison uses `package-interface.json`, so an API change is detected
+//! from the compiler's own view of the package rather than from source text.
+
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use anyhow::{Context, Result};

@@ -1,3 +1,10 @@
+//! GitHub Actions OIDC verification.
+//!
+//! A token proves which repository, workflow, environment, and commit a
+//! publication is running for. Every claim is checked against the sealed
+//! Candidate, so authority comes from the run rather than from a long-lived
+//! credential.
+
 use anyhow::{Result, bail};
 use base64::Engine;
 use reqwest::{Client, StatusCode, Url};
@@ -7,7 +14,12 @@ use std::time::Duration;
 
 use crate::config::host_is_loopback_ip;
 
+/// The only issuer whose GitHub Actions tokens are accepted.
 pub const GITHUB_OIDC_ISSUER: &str = "https://token.actions.githubusercontent.com";
+/// Audience a token has to be minted for.
+///
+/// A token issued for any other audience is rejected, so a token minted
+/// for a different tool cannot authorize a publication.
 pub const RELEASE_GLZ_AUDIENCE: &str = "release-glz";
 const CLOCK_SKEW_SECONDS: i64 = 30;
 const MAX_COMPACT_JWT_BYTES: usize = 32 * 1024;
@@ -18,23 +30,32 @@ const MAX_JWKS_BYTES: usize = 1024 * 1024;
 const GITHUB_DISCOVERY_URL: &str =
     "https://token.actions.githubusercontent.com/.well-known/openid-configuration";
 
+/// A JSON Web Key Set, as served by the issuer.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct JwkSet {
+    /// Signing keys in the set.
     pub keys: Vec<RsaJwk>,
 }
 
+/// One RSA signing key from the issuer's key set.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct RsaJwk {
+    /// Key type; only RSA keys are usable here.
     #[serde(rename = "kty")]
     pub key_type: String,
+    /// Key identifier, matched against the token header.
     #[serde(rename = "kid", default)]
     pub key_id: Option<String>,
+    /// Algorithm the key is published for.
     #[serde(rename = "alg", default)]
     pub algorithm: Option<String>,
+    /// Declared use of the key.
     #[serde(rename = "use", default)]
     pub usage: Option<String>,
+    /// RSA modulus, base64url encoded.
     #[serde(rename = "n")]
     pub modulus: String,
+    /// RSA exponent, base64url encoded.
     #[serde(rename = "e")]
     pub exponent: String,
 }
@@ -59,6 +80,10 @@ struct OpenIdConfiguration {
     jwks_uri: String,
 }
 
+/// Verifier for GitHub Actions OIDC tokens.
+///
+/// Discovery, the key set, and the token are each fetched under a size
+/// limit and without following redirects.
 #[derive(Debug)]
 pub struct GithubOidcVerifier {
     client: Client,
@@ -67,10 +92,12 @@ pub struct GithubOidcVerifier {
 }
 
 impl GithubOidcVerifier {
+    /// A verifier pinned to GitHub's own issuer.
     pub fn github() -> Result<Self> {
         Self::new(GITHUB_DISCOVERY_URL, false)
     }
 
+    /// A verifier for an explicit discovery URL, used by loopback tests.
     pub fn new(discovery_url: &str, allow_http_loopback: bool) -> Result<Self> {
         let discovery_url =
             validate_oidc_url(discovery_url, allow_http_loopback, OidcUrlKind::Discovery)?;
@@ -86,6 +113,10 @@ impl GithubOidcVerifier {
         })
     }
 
+    /// Mint a token from the runner and verify it against the issuer.
+    ///
+    /// The claims are then checked against the sealed Candidate, so a valid
+    /// token from another repository, workflow, or commit is refused.
     pub async fn verify_actions_token(
         &self,
         request_url: &str,
@@ -230,10 +261,13 @@ async fn checked_body(
     Ok(body)
 }
 
+/// The `aud` claim, which may be one value or several.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum OidcAudience {
+    /// A single audience.
     One(String),
+    /// Several audiences.
     Many(Vec<String>),
 }
 
@@ -250,40 +284,66 @@ impl OidcAudience {
 /// verified against GitHub's OpenID key set.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GithubOidcClaims {
+    /// Issuer that minted the token.
     #[serde(rename = "iss")]
     pub issuer: String,
+    /// Audience the token was minted for.
     #[serde(rename = "aud")]
     pub audience: OidcAudience,
+    /// Subject, as composed by GitHub.
     #[serde(rename = "sub")]
     pub subject: String,
+    /// Repository the workflow ran in.
     pub repository: String,
+    /// Environment the job was released by, when it used one.
     #[serde(default)]
     pub environment: Option<String>,
+    /// Fully qualified reference of the running workflow.
     pub workflow_ref: String,
+    /// Ref the run was triggered on.
     #[serde(rename = "ref")]
     pub git_ref: String,
+    /// Commit the run was triggered on.
     #[serde(rename = "sha")]
     pub source_sha: String,
+    /// Identifier of the run.
     pub run_id: String,
+    /// Attempt number within the run.
     pub run_attempt: String,
+    /// Event that triggered the run.
     pub event_name: String,
+    /// Issue time, in Unix seconds.
     #[serde(rename = "iat")]
     pub issued_at: i64,
+    /// Earliest acceptable time, in Unix seconds.
     #[serde(rename = "nbf", default)]
     pub not_before: Option<i64>,
+    /// Expiry time, in Unix seconds.
     #[serde(rename = "exp")]
     pub expires_at: i64,
 }
 
+/// What the claims of an acceptable token have to say.
+///
+/// Built from the sealed Candidate, never from the token itself.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OidcExpectation {
+    /// Repository the Candidate belongs to.
     pub repository: String,
+    /// Environment that has to have released the job.
     pub environment: String,
+    /// Workflow the publication has to come from.
     pub workflow_path: String,
+    /// Commit the Candidate was built from.
     pub source_sha: String,
+    /// Run the publication has to come from, when one is known.
     pub run_id: Option<String>,
 }
 
+/// Claims that have passed both signature and expectation checks.
+///
+/// The fields are private: the type exists so that a caller cannot hold
+/// one without the checks having been made.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifiedGithubOidc {
     repository: String,
@@ -297,39 +357,51 @@ pub struct VerifiedGithubOidc {
 }
 
 impl VerifiedGithubOidc {
+    /// Repository the run belonged to.
     pub fn repository(&self) -> &str {
         &self.repository
     }
 
+    /// Environment that released the job.
     pub fn environment(&self) -> &str {
         &self.environment
     }
 
+    /// Reference of the workflow that ran.
     pub fn workflow_ref(&self) -> &str {
         &self.workflow_ref
     }
 
+    /// Ref the run was triggered on.
     pub fn git_ref(&self) -> &str {
         &self.git_ref
     }
 
+    /// Commit the run was triggered on.
     pub fn source_sha(&self) -> &str {
         &self.source_sha
     }
 
+    /// Identifier of the run.
     pub fn run_id(&self) -> &str {
         &self.run_id
     }
 
+    /// Attempt number within the run.
     pub fn run_attempt(&self) -> u64 {
         self.run_attempt
     }
 
+    /// Event that triggered the run.
     pub fn event_name(&self) -> &str {
         &self.event_name
     }
 }
 
+/// Check verified claims against what the Candidate expects.
+///
+/// Issuer, audience, repository, workflow, environment, commit, and the
+/// validity window all have to agree before the claims are accepted.
 pub fn validate_github_claims(
     claims: GithubOidcClaims,
     expected: &OidcExpectation,
@@ -408,6 +480,7 @@ pub fn validate_github_claims(
     })
 }
 
+/// Verify a compact JWT against a key set, then check its claims.
 pub fn verify_github_oidc_token(
     token: &str,
     keys: &JwkSet,

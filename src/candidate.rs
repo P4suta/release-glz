@@ -1,3 +1,10 @@
+//! The Candidate: the sealed publication unit of the v1 model.
+//!
+//! A Candidate binds one committed source SHA, the exact package and
+//! documentation bytes built from it, the policy that applies, and the hook
+//! evidence collected along the way. `release` publishes these bytes; it
+//! never rebuilds them from a checkout.
+
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -29,130 +36,229 @@ const DOCS_FILE: &str = "artifacts/docs.tar.gz";
 const INTERFACE_FILE: &str = "artifacts/package-interface.json";
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
 
+/// The exact commit and manifest a Candidate was built from.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CandidateSource {
+    /// Full commit SHA of the sealed source.
     pub commit_sha: String,
+    /// Repository-relative path of the package manifest.
     pub manifest_path: String,
 }
 
+/// The registry a Candidate is bound to.
+///
+/// Recorded by value so that publication cannot be redirected by editing
+/// the manifest after the Candidate was approved.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RegistryIdentity {
+    /// Registry protocol.
     pub provider: RegistryProvider,
+    /// Hex.pm Organization name, when publishing to one.
     pub repository: Option<String>,
+    /// Base URL of the publish API.
     pub api_url: String,
+    /// Base URL that serves package tarballs.
     pub repository_url: String,
+    /// Base URL that receives documentation tarballs.
     pub docs_url: String,
+    /// Name of the environment variable holding the credential.
     pub credential_env: String,
+    /// How the credential is presented.
     pub auth: AuthKind,
+    /// Whether a loopback `http` origin was permitted.
     #[serde(default)]
     pub allow_http_loopback: bool,
 }
 
+/// Which phase a hook ran in.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HookKind {
+    /// Ran against the sealed bytes before publication.
     Verify,
+    /// Produced an artifact that travels with the Candidate.
     Sidecar,
+    /// Ran after publication.
     Notify,
 }
 
+/// Proof that one hook ran, and what it concluded.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HookEvidence {
+    /// Always `hook/v1`.
     pub schema: String,
+    /// Hook identifier from the manifest.
     pub id: String,
+    /// Phase the hook ran in.
     pub kind: HookKind,
+    /// Whether failure of this hook fails the release.
     pub required: bool,
+    /// Whether the hook reported success.
     pub success: bool,
+    /// Digest of the hook's output, which binds the evidence to it.
     pub output_sha256: String,
 }
 
+/// One artifact sealed into a Candidate.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SealedArtifact {
+    /// Path inside the Candidate directory.
     pub path: String,
+    /// Digest of the bytes exactly as they were written.
     pub sha256: String,
+    /// Digest of the normalized contents.
+    ///
+    /// Two archives that differ only in compression or timestamps share
+    /// this digest, which is what makes republication detectable.
     pub semantic_sha256: String,
+    /// Size in bytes.
     pub size: u64,
 }
 
+/// The three artifacts every Candidate carries.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CandidateArtifacts {
+    /// The package tarball that will be published.
     pub package: SealedArtifact,
+    /// The documentation tarball, when docs are published.
     pub docs: Option<SealedArtifact>,
+    /// The `package-interface.json` used for API comparison.
     pub package_interface: SealedArtifact,
 }
 
+/// One sidecar artifact, sealed alongside the package.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SealedSidecarArtifact {
+    /// Hook that produced it.
     pub hook_id: String,
+    /// Name recorded in the inventory.
     pub name: String,
+    /// Path inside the Candidate directory.
     pub path: String,
+    /// Declared media type.
     pub media_type: String,
+    /// Digest of the bytes.
     pub sha256: String,
+    /// Size in bytes.
     pub size: u64,
+    /// Whether the artifact may be published.
     pub public: bool,
 }
 
+/// The sealed publication unit, as written to `candidate.json`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CandidateManifest {
+    /// Always `candidate/v1`.
     pub schema: String,
+    /// Package name.
     pub package: String,
+    /// Version being released.
     pub version: Version,
+    /// Release tag for this version.
     pub tag: String,
+    /// Commit and manifest the bytes were built from.
     pub source: CandidateSource,
+    /// Compiler that produced the bytes.
     pub compiler: Version,
+    /// Registry this Candidate may be published to.
     pub registry: RegistryIdentity,
+    /// Whether the source repository is private.
     pub private: bool,
+    /// The `owner/name` GitHub slug.
     pub github_repository: String,
+    /// Branch prefix of the rolling Release PR.
     pub release_branch_prefix: String,
+    /// Release notes as they will appear on the GitHub Release.
     pub release_notes: String,
+    /// Approvals that have to exist before publication.
     pub approval: ApprovalConfig,
+    /// Which artifacts this release produces.
     pub outputs: OutputConfig,
+    /// Digests and sizes of the sealed artifacts.
     pub artifacts: CandidateArtifacts,
+    /// Verify hooks exactly as they were configured.
     pub verify_hook_definitions: Vec<HookConfig>,
+    /// Sidecar hooks exactly as they were configured.
     pub sidecar_hook_definitions: Vec<HookConfig>,
+    /// Evidence from every hook that ran while sealing.
     pub hook_evidence: Vec<HookEvidence>,
+    /// Sidecar artifacts sealed into this Candidate.
     pub sidecars: Vec<SealedSidecarArtifact>,
+    /// Identifiers of the notify hooks to run after publication.
     pub notify_hooks: Vec<String>,
+    /// Notify hooks exactly as they were configured.
     pub notify_hook_definitions: Vec<HookConfig>,
+    /// Digest of the release decision this Candidate implements.
     pub intent_digest: String,
+    /// Digest of the Candidate itself.
+    ///
+    /// An approval binds to this value, so altered bytes can no longer be
+    /// published under an approval that was granted for the original.
     pub candidate_digest: String,
 }
 
+/// Everything needed to seal a Candidate, including the raw bytes.
 #[derive(Debug, Clone)]
 pub struct CandidateInput {
+    /// Package name.
     pub package: String,
+    /// Version being released.
     pub version: Version,
+    /// Release tag for this version.
     pub tag: String,
+    /// Commit and manifest the bytes were built from.
     pub source: CandidateSource,
+    /// Compiler that produced the bytes.
     pub compiler: Version,
+    /// Registry the Candidate will be bound to.
     pub registry: RegistryIdentity,
+    /// Whether the source repository is private.
     pub private: bool,
+    /// The `owner/name` GitHub slug.
     pub github_repository: String,
+    /// Branch prefix of the rolling Release PR.
     pub release_branch_prefix: String,
+    /// Release notes for the GitHub Release.
     pub release_notes: String,
+    /// Approvals that will be required.
     pub approval: ApprovalConfig,
+    /// Which artifacts this release produces.
     pub outputs: OutputConfig,
+    /// The package tarball to seal.
     pub package_tarball: Vec<u8>,
+    /// The documentation tarball to seal, when docs are published.
     pub docs_tarball: Option<Vec<u8>>,
+    /// The `package-interface.json` to seal.
     pub package_interface: Vec<u8>,
+    /// Verify hooks as configured.
     pub verify_hook_definitions: Vec<HookConfig>,
+    /// Sidecar hooks as configured.
     pub sidecar_hook_definitions: Vec<HookConfig>,
+    /// Evidence from the hooks that already ran.
     pub hook_evidence: Vec<HookEvidence>,
+    /// Sidecar artifacts to seal.
     pub sidecars: Vec<SidecarArtifact>,
+    /// Identifiers of the notify hooks to run after publication.
     pub notify_hooks: Vec<String>,
+    /// Notify hooks as configured.
     pub notify_hook_definitions: Vec<HookConfig>,
 }
 
+/// Sealing and verification of the publication unit.
 pub struct Candidate;
 
 impl Candidate {
+    /// Build the evidence artifacts release-glz produces itself.
+    ///
+    /// Evidence from a private repository stays internal unless the manifest
+    /// explicitly permits uploading it.
     pub fn built_in_evidence(input: &CandidateInput) -> Result<Vec<SidecarArtifact>> {
         validate_package_name(&input.package)?;
         let artifacts = core_artifacts(input)?;
@@ -232,6 +338,10 @@ impl Candidate {
         Ok(evidence)
     }
 
+    /// Digest the decision without sealing anything.
+    ///
+    /// `plan` and `release-pr` use this to publish an intent digest before
+    /// any artifact exists.
     pub fn core_intent_digest(input: &CandidateInput) -> Result<String> {
         validate_package_name(&input.package)?;
         validate_source(&input.source)?;
@@ -253,6 +363,10 @@ impl Candidate {
         intent_digest(Intent::from_input(input, &artifacts))
     }
 
+    /// Seal a Candidate into a new directory.
+    ///
+    /// An existing destination is refused rather than reused: a sealed
+    /// Candidate is never replaced in place.
     pub fn seal(directory: &Path, input: CandidateInput) -> Result<CandidateManifest> {
         if directory.exists() {
             bail!(
@@ -358,6 +472,11 @@ impl Candidate {
         Ok(manifest)
     }
 
+    /// Re-verify a sealed Candidate from its directory alone.
+    ///
+    /// Every artifact is re-digested and the manifest is revalidated, so a
+    /// Candidate that was altered after sealing fails here rather than at
+    /// publication time.
     pub fn verify(directory: &Path) -> Result<CandidateManifest> {
         let manifest_bytes = read_regular_limited(
             &directory.join(MANIFEST_FILE),
@@ -451,10 +570,12 @@ impl Candidate {
         Ok(manifest)
     }
 
+    /// Read the package tarball after checking it against the manifest.
     pub fn package_bytes(directory: &Path, manifest: &CandidateManifest) -> Result<Vec<u8>> {
         verify_file(directory, &manifest.artifacts.package)
     }
 
+    /// Read the documentation tarball, when the Candidate has one.
     pub fn docs_bytes(directory: &Path, manifest: &CandidateManifest) -> Result<Option<Vec<u8>>> {
         manifest
             .artifacts
@@ -464,6 +585,7 @@ impl Candidate {
             .transpose()
     }
 
+    /// Read every sidecar artifact together with its descriptor.
     pub fn sidecar_bytes(
         directory: &Path,
         manifest: &CandidateManifest,

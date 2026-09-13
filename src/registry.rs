@@ -1,3 +1,15 @@
+//! Package registry access: Hex.pm, a Hex.pm Organization, or a
+//! hex-compatible private registry.
+//!
+//! Reads are separated from publication so that planning and verification
+//! never need a credential.
+
+// `async_trait` rewrites the defaulted bodies in `Registry`, and the rewritten
+// items lose their documentation before `missing_docs` sees them, so the lint
+// fires on the macro itself and no attribute on the trait can reach it. Every
+// public item in this module is documented.
+#![allow(missing_docs)]
+
 use std::collections::BTreeMap;
 use std::fmt;
 use std::time::Duration;
@@ -16,49 +28,75 @@ const JSON_LIMIT: u64 = 4 * 1024 * 1024;
 const ARCHIVE_LIMIT: u64 = 128 * 1024 * 1024;
 const DEFAULT_RETRIES: usize = 3;
 
+/// One release as the registry reports it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HexRelease {
+    /// Published version.
     pub version: Version,
+    /// Whether documentation was published for it.
     pub has_docs: bool,
+    /// Whether the release has been retired.
     pub retired: bool,
 }
 
+/// One release, including the checksum the registry recorded.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RegistryRelease {
+    /// Published version.
     pub version: Version,
+    /// Whether documentation was published for it.
     pub has_docs: bool,
+    /// Whether the release has been retired.
     pub retired: bool,
+    /// Outer tarball checksum, when the registry exposes one.
     pub outer_checksum: Option<String>,
 }
 
+/// What a publish request established.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PublishOutcome {
+    /// The registry accepted the release.
     Accepted,
+    /// The result is undetermined and has to be observed.
+    ///
+    /// A timeout or a conflict says nothing about whether the bytes landed,
+    /// so the reconciler re-observes instead of retrying blindly.
     Unknown,
 }
 
+/// What a non-destructive credential audit found.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RegistryCredentialAudit {
+    /// No credential was present in the environment.
     Missing,
+    /// The registry rejected the credential.
     Invalid,
+    /// The credential cannot publish this package.
     PublishPermissionDenied,
+    /// The credential cannot read the configured repository.
     RepositoryReadPermissionDenied,
+    /// The credential can publish and read; the release path is open.
     PublishAndReadAllowed,
+    /// The registry could not be reached, so nothing was established.
     Unavailable,
 }
 
+/// Everything the registry knows about one package.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PackageState {
+    /// Every published release.
     pub releases: Vec<HexRelease>,
 }
 
 impl PackageState {
+    /// Highest published version, prereleases included.
     pub fn latest(&self) -> Option<&HexRelease> {
         self.releases
             .iter()
             .max_by(|a, b| a.version.cmp(&b.version))
     }
 
+    /// Highest published version that is not a prerelease.
     pub fn latest_stable(&self) -> Option<&HexRelease> {
         self.releases
             .iter()
@@ -66,6 +104,7 @@ impl PackageState {
             .max_by(|a, b| a.version.cmp(&b.version))
     }
 
+    /// One exact release, if it is published.
     pub fn release(&self, version: &Version) -> Option<&HexRelease> {
         self.releases
             .iter()
@@ -73,12 +112,23 @@ impl PackageState {
     }
 }
 
+/// Read access to a package registry.
+///
+/// Only observation lives behind this trait; publication is part of the
+/// reconciler, which needs the credential and the retry contract.
 #[async_trait]
 pub trait Registry: Send + Sync {
+    /// Every release of a package, or `None` when it is unknown.
     async fn package(&self, name: &str) -> Result<Option<PackageState>>;
+    /// Source tarball of one published release.
     async fn source_tarball(&self, name: &str, version: &Version) -> Result<Vec<u8>>;
+    /// Documentation tarball of one published release, when it has one.
     async fn docs_tarball(&self, name: &str, version: &Version) -> Result<Option<Vec<u8>>>;
 
+    /// One release together with its recorded checksum.
+    ///
+    /// Derived from [`Registry::package`] by default; an implementation that
+    /// can read the checksum directly overrides it.
     async fn release(&self, name: &str, version: &Version) -> Result<Option<RegistryRelease>> {
         Ok(self
             .package(name)
@@ -92,10 +142,18 @@ pub trait Registry: Send + Sync {
             }))
     }
 
+    /// Publish a package tarball.
+    ///
+    /// Defaults to refusing: an adapter stays read-only until it deliberately
+    /// implements publication.
     async fn publish_package(&self, _tarball: &[u8]) -> Result<PublishOutcome> {
         bail!("registry adapter does not support publishing")
     }
 
+    /// Publish a documentation tarball.
+    ///
+    /// Defaults to refusing, for the same reason as
+    /// [`Registry::publish_package`].
     async fn publish_docs(
         &self,
         _name: &str,
@@ -115,6 +173,11 @@ impl fmt::Debug for Credential {
     }
 }
 
+/// A Hex API and repository client.
+///
+/// Redirects are refused and every response is read under a size limit,
+/// so a hostile or misconfigured origin cannot redirect a credential or
+/// exhaust memory.
 #[derive(Debug, Clone)]
 pub struct HexRegistry {
     client: reqwest::Client,
@@ -156,6 +219,7 @@ impl Default for HexRegistry {
 }
 
 impl HexRegistry {
+    /// Build a client for a loopback test registry.
     pub fn new(api_url: impl Into<String>, repository_url: impl Into<String>) -> Self {
         let repository_url = repository_url.into();
         let config = RegistryConfig {
@@ -168,6 +232,7 @@ impl HexRegistry {
         Self::from_config(&config, None).expect("valid registry URLs")
     }
 
+    /// Build a client from configuration and an explicit credential.
     pub fn from_config(config: &RegistryConfig, credential: Option<&str>) -> Result<Self> {
         validate_registry_repository(config.provider, config.repository.as_deref())?;
         let api_url = parse_base_url(&config.api_url, config.allow_http_loopback, "api_url")?;
@@ -203,6 +268,7 @@ impl HexRegistry {
         })
     }
 
+    /// Build a client, reading the credential from `credential_env`.
     pub fn from_environment(config: &RegistryConfig) -> Result<Self> {
         let credential = std::env::var(&config.credential_env).ok();
         Self::from_config(config, credential.as_deref())
@@ -437,6 +503,10 @@ impl HexRegistry {
         bail!("registry POST {url} failed with {}", response.status())
     }
 
+    /// Poll until a version, and optionally its docs, are visible.
+    ///
+    /// A registry makes a release visible asynchronously, so publication is
+    /// only complete once it can be observed.
     pub async fn wait_for(
         &self,
         package: &str,

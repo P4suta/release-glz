@@ -1,3 +1,8 @@
+//! Preflight checks, as a pure assessment of observed inputs.
+//!
+//! The caller observes; this module only decides. That separation is what
+//! lets the local mode run with no network and no credential.
+
 use semver::Version;
 use serde::Serialize;
 
@@ -6,29 +11,50 @@ use crate::forge::GitHubEnvironmentAudit;
 use crate::model::{Diagnostic, DiagnosticLevel, NextAction, ReleaseState};
 use crate::registry::RegistryCredentialAudit;
 
+/// Everything the checks are decided from.
+///
+/// Observation is done by the caller so the assessment itself stays pure
+/// and can be tested without a network.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DoctorInput {
+    /// Configuration schema found in the manifest.
     pub config_schema: u32,
+    /// Version currently declared by the package.
     pub package_version: Version,
+    /// Compiler the manifest requires.
     pub required_compiler: Version,
+    /// Compiler that is actually installed, when one was found.
     pub installed_compiler: Option<Version>,
+    /// What the credential audit established.
     pub registry_credential: RegistryCredentialAudit,
+    /// Whether the managed workflow matches what would be generated.
     pub workflow_current: bool,
+    /// Approval configuration to check the environment against.
     pub approval: ApprovalConfig,
+    /// Observed protections around the publish environment, when online.
     pub github_environment: Option<GitHubEnvironmentAudit>,
 }
 
+/// The result of a `doctor` run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DoctorReport {
+    /// Always `doctor/v1`.
     pub schema: String,
+    /// State the package is in, as far as the checks can tell.
     pub state: ReleaseState,
+    /// Configuration schema that was found.
     pub config_schema: u32,
+    /// Compiler the manifest requires.
     pub required_compiler: Version,
+    /// Compiler that is installed.
     pub installed_compiler: Option<Version>,
+    /// Everything the checks concluded.
     pub diagnostics: Vec<Diagnostic>,
+    /// Next safe steps for the operator.
     pub next_actions: Vec<NextAction>,
 }
 
+/// Assess every check, including the ones that need the network.
 pub fn assess(input: &DoctorInput) -> DoctorReport {
     assess_mode(input, true)
 }

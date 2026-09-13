@@ -1,3 +1,5 @@
+//! Unified diff rendering for the `--diff` mode of `init` and `migrate`.
+
 /// Render a deterministic, valid unified diff.
 ///
 /// v1 intentionally emits one complete hunk. Configuration and managed

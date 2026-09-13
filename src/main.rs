@@ -1,3 +1,11 @@
+//! Command-line front end for `release-glz`.
+//!
+//! The binary parses argv, calls into the [`release_glz`] engine, and renders
+//! either human output or a `command/v2` envelope. Release decisions live in
+//! the library so another front end can make the same ones.
+
+#![warn(missing_docs)]
+
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
