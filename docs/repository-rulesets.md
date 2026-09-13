@@ -29,10 +29,13 @@ restarting the expensive mutation matrix after every review fix.
 
 There are no bypass actors. The owner follows the same PR, status-check,
 linear-history, and thread-resolution rules as every contributor, but does not
-need a second maintainer merely to provide an approval click. Commit signatures
-are not a ruleset requirement because GitHub App-created topic commits are not
-signed and would otherwise make the PR path unusable. Release identity remains
-protected by the annotated-tag checklist and immutable `v*` tag ruleset.
+need a second maintainer merely to provide an approval click.
+
+Every commit on `main` must carry a signature. GitHub signs the squash commit
+it writes while this rule is active, so the pull request path — including the
+one Dependabot uses — stays usable, and a commit pushed from a workstation
+carries that maintainer's own signature. Release identity remains protected by
+the annotated-tag checklist and the immutable `v*` tag ruleset.
 
 ## Accepted solo-maintainer risk
 
