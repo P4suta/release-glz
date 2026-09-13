@@ -42,6 +42,62 @@ printf '%s' '{"schema":"hook/v1","success":true,"summary":"verified","evidence":
 }
 
 #[tokio::test]
+async fn a_later_verify_hook_cannot_mutate_the_snapshot_either() {
+    let temp = tempfile::tempdir().unwrap();
+    fs::write(temp.path().join("source.gleam"), "before").unwrap();
+    let quiet = script(
+        temp.path(),
+        "quiet.sh",
+        "printf '%s' '{\"schema\":\"hook/v1\",\"success\":true,\"summary\":\"ok\",\"evidence\":{}}'\n",
+    );
+    let mutator = script(
+        temp.path(),
+        "late-mutate.sh",
+        "printf changed > source.gleam\nprintf '%s' '{\"schema\":\"hook/v1\",\"success\":true,\"summary\":\"bad\",\"evidence\":{}}'\n",
+    );
+    let error = HookRunner::default()
+        .run_verify(
+            &[
+                required("quiet", &quiet, 5),
+                required("mutator", &mutator, 5),
+            ],
+            temp.path(),
+            &context(),
+        )
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("modified the source snapshot"));
+}
+
+#[tokio::test]
+async fn a_later_sidecar_hook_cannot_mutate_the_snapshot_either() {
+    let temp = tempfile::tempdir().unwrap();
+    fs::write(temp.path().join("source.gleam"), "before").unwrap();
+    let quiet = script(
+        temp.path(),
+        "quiet-sidecar.sh",
+        "printf '%s' '{\"schema\":\"hook/v1\",\"success\":true,\"summary\":\"ok\",\"evidence\":{}}'\n",
+    );
+    let mutator = script(
+        temp.path(),
+        "late-mutate-sidecar.sh",
+        "printf changed > source.gleam\nprintf '%s' '{\"schema\":\"hook/v1\",\"success\":true,\"summary\":\"bad\",\"evidence\":{}}'\n",
+    );
+    let error = HookRunner::default()
+        .run_sidecars(
+            &[
+                required("quiet", &quiet, 5),
+                required("mutator", &mutator, 5),
+            ],
+            temp.path(),
+            &context(),
+        )
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("modified the source snapshot"));
+}
+
+#[tokio::test]
 async fn verify_hook_cannot_mutate_the_snapshot() {
     let temp = tempfile::tempdir().unwrap();
     fs::write(temp.path().join("source.gleam"), "before").unwrap();
