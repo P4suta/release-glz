@@ -8,6 +8,19 @@ use chrono::{NaiveDate, Utc};
 use serde::Deserialize;
 
 use crate::model::ChangeEntry;
+use crate::units::KIB;
+
+/// Structured note files one package may carry at once.
+const MAX_NOTE_FILES: usize = 1_000;
+
+/// Size one structured note file may reach.
+const MAX_NOTE_BYTES: u64 = 64 * KIB;
+
+/// Characters a structured note id may use.
+const MAX_NOTE_ID_LEN: usize = 128;
+
+/// Characters a structured note line may use.
+const MAX_NOTE_TEXT_LEN: usize = 1_000;
 
 const PREAMBLE: &str = "# Changelog\n\nAll notable changes to this project will be documented in this file.\n\nThe format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),\nand this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).\n\n## [Unreleased]\n";
 
@@ -155,15 +168,18 @@ pub fn load_structured_notes(
         })
         .collect::<Vec<_>>();
     paths.sort();
-    if paths.len() > 1_000 {
-        anyhow::bail!("structured changelog notes exceed the 1000 file limit");
+    if paths.len() > MAX_NOTE_FILES {
+        anyhow::bail!("structured changelog notes exceed the {MAX_NOTE_FILES} file limit");
     }
     let mut ids = BTreeSet::new();
     let mut entries = Vec::new();
     for path in paths {
         let metadata = fs::symlink_metadata(&path)?;
-        if !metadata.file_type().is_file() || metadata.len() > 64 * 1024 {
-            anyhow::bail!("structured changelog note must be a regular file under 64 KiB");
+        if !metadata.file_type().is_file() || metadata.len() > MAX_NOTE_BYTES {
+            anyhow::bail!(
+                "structured changelog note must be a regular file under {} KiB",
+                MAX_NOTE_BYTES / KIB
+            );
         }
         let source = fs::read_to_string(&path)
             .with_context(|| format!("failed to read structured note `{}`", path.display()))?;
@@ -211,7 +227,7 @@ pub fn merge_supplemental_notes(
 
 fn validate_note(note: &StructuredNote, path: &Path) -> Result<()> {
     let valid_id = !note.id.is_empty()
-        && note.id.len() <= 128
+        && note.id.len() <= MAX_NOTE_ID_LEN
         && note.id.bytes().enumerate().all(|(index, byte)| match byte {
             b'a'..=b'z' | b'A'..=b'Z' => true,
             b'0'..=b'9' | b'-' | b'_' => index > 0,
@@ -221,7 +237,7 @@ fn validate_note(note: &StructuredNote, path: &Path) -> Result<()> {
         anyhow::bail!("structured changelog note id must be safe and match its filename");
     }
     if note.text.is_empty()
-        || note.text.len() > 1_000
+        || note.text.len() > MAX_NOTE_TEXT_LEN
         || note.text.trim() != note.text
         || note.text.contains(['\n', '\r', '\0'])
     {

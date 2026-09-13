@@ -26,6 +26,7 @@ pub mod rehearse;
 pub mod release;
 pub mod secrets;
 mod sidecar;
+mod units;
 pub mod version;
 pub mod workflow;
 

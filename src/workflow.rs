@@ -8,6 +8,7 @@ use sha2::{Digest, Sha256};
 
 use crate::config::{validate_git_ref, validate_relative_path, validate_release_branch_prefix};
 use crate::diff::unified_diff;
+use crate::git::OBJECT_HEX_LEN;
 
 pub const WORKFLOW_PATH: &str = ".github/workflows/release-glz.yml";
 
@@ -375,7 +376,7 @@ jobs:
 }
 
 pub fn validate_action_sha(action_sha: &str) -> Result<()> {
-    if action_sha.len() != 40
+    if action_sha.len() != OBJECT_HEX_LEN
         || !action_sha
             .bytes()
             .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))

@@ -6,6 +6,9 @@ use anyhow::{Context, Result, bail};
 
 use crate::model::Bump;
 
+/// Characters in the hexadecimal form of a git object id.
+pub(crate) const OBJECT_HEX_LEN: usize = 40;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Commit {
     pub sha: String,

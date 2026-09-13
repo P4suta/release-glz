@@ -13,6 +13,10 @@ use crate::gleam::Gleam;
 
 const LEGACY_BACKUP: &str = ".release-glz/legacy-gleam.toml";
 
+/// Digits the generated ids for migrated changelog entries are padded to, so
+/// they sort in the order they were read.
+const LEGACY_NOTE_INDEX_DIGITS: usize = 4;
+
 #[derive(Debug)]
 pub struct Migration {
     manifest_path: PathBuf,
@@ -238,7 +242,11 @@ fn legacy_unreleased_notes(changelog_path: &Path) -> Result<Vec<(String, String)
         .enumerate()
         .map(|(index, (category, text))| {
             let id = if multiple {
-                format!("legacy-unreleased-{:04}", index + 1)
+                format!(
+                    "legacy-unreleased-{:0width$}",
+                    index + 1,
+                    width = LEGACY_NOTE_INDEX_DIGITS
+                )
             } else {
                 "legacy-unreleased".to_owned()
             };
