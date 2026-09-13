@@ -156,13 +156,21 @@ impl HookRunner {
         context: &HookContext,
     ) -> Result<Vec<HookEvidence>> {
         let mut evidence = Vec::new();
+        // Nothing between two hooks can touch the snapshot, so the digest
+        // taken after one hook is the digest before the next: k hooks need
+        // k + 1 walks of the tree rather than 2k.
+        let mut unchanged = None;
         for hook in hooks {
-            let before = tree_digest(snapshot)?;
+            let before = match unchanged.take() {
+                Some(digest) => digest,
+                None => tree_digest(snapshot)?,
+            };
             let result = self.run_one(hook, snapshot, "verify", context).await;
             let after = tree_digest(snapshot)?;
             if before != after {
                 bail!("verify hook `{}` modified the source snapshot", hook.id);
             }
+            unchanged = Some(after);
             match result {
                 Ok(item) if item.success => evidence.push(item.as_evidence(hook, HookKind::Verify)),
                 Ok(item) if !hook.required => {
@@ -194,13 +202,20 @@ impl HookRunner {
         let mut artifacts = Vec::new();
         let mut names = std::collections::BTreeSet::new();
         let mut total_size = 0_u64;
+        // The digest after one hook is the digest before the next, for the
+        // same reason as in `run_verify`.
+        let mut unchanged = None;
         for hook in hooks {
-            let before = tree_digest(snapshot)?;
+            let before = match unchanged.take() {
+                Some(digest) => digest,
+                None => tree_digest(snapshot)?,
+            };
             let result = self.run_one(hook, snapshot, "sidecar", context).await;
             let after = tree_digest(snapshot)?;
             if before != after {
                 bail!("sidecar hook `{}` modified the source snapshot", hook.id);
             }
+            unchanged = Some(after);
             match result {
                 Ok(item) if item.success => {
                     let output: SidecarOutput = serde_json::from_value(item.evidence.clone())

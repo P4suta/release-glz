@@ -163,8 +163,11 @@ impl Rehearsal {
                 .collect(),
             notify_hook_definitions: manifest.release.hooks.notify.clone(),
         };
-        let built_in_evidence = Candidate::built_in_evidence(&input)?;
-        let intent_digest = Candidate::core_intent_digest(&input)?;
+        // Evidence, the intent digest, and the seal all describe the same
+        // archives, so they are validated and expanded once here rather than
+        // once per step.
+        let (built_in_evidence, artifacts) = Candidate::built_in_evidence_and_artifacts(&input)?;
+        let intent_digest = Candidate::core_intent_digest_prepared(&input, Some(&artifacts))?;
         let sidecars = hook_runner
             .run_sidecars(
                 &sidecar_hooks,
@@ -185,7 +188,7 @@ impl Rehearsal {
         input.hook_evidence.extend(sidecars.evidence);
         input.sidecars = built_in_evidence;
         input.sidecars.extend(sidecars.artifacts);
-        Candidate::seal(&options.output, input).map_err(|error| {
+        Candidate::seal_prepared(&options.output, input, Some(artifacts)).map_err(|error| {
             crate::failure::classified(crate::failure::FailureClass::ImmutableStateConflict, error)
         })
     }

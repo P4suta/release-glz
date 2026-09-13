@@ -177,6 +177,7 @@ pub fn load_structured_notes(
     if paths.len() > 1_000 {
         anyhow::bail!("structured changelog notes exceed the 1000 file limit");
     }
+    let released = released_note_ids(existing_changelog);
     let mut ids = BTreeSet::new();
     let mut entries = Vec::new();
     for path in paths {
@@ -192,10 +193,10 @@ pub fn load_structured_notes(
         if !ids.insert(note.id.clone()) {
             anyhow::bail!("duplicate structured changelog note id `{}`", note.id);
         }
-        let marker = format!("<!-- release-glz-note:{} -->", note.id);
-        if existing_changelog.is_some_and(|existing| existing.contains(&marker)) {
+        if released.contains(note.id.as_str()) {
             continue;
         }
+        let marker = format!("<!-- release-glz-note:{} -->", note.id);
         entries.push(ChangeEntry {
             title: format!("{} {marker}", note.text),
             pull_request: note.pull_request,
@@ -230,6 +231,32 @@ pub fn merge_supplemental_notes(
         entries.push(note);
     }
     entries
+}
+
+/// Collect the note ids a changelog already records.
+///
+/// Reading the changelog once and looking each note up costs
+/// `O(changelog + notes * log notes)`; searching the whole changelog for every
+/// note costs `O(changelog * notes)`, and a package may carry up to a thousand
+/// pending notes.
+fn released_note_ids(changelog: Option<&str>) -> BTreeSet<&str> {
+    const PREFIX: &str = "<!-- release-glz-note:";
+    const SUFFIX: &str = " -->";
+
+    let mut ids = BTreeSet::new();
+    let Some(changelog) = changelog else {
+        return ids;
+    };
+    let mut rest = changelog;
+    while let Some(start) = rest.find(PREFIX) {
+        rest = &rest[start + PREFIX.len()..];
+        let Some(end) = rest.find(SUFFIX) else {
+            break;
+        };
+        ids.insert(&rest[..end]);
+        rest = &rest[end + SUFFIX.len()..];
+    }
+    ids
 }
 
 fn validate_note(note: &StructuredNote, path: &Path) -> Result<()> {
@@ -386,6 +413,26 @@ pub fn default_category(title: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn released_ids_agree_with_searching_for_each_marker() {
+        let changelog = concat!(
+            "## [1.0.0] - 2026-01-01\n",
+            "- shipped <!-- release-glz-note:alpha -->\n",
+            "- also shipped <!-- release-glz-note:beta-2 -->\n",
+        );
+        let ids = released_note_ids(Some(changelog));
+        for id in ["alpha", "beta-2", "gamma", "alph", "alphaa"] {
+            let marker = format!("<!-- release-glz-note:{id} -->");
+            assert_eq!(
+                ids.contains(id),
+                changelog.contains(&marker),
+                "id `{id}` disagrees with a direct search"
+            );
+        }
+        assert!(released_note_ids(None).is_empty());
+        assert!(released_note_ids(Some("<!-- release-glz-note:unterminated")).is_empty());
+    }
 
     #[test]
     fn renders_and_replaces_keep_a_changelog_section() {

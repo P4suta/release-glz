@@ -14,8 +14,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::artifact::{
-    ArchiveLimits, fingerprint_hex_tarball, fingerprint_tar_gz, validate_docs_tarball,
-    validate_hex_tarball,
+    ArchiveLimits, validate_and_fingerprint_docs_tarball, validate_and_fingerprint_hex_tarball,
 };
 use crate::canonical::{canonical_json_bytes, canonical_sha256};
 use crate::config::{
@@ -260,6 +259,17 @@ impl Candidate {
     /// Evidence from a private repository stays internal unless the manifest
     /// explicitly permits uploading it.
     pub fn built_in_evidence(input: &CandidateInput) -> Result<Vec<SidecarArtifact>> {
+        Ok(Self::built_in_evidence_and_artifacts(input)?.0)
+    }
+
+    /// Build the evidence and hand back the archives it was validated from.
+    ///
+    /// One rehearsal needs evidence, an intent digest, and a sealed Candidate
+    /// for the same bytes. Passing the validated archives along means those
+    /// archives are expanded once instead of once per step.
+    pub(crate) fn built_in_evidence_and_artifacts(
+        input: &CandidateInput,
+    ) -> Result<(Vec<SidecarArtifact>, CandidateArtifacts)> {
         validate_package_name(&input.package)?;
         let artifacts = core_artifacts(input)?;
         let public = input.outputs.github_release
@@ -335,7 +345,7 @@ impl Candidate {
                 public,
             });
         }
-        Ok(evidence)
+        Ok((evidence, artifacts))
     }
 
     /// Digest the decision without sealing anything.
@@ -343,6 +353,14 @@ impl Candidate {
     /// `plan` and `release-pr` use this to publish an intent digest before
     /// any artifact exists.
     pub fn core_intent_digest(input: &CandidateInput) -> Result<String> {
+        Self::core_intent_digest_prepared(input, None)
+    }
+
+    /// Digest the decision, reusing archives that were already validated.
+    pub(crate) fn core_intent_digest_prepared(
+        input: &CandidateInput,
+        prepared: Option<&CandidateArtifacts>,
+    ) -> Result<String> {
         validate_package_name(&input.package)?;
         validate_source(&input.source)?;
         validate_candidate_tag(&input.tag, &input.version)?;
@@ -359,8 +377,15 @@ impl Candidate {
         )?;
         validate_notify_hooks(&input.notify_hooks)?;
         validate_notify_hook_definitions(&input.notify_hooks, &input.notify_hook_definitions)?;
-        let artifacts = core_artifacts(input)?;
-        intent_digest(Intent::from_input(input, &artifacts))
+        let owned;
+        let artifacts = match prepared {
+            Some(artifacts) => artifacts,
+            None => {
+                owned = core_artifacts(input)?;
+                &owned
+            }
+        };
+        intent_digest(Intent::from_input(input, artifacts))
     }
 
     /// Seal a Candidate into a new directory.
@@ -368,6 +393,15 @@ impl Candidate {
     /// An existing destination is refused rather than reused: a sealed
     /// Candidate is never replaced in place.
     pub fn seal(directory: &Path, input: CandidateInput) -> Result<CandidateManifest> {
+        Self::seal_prepared(directory, input, None)
+    }
+
+    /// Seal a Candidate, reusing archives that were already validated.
+    pub(crate) fn seal_prepared(
+        directory: &Path,
+        input: CandidateInput,
+        prepared: Option<CandidateArtifacts>,
+    ) -> Result<CandidateManifest> {
         if directory.exists() {
             bail!(
                 "candidate destination `{}` already exists; sealed candidates are never replaced",
@@ -382,7 +416,10 @@ impl Candidate {
         validate_release_branch_prefix(&input.release_branch_prefix)?;
         validate_release_notes(&input.release_notes)?;
         validate_approval(&input.approval)?;
-        let artifacts = core_artifacts(&input)?;
+        let artifacts = match prepared {
+            Some(artifacts) => artifacts,
+            None => core_artifacts(&input)?,
+        };
         validate_hook_evidence(&input.hook_evidence)?;
         let sidecars = input
             .sidecars
@@ -534,7 +571,8 @@ impl Candidate {
         }
 
         let package = verify_file(directory, &manifest.artifacts.package)?;
-        validate_hex_tarball(&package, ArchiveLimits::default())?;
+        let (_, semantic_package) =
+            validate_and_fingerprint_hex_tarball(&package, ArchiveLimits::default())?;
         let interface = verify_file(directory, &manifest.artifacts.package_interface)?;
         let interface_value: serde_json::Value =
             serde_json::from_slice(&interface).context("package interface is not valid JSON")?;
@@ -544,19 +582,19 @@ impl Candidate {
             .as_ref()
             .map(|descriptor| verify_file(directory, descriptor))
             .transpose()?;
-        if let Some(docs) = &docs {
-            validate_docs_tarball(docs, ArchiveLimits::default())?;
-        }
+        let docs_fingerprint = docs
+            .as_ref()
+            .map(|bytes| validate_and_fingerprint_docs_tarball(bytes, ArchiveLimits::default()))
+            .transpose()?;
 
-        let semantic_package = fingerprint_hex_tarball(&package)?;
         let semantic_interface = canonical_sha256(&interface_value)?;
         if semantic_package != manifest.artifacts.package.semantic_sha256
             || semantic_interface != manifest.artifacts.package_interface.semantic_sha256
         {
             bail!("candidate semantic checksum mismatch");
         }
-        if let (Some(bytes), Some(descriptor)) = (&docs, &manifest.artifacts.docs)
-            && fingerprint_tar_gz(bytes)? != descriptor.semantic_sha256
+        if let (Some(fingerprint), Some(descriptor)) = (&docs_fingerprint, &manifest.artifacts.docs)
+            && fingerprint != &descriptor.semantic_sha256
         {
             bail!("candidate documentation semantic checksum mismatch");
         }
@@ -734,28 +772,21 @@ fn candidate_digest(manifest: &CandidateManifest) -> Result<String> {
 
 fn core_artifacts(input: &CandidateInput) -> Result<CandidateArtifacts> {
     validate_output_artifacts(&input.outputs, input.docs_tarball.is_some())?;
-    validate_hex_tarball(&input.package_tarball, ArchiveLimits::default())?;
-    if let Some(docs) = &input.docs_tarball {
-        validate_docs_tarball(docs, ArchiveLimits::default())?;
-    }
+    let (_, package_fingerprint) =
+        validate_and_fingerprint_hex_tarball(&input.package_tarball, ArchiveLimits::default())?;
+    let docs_fingerprint = input
+        .docs_tarball
+        .as_ref()
+        .map(|docs| validate_and_fingerprint_docs_tarball(docs, ArchiveLimits::default()))
+        .transpose()?;
     let interface: serde_json::Value = serde_json::from_slice(&input.package_interface)
         .context("package interface is not valid JSON")?;
-    let package = artifact_descriptor(
-        PACKAGE_FILE,
-        &input.package_tarball,
-        fingerprint_hex_tarball(&input.package_tarball)?,
-    );
+    let package = artifact_descriptor(PACKAGE_FILE, &input.package_tarball, package_fingerprint);
     let docs = input
         .docs_tarball
         .as_ref()
-        .map(|bytes| {
-            Ok::<_, anyhow::Error>(artifact_descriptor(
-                DOCS_FILE,
-                bytes,
-                fingerprint_tar_gz(bytes)?,
-            ))
-        })
-        .transpose()?;
+        .zip(docs_fingerprint)
+        .map(|(bytes, fingerprint)| artifact_descriptor(DOCS_FILE, bytes, fingerprint));
     let package_interface = artifact_descriptor(
         INTERFACE_FILE,
         &input.package_interface,
