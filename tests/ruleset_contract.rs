@@ -39,6 +39,7 @@ fn default_branch_requires_checked_linear_changes() {
             "deletion",
             "non_fast_forward",
             "required_linear_history",
+            "required_signatures",
             "pull_request",
             "required_status_checks"
         ]
