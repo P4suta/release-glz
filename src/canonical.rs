@@ -11,6 +11,9 @@ use serde::Serialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+/// Characters in the hexadecimal form of a SHA-256 digest.
+pub(crate) const SHA256_HEX_LEN: usize = 64;
+
 /// Serialize a value using the JSON Canonicalization Scheme from RFC 8785.
 pub fn canonical_json_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>> {
     let value = serde_json::to_value(value).context("value cannot be represented as JSON")?;

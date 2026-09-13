@@ -11,6 +11,9 @@ use anyhow::{Context, Result, bail};
 
 use crate::model::Bump;
 
+/// Characters in the hexadecimal form of a git object id.
+pub(crate) const OBJECT_HEX_LEN: usize = 40;
+
 /// One commit, with the fields release notes and intent are read from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Commit {

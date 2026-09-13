@@ -20,13 +20,35 @@ use reqwest::{StatusCode, Url};
 use semver::Version;
 use serde::Deserialize;
 
+use crate::canonical::SHA256_HEX_LEN;
 use crate::config::{
     AuthKind, RegistryConfig, RegistryProvider, url_is_http_loopback, validate_registry_repository,
 };
+use crate::units::MIB;
 
-const JSON_LIMIT: u64 = 4 * 1024 * 1024;
-const ARCHIVE_LIMIT: u64 = 128 * 1024 * 1024;
+/// Size a JSON response may reach before it is refused.
+const JSON_LIMIT: u64 = 4 * MIB;
+
+/// Size an archive response may reach before it is refused.
+const ARCHIVE_LIMIT: u64 = 128 * MIB;
+
+/// Attempts made for one request before its failure is reported.
 const DEFAULT_RETRIES: usize = 3;
+
+/// Seconds a single registry request may take before it is abandoned.
+const REQUEST_TIMEOUT_SECONDS: u64 = 60;
+
+/// Seconds spent connecting before a request is abandoned.
+const CONNECT_TIMEOUT_SECONDS: u64 = 10;
+
+/// Observations made while waiting for a release to become visible.
+const DEFAULT_POLL_ATTEMPTS: usize = 20;
+
+/// Milliseconds between those observations.
+const DEFAULT_POLL_INTERVAL_MS: u64 = 3_000;
+
+/// Milliseconds to wait when a response asks to retry without saying when.
+const DEFAULT_RETRY_AFTER_MS: u64 = 250;
 
 /// One release as the registry reports it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -247,8 +269,8 @@ impl HexRegistry {
             .all(url_is_http_loopback);
         let mut client = reqwest::Client::builder()
             .user_agent(concat!("release-glz/", env!("CARGO_PKG_VERSION")))
-            .connect_timeout(Duration::from_secs(10))
-            .timeout(Duration::from_secs(60))
+            .connect_timeout(Duration::from_secs(CONNECT_TIMEOUT_SECONDS))
+            .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECONDS))
             .redirect(reqwest::redirect::Policy::none());
         if loopback_only {
             client = client.no_proxy();
@@ -516,11 +538,11 @@ impl HexRegistry {
         let attempts = std::env::var("RELEASE_GLZ_POLL_ATTEMPTS")
             .ok()
             .and_then(|value| value.parse().ok())
-            .unwrap_or(20);
+            .unwrap_or(DEFAULT_POLL_ATTEMPTS);
         let delay = std::env::var("RELEASE_GLZ_POLL_INTERVAL_MS")
             .ok()
             .and_then(|value| value.parse().ok())
-            .unwrap_or(3_000);
+            .unwrap_or(DEFAULT_POLL_INTERVAL_MS);
         for _ in 0..attempts {
             let state = self.package(package).await?;
             if release_ready(state.as_ref(), version, require_docs) {
@@ -722,11 +744,11 @@ fn retry_after(headers: &reqwest::header::HeaderMap) -> Duration {
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.parse::<u64>().ok())
         .map(Duration::from_secs)
-        .unwrap_or_else(|| Duration::from_millis(250))
+        .unwrap_or_else(|| Duration::from_millis(DEFAULT_RETRY_AFTER_MS))
 }
 
 fn validate_checksum(value: &str) -> Result<()> {
-    if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+    if value.len() != SHA256_HEX_LEN || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         bail!("registry release checksum is not SHA-256");
     }
     Ok(())

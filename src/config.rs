@@ -16,6 +16,18 @@ use toml_edit::{DocumentMut, Item, Table, value};
 
 use crate::model::PrereleaseChannel;
 
+/// Seconds a hook may run for when the manifest names no timeout.
+const DEFAULT_HOOK_TIMEOUT_SECONDS: u64 = 300;
+
+/// Shortest hook timeout a manifest may configure.
+const MIN_HOOK_TIMEOUT_SECONDS: u64 = 1;
+
+/// Longest hook timeout a manifest may configure.
+const MAX_HOOK_TIMEOUT_SECONDS: u64 = 3_600;
+
+/// Characters a Hex organization name may use.
+const MAX_REPOSITORY_LEN: usize = 255;
+
 /// The `[repository]` table that names the package's forge.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RepositoryConfig {
@@ -229,7 +241,7 @@ pub struct HookConfig {
 }
 
 fn default_hook_timeout() -> u64 {
-    300
+    DEFAULT_HOOK_TIMEOUT_SECONDS
 }
 
 fn default_true() -> bool {
@@ -946,7 +958,7 @@ pub fn validate_registry_repository(
     let Some(repository) = repository else {
         return Ok(());
     };
-    let valid = repository.len() <= 255
+    let valid = repository.len() <= MAX_REPOSITORY_LEN
         && repository
             .bytes()
             .enumerate()
@@ -983,9 +995,9 @@ pub fn validate_hook_config(hook: &HookConfig) -> Result<()> {
     {
         bail!("hook `{}` must have a non-empty NUL-free argv", hook.id);
     }
-    if !(1..=3_600).contains(&hook.timeout_seconds) {
+    if !(MIN_HOOK_TIMEOUT_SECONDS..=MAX_HOOK_TIMEOUT_SECONDS).contains(&hook.timeout_seconds) {
         bail!(
-            "hook `{}` timeout_seconds must be between 1 and 3600",
+            "hook `{}` timeout_seconds must be between {MIN_HOOK_TIMEOUT_SECONDS} and {MAX_HOOK_TIMEOUT_SECONDS}",
             hook.id
         );
     }

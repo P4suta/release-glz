@@ -40,6 +40,13 @@ use release_glz::release::{
 };
 use semver::Version;
 
+/// Seconds the isolated Candidate build may run before it is abandoned.
+const CANDIDATE_BUILD_TIMEOUT_SECONDS: u64 = 1_800;
+
+/// Seconds the locally constructed claims stay valid for, when `doctor`
+/// checks an authorization path with no runner to mint a token.
+const LOCAL_CLAIM_LIFETIME_SECONDS: i64 = 60;
+
 #[derive(Debug, Parser)]
 #[command(
     name = "release-glz",
@@ -1302,9 +1309,12 @@ async fn credential_free_candidate_build(manifest: &Manifest) -> Result<()> {
             command.env(name, value);
         }
     }
-    let output = tokio::time::timeout(std::time::Duration::from_secs(1_800), command.output())
-        .await
-        .context("isolated Candidate build timed out")??;
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(CANDIDATE_BUILD_TIMEOUT_SECONDS),
+        command.output(),
+    )
+    .await
+    .context("isolated Candidate build timed out")??;
     if output.status.success() {
         return Ok(());
     }
@@ -1434,7 +1444,7 @@ fn approved_for_inspection(
             event_name: "push".into(),
             issued_at: now,
             not_before: Some(now),
-            expires_at: now + 60,
+            expires_at: now + LOCAL_CLAIM_LIFETIME_SECONDS,
         },
         &OidcExpectation {
             repository: manifest.github_repository.clone(),
