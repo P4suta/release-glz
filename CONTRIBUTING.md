@@ -25,10 +25,10 @@ cargo machete
 ```
 
 Workflow changes must also pass actionlint, zizmor, and the repository's
-workflow-verifier/de-shell scripts. Fuzz targets cover archive, config, PR
-markers, API interfaces, and structured inputs. Release assurance requires at
-least 90% line and 85% branch coverage, and zero critical mutation survivors in
-version, registry, archive, and reconciler code.
+workflow-verifier/de-shell scripts. Fuzz targets cover archive extraction,
+configuration parsing, Release PR markers, and package API interfaces. Release
+assurance requires at least 90% line and 85% branch coverage, and zero critical
+mutation survivors in version, registry, archive, and reconciler code.
 
 Public JSON is a compatibility contract. All commands use `command/v2`, while
 `plan/v2`, `candidate/v1`, `state/v1`, and `hook/v1` evolve independently.
