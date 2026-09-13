@@ -1,3 +1,9 @@
+//! Publication: the live adapter and the Candidate release runner.
+//!
+//! The runner verifies a sealed Candidate, asks the reconciler what is still
+//! missing, and applies only those effects, using bytes loaded from the
+//! Candidate itself.
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{Context, Result, bail};
@@ -17,39 +23,65 @@ use crate::reconciler::{
 };
 use crate::registry::{HexRegistry, PublishOutcome, Registry};
 
+/// How a release run is allowed to touch the outside world.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ReleaseExecutionOptions {
+    /// Report every remaining effect instead of applying any of them.
     pub dry_run: bool,
 }
 
+/// What one release run did, and what is left.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ReleaseReport {
+    /// Always `release/v1`.
     pub schema: String,
+    /// State the release reached.
     pub state: ReleaseState,
+    /// Candidate that was published.
     pub candidate_digest: String,
+    /// Effects this run applied.
     pub applied: Vec<ReconcileEffect>,
+    /// Effects still outstanding, in order.
     pub remaining: Vec<ReconcileEffect>,
 }
 
+/// The sealed bytes handed to an effect.
+///
+/// Borrowed from the verified Candidate, never rebuilt, so an adapter
+/// has nothing else it could publish.
 #[derive(Debug, Clone, Copy)]
 pub struct ReleasePayload<'a> {
+    /// Package tarball.
     pub package: &'a [u8],
+    /// Documentation tarball, when docs are published.
     pub docs: Option<&'a [u8]>,
+    /// Assets for the GitHub Release.
     pub release_assets: &'a [ReleaseAssetPayload<'a>],
 }
 
+/// One asset, with the bytes to upload.
 #[derive(Debug, Clone, Copy)]
 pub struct ReleaseAssetPayload<'a> {
+    /// Hook that produced it.
     pub hook_id: &'a str,
+    /// File name.
     pub name: &'a str,
+    /// Declared media type.
     pub media_type: &'a str,
+    /// Asset bytes.
     pub bytes: &'a [u8],
 }
 
+/// The external systems a release is applied to.
+///
+/// Observation and application are separate so the reconciler can decide
+/// what remains before anything is changed.
 #[async_trait]
 pub trait ReleaseTarget: Send + Sync {
+    /// Observe everything that already exists for this release.
     async fn observe(&self, intent: &ReleaseIntent) -> Result<ExternalReleaseState>;
 
+    /// Apply one effect using the sealed bytes.
     async fn apply(
         &self,
         effect: &ReconcileEffect,
@@ -70,6 +102,7 @@ pub struct LiveReleaseTarget {
 }
 
 impl LiveReleaseTarget {
+    /// Build a live target from a verified Candidate and its repository.
     pub fn from_candidate(manifest: CandidateManifest, repo: GitRepo) -> Result<Self> {
         let head = repo.head()?;
         if head != manifest.source.commit_sha {
@@ -106,6 +139,10 @@ impl LiveReleaseTarget {
         })
     }
 
+    /// Build a live target from explicit adapters, for loopback tests.
+    ///
+    /// The adapters still have to match the sealed Candidate, so a test
+    /// cannot point a real Candidate at a different repository.
     pub fn with_adapters(
         manifest: CandidateManifest,
         repo: GitRepo,
@@ -429,6 +466,7 @@ fn is_sha256(value: &str) -> bool {
     value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
+/// A failed release run, carrying the state it stopped in.
 #[derive(Debug)]
 pub struct ReleaseRunError {
     state: ReleaseState,
@@ -437,10 +475,12 @@ pub struct ReleaseRunError {
 }
 
 impl ReleaseRunError {
+    /// State the release was left in.
     pub fn state(&self) -> ReleaseState {
         self.state
     }
 
+    /// Failure class, which decides the exit status.
     pub fn failure_class(&self) -> crate::failure::FailureClass {
         self.class
     }
@@ -458,6 +498,7 @@ impl std::error::Error for ReleaseRunError {
     }
 }
 
+/// Publishes a verified Candidate through a [`ReleaseTarget`].
 pub struct CandidateReleaseRunner<T> {
     target: T,
 }
@@ -466,10 +507,15 @@ impl<T> CandidateReleaseRunner<T>
 where
     T: ReleaseTarget,
 {
+    /// Wrap a target.
     pub fn new(target: T) -> Self {
         Self { target }
     }
 
+    /// Verify the Candidate, then apply what is still missing.
+    ///
+    /// The Candidate is re-verified on every run, so a resumed release
+    /// publishes exactly the bytes the first run sealed.
     pub async fn run(
         &self,
         candidate_directory: &std::path::Path,

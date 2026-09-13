@@ -1,3 +1,9 @@
+//! GitHub: pull requests, tags, releases, environments, and Actions
+//! artifacts.
+//!
+//! Everything observable is read before anything is written, so a resumed
+//! release recognizes what it already created instead of duplicating it.
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{Context, Result, bail};
@@ -21,13 +27,17 @@ const GITHUB_GET_ATTEMPTS: usize = 3;
 const OPEN_PULL_REQUEST_PAGE_SIZE: usize = 100;
 const MAX_OPEN_PULL_REQUEST_PAGES: usize = 100;
 
+/// An `owner/name` repository on GitHub.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitHubRepository {
+    /// Repository owner.
     pub owner: String,
+    /// Repository name.
     pub name: String,
 }
 
 impl GitHubRepository {
+    /// Parse an `owner/name` slug, rejecting anything unsafe in a URL path.
     pub fn parse(value: &str) -> Result<Self> {
         let (owner, name) = value
             .split_once('/')
@@ -59,48 +69,71 @@ impl GitHubRepository {
         })
     }
 
+    /// The `owner/name` slug.
     pub fn full_name(&self) -> String {
         format!("{}/{}", self.owner, self.name)
     }
 }
 
+/// A GitHub REST and GraphQL client.
+///
+/// Redirects are refused so a token cannot follow one to another host,
+/// and a token is required explicitly by the calls that change state.
 #[derive(Clone)]
 pub struct GitHubClient {
     client: reqwest::Client,
     token: Option<String>,
     api_url: String,
     graphql_url: String,
+    /// Repository every request is scoped to.
     pub repository: GitHubRepository,
 }
 
+/// A pull request, as far as release-glz reads it.
 #[derive(Debug, Clone, Deserialize)]
 pub struct PullRequest {
+    /// Pull request number.
     pub number: u64,
+    /// Title.
     pub title: String,
+    /// Body, when it has one.
     pub body: Option<String>,
+    /// Page for humans.
     pub html_url: String,
+    /// Merge commit, once the pull request is merged.
     pub merge_commit_sha: Option<String>,
+    /// Merge timestamp, once it is merged.
     pub merged_at: Option<String>,
+    /// Author.
     pub user: User,
+    /// Labels, used to place a change in a changelog category.
     #[serde(default)]
     pub labels: Vec<Label>,
+    /// Head branch and commit.
     pub head: PullHead,
 }
 
+/// A GitHub account.
 #[derive(Debug, Clone, Deserialize)]
 pub struct User {
+    /// Account login.
     pub login: String,
 }
 
+/// A label on a pull request.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Label {
+    /// Label name.
     pub name: String,
 }
 
+/// The head of a pull request.
 #[derive(Debug, Clone, Deserialize)]
 pub struct PullHead {
+    /// Branch name.
     #[serde(rename = "ref")]
     pub branch: String,
+    /// Commit the branch points at.
     pub sha: String,
 }
 
@@ -149,36 +182,63 @@ struct ReleaseAssetResponse {
     digest: Option<String>,
 }
 
+/// A GitHub Release.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitHubRelease {
+    /// Release identifier.
     pub id: u64,
+    /// Page for humans.
     pub html_url: String,
+    /// Tag this release belongs to.
     pub tag_name: String,
+    /// Commit the tag points at.
     pub target_commitish: String,
+    /// Candidate digest recorded in the release body, when present.
+    ///
+    /// It is what lets a resumed run recognize its own draft instead of
+    /// adopting one that was created for different bytes.
     pub candidate_digest: Option<String>,
+    /// Whether the release is still a draft.
     pub draft: bool,
+    /// Endpoint that accepts asset uploads.
     pub upload_url: String,
+    /// Assets already attached.
     pub assets: Vec<GitHubReleaseAsset>,
 }
 
+/// One asset attached to a GitHub Release.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitHubReleaseAsset {
+    /// Asset identifier.
     pub id: u64,
+    /// File name.
     pub name: String,
+    /// Upload state reported by GitHub.
     pub state: String,
+    /// Declared media type.
     pub media_type: String,
+    /// Size in bytes.
     pub size: u64,
+    /// Digest GitHub recorded, when it reports one.
     pub sha256: Option<String>,
 }
 
+/// What the protections around a publish environment look like.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct GitHubEnvironmentAudit {
+    /// Whether the repository is private.
     pub private_repository: bool,
+    /// Plan the repository is on, when GitHub reports one.
     pub plan: Option<String>,
+    /// Default branch name.
     pub default_branch: String,
+    /// Whether the default branch is protected.
     pub default_branch_protected: bool,
+    /// How many reviewers the environment requires.
     pub required_reviewers: usize,
+    /// Whether the environment forbids self-review.
     pub prevent_self_review: bool,
+    /// Whether the environment is restricted to protected branches.
     pub protected_branches_only: bool,
 }
 
@@ -260,6 +320,10 @@ struct ActionsWorkflowRepositoryResponse {
     full_name: String,
 }
 
+/// An Actions artifact whose identity has been checked.
+///
+/// The fields are private because the type exists to prove that the
+/// digest, run, and source commit were verified together.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifiedActionsArtifact {
     id: u64,
@@ -271,34 +335,43 @@ pub struct VerifiedActionsArtifact {
 }
 
 impl VerifiedActionsArtifact {
+    /// Artifact identifier.
     pub fn id(&self) -> u64 {
         self.id
     }
 
+    /// Digest of the artifact bytes.
     pub fn sha256(&self) -> &str {
         &self.sha256
     }
 
+    /// Run that produced it.
     pub fn run_id(&self) -> &str {
         &self.run_id
     }
 
+    /// Commit it was built from.
     pub fn source_sha(&self) -> &str {
         &self.source_sha
     }
 
+    /// Repository that produced it.
     pub fn repository(&self) -> &str {
         &self.repository
     }
 
+    /// Workflow that produced it.
     pub fn workflow_path(&self) -> &str {
         &self.workflow_path
     }
 }
 
+/// What a tag points at on GitHub.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitHubTagState {
+    /// Commit the tag resolves to.
     pub target_sha: String,
+    /// Whether the tag is an annotated tag object.
     pub annotated: bool,
 }
 
@@ -394,6 +467,7 @@ struct ManagedMarker {
 }
 
 impl GitHubClient {
+    /// Build a client for explicit endpoints and an optional token.
     pub fn new(
         repository: GitHubRepository,
         api_url: String,
@@ -422,6 +496,7 @@ impl GitHubClient {
         })
     }
 
+    /// Build a client from the ambient GitHub Actions environment.
     pub fn from_environment(repository: GitHubRepository) -> Result<Self> {
         let token = std::env::var("GITHUB_TOKEN")
             .or_else(|_| std::env::var("GH_TOKEN"))
@@ -433,6 +508,7 @@ impl GitHubClient {
         Self::new(repository, api_url, graphql_url, token)
     }
 
+    /// Collect the change entries for a range of commits.
     pub async fn changes_for_commits(&self, commits: &[Commit]) -> Result<Vec<ChangeEntry>> {
         let mut seen = BTreeSet::new();
         let mut output = Vec::new();
@@ -464,6 +540,10 @@ impl GitHubClient {
         Ok(output)
     }
 
+    /// Observe the protections around a publish environment.
+    ///
+    /// `doctor --online` reports these so a missing protection is found
+    /// before a release depends on it.
     pub async fn environment_audit(&self, environment: &str) -> Result<GitHubEnvironmentAudit> {
         if environment.is_empty() {
             bail!("GitHub Environment name must not be empty");
@@ -504,6 +584,10 @@ impl GitHubClient {
         })
     }
 
+    /// Check that an Actions artifact is the one this release expects.
+    ///
+    /// Digest, run, and source commit must all agree, so the publish job
+    /// cannot be handed an artifact built somewhere else.
     pub async fn verify_actions_artifact(
         &self,
         artifact_id: u64,
@@ -562,6 +646,10 @@ impl GitHubClient {
         })
     }
 
+    /// Create or update the rolling Release PR for a package.
+    ///
+    /// One pull request is maintained per package, so a superseded plan
+    /// updates it in place instead of leaving stale proposals open.
     pub async fn upsert_release_pr(
         &self,
         plan: &ReleasePlan,
@@ -691,6 +779,7 @@ impl GitHubClient {
         }
     }
 
+    /// Close the managed Release PR and remove its unchanged branch.
     pub async fn close_managed_release_pr(
         &self,
         package: &str,
@@ -733,6 +822,7 @@ impl GitHubClient {
         Ok(false)
     }
 
+    /// The merged Release PR that introduced a commit, if it was managed.
     pub async fn merged_release_pr_for_head(
         &self,
         sha: &str,
@@ -765,6 +855,10 @@ impl GitHubClient {
         Ok(None)
     }
 
+    /// Record the intent digest on the managed Release PR.
+    ///
+    /// Approval is bound to that digest, so a plan that changes afterwards
+    /// can no longer claim the review the pull request carries.
     pub async fn bind_release_pr_intent(
         &self,
         head_sha: &str,
@@ -843,6 +937,7 @@ impl GitHubClient {
         bail!("GitHub open pull-request search exceeded its bounded page limit")
     }
 
+    /// Page of the GitHub Release for a tag, if one exists.
     pub async fn release_for_tag(&self, tag: &str) -> Result<Option<String>> {
         Ok(self
             .release_details_for_tag(tag)
@@ -850,6 +945,7 @@ impl GitHubClient {
             .map(|release| release.html_url))
     }
 
+    /// What a tag points at, and whether it is annotated.
     pub async fn tag_state(&self, tag: &str) -> Result<Option<GitHubTagState>> {
         let Some(reference) = self
             .get_optional::<GitReferenceResponse>(&format!("git/ref/tags/{}", encode_segment(tag)))
@@ -881,6 +977,7 @@ impl GitHubClient {
         }
     }
 
+    /// Create an annotated tag object and the ref that points at it.
     pub async fn create_annotated_tag(&self, tag: &str, sha: &str, message: &str) -> Result<()> {
         self.require_token()?;
         let object: GitTagObjectResponse = self
@@ -907,6 +1004,7 @@ impl GitHubClient {
         .await
     }
 
+    /// The full GitHub Release for a tag, if one exists.
     pub async fn release_details_for_tag(&self, tag: &str) -> Result<Option<GitHubRelease>> {
         Ok(self
             .get_optional::<ReleaseResponse>(&format!("releases/tags/{}", encode_segment(tag)))
@@ -914,6 +1012,10 @@ impl GitHubClient {
             .map(Into::into))
     }
 
+    /// Create the draft Release that later stages fill in.
+    ///
+    /// Assets are attached while the release is a draft, so consumers never
+    /// see a published release that is still missing artifacts.
     pub async fn create_draft_release(
         &self,
         tag: &str,
@@ -945,6 +1047,7 @@ impl GitHubClient {
         Ok(release.into())
     }
 
+    /// Publish a draft Release.
     pub async fn finalize_release(&self, id: u64) -> Result<GitHubRelease> {
         self.require_token()?;
         let release: ReleaseResponse = self
@@ -956,6 +1059,7 @@ impl GitHubClient {
         Ok(release.into())
     }
 
+    /// Attach one asset to a draft Release.
     pub async fn upload_release_asset(
         &self,
         release: &GitHubRelease,
@@ -1001,6 +1105,7 @@ impl GitHubClient {
         Ok(uploaded)
     }
 
+    /// Create a published Release directly, for outputs that need no assets.
     pub async fn create_release(
         &self,
         tag: &str,

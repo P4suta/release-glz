@@ -1,3 +1,10 @@
+//! The monotonic reconciler: the pure core of publication.
+//!
+//! Given what a Candidate intends, what the world already contains, and what
+//! has been approved, it returns the effects that are still missing. It never
+//! replaces an existing object, so a resumed release completes rather than
+//! republishes.
+
 use std::collections::BTreeMap;
 use std::fmt;
 
@@ -8,90 +15,151 @@ use sha2::{Digest, Sha256};
 use crate::authorization::VerifiedGithubOidc;
 use crate::model::ReleaseState;
 
+/// What one release is supposed to accomplish.
+///
+/// Derived from the sealed Candidate, so the reconciler compares the
+/// world against approved bytes rather than against a checkout.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReleaseIntent {
+    /// Package name.
     pub package: String,
+    /// Version being released.
     pub version: Version,
+    /// Commit the Candidate was built from.
     pub source_sha: String,
+    /// Release tag.
     pub tag: String,
+    /// Digest of the release decision.
     pub intent_digest: String,
+    /// Digest of the sealed Candidate.
     pub candidate_digest: String,
+    /// Environment that has to release the publish job.
     pub approval_environment: String,
+    /// Refs a manual release may be dispatched from.
     pub manual_refs: Vec<String>,
+    /// The `owner/name` GitHub slug.
     pub github_repository: String,
+    /// Workflow the publication has to run from.
     pub workflow_path: String,
+    /// Whether a GitHub Release is part of this publication.
     pub github_release: bool,
+    /// Digest of the package tarball to publish.
     pub package_sha256: String,
+    /// Digest of the documentation tarball, when docs are published.
     pub docs_sha256: Option<String>,
+    /// Assets to attach to the GitHub Release.
     pub release_assets: Vec<ReleaseAsset>,
+    /// Notifications to deliver after publication.
     pub notify_hooks: Vec<NotifyHookIntent>,
 }
 
+/// One notification this release owes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NotifyHookIntent {
+    /// Hook that delivers it.
     pub id: String,
+    /// Whether failing to deliver fails the release.
     pub required: bool,
 }
 
+/// One asset to attach to the GitHub Release.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReleaseAsset {
+    /// Hook that produced it.
     pub hook_id: String,
+    /// File name.
     pub name: String,
+    /// Declared media type.
     pub media_type: String,
+    /// Digest of the bytes.
     pub sha256: String,
+    /// Size in bytes.
     pub size: u64,
 }
 
+/// The authority a publication is running under.
+///
+/// Each field is something that was actually observed; absent evidence
+/// blocks rather than defaults to permitted.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ApprovalEvidence {
+    /// Intent digest recorded on the merged Release PR.
     pub release_pr_intent_digest: Option<String>,
+    /// Candidate digest the environment approved.
     pub environment_candidate_digest: Option<String>,
+    /// Environment that released the job.
     pub environment: Option<String>,
+    /// Commit the approval was granted for.
     pub source_sha: Option<String>,
+    /// Reason recorded for a manually dispatched release.
     pub manual_reason: Option<String>,
+    /// Verified OIDC claims of the publishing run.
     pub github_oidc: Option<VerifiedGithubOidc>,
 }
 
+/// An artifact that already exists externally.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ObservedArtifact {
+    /// Digest of the bytes that are published.
     pub sha256: String,
 }
 
+/// A tag that already exists.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ObservedTag {
+    /// Commit the tag points at.
     pub target_sha: String,
+    /// Whether it is an annotated tag.
     pub annotated: bool,
 }
 
+/// A GitHub Release that already exists.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ObservedGithubRelease {
+    /// Commit the release points at.
     pub target_sha: String,
+    /// Candidate digest recorded in the release body.
     pub candidate_digest: String,
+    /// Whether the release is still a draft.
     pub draft: bool,
 }
 
+/// What is known about one notification.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NotifyObservation {
+    /// Key that identifies this delivery across retries.
     pub idempotency_key: String,
+    /// Whether the delivery has been observed to complete.
     pub complete: bool,
 }
 
+/// Everything observed about a release in the outside world.
+///
+/// This is an observation, never a cache: a resumed run re-observes
+/// before deciding what is still missing.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExternalReleaseState {
+    /// Always `state/v1`.
     pub schema: String,
+    /// Published package, when the registry already has it.
     pub package: Option<ObservedArtifact>,
+    /// Published documentation, when the registry already has it.
     pub docs: Option<ObservedArtifact>,
+    /// Existing tag, when there is one.
     pub tag: Option<ObservedTag>,
+    /// Existing GitHub Release, when there is one.
     pub github_release: Option<ObservedGithubRelease>,
+    /// Assets already attached, keyed by name.
     #[serde(default)]
     pub release_assets: BTreeMap<String, ObservedArtifact>,
+    /// Notifications already observed, keyed by idempotency key.
     pub notifications: BTreeMap<String, NotifyObservation>,
 }
 
@@ -109,27 +177,42 @@ impl Default for ExternalReleaseState {
     }
 }
 
+/// One remaining effect, in the order v1 permits them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ReconcileEffect {
+    /// Create the annotated release tag.
     PrepareAnnotatedTag,
+    /// Create the draft GitHub Release.
     PrepareGithubDraft,
+    /// Publish the package tarball.
     PublishPackage,
+    /// Publish the documentation tarball.
     PublishDocs,
+    /// Attach one asset to the draft Release.
     UploadGithubAsset {
+        /// Hook that produced the asset.
         hook_id: String,
+        /// File name.
         name: String,
+        /// Digest of the bytes.
         sha256: String,
     },
+    /// Publish the draft Release.
     FinalizeGithubRelease,
+    /// Deliver one notification.
     Notify {
+        /// Hook that delivers it.
         hook_id: String,
+        /// Key that identifies this delivery across retries.
         idempotency_key: String,
+        /// Whether failing to deliver fails the release.
         required: bool,
     },
 }
 
 impl ReconcileEffect {
+    /// The idempotency key, for effects that have one.
     pub fn idempotency_key(&self) -> Option<&str> {
         match self {
             Self::Notify {
@@ -140,19 +223,27 @@ impl ReconcileEffect {
     }
 }
 
+/// The remaining work, and the state it implies.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReconcilePlan {
+    /// Always `reconcile/v1`.
     pub schema: String,
+    /// State the release is in once this plan was computed.
     pub state: ReleaseState,
+    /// Effects still to apply, in order.
     pub effects: Vec<ReconcileEffect>,
 }
 
+/// An observation that contradicts the Candidate.
+///
+/// Reported rather than resolved: v1 never replaces a published object.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReconcileError {
     message: String,
 }
 
 impl ReconcileError {
+    /// Always [`ReleaseState::Conflict`].
     pub fn state(&self) -> ReleaseState {
         ReleaseState::Conflict
     }
@@ -166,6 +257,11 @@ impl fmt::Display for ReconcileError {
 
 impl std::error::Error for ReconcileError {}
 
+/// Decide what is left to do, given intent, observation, and approval.
+///
+/// The function is pure, and every effect it returns is one that has
+/// not been observed yet, which is what makes a resumed release
+/// monotonic rather than repeated.
 pub fn reconcile(
     intent: &ReleaseIntent,
     observed: &ExternalReleaseState,
@@ -367,6 +463,7 @@ fn validate_existing(
     Ok(())
 }
 
+/// The idempotency key for one notification of one Candidate.
 pub fn notification_key(candidate_digest: &str, hook_id: &str) -> String {
     let mut digest = Sha256::new();
     digest.update(b"release-glz-notify-v1\0");

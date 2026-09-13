@@ -1,3 +1,6 @@
+//! Failure classes shared by the CLI exit status and the `command/v2` error
+//! code.
+
 use std::fmt;
 
 use anyhow::Error;
@@ -10,16 +13,30 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FailureClass {
+    /// A defect, or a boundary error that carries no more precise class.
     Internal,
+    /// Invalid arguments, manifest, or repository state that the caller has
+    /// to correct.
     UsageOrConfig,
+    /// A policy, approval, or authorization requirement that is not met.
     PolicyOrApproval,
+    /// An already published object differs from what this run would write.
+    ///
+    /// Republishing is never attempted; the conflict is reported instead.
     ImmutableStateConflict,
+    /// A transient registry, GitHub, or network failure that may be retried.
     TemporaryExternal,
+    /// A configured hook failed, timed out, or produced invalid evidence.
     Hook,
+    /// Publication stopped part way and can be resumed monotonically.
     PartialRelease,
 }
 
 impl FailureClass {
+    /// The process exit status for this class.
+    ///
+    /// The mapping is a public contract documented in the README; callers
+    /// branch on it, so a code can never be reused for another class.
     pub const fn exit_code(self) -> i32 {
         match self {
             Self::Internal => 1,
@@ -32,6 +49,7 @@ impl FailureClass {
         }
     }
 
+    /// The stable diagnostic code emitted in `command/v2` output.
     pub const fn diagnostic_code(self) -> &'static str {
         match self {
             Self::Internal => "internal_failure",
@@ -45,6 +63,7 @@ impl FailureClass {
     }
 }
 
+/// An error that carries its class instead of leaving it to message text.
 #[derive(Debug)]
 pub struct ClassifiedFailure {
     class: FailureClass,
@@ -52,6 +71,7 @@ pub struct ClassifiedFailure {
 }
 
 impl ClassifiedFailure {
+    /// Pair a class with the message that will be shown for it.
     pub fn new(class: FailureClass, message: impl Into<String>) -> Self {
         Self {
             class,
@@ -59,6 +79,7 @@ impl ClassifiedFailure {
         }
     }
 
+    /// The class this failure was constructed with.
     pub const fn class(&self) -> FailureClass {
         self.class
     }
@@ -72,6 +93,8 @@ impl fmt::Display for ClassifiedFailure {
 
 impl std::error::Error for ClassifiedFailure {}
 
+/// Wrap any displayable error so its class survives conversion to
+/// [`anyhow::Error`].
 pub fn classified(class: FailureClass, error: impl fmt::Display) -> Error {
     Error::new(ClassifiedFailure::new(class, error.to_string()))
 }
@@ -88,6 +111,10 @@ pub fn with_default_class(error: Error, fallback: FailureClass) -> Error {
     }
 }
 
+/// Recover the class of an error, defaulting to [`FailureClass::Internal`].
+///
+/// Only typed source errors are inspected. Message wording never selects
+/// a class, so rephrasing an error cannot change an exit status.
 pub fn classify(error: &Error) -> FailureClass {
     if let Some(classified) = error.downcast_ref::<ClassifiedFailure>() {
         return classified.class();

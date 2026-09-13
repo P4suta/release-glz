@@ -1,3 +1,9 @@
+//! Hook execution and the evidence it produces.
+//!
+//! Hooks are processes described by an argv array, never shell strings, and
+//! credentials and GitHub control files are withheld from them even when a
+//! manifest names those variables.
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -22,13 +28,23 @@ const STDOUT_LIMIT: usize = 1024 * 1024;
 const STDERR_LIMIT: usize = 256 * 1024;
 const HOOK_SPAWN_ATTEMPTS: usize = 3;
 
+/// What a hook is told about the release it is running for.
+///
+/// Digests appear only once they exist, so a verify hook cannot depend
+/// on a Candidate digest that has not been computed yet.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HookContext {
+    /// Package name.
     pub package: String,
+    /// Version being released.
     pub version: Version,
+    /// Commit the Candidate was built from.
     pub source_sha: String,
+    /// Digest of the release decision, once planning has produced one.
     pub intent_digest: Option<String>,
+    /// Digest of the sealed Candidate, once it has been sealed.
     pub candidate_digest: Option<String>,
+    /// Key that makes a retried publication attempt recognizable.
     pub idempotency_key: Option<String>,
 }
 
@@ -65,18 +81,27 @@ struct SidecarOutput {
     artifacts: Vec<SidecarArtifactOutput>,
 }
 
+/// One artifact produced by a sidecar hook.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SidecarArtifact {
+    /// Hook that produced it.
     pub hook_id: String,
+    /// File name recorded in the Candidate inventory.
     pub name: String,
+    /// Declared media type.
     pub media_type: String,
+    /// Artifact bytes.
     pub bytes: Vec<u8>,
+    /// Whether the artifact may be published, or stays internal.
     pub public: bool,
 }
 
+/// The result of running every sidecar hook.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SidecarRun {
+    /// Evidence recorded for each hook that ran.
     pub evidence: Vec<HookEvidence>,
+    /// Artifacts the hooks produced.
     pub artifacts: Vec<SidecarArtifact>,
 }
 
@@ -100,6 +125,10 @@ impl ExecutedHook {
     }
 }
 
+/// Runs configured hooks as plain processes.
+///
+/// Hooks are spawned from an argv array, never through a shell, and
+/// their output is read under fixed limits.
 #[derive(Debug, Clone)]
 pub struct HookRunner {
     stdout_limit: usize,
@@ -116,6 +145,10 @@ impl Default for HookRunner {
 }
 
 impl HookRunner {
+    /// Run the verify hooks against a sealed snapshot.
+    ///
+    /// The snapshot is digested before and after each hook, so a hook that
+    /// modifies the bytes under review is caught instead of trusted.
     pub async fn run_verify(
         &self,
         hooks: &[HookConfig],
@@ -150,6 +183,7 @@ impl HookRunner {
         Ok(evidence)
     }
 
+    /// Run the sidecar hooks and collect the artifacts they emit.
     pub async fn run_sidecars(
         &self,
         hooks: &[HookConfig],
@@ -233,6 +267,10 @@ impl HookRunner {
         })
     }
 
+    /// Ask a notify hook whether its delivery has already completed.
+    ///
+    /// Observation comes first so that a retry does not send a second
+    /// notification for the same release.
     pub async fn observe_notify(
         &self,
         hook: &HookConfig,
@@ -265,6 +303,7 @@ impl HookRunner {
             })
     }
 
+    /// Run the delivering half of a notify hook.
     pub async fn apply_notify(
         &self,
         hook: &HookConfig,

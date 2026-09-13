@@ -1,3 +1,8 @@
+//! Migration of a legacy manifest to `schema = 2`.
+//!
+//! Legacy configuration stays readable during v1.x but cannot produce a
+//! Candidate, so migration is the one path from one to the other.
+
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -13,6 +18,7 @@ use crate::gleam::Gleam;
 
 const LEGACY_BACKUP: &str = ".release-glz/legacy-gleam.toml";
 
+/// A prepared, not yet applied, migration to schema 2.
 #[derive(Debug)]
 pub struct Migration {
     manifest_path: PathBuf,
@@ -23,17 +29,28 @@ pub struct Migration {
     legacy_notes: Vec<(PathBuf, String)>,
 }
 
+/// What one migration did.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct MigrationOutcome {
+    /// Always `migration/v1`.
     pub schema: String,
+    /// Whether the manifest would change at all.
     pub changed: bool,
+    /// Whether the manifest was actually replaced.
     pub written: bool,
+    /// Repository-relative path of the migrated manifest.
     pub manifest_path: String,
+    /// Where the legacy manifest was preserved, when one was replaced.
     pub legacy_backup_path: Option<String>,
+    /// Unified diff, in diff mode only.
     pub diff: Option<String>,
 }
 
 impl Migration {
+    /// Prepare a migration, observing the installed compiler.
+    ///
+    /// A legacy manifest does not record the compiler it was released with,
+    /// so the installed one has to stand in for it.
     pub fn prepare(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
         let manifest = Manifest::load(&path)?;
@@ -130,18 +147,22 @@ impl Migration {
         })
     }
 
+    /// Whether applying this migration would change the manifest.
     pub fn changed(&self) -> bool {
         self.original != self.rendered
     }
 
+    /// The manifest as it would be written.
     pub fn rendered(&self) -> &str {
         &self.rendered
     }
 
+    /// The legacy manifest that would be replaced, when there is one.
     pub fn legacy_source(&self) -> Option<&str> {
         self.legacy.as_deref()
     }
 
+    /// Unified diff of the pending change, when there is one.
     pub fn diff(&self) -> Option<String> {
         self.changed().then(|| {
             unified_diff(
@@ -152,6 +173,7 @@ impl Migration {
         })
     }
 
+    /// Describe this migration without applying it.
     pub fn outcome(&self, written: bool) -> MigrationOutcome {
         MigrationOutcome {
             schema: "migration/v1".into(),
@@ -166,6 +188,10 @@ impl Migration {
         }
     }
 
+    /// Apply the migration, preserving the legacy manifest first.
+    ///
+    /// The manifest is re-read and the write is refused when it changed
+    /// after preparation.
     pub fn apply(self) -> Result<MigrationOutcome> {
         if !self.changed() {
             return Ok(self.outcome(false));

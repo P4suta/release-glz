@@ -1,3 +1,8 @@
+//! Rehearsal: build one committed snapshot and seal it as a `candidate/v1`.
+//!
+//! The snapshot comes from `git archive`, so uncommitted and ignored
+//! working-tree files cannot enter the Candidate.
+
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -11,19 +16,29 @@ use crate::git::GitRepo;
 use crate::gleam::Gleam;
 use crate::hooks::{HookContext, HookRunner};
 
+/// Inputs for one rehearsal.
 #[derive(Debug, Clone)]
 pub struct RehearseOptions {
+    /// Path to the `gleam.toml` that selects the package.
     pub manifest_path: PathBuf,
+    /// The exact full commit SHA to seal; abbreviated and symbolic refs are
+    /// rejected.
     pub source_ref: String,
+    /// Directory that receives the sealed Candidate.
     pub output: PathBuf,
 }
 
+/// Builds a Candidate from a committed snapshot.
 #[derive(Debug, Clone, Default)]
 pub struct Rehearsal {
     gleam: Gleam,
 }
 
 impl Rehearsal {
+    /// Build the requested commit, run the verify hooks, and seal the result.
+    ///
+    /// The configured compiler must match the installed one exactly, so the
+    /// bytes a reviewer approved are the bytes that can later be published.
     pub async fn run(&self, options: &RehearseOptions) -> Result<CandidateManifest> {
         validate_full_sha(&options.source_ref)?;
         let requested_manifest = absolute(&options.manifest_path)?;
