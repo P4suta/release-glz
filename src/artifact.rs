@@ -120,6 +120,27 @@ fn append_deterministic_file<W: std::io::Write>(
 }
 
 pub fn validate_hex_tarball(bytes: &[u8], limits: ArchiveLimits) -> Result<HexTarballValidation> {
+    Ok(expand_hex_tarball(bytes, limits)?.0)
+}
+
+/// Validate a Hex package tarball and fingerprint it from the same expansion.
+///
+/// Validating and then fingerprinting separately expands the outer tarball and
+/// its `contents.tar.gz` twice each. A Candidate needs both facts about the
+/// same bytes, so it takes them from one expansion instead.
+pub fn validate_and_fingerprint_hex_tarball(
+    bytes: &[u8],
+    limits: ArchiveLimits,
+) -> Result<(HexTarballValidation, String)> {
+    let (validation, contents) = expand_hex_tarball(bytes, limits)?;
+    let fingerprint = fingerprint_normalized(&normalize_expanded_contents(contents)?);
+    Ok((validation, fingerprint))
+}
+
+fn expand_hex_tarball(
+    bytes: &[u8],
+    limits: ArchiveLimits,
+) -> Result<(HexTarballValidation, BTreeMap<String, Vec<u8>>)> {
     if bytes.len() as u64 > limits.max_archive_bytes {
         bail!("Hex package exceeds the archive byte limit");
     }
@@ -154,12 +175,15 @@ pub fn validate_hex_tarball(bytes: &[u8], limits: ArchiveLimits) -> Result<HexTa
         .values()
         .map(|contents| contents.len() as u64)
         .sum();
-    Ok(HexTarballValidation {
-        outer_checksum: format!("{:x}", Sha256::digest(bytes)),
-        inner_checksum: inner_checksum.to_ascii_lowercase(),
-        content_entries: contents.len(),
-        expanded_bytes,
-    })
+    Ok((
+        HexTarballValidation {
+            outer_checksum: format!("{:x}", Sha256::digest(bytes)),
+            inner_checksum: inner_checksum.to_ascii_lowercase(),
+            content_entries: contents.len(),
+            expanded_bytes,
+        },
+        contents,
+    ))
 }
 
 pub fn fingerprint_tar_gz(bytes: &[u8]) -> Result<String> {
@@ -170,6 +194,17 @@ pub fn fingerprint_tar_gz(bytes: &[u8]) -> Result<String> {
 pub fn validate_docs_tarball(bytes: &[u8], limits: ArchiveLimits) -> Result<()> {
     read_tar_gz_files(bytes, limits).context("unsafe documentation archive")?;
     Ok(())
+}
+
+/// Validate a documentation tarball and fingerprint it from the same expansion.
+///
+/// Validating and then fingerprinting separately expands the archive twice.
+pub fn validate_and_fingerprint_docs_tarball(
+    bytes: &[u8],
+    limits: ArchiveLimits,
+) -> Result<String> {
+    let files = read_tar_gz_files(bytes, limits).context("unsafe documentation archive")?;
+    fingerprint_files(files)
 }
 
 pub fn unpack_tar_bytes(bytes: &[u8], destination: &Path, limits: ArchiveLimits) -> Result<()> {
@@ -194,7 +229,14 @@ pub fn normalize_hex_tarball(bytes: &[u8]) -> Result<NormalizedArtifact> {
 }
 
 pub fn fingerprint_hex_tarball(bytes: &[u8]) -> Result<String> {
-    let normalized = normalize_hex_tarball(bytes)?;
+    Ok(fingerprint_normalized(&normalize_hex_tarball(bytes)?))
+}
+
+/// Digest an artifact that has already been normalized.
+///
+/// A caller holding the normalized form does not have to expand the archive
+/// again to learn its fingerprint.
+pub fn fingerprint_normalized(normalized: &NormalizedArtifact) -> String {
     let mut digest = Sha256::new();
     for (path, contents) in normalized {
         digest.update((path.len() as u64).to_be_bytes());
@@ -202,7 +244,7 @@ pub fn fingerprint_hex_tarball(bytes: &[u8]) -> Result<String> {
         digest.update((contents.len() as u64).to_be_bytes());
         digest.update(contents);
     }
-    Ok(format!("{:x}", digest.finalize()))
+    format!("{:x}", digest.finalize())
 }
 
 pub fn artifacts_equal(old: &[u8], new: &[u8]) -> Result<bool> {
@@ -276,8 +318,10 @@ pub(crate) fn hex_metadata(bytes: &[u8]) -> Result<Vec<u8>> {
 }
 
 pub fn normalize_contents_tar_gz(bytes: &[u8]) -> Result<NormalizedArtifact> {
-    let raw = read_tar_gz_files(bytes, ArchiveLimits::default())?;
+    normalize_expanded_contents(read_tar_gz_files(bytes, ArchiveLimits::default())?)
+}
 
+fn normalize_expanded_contents(raw: BTreeMap<String, Vec<u8>>) -> Result<NormalizedArtifact> {
     let generated_erlang = generated_erlang_paths(raw.keys());
     let mut normalized = BTreeMap::new();
     for (path, mut contents) in raw {
@@ -646,6 +690,43 @@ mod tests {
             tar.finish().unwrap();
         }
         outer
+    }
+
+    fn docs(body: &str) -> Vec<u8> {
+        let mut archive = Vec::new();
+        {
+            let encoder = GzEncoder::new(&mut archive, Compression::default());
+            let mut tar = tar::Builder::new(encoder);
+            add(&mut tar, "index.html", body.as_bytes());
+            tar.finish().unwrap();
+        }
+        archive
+    }
+
+    #[test]
+    fn one_expansion_reports_exactly_what_two_separate_ones_did() {
+        let bytes = package("1.0.0", "pub fn x() { 1 }", "generated");
+        let limits = ArchiveLimits::default();
+
+        let (validation, fingerprint) =
+            validate_and_fingerprint_hex_tarball(&bytes, limits).unwrap();
+        assert_eq!(validation, validate_hex_tarball(&bytes, limits).unwrap());
+        assert_eq!(fingerprint, fingerprint_hex_tarball(&bytes).unwrap());
+
+        let docs = docs("<html></html>");
+        let combined = validate_and_fingerprint_docs_tarball(&docs, limits).unwrap();
+        validate_docs_tarball(&docs, limits).unwrap();
+        assert_eq!(combined, fingerprint_tar_gz(&docs).unwrap());
+    }
+
+    #[test]
+    fn the_combined_expansion_rejects_what_validation_alone_rejects() {
+        let limits = ArchiveLimits::default();
+        let truncated = b"not a tarball".to_vec();
+        assert!(validate_hex_tarball(&truncated, limits).is_err());
+        assert!(validate_and_fingerprint_hex_tarball(&truncated, limits).is_err());
+        assert!(validate_docs_tarball(&truncated, limits).is_err());
+        assert!(validate_and_fingerprint_docs_tarball(&truncated, limits).is_err());
     }
 
     fn add<W: Write>(tar: &mut tar::Builder<W>, path: &str, bytes: &[u8]) {

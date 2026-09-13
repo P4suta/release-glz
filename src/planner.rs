@@ -296,7 +296,7 @@ impl<R: Registry> Planner<R> {
                 version: &latest.version,
                 retired: latest.retired,
                 published: &published_artifact,
-                published_fingerprint: &artifact::fingerprint_hex_tarball(&source)?,
+                published_fingerprint: &artifact::fingerprint_normalized(&published_artifact),
             })
             .await?;
 
