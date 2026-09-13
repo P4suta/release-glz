@@ -4,8 +4,13 @@ const childProcess = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
 
-const MAX_METADATA_BYTES = 32 * 1024 * 1024;
-const MAX_LOCK_BYTES = 16 * 1024 * 1024;
+const KIB = 1024;
+const MIB = 1024 * KIB;
+
+const SHA256_HEX = /^[0-9a-f]{64}$/;
+
+const MAX_METADATA_BYTES = 32 * MIB;
+const MAX_LOCK_BYTES = 16 * MIB;
 const SHIPPED_TARGETS = Object.freeze([
   "x86_64-unknown-linux-musl",
   "aarch64-unknown-linux-musl",
@@ -21,7 +26,7 @@ function packageKey(name, version) {
 
 function parseLockChecksums(source) {
   if (Buffer.byteLength(source, "utf8") > MAX_LOCK_BYTES) {
-    throw new Error("Cargo.lock exceeds the 16 MiB evidence limit");
+    throw new Error(`Cargo.lock exceeds the ${MAX_LOCK_BYTES / MIB} MiB evidence limit`);
   }
   const checksums = new Map();
   for (const block of source.split(/^\[\[package\]\]\s*$/m).slice(1)) {
@@ -33,7 +38,7 @@ function parseLockChecksums(source) {
     const version = value("version");
     const checksum = value("checksum");
     if (!name || !version || !checksum) continue;
-    if (!/^[0-9a-f]{64}$/.test(checksum)) {
+    if (!SHA256_HEX.test(checksum)) {
       throw new Error(`Cargo.lock has an invalid checksum for ${name} ${version}`);
     }
     const key = packageKey(name, version);

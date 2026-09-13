@@ -5,6 +5,12 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 
+const KIB = 1024;
+const MIB = 1024 * KIB;
+
+// Size one release archive may reach before it is refused.
+const MAX_ARCHIVE_BYTES = 256 * MIB;
+
 const archives = [
   "release-glz-x86_64-unknown-linux-musl.tar.gz",
   "release-glz-aarch64-unknown-linux-musl.tar.gz",
@@ -42,7 +48,7 @@ function argumentsFrom(argv) {
 
 function digestRegularFile(file) {
   const metadata = fs.lstatSync(file);
-  if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size === 0 || metadata.size > 256 * 1024 * 1024) {
+  if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size === 0 || metadata.size > MAX_ARCHIVE_BYTES) {
     throw new Error(`${path.basename(file)} is not a bounded regular release archive`);
   }
   return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
