@@ -13,7 +13,15 @@ const ARCHIVES = Object.freeze([
   "release-glz-x86_64-pc-windows-msvc.zip",
   "release-glz-aarch64-pc-windows-msvc.zip",
 ]);
-const MAX_ARCHIVE_BYTES = 256 * 1024 * 1024;
+const KIB = 1024;
+const MIB = 1024 * KIB;
+
+const GIT_OBJECT_HEX = /^[a-f0-9]{40}$/;
+
+// A positive decimal run id, bounded to what a 64-bit counter can produce.
+const RUN_ID = /^[1-9]\d{0,19}$/;
+
+const MAX_ARCHIVE_BYTES = 256 * MIB;
 
 function argumentsFrom(argv) {
   const allowed = new Set([
@@ -40,13 +48,13 @@ function argumentsFrom(argv) {
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(values["--repository"])) {
     throw new Error("repository must be an owner/name pair");
   }
-  if (!/^[a-f0-9]{40}$/.test(values["--source"])) {
+  if (!GIT_OBJECT_HEX.test(values["--source"])) {
     throw new Error("source must be a lowercase full commit SHA");
   }
   if (!/^v\d+\.\d+\.\d+$/.test(values["--version"])) {
     throw new Error("version must be a stable vX.Y.Z tag");
   }
-  if (!/^[1-9]\d{0,19}$/.test(values["--run-id"])) {
+  if (!RUN_ID.test(values["--run-id"])) {
     throw new Error("run-id must be a positive decimal GitHub Actions run ID");
   }
   const metadata = fs.lstatSync(values["--artifacts"]);

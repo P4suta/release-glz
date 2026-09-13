@@ -4,11 +4,17 @@
 const fs = require("node:fs");
 const path = require("node:path");
 
-const MAX_RELEASE_JSON_BYTES = 4 * 1024 * 1024;
+const KIB = 1024;
+const MIB = 1024 * KIB;
+
+const MAX_RELEASE_JSON_BYTES = 4 * MIB;
 const MAX_ASSET_COUNT = 1024;
 
+// Characters a Release asset name may use.
+const MAX_ASSET_NAME_LEN = 256;
+
 function safeAssetName(name) {
-  return typeof name === "string" && name.length > 0 && name.length <= 256 &&
+  return typeof name === "string" && name.length > 0 && name.length <= MAX_ASSET_NAME_LEN &&
     name !== "." && name !== ".." && !/[\\/\0\r\n]/.test(name);
 }
 

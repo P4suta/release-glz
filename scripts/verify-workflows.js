@@ -4,7 +4,16 @@
 const fs = require("node:fs");
 const path = require("node:path");
 
-const MAX_WORKFLOW_BYTES = 1024 * 1024;
+const KIB = 1024;
+const MIB = 1024 * KIB;
+
+const MAX_WORKFLOW_BYTES = MIB;
+
+// A container action pinned by image digest.
+const CONTAINER_DIGEST = /@sha256:[a-f0-9]{64}$/;
+
+// A git object id, in either case, as an action reference may carry it.
+const GIT_OBJECT_HEX = /^[a-f0-9]{40}$/i;
 
 function indentation(line) {
   return line.length - line.trimStart().length;
@@ -57,13 +66,13 @@ function verifyWorkflow(filename, source) {
     const reference = match[1];
     if (reference.startsWith("./")) continue;
     if (reference.startsWith("docker://")) {
-      if (!/@sha256:[a-f0-9]{64}$/.test(reference)) {
+      if (!CONTAINER_DIGEST.test(reference)) {
         throw new Error(`${filename}: container action must use a sha256 digest`);
       }
       continue;
     }
     const separator = reference.lastIndexOf("@");
-    if (separator < 1 || !/^[a-f0-9]{40}$/i.test(reference.slice(separator + 1))) {
+    if (separator < 1 || !GIT_OBJECT_HEX.test(reference.slice(separator + 1))) {
       throw new Error(`${filename}: every external action must use a full commit SHA`);
     }
   }
