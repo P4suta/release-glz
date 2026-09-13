@@ -88,6 +88,41 @@ function verifyWorkflow(filename, source) {
     if (!/^\s+permissions:\s*(?:\{\}\s*)?(?:#.*)?$/m.test(job.source)) {
       throw new Error(`${filename}: job ${job.name} must declare permissions`);
     }
+    requireExplicitShell(filename, job);
+  }
+}
+
+// Reject a `run` step that expands a POSIX variable while leaving its shell to
+// the runner, when the runner is not fixed to one operating system. PowerShell
+// is the default on Windows and does not expand `$NAME`, so such a step reads
+// an empty value there instead of failing loudly.
+function requireExplicitShell(filename, job) {
+  const runsOn = job.source.match(/^\s+runs-on:\s*(.+?)\s*(?:#.*)?$/m);
+  if (!runsOn) return;
+  const varies = runsOn[1].includes("${{") || /windows/i.test(runsOn[1]);
+  if (!varies) return;
+
+  const lines = job.source.split(/\r?\n/);
+  for (let index = 0; index < lines.length; index += 1) {
+    if (!/^\s+run:\s*\S/.test(lines[index]) && !/^\s+run:\s*[|>]/.test(lines[index])) continue;
+    let start = index;
+    while (start > 0 && !/^\s*-\s+\S/.test(lines[start])) start -= 1;
+    const stepIndent = indentation(lines[start]);
+    let end = start + 1;
+    while (end < lines.length &&
+      (!/^\s*-\s+\S/.test(lines[end]) || indentation(lines[end]) > stepIndent)) end += 1;
+    const step = lines.slice(start, end).join("\n");
+    const posix = step.replace(/\$\{\{[^}]*\}\}/g, "");
+    if (!/\$[A-Za-z_{]/.test(posix)) {
+      index = end - 1;
+      continue;
+    }
+    if (!/^\s+(?:-\s+)?shell:\s*\S/m.test(step)) {
+      throw new Error(
+        `${filename}: job ${job.name} expands a POSIX variable on a runner that varies, so its run step must set shell`,
+      );
+    }
+    index = end - 1;
   }
 }
 
@@ -127,4 +162,11 @@ if (require.main === module) {
   }
 }
 
-module.exports = { jobBlocks, main, rejectQuotedMappingKeys, verifyWorkflow, workflowFiles };
+module.exports = {
+  jobBlocks,
+  main,
+  rejectQuotedMappingKeys,
+  requireExplicitShell,
+  verifyWorkflow,
+  workflowFiles,
+};
