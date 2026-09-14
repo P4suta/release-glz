@@ -24,6 +24,24 @@ fn distribution_builds_and_smokes_every_supported_native_target() {
     assert!(yaml.contains("ldd") && yaml.contains("not a dynamic executable"));
 }
 
+/// Whether a workflow uses an action and pins it to a full commit SHA.
+///
+/// Asserting the SHA itself would make this test the second place that has to
+/// know it, so every routine bump of the action would fail here until someone
+/// copied the new value across. What matters is the property — the action is
+/// used, and it is pinned — which survives the bump.
+fn pinned_to_a_commit(yaml: &str, action: &str) -> bool {
+    let marker = format!("{action}@");
+    yaml.lines().any(|line| {
+        line.split_once(&marker).is_some_and(|(_, rest)| {
+            rest.chars()
+                .take_while(char::is_ascii_hexdigit)
+                .count()
+                .eq(&40)
+        })
+    })
+}
+
 #[test]
 fn distribution_is_attested_and_uploaded_to_a_draft_exactly_once() {
     let yaml = fs::read_to_string(".github/workflows/distribute.yml")
@@ -33,7 +51,10 @@ fn distribution_is_attested_and_uploaded_to_a_draft_exactly_once() {
     assert!(yaml.contains("permissions: {}"));
     assert!(yaml.contains("id-token: write"));
     assert!(yaml.contains("attestations: write"));
-    assert!(yaml.contains("actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26"));
+    assert!(
+        pinned_to_a_commit(&yaml, "actions/attest"),
+        "attestation must run from an action pinned to a full commit SHA"
+    );
     assert!(yaml.contains("release create") && yaml.contains("--draft"));
     assert_eq!(yaml.matches("gh release upload").count(), 1);
     assert!(yaml.contains("gh attestation verify"));
