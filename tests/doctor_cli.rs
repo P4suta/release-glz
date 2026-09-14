@@ -11,6 +11,18 @@ use std::time::{Duration, Instant};
 
 use release_glz::workflow::{self, WorkflowMode, WorkflowSettings};
 
+/// Seconds the fake server keeps listening when a test never stops it.
+const SERVER_LIFETIME_SECONDS: u64 = 120;
+
+/// Seconds it waits for the rest of a request once a connection arrives.
+const READ_TIMEOUT_SECONDS: u64 = 30;
+
+/// Bytes read from a connection in one call.
+const READ_BUFFER_BYTES: usize = 4096;
+
+/// The blank line that ends an HTTP request's headers.
+const HEADER_TERMINATOR: &[u8] = b"\r\n\r\n";
+
 #[test]
 fn doctor_cli_collects_local_and_github_checks_into_envelope_v2() {
     let temp = tempfile::tempdir().unwrap();
@@ -373,19 +385,32 @@ impl FakeGitHub {
         let thread_requests = Arc::clone(&requests);
         let thread = thread::spawn(move || {
             let mut responses = responses.into_iter();
-            let deadline = Instant::now() + Duration::from_secs(10);
+            // Both bounds only exist so a test that never calls `stop` cannot
+            // leave this thread running. They have to outlast the slowest gap
+            // a loaded runner puts between accepting a connection and the
+            // request arriving on it — otherwise the listener gives up first
+            // and the assertion blames the product for the machine.
+            let deadline = Instant::now() + Duration::from_secs(SERVER_LIFETIME_SECONDS);
             while !thread_stop.load(Ordering::Relaxed) && Instant::now() < deadline {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
                         stream
-                            .set_read_timeout(Some(Duration::from_secs(2)))
+                            .set_read_timeout(Some(Duration::from_secs(READ_TIMEOUT_SECONDS)))
                             .unwrap();
                         let mut request = Vec::new();
-                        let mut buffer = [0_u8; 4096];
-                        loop {
-                            let count = stream.read(&mut buffer).unwrap_or(0);
+                        let mut buffer = [0_u8; READ_BUFFER_BYTES];
+                        // A read error — a timeout, most likely — used to read
+                        // as a clean end of request, which recorded an empty
+                        // one and answered it. The caller then saw a reply to
+                        // a request it had not finished sending.
+                        while let Ok(count) = stream.read(&mut buffer) {
+                            if count == 0 {
+                                break;
+                            }
                             request.extend_from_slice(&buffer[..count]);
-                            if count == 0 || request.windows(4).any(|window| window == b"\r\n\r\n")
+                            if request
+                                .windows(HEADER_TERMINATOR.len())
+                                .any(|window| window == HEADER_TERMINATOR)
                             {
                                 break;
                             }
