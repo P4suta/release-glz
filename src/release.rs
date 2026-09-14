@@ -467,7 +467,7 @@ fn ambiguous_publish_context(kind: &str, outcome: PublishOutcome) -> String {
 }
 
 fn sha256(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
+    crate::hex::lower(&Sha256::digest(bytes))
 }
 
 fn is_sha256(value: &str) -> bool {

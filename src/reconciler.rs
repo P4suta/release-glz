@@ -470,7 +470,7 @@ pub fn notification_key(candidate_digest: &str, hook_id: &str) -> String {
     digest.update(candidate_digest.as_bytes());
     digest.update(b"\0");
     digest.update(hook_id.as_bytes());
-    format!("{:x}", digest.finalize())
+    crate::hex::lower(&digest.finalize())
 }
 
 fn conflict<T>(message: String) -> Result<T, ReconcileError> {

@@ -125,7 +125,7 @@ pub fn build_hex_tarball(
     digest.update(VERSION);
     digest.update(metadata);
     digest.update(&contents);
-    let checksum = format!("{:X}", digest.finalize());
+    let checksum = crate::hex::upper(&digest.finalize());
 
     let mut outer = tar::Builder::new(Vec::new());
     for (path, bytes) in [
@@ -206,7 +206,7 @@ fn expand_hex_tarball(
     inner.update(&outer["VERSION"]);
     inner.update(&outer["metadata.config"]);
     inner.update(&outer["contents.tar.gz"]);
-    let inner_checksum = format!("{:X}", inner.finalize());
+    let inner_checksum = crate::hex::upper(&inner.finalize());
     let recorded =
         std::str::from_utf8(trim_ascii(&outer["CHECKSUM"])).context("Hex CHECKSUM is not ASCII")?;
     if recorded != inner_checksum {
@@ -220,7 +220,7 @@ fn expand_hex_tarball(
         .sum();
     Ok((
         HexTarballValidation {
-            outer_checksum: format!("{:x}", Sha256::digest(bytes)),
+            outer_checksum: crate::hex::lower(&Sha256::digest(bytes)),
             inner_checksum: inner_checksum.to_ascii_lowercase(),
             content_entries: contents.len(),
             expanded_bytes,
@@ -295,7 +295,7 @@ pub fn fingerprint_normalized(normalized: &NormalizedArtifact) -> String {
         digest.update((contents.len() as u64).to_be_bytes());
         digest.update(contents);
     }
-    format!("{:x}", digest.finalize())
+    crate::hex::lower(&digest.finalize())
 }
 
 /// Whether two Hex tarballs contain the same publication inputs.
@@ -585,7 +585,7 @@ fn fingerprint_files(files: BTreeMap<String, Vec<u8>>) -> Result<String> {
         digest.update((contents.len() as u64).to_be_bytes());
         digest.update(contents);
     }
-    Ok(format!("{:x}", digest.finalize()))
+    Ok(crate::hex::lower(&digest.finalize()))
 }
 
 fn trim_ascii(bytes: &[u8]) -> &[u8] {
@@ -745,7 +745,7 @@ mod tests {
             digest.update(version);
             digest.update(metadata);
             digest.update(&contents);
-            let checksum = format!("{:X}", digest.finalize());
+            let checksum = crate::hex::upper(&digest.finalize());
             add(&mut tar, "VERSION", version);
             add(&mut tar, "metadata.config", metadata);
             add(&mut tar, "contents.tar.gz", &contents);

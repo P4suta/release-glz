@@ -583,7 +583,7 @@ fn atomic_write(path: &Path, contents: &[u8]) -> Result<()> {
 }
 
 fn digest(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
+    crate::hex::lower(&Sha256::digest(bytes))
 }
 
 #[cfg(test)]
