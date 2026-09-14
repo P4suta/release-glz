@@ -18,7 +18,7 @@ pub mod failure;
 pub mod forge;
 pub mod git;
 pub mod gleam;
-mod hex;
+pub mod hex;
 pub mod hooks;
 pub mod migrate;
 pub mod model;

@@ -131,7 +131,7 @@ async fn draft_creation_binds_target_and_candidate_digest() {
 #[tokio::test]
 async fn release_asset_upload_is_content_addressed_and_never_uses_clobber() {
     let bytes = br#"{"bomFormat":"CycloneDX"}"#;
-    let digest = format!("{:x}", sha2::Sha256::digest(bytes));
+    let digest = release_glz::hex::lower(&sha2::Sha256::digest(bytes));
     let response_body = format!(
         r#"{{"id":77,"name":"sbom.cdx.json","state":"uploaded","content_type":"application/vnd.cyclonedx+json","size":{},"digest":"sha256:{digest}"}}"#,
         bytes.len()
@@ -1252,7 +1252,7 @@ async fn release_asset_preflight_rejects_unpublishable_identity_and_untrusted_ur
 #[tokio::test]
 async fn release_asset_response_must_match_every_uploaded_byte_identity() {
     let bytes = b"sealed evidence";
-    let digest = format!("{:x}", sha2::Sha256::digest(bytes));
+    let digest = release_glz::hex::lower(&sha2::Sha256::digest(bytes));
     let valid = serde_json::json!({
         "id": 7,
         "name": "evidence.json",
@@ -1452,7 +1452,7 @@ fn release_files_digest(files: &BTreeMap<String, Vec<u8>>) -> String {
         digest.update([0]);
         digest.update(contents);
     }
-    format!("{:x}", digest.finalize())
+    release_glz::hex::lower(&digest.finalize())
 }
 
 fn managed_body(

@@ -482,7 +482,7 @@ fn registry_response(
                     200,
                     serde_json::json!({
                         "version": "1.2.3",
-                        "checksum": format!("{:x}", Sha256::digest(package)),
+                        "checksum": release_glz::hex::lower(&Sha256::digest(package)),
                         "has_docs": state.docs.is_some()
                     }),
                 ),
@@ -631,7 +631,7 @@ fn github_response(
             state.asset = Some(request.body.clone());
             state.asset_name = request.path.split("name=").nth(1).map(str::to_owned);
             state.asset_media_type = request.headers.get("content-type").cloned();
-            let digest = format!("{:x}", Sha256::digest(&request.body));
+            let digest = release_glz::hex::lower(&Sha256::digest(&request.body));
             HttpResponse::json(
                 201,
                 serde_json::json!({
@@ -660,7 +660,7 @@ fn release_response(state: &GitHubState, base_url: &str) -> HttpResponse {
             "state": "uploaded",
             "content_type": media_type,
             "size": bytes.len(),
-            "digest": format!("sha256:{:x}", Sha256::digest(bytes))
+            "digest": format!("sha256:{}", release_glz::hex::lower(&Sha256::digest(bytes)))
         })],
         _ => vec![],
     };
@@ -717,7 +717,7 @@ fn hex_package() -> Vec<u8> {
     digest.update(version);
     digest.update(metadata);
     digest.update(&contents);
-    let checksum = format!("{:X}", digest.finalize());
+    let checksum = release_glz::hex::upper(&digest.finalize());
     tar(&[
         ("VERSION", version),
         ("metadata.config", metadata),
