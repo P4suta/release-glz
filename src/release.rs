@@ -10,6 +10,14 @@ use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use sha2::{Digest, Sha256};
 
+use crate::canonical::SHA256_HEX_LEN;
+
+/// Rounds of observe-and-apply one release run may take.
+///
+/// Each round applies at most one effect, and the reconciler only ever returns
+/// effects that have not been observed yet, so a release that needs more than
+/// this is not making progress.
+const MAX_RECONCILE_ROUNDS: usize = 128;
 use crate::candidate::{Candidate, CandidateManifest};
 use crate::config::RegistryConfig;
 use crate::forge::{GitHubClient, GitHubRepository};
@@ -463,7 +471,7 @@ fn sha256(bytes: &[u8]) -> String {
 }
 
 fn is_sha256(value: &str) -> bool {
-    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+    value.len() == SHA256_HEX_LEN && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 /// A failed release run, carrying the state it stopped in.
@@ -583,7 +591,7 @@ where
         let mut applied = Vec::new();
         let mut attempted_optional_notifications = BTreeSet::new();
 
-        for _ in 0..128 {
+        for _ in 0..MAX_RECONCILE_ROUNDS {
             let observed = self
                 .target
                 .observe(&intent)

@@ -18,6 +18,23 @@ use serde::Deserialize;
 use tempfile::TempDir;
 
 use crate::config::Manifest;
+#[cfg(any(windows, test))]
+use crate::units::MIB;
+
+/// Size the compiler's package information may reach before it is refused.
+#[cfg(any(windows, test))]
+const MAX_PACKAGE_INFORMATION_BYTES: u64 = MIB;
+
+/// Size a `gleam.toml` may reach before it is refused.
+#[cfg(any(windows, test))]
+const MAX_MANIFEST_BYTES: u64 = 4 * MIB;
+
+/// The one compiler release whose Windows `export hex-tarball` is recovered
+/// from rather than trusted.
+#[cfg(any(windows, test))]
+fn windows_hex_tarball_regression_version() -> Version {
+    Version::new(1, 18, 1)
+}
 
 /// A package directory in a temporary tree.
 ///
@@ -156,7 +173,7 @@ impl Gleam {
         )?;
         read_regular_file_bounded(
             &package_dir.join(OUTPUT),
-            1024 * 1024,
+            MAX_PACKAGE_INFORMATION_BYTES,
             "Gleam package information",
         )
     }
@@ -306,7 +323,7 @@ fn check_output(output: &Output, action: &str, configured_secret: Option<&str>) 
 
 #[cfg(any(windows, test))]
 fn is_windows_hex_tarball_regression(version: &Version, stderr: &[u8]) -> bool {
-    version == &Version::new(1, 18, 1)
+    version == &windows_hex_tarball_regression_version()
         && String::from_utf8_lossy(stderr).contains("Cannot add path to tar archive")
         && String::from_utf8_lossy(stderr).contains("is outside this Gleam project")
 }
@@ -375,7 +392,7 @@ fn build_hex_tarball_from_compiler_outputs(
     package_dir: &Path,
     package_information: &[u8],
 ) -> Result<Vec<u8>> {
-    if package_information.len() > 1024 * 1024 {
+    if package_information.len() as u64 > MAX_PACKAGE_INFORMATION_BYTES {
         bail!("Gleam package information exceeds the one MiB limit");
     }
     let information: PackageInformation = serde_json::from_slice(package_information)
@@ -598,7 +615,7 @@ fn dependency_otp_apps(
         return Ok(BTreeMap::new());
     }
     let path = package_dir.join("manifest.toml");
-    let source = read_regular_file_bounded(&path, 4 * 1024 * 1024, "Gleam manifest")?;
+    let source = read_regular_file_bounded(&path, MAX_MANIFEST_BYTES, "Gleam manifest")?;
     let source = String::from_utf8(source).context("Gleam manifest is not UTF-8")?;
     let document = source
         .parse::<toml_edit::DocumentMut>()

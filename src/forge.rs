@@ -16,10 +16,36 @@ use reqwest::{
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 
+use crate::canonical::SHA256_HEX_LEN;
 use crate::changelog::default_category;
 use crate::config::url_is_http_loopback;
 use crate::git::Commit;
 use crate::model::{ChangeEntry, ReleasePlan};
+use crate::units::GIB;
+
+/// REST API version this client pins its requests to.
+const GITHUB_API_VERSION: &str = "2026-03-10";
+
+/// Seconds a single GitHub request may take before it is abandoned.
+const REQUEST_TIMEOUT_SECONDS: u64 = 60;
+
+/// Seconds a `Retry-After` header may ask this client to wait.
+const MAX_RETRY_AFTER_SECONDS: u64 = 30;
+
+/// Size an Actions artifact may reach before it is refused.
+const MAX_ACTIONS_ARTIFACT_BYTES: u64 = GIB;
+
+/// Characters a GitHub account name may use.
+const MAX_OWNER_LEN: usize = 39;
+
+/// Characters a Release asset name may use.
+const MAX_ASSET_NAME_LEN: usize = 256;
+
+/// Characters a Release asset media type may use.
+const MAX_MEDIA_TYPE_LEN: usize = 128;
+
+/// The port an `https` URL uses when it names none.
+const HTTPS_PORT: u16 = 443;
 
 const MAX_GITHUB_JSON_BYTES: usize = 4 * 1024 * 1024;
 const MAX_GITHUB_ERROR_BYTES: usize = 64 * 1024;
@@ -42,7 +68,7 @@ impl GitHubRepository {
         let (owner, name) = value
             .split_once('/')
             .context("GitHub repository must be `owner/name`")?;
-        let owner_valid = (1..=39).contains(&owner.len())
+        let owner_valid = (1..=MAX_OWNER_LEN).contains(&owner.len())
             && owner
                 .bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
@@ -415,7 +441,7 @@ impl From<ReleaseAssetResponse> for GitHubReleaseAsset {
             digest
                 .strip_prefix("sha256:")
                 .filter(|digest| {
-                    digest.len() == 64
+                    digest.len() == SHA256_HEX_LEN
                         && digest
                             .bytes()
                             .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
@@ -482,7 +508,7 @@ impl GitHubClient {
         let mut client = reqwest::Client::builder()
             .user_agent(concat!("release-glz/", env!("CARGO_PKG_VERSION")))
             .connect_timeout(std::time::Duration::from_secs(10))
-            .timeout(std::time::Duration::from_secs(60))
+            .timeout(std::time::Duration::from_secs(REQUEST_TIMEOUT_SECONDS))
             .redirect(reqwest::redirect::Policy::none());
         if loopback_only {
             client = client.no_proxy();
@@ -614,7 +640,7 @@ impl GitHubClient {
         if artifact.id != artifact_id
             || artifact.name != format!("release-glz-candidate-{expected_run_id}")
             || artifact.size_in_bytes == 0
-            || artifact.size_in_bytes > 1024 * 1024 * 1024
+            || artifact.size_in_bytes > MAX_ACTIONS_ARTIFACT_BYTES
             || artifact.digest != format!("sha256:{expected_sha256}")
             || artifact.workflow_run.id != expected_run_number
             || artifact.workflow_run.head_sha != expected_source_sha
@@ -1239,7 +1265,8 @@ impl GitHubClient {
         Ok(commit.message.lines().find_map(|line| {
             line.strip_prefix("release-glz-digest: ")
                 .filter(|digest| {
-                    digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+                    digest.len() == SHA256_HEX_LEN
+                        && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
                 })
                 .map(str::to_owned)
         }))
@@ -1290,7 +1317,7 @@ impl GitHubClient {
                 .and_then(|value| value.to_str().ok())
                 .and_then(|value| value.parse::<u64>().ok())
                 .unwrap_or(1_u64 << attempt)
-                .min(30);
+                .min(MAX_RETRY_AFTER_SECONDS);
             drop(response);
             tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
         }
@@ -1349,7 +1376,7 @@ impl GitHubClient {
             .client
             .request(method, url)
             .header("Accept", "application/vnd.github+json")
-            .header("X-GitHub-Api-Version", "2026-03-10");
+            .header("X-GitHub-Api-Version", GITHUB_API_VERSION);
         match &self.token {
             Some(token) => request.bearer_auth(token),
             None => request,
@@ -1387,7 +1414,7 @@ fn validate_github_url(raw: &str) -> Result<()> {
 
 fn validate_release_asset_identity(name: &str, media_type: &str) -> Result<()> {
     if name.is_empty()
-        || name.len() > 256
+        || name.len() > MAX_ASSET_NAME_LEN
         || name == "."
         || name == ".."
         || name.contains(['/', '\\', '\n', '\r', '\0'])
@@ -1395,7 +1422,7 @@ fn validate_release_asset_identity(name: &str, media_type: &str) -> Result<()> {
         bail!("GitHub Release asset name is unsafe");
     }
     if media_type.is_empty()
-        || media_type.len() > 128
+        || media_type.len() > MAX_MEDIA_TYPE_LEN
         || !media_type.contains('/')
         || !media_type
             .bytes()
@@ -1425,7 +1452,7 @@ fn validate_release_upload_url(
         && api.host_str() == Some("api.github.com")
         && url.scheme() == "https"
         && url.host_str() == Some("uploads.github.com")
-        && url.port_or_known_default() == Some(443);
+        && url.port_or_known_default() == Some(HTTPS_PORT);
     if !same_origin && !github_upload_origin {
         bail!("GitHub Release upload URL has an untrusted origin");
     }
@@ -1553,7 +1580,7 @@ fn parse_marker(body: &str) -> Option<ManagedMarker> {
             .get("intent")
             .copied()
             .filter(|digest| {
-                digest.len() == 64
+                digest.len() == SHA256_HEX_LEN
                     && digest
                         .bytes()
                         .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
@@ -1573,7 +1600,7 @@ pub fn is_managed_release_pr(body: &str) -> bool {
 fn parse_candidate_digest(body: &str) -> Option<String> {
     body.lines().find_map(|line| {
         let digest = line.trim().strip_prefix("release-glz-candidate-digest: ")?;
-        (digest.len() == 64
+        (digest.len() == SHA256_HEX_LEN
             && digest
                 .bytes()
                 .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f')))
@@ -1595,7 +1622,7 @@ fn replace_managed_marker(body: &str, marker: &ManagedMarker) -> Result<String> 
 }
 
 fn valid_sha256(value: &str) -> bool {
-    value.len() == 64
+    value.len() == SHA256_HEX_LEN
         && value
             .bytes()
             .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))

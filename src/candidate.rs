@@ -16,24 +16,29 @@ use sha2::{Digest, Sha256};
 use crate::artifact::{
     ArchiveLimits, validate_and_fingerprint_docs_tarball, validate_and_fingerprint_hex_tarball,
 };
-use crate::canonical::{canonical_json_bytes, canonical_sha256};
+use crate::canonical::{SHA256_HEX_LEN, canonical_json_bytes, canonical_sha256};
 use crate::config::{
     ApprovalConfig, AuthKind, HookConfig, OutputConfig, RegistryProvider, url_is_http_loopback,
     valid_env_name, validate_git_ref, validate_hook_config, validate_package_name,
     validate_registry_repository, validate_relative_path,
 };
+use crate::git::OBJECT_HEX_LEN;
 use crate::hooks::SidecarArtifact;
 use crate::sidecar::{
     MAX_ARTIFACT_BYTES as MAX_SIDECAR_BYTES, MAX_COUNT as MAX_SIDECAR_COUNT,
     MAX_TOTAL_BYTES as MAX_TOTAL_SIDECAR_BYTES, validate_hook_id as validate_sidecar_hook_id,
     validate_media_type as validate_sidecar_media_type, validate_name as validate_sidecar_name,
 };
+use crate::units::MIB;
 
 const MANIFEST_FILE: &str = "candidate.json";
 const PACKAGE_FILE: &str = "artifacts/package.tar";
 const DOCS_FILE: &str = "artifacts/docs.tar.gz";
 const INTERFACE_FILE: &str = "artifacts/package-interface.json";
-const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
+const MAX_MANIFEST_BYTES: u64 = MIB;
+
+/// Bytes of release notes a Candidate may carry.
+const MAX_RELEASE_NOTES_BYTES: usize = MIB as usize;
 
 /// The exact commit and manifest a Candidate was built from.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -964,7 +969,7 @@ fn validate_descriptor_path(descriptor: &SealedArtifact, expected: &str) -> Resu
 
 fn validate_source(source: &CandidateSource) -> Result<()> {
     let sha = source.commit_sha.as_bytes();
-    if !matches!(sha.len(), 40 | 64)
+    if !matches!(sha.len(), OBJECT_HEX_LEN | SHA256_HEX_LEN)
         || !sha
             .iter()
             .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
@@ -1035,7 +1040,7 @@ fn validate_release_branch_prefix(prefix: &str) -> Result<()> {
 }
 
 fn validate_release_notes(notes: &str) -> Result<()> {
-    if notes.len() > 1024 * 1024 || notes.contains('\0') {
+    if notes.len() > MAX_RELEASE_NOTES_BYTES || notes.contains('\0') {
         bail!("candidate release notes are invalid or exceed 1 MiB");
     }
     Ok(())
@@ -1277,7 +1282,7 @@ fn validate_notify_hook_definitions(ids: &[String], hooks: &[HookConfig]) -> Res
 }
 
 fn validate_sha256(value: &str, field: &str) -> Result<()> {
-    if value.len() != 64
+    if value.len() != SHA256_HEX_LEN
         || !value
             .bytes()
             .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))

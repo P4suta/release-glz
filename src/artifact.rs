@@ -15,6 +15,8 @@ use sha2::{Digest, Sha256};
 use tar::Archive;
 use toml_edit::{DocumentMut, value};
 
+use crate::units::MIB;
+
 /// Archive contents keyed by repository-relative path.
 ///
 /// The map is ordered, so two normalizations of the same bytes iterate
@@ -37,13 +39,25 @@ pub struct ArchiveLimits {
     pub max_archive_bytes: u64,
 }
 
+/// Entries one archive may contain by default.
+const DEFAULT_MAX_ENTRIES: usize = 20_000;
+
+/// Expanded size one archive entry may reach by default.
+const DEFAULT_MAX_ENTRY_BYTES: u64 = 64 * MIB;
+
+/// Expanded size a whole archive may reach by default.
+const DEFAULT_MAX_TOTAL_BYTES: u64 = 256 * MIB;
+
+/// Compressed size an archive itself may reach by default.
+const DEFAULT_MAX_ARCHIVE_BYTES: u64 = 128 * MIB;
+
 impl Default for ArchiveLimits {
     fn default() -> Self {
         Self {
-            max_entries: 20_000,
-            max_entry_bytes: 64 * 1024 * 1024,
-            max_total_bytes: 256 * 1024 * 1024,
-            max_archive_bytes: 128 * 1024 * 1024,
+            max_entries: DEFAULT_MAX_ENTRIES,
+            max_entry_bytes: DEFAULT_MAX_ENTRY_BYTES,
+            max_total_bytes: DEFAULT_MAX_TOTAL_BYTES,
+            max_archive_bytes: DEFAULT_MAX_ARCHIVE_BYTES,
         }
     }
 }

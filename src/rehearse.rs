@@ -11,8 +11,9 @@ use anyhow::{Context, Result, bail};
 use crate::candidate::{
     Candidate, CandidateInput, CandidateManifest, CandidateSource, RegistryIdentity,
 };
+use crate::canonical::SHA256_HEX_LEN;
 use crate::config::{Manifest, RegistryProvider};
-use crate::git::GitRepo;
+use crate::git::{GitRepo, OBJECT_HEX_LEN};
 use crate::gleam::Gleam;
 use crate::hooks::{HookContext, HookRunner};
 
@@ -203,7 +204,7 @@ fn absolute(path: &Path) -> Result<PathBuf> {
 }
 
 fn validate_full_sha(value: &str) -> Result<()> {
-    if !matches!(value.len(), 40 | 64)
+    if !matches!(value.len(), OBJECT_HEX_LEN | SHA256_HEX_LEN)
         || !value
             .bytes()
             .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))

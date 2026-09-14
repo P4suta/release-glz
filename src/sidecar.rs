@@ -2,9 +2,22 @@ use std::path::Path;
 
 use anyhow::{Result, bail};
 
+use crate::units::MIB;
+
+/// Sidecar artifacts one Candidate may carry.
 pub(crate) const MAX_COUNT: usize = 64;
-pub(crate) const MAX_ARTIFACT_BYTES: u64 = 64 * 1024 * 1024;
-pub(crate) const MAX_TOTAL_BYTES: u64 = 128 * 1024 * 1024;
+
+/// Size one sidecar artifact may reach.
+pub(crate) const MAX_ARTIFACT_BYTES: u64 = 64 * MIB;
+
+/// Size every sidecar artifact may reach together.
+pub(crate) const MAX_TOTAL_BYTES: u64 = 128 * MIB;
+
+/// Characters a sidecar artifact name may use.
+pub(crate) const MAX_NAME_LEN: usize = 256;
+
+/// Characters a sidecar media type may use.
+pub(crate) const MAX_MEDIA_TYPE_LEN: usize = 128;
 
 pub(crate) fn validate_hook_id(hook_id: &str) -> Result<()> {
     let valid = !hook_id.is_empty()
@@ -21,7 +34,7 @@ pub(crate) fn validate_hook_id(hook_id: &str) -> Result<()> {
 
 pub(crate) fn validate_name(name: &str) -> Result<()> {
     if name.is_empty()
-        || name.len() > 256
+        || name.len() > MAX_NAME_LEN
         || name.contains(['/', '\\', '\n', '\r', '\0'])
         || Path::new(name).is_absolute()
         || Path::new(name)
@@ -35,7 +48,7 @@ pub(crate) fn validate_name(name: &str) -> Result<()> {
 
 pub(crate) fn validate_media_type(media_type: &str) -> Result<()> {
     if media_type.is_empty()
-        || media_type.len() > 128
+        || media_type.len() > MAX_MEDIA_TYPE_LEN
         || !media_type.contains('/')
         || !media_type
             .bytes()

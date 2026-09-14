@@ -18,9 +18,67 @@ const SUPPORTED_COMMANDS = new Set([
   "status",
   "doctor",
 ]);
-const DOWNLOAD_LIMIT = 256 * 1024 * 1024;
-const PROCESS_OUTPUT_LIMIT = 8 * 1024 * 1024;
-const PROCESS_TIMEOUT_MS = 30 * 60 * 1000;
+// Byte-size units, so a limit reads as a count rather than a product of 1024s.
+const KIB = 1024;
+const MIB = 1024 * KIB;
+const SECOND_MS = 1000;
+const MINUTE_MS = 60 * SECOND_MS;
+
+const DOWNLOAD_LIMIT = 256 * MIB;
+const PROCESS_OUTPUT_LIMIT = 8 * MIB;
+const PROCESS_TIMEOUT_MS = 30 * MINUTE_MS;
+
+/// The hexadecimal form of a SHA-256 digest, lowercase as every manifest
+/// records it, and in either case where a third party wrote it.
+const SHA256_HEX = /^[a-f0-9]{64}$/;
+const SHA256_HEX_ANY_CASE = /^[a-fA-F0-9]{64}$/;
+
+/// A digest of nothing but zeroes, which is what the checksum manifest carries
+/// until a release fills it in.
+const SHA256_HEX_ZEROED = /^0{64}$/;
+
+/// A git object id: the SHA-1 form git writes today, or the SHA-256 form a
+/// migrated repository writes.
+const GIT_OBJECT_HEX = /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/;
+
+/// Size the checksum manifest and a `SHA256SUMS` file may reach.
+const CHECKSUM_MANIFEST_LIMIT = MIB;
+const CHECKSUM_LIST_LIMIT = 64 * KIB;
+
+/// Entries an archive this Action unpacks may contain.
+const ARCHIVE_ENTRY_LIMIT = 32;
+
+/// Milliseconds one download may take before it is abandoned.
+const DOWNLOAD_TIMEOUT_MS = 60 * SECOND_MS;
+
+/// Milliseconds a terminated child is given to exit before it is killed.
+const TERMINATE_GRACE_MS = 5 * SECOND_MS;
+
+/// Bounds on the `timeout-seconds` input, matching the manifest's hook bounds.
+const MIN_TIMEOUT_SECONDS = 1;
+const MAX_TIMEOUT_SECONDS = 3600;
+const DEFAULT_TIMEOUT_SECONDS = 1800;
+
+/// HTTP status codes this client distinguishes.
+const HTTP_OK = 200;
+const HTTP_REDIRECT_MIN = 300;
+const HTTP_REDIRECT_MAX = 400;
+
+/// POSIX ustar header layout, in bytes.
+const TAR_BLOCK_BYTES = 512;
+const TAR_NAME_END = 100;
+const TAR_SIZE_START = 124;
+const TAR_SIZE_END = 136;
+const TAR_CHECKSUM_START = 148;
+const TAR_CHECKSUM_END = 156;
+const TAR_TYPE_OFFSET = 156;
+const TAR_PREFIX_START = 345;
+const TAR_PREFIX_END = 500;
+const TAR_CHECKSUM_BLANK = 0x20;
+const TAR_BASE256_FLAG = 0x80;
+const TAR_TYPE_FILE_ALTERNATE = 0x30;
+const TAR_TYPE_DIRECTORY = 0x35;
+const OCTAL_RADIX = 8;
 const SUPPORTED_ARCHIVES = Object.freeze([
   "release-glz-x86_64-unknown-linux-musl.tar.gz",
   "release-glz-aarch64-unknown-linux-musl.tar.gz",
@@ -69,7 +127,7 @@ function expectedChecksum(checksums, filename) {
 }
 
 function verifyChecksum(file, expected) {
-  if (!/^[a-fA-F0-9]{64}$/.test(expected || "")) {
+  if (!SHA256_HEX_ANY_CASE.test(expected || "")) {
     throw new Error("Expected checksum must be a full SHA-256 digest");
   }
   const actual = sha256(file);
@@ -81,7 +139,7 @@ function verifyChecksum(file, expected) {
 }
 
 function bundledChecksum(source, version, filename) {
-  if (typeof source !== "string" || Buffer.byteLength(source) > 64 * 1024) {
+  if (typeof source !== "string" || Buffer.byteLength(source) > CHECKSUM_LIST_LIMIT) {
     throw new Error("Bundled checksum manifest exceeds its size limit");
   }
   let manifest;
@@ -107,7 +165,7 @@ function bundledChecksum(source, version, filename) {
     throw new Error("Bundled checksum manifest must cover every supported platform exactly once");
   }
   for (const [name, digest] of Object.entries(manifest.artifacts)) {
-    if (!/^[a-f0-9]{64}$/.test(digest) || /^0{64}$/.test(digest)) {
+    if (!SHA256_HEX.test(digest) || SHA256_HEX_ZEROED.test(digest)) {
       throw new Error(`Bundled checksum for ${name} is not a lowercase SHA-256 digest`);
     }
   }
@@ -119,7 +177,7 @@ function bundledChecksum(source, version, filename) {
 
 function verifyProvenance(file, expectedDigest, filename, archiveDigest) {
   const metadata = fs.lstatSync(file);
-  if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size > 1024 * 1024) {
+  if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size > CHECKSUM_MANIFEST_LIMIT) {
     throw new Error("Provenance must be a regular file no larger than 1 MiB");
   }
   verifyChecksum(file, expectedDigest);
@@ -162,7 +220,7 @@ function isAllowedDownloadRedirect(initial, target) {
 
 function download(url, destination, options = {}) {
   const maxBytes = options.maxBytes ?? DOWNLOAD_LIMIT;
-  const timeoutMs = options.timeoutMs ?? 60_000;
+  const timeoutMs = options.timeoutMs ?? DOWNLOAD_TIMEOUT_MS;
   const allowHttpLoopback = options.allowHttpLoopback === true;
   const redirects = options.redirects ?? 0;
   const initialUrl = options.initialUrl ?? url;
@@ -194,7 +252,11 @@ function download(url, destination, options = {}) {
       headers: { "user-agent": "release-glz-action" },
       timeout: timeoutMs,
     }, (response) => {
-      if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
+      if (
+      response.statusCode >= HTTP_REDIRECT_MIN &&
+      response.statusCode < HTTP_REDIRECT_MAX &&
+      response.headers.location
+    ) {
         response.resume();
         const next = new URL(response.headers.location, parsed);
         if (!isAllowedDownloadRedirect(initialUrl, next)) {
@@ -211,7 +273,7 @@ function download(url, destination, options = {}) {
         }).then(resolve, reject);
         return;
       }
-      if (response.statusCode !== 200) {
+      if (response.statusCode !== HTTP_OK) {
         response.resume();
         fail(new Error(`Download failed with HTTP ${response.statusCode}: ${url}`));
         return;
@@ -249,7 +311,7 @@ function download(url, destination, options = {}) {
 }
 
 function validateArchiveInventory(entries, limits = {}) {
-  const maxEntries = limits.maxEntries ?? 32;
+  const maxEntries = limits.maxEntries ?? ARCHIVE_ENTRY_LIMIT;
   const maxBytes = limits.maxBytes ?? DOWNLOAD_LIMIT;
   if (!Array.isArray(entries) || entries.length === 0 || entries.length > maxEntries) {
     throw new Error(`Archive inventory exceeds the ${maxEntries} entry limit or is empty`);
@@ -300,7 +362,7 @@ function terminateProcess(child, force = false) {
 
 function runProcess(executable, args, options = {}) {
   const timeoutMs = options.timeoutMs ?? PROCESS_TIMEOUT_MS;
-  const terminateGraceMs = options.terminateGraceMs ?? 5_000;
+  const terminateGraceMs = options.terminateGraceMs ?? TERMINATE_GRACE_MS;
   const maxOutputBytes = options.maxOutputBytes ?? PROCESS_OUTPUT_LIMIT;
   const child = spawn(executable, args, {
     cwd: options.cwd,
@@ -366,39 +428,42 @@ function tarString(field) {
 }
 
 function tarOctal(field, description) {
-  if (field[0] & 0x80) throw new Error(`Tar ${description} uses unsupported base-256 encoding`);
+  if (field[0] & TAR_BASE256_FLAG) throw new Error(`Tar ${description} uses unsupported base-256 encoding`);
   const value = field.toString("ascii").replace(/\0.*$/, "").trim();
   if (!value || !/^[0-7]+$/.test(value)) throw new Error(`Tar ${description} is not valid octal`);
-  const parsed = Number.parseInt(value, 8);
+  const parsed = Number.parseInt(value, OCTAL_RADIX);
   if (!Number.isSafeInteger(parsed)) throw new Error(`Tar ${description} exceeds the safe integer range`);
   return parsed;
 }
 
 function parseTarHeader(header) {
-  const expectedChecksum = tarOctal(header.subarray(148, 156), "checksum");
+  const expectedChecksum = tarOctal(header.subarray(TAR_CHECKSUM_START, TAR_CHECKSUM_END), "checksum");
   let actualChecksum = 0;
   for (let index = 0; index < header.length; index += 1) {
-    actualChecksum += index >= 148 && index < 156 ? 0x20 : header[index];
+    actualChecksum +=
+      index >= TAR_CHECKSUM_START && index < TAR_CHECKSUM_END
+        ? TAR_CHECKSUM_BLANK
+        : header[index];
   }
   if (actualChecksum !== expectedChecksum) throw new Error("Tar header checksum mismatch");
-  const name = tarString(header.subarray(0, 100));
-  const prefixBytes = header.subarray(345, 500);
+  const name = tarString(header.subarray(0, TAR_NAME_END));
+  const prefixBytes = header.subarray(TAR_PREFIX_START, TAR_PREFIX_END);
   const prefix = prefixBytes.every((byte) => byte === 0) ? "" : tarString(prefixBytes);
   const entryPath = `${prefix ? `${prefix}/` : ""}${name}`.replace(/\/+$/, "");
-  const type = header[156];
+  const type = header[TAR_TYPE_OFFSET];
   let kind;
-  if (type === 0 || type === 0x30) kind = "file";
-  else if (type === 0x35) kind = "directory";
+  if (type === 0 || type === TAR_TYPE_FILE_ALTERNATE) kind = "file";
+  else if (type === TAR_TYPE_DIRECTORY) kind = "directory";
   else kind = "unsupported";
-  const size = tarOctal(header.subarray(124, 136), "entry size");
+  const size = tarOctal(header.subarray(TAR_SIZE_START, TAR_SIZE_END), "entry size");
   if (kind === "directory" && size !== 0) throw new Error(`Tar directory ${entryPath} has content`);
   return { path: entryPath, kind, size };
 }
 
 async function inventoryTarGz(archive, limits = {}) {
-  const maxEntries = limits.maxEntries ?? 32;
+  const maxEntries = limits.maxEntries ?? ARCHIVE_ENTRY_LIMIT;
   const maxBytes = limits.maxBytes ?? DOWNLOAD_LIMIT;
-  const maxStreamBytes = maxBytes + (maxEntries * 1024) + 1024;
+  const maxStreamBytes = maxBytes + (maxEntries * KIB) + KIB;
   const input = fs.createReadStream(archive);
   const gunzip = zlib.createGunzip();
   input.pipe(gunzip);
@@ -432,9 +497,9 @@ async function inventoryTarGz(archive, limits = {}) {
           paddingRemaining -= consumed;
           continue;
         }
-        if (buffer.length < 512) break;
-        const header = buffer.subarray(0, 512);
-        buffer = buffer.subarray(512);
+        if (buffer.length < TAR_BLOCK_BYTES) break;
+        const header = buffer.subarray(0, TAR_BLOCK_BYTES);
+        buffer = buffer.subarray(TAR_BLOCK_BYTES);
         if (header.every((byte) => byte === 0)) {
           zeroBlocks += 1;
           if (zeroBlocks === 2) ended = true;
@@ -445,7 +510,7 @@ async function inventoryTarGz(archive, limits = {}) {
         entries.push(entry);
         validateArchiveInventory(entries, { maxEntries, maxBytes });
         contentRemaining = entry.size;
-        paddingRemaining = (512 - (entry.size % 512)) % 512;
+        paddingRemaining = (TAR_BLOCK_BYTES - (entry.size % TAR_BLOCK_BYTES)) % TAR_BLOCK_BYTES;
       }
     }
   } catch (error) {
@@ -557,7 +622,7 @@ function buildCommandArgs(command, environment = process.env) {
     throw new Error(`candidate-build is not supported by the ${command} command`);
   }
   if (command === "rehearse") {
-    if (!/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(sourceRef || "")) {
+    if (!GIT_OBJECT_HEX.test(sourceRef || "")) {
       throw new Error("rehearse requires source-ref to be a full lowercase commit SHA");
     }
     if (!candidate) throw new Error("rehearse requires the candidate output directory input");
@@ -648,13 +713,13 @@ async function acquireBinary(environment = process.env) {
     let expected = environment["INPUT_BINARY-CHECKSUM"] || "";
     if (inputVersion) {
       const provenanceExpected = environment.INPUT_PROVENANCE;
-      if (!/^[a-f0-9]{64}$/.test(expected) || !/^[a-f0-9]{64}$/.test(provenanceExpected)) {
+      if (!SHA256_HEX.test(expected) || !SHA256_HEX.test(provenanceExpected)) {
         throw new Error("Explicit override checksum and provenance must be lowercase SHA-256 digests");
       }
       const provenance = path.join(temporary, `${filename}.intoto.jsonl`);
       await Promise.all([
         download(`${base}/${filename}`, archive),
-        download(`${base}/${filename}.intoto.jsonl`, provenance, { maxBytes: 1024 * 1024 }),
+        download(`${base}/${filename}.intoto.jsonl`, provenance, { maxBytes: MIB }),
       ]);
       verifyChecksum(archive, expected);
       verifyProvenance(provenance, provenanceExpected, filename, expected);
@@ -694,15 +759,21 @@ async function main(environment = process.env, stdout = process.stdout) {
   try {
     const childEnvironment = { ...environment };
     if (environment["INPUT_GITHUB-TOKEN"]) childEnvironment.GITHUB_TOKEN = environment["INPUT_GITHUB-TOKEN"];
-    const timeoutSeconds = Number(environment["INPUT_TIMEOUT-SECONDS"] || 1800);
-    if (!Number.isSafeInteger(timeoutSeconds) || timeoutSeconds < 1 || timeoutSeconds > 3600) {
-      throw new Error("timeout-seconds must be between 1 and 3600");
+    const timeoutSeconds = Number(environment["INPUT_TIMEOUT-SECONDS"] || DEFAULT_TIMEOUT_SECONDS);
+    if (
+    !Number.isSafeInteger(timeoutSeconds) ||
+    timeoutSeconds < MIN_TIMEOUT_SECONDS ||
+    timeoutSeconds > MAX_TIMEOUT_SECONDS
+  ) {
+      throw new Error(
+      `timeout-seconds must be between ${MIN_TIMEOUT_SECONDS} and ${MAX_TIMEOUT_SECONDS}`,
+    );
     }
     let result;
     try {
       result = await runProcess(acquired.binary, args, {
         env: childEnvironment,
-        timeoutMs: timeoutSeconds * 1000,
+        timeoutMs: timeoutSeconds * SECOND_MS,
         maxOutputBytes: PROCESS_OUTPUT_LIMIT,
         signal: controller.signal,
       });

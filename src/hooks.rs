@@ -23,10 +23,19 @@ use crate::sidecar::{
     MAX_ARTIFACT_BYTES as SIDECAR_ARTIFACT_LIMIT, MAX_COUNT as SIDECAR_COUNT_LIMIT,
     MAX_TOTAL_BYTES as SIDECAR_TOTAL_LIMIT, validate_media_type, validate_name,
 };
+use crate::units::{KIB, MIB};
 
-const STDOUT_LIMIT: usize = 1024 * 1024;
-const STDERR_LIMIT: usize = 256 * 1024;
+/// Bytes of hook stdout that are read before the stream is cut off.
+const STDOUT_LIMIT: usize = MIB as usize;
+
+/// Bytes of hook stderr that are read before the stream is cut off.
+const STDERR_LIMIT: usize = 256 * KIB as usize;
+
+/// Attempts made to spawn a hook before the failure is reported.
 const HOOK_SPAWN_ATTEMPTS: usize = 3;
+
+/// Bytes read from a hook pipe in one call.
+const PIPE_READ_BYTES: usize = 8 * KIB as usize;
 
 /// What a hook is told about the release it is running for.
 ///
@@ -464,7 +473,7 @@ async fn drain_limited<R: AsyncRead + Unpin>(
 ) -> std::io::Result<(Vec<u8>, bool)> {
     let mut output = Vec::new();
     let mut exceeded = false;
-    let mut buffer = [0_u8; 8 * 1024];
+    let mut buffer = [0_u8; PIPE_READ_BYTES];
     loop {
         let read = reader.read(&mut buffer).await?;
         if read == 0 {

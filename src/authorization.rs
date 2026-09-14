@@ -13,6 +13,8 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 use crate::config::host_is_loopback_ip;
+use crate::git::OBJECT_HEX_LEN;
+use crate::units::{KIB, MIB};
 
 /// The only issuer whose GitHub Actions tokens are accepted.
 pub const GITHUB_OIDC_ISSUER: &str = "https://token.actions.githubusercontent.com";
@@ -21,12 +23,32 @@ pub const GITHUB_OIDC_ISSUER: &str = "https://token.actions.githubusercontent.co
 /// A token issued for any other audience is rejected, so a token minted
 /// for a different tool cannot authorize a publication.
 pub const RELEASE_GLZ_AUDIENCE: &str = "release-glz";
+/// Seconds of clock difference tolerated when checking a token's validity.
 const CLOCK_SKEW_SECONDS: i64 = 30;
-const MAX_COMPACT_JWT_BYTES: usize = 32 * 1024;
-const MAX_JWT_PART_BYTES: usize = 16 * 1024;
-const MAX_TOKEN_RESPONSE_BYTES: usize = 64 * 1024;
-const MAX_DISCOVERY_BYTES: usize = 64 * 1024;
-const MAX_JWKS_BYTES: usize = 1024 * 1024;
+
+/// Size a compact JWT may reach before it is refused.
+const MAX_COMPACT_JWT_BYTES: usize = 32 * KIB as usize;
+
+/// Size one JWT segment may reach before it is refused.
+const MAX_JWT_PART_BYTES: usize = 16 * KIB as usize;
+
+/// Size the runner's token response may reach before it is refused.
+const MAX_TOKEN_RESPONSE_BYTES: usize = 64 * KIB as usize;
+
+/// Size the issuer's discovery document may reach before it is refused.
+const MAX_DISCOVERY_BYTES: usize = 64 * KIB as usize;
+
+/// Size the issuer's key set may reach before it is refused.
+const MAX_JWKS_BYTES: usize = MIB as usize;
+
+/// Size the runner's request token may reach before it is refused.
+const MAX_REQUEST_TOKEN_BYTES: usize = 16 * KIB as usize;
+
+/// Seconds spent connecting to the issuer before the attempt is abandoned.
+const CONNECT_TIMEOUT_SECONDS: u64 = 10;
+
+/// Seconds one issuer request may take before it is abandoned.
+const REQUEST_TIMEOUT_SECONDS: u64 = 20;
 const GITHUB_DISCOVERY_URL: &str =
     "https://token.actions.githubusercontent.com/.well-known/openid-configuration";
 
@@ -102,8 +124,8 @@ impl GithubOidcVerifier {
         let discovery_url =
             validate_oidc_url(discovery_url, allow_http_loopback, OidcUrlKind::Discovery)?;
         let client = Client::builder()
-            .connect_timeout(Duration::from_secs(10))
-            .timeout(Duration::from_secs(20))
+            .connect_timeout(Duration::from_secs(CONNECT_TIMEOUT_SECONDS))
+            .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECONDS))
             .redirect(reqwest::redirect::Policy::none())
             .build()?;
         Ok(Self {
@@ -124,7 +146,7 @@ impl GithubOidcVerifier {
         expected: &OidcExpectation,
         now_unix_seconds: i64,
     ) -> Result<VerifiedGithubOidc> {
-        if request_token.is_empty() || request_token.len() > 16 * 1024 {
+        if request_token.is_empty() || request_token.len() > MAX_REQUEST_TOKEN_BYTES {
             bail!("GitHub Actions OIDC request token is missing or invalid");
         }
         let mut request_url = validate_oidc_url(
@@ -494,7 +516,7 @@ pub fn verify_github_oidc_token(
 }
 
 fn is_full_sha(value: &str) -> bool {
-    value.len() == 40
+    value.len() == OBJECT_HEX_LEN
         && value
             .bytes()
             .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
