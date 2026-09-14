@@ -192,7 +192,7 @@ impl HookRunner {
                     kind: HookKind::Verify,
                     required: false,
                     success: false,
-                    output_sha256: format!("{:x}", Sha256::digest(error.to_string().as_bytes())),
+                    output_sha256: crate::hex::lower(&Sha256::digest(error.to_string().as_bytes())),
                 }),
                 Err(error) => return Err(error),
             }
@@ -280,7 +280,7 @@ impl HookRunner {
                     kind: HookKind::Sidecar,
                     required: false,
                     success: false,
-                    output_sha256: format!("{:x}", Sha256::digest(error.to_string().as_bytes())),
+                    output_sha256: crate::hex::lower(&Sha256::digest(error.to_string().as_bytes())),
                 }),
                 Err(error) => return Err(error),
             }
@@ -409,7 +409,7 @@ impl HookRunner {
         if stdout_exceeded || stderr_exceeded {
             bail!("hook `{}` exceeded its output limit", hook.id);
         }
-        let output_sha256 = format!("{:x}", Sha256::digest(&stdout));
+        let output_sha256 = crate::hex::lower(&Sha256::digest(&stdout));
         if !status.success() {
             return Ok(ExecutedHook {
                 success: false,
@@ -501,7 +501,7 @@ fn tree_digest(root: &Path) -> Result<String> {
         digest.update((contents.len() as u64).to_be_bytes());
         digest.update(contents);
     }
-    Ok(format!("{:x}", digest.finalize()))
+    Ok(crate::hex::lower(&digest.finalize()))
 }
 
 fn collect_tree(root: &Path, directory: &Path, output: &mut Vec<(String, PathBuf)>) -> Result<()> {

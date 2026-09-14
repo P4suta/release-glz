@@ -1119,7 +1119,7 @@ impl GitHubClient {
             .await
             .context("invalid GitHub release asset response")?;
         let uploaded: GitHubReleaseAsset = uploaded.into();
-        let expected_sha256 = format!("{:x}", Sha256::digest(bytes));
+        let expected_sha256 = crate::hex::lower(&Sha256::digest(bytes));
         if uploaded.name != name
             || uploaded.state != "uploaded"
             || uploaded.media_type != media_type
@@ -1521,7 +1521,7 @@ fn files_digest(files: &BTreeMap<String, Vec<u8>>) -> String {
         digest.update([0]);
         digest.update(contents);
     }
-    format!("{:x}", digest.finalize())
+    crate::hex::lower(&digest.finalize())
 }
 
 fn pull_body(plan: &ReleasePlan, marker: &ManagedMarker) -> String {

@@ -818,7 +818,7 @@ fn validate_output_artifacts(outputs: &OutputConfig, docs_present: bool) -> Resu
 fn artifact_descriptor(path: &str, bytes: &[u8], semantic_sha256: String) -> SealedArtifact {
     SealedArtifact {
         path: path.into(),
-        sha256: format!("{:x}", Sha256::digest(bytes)),
+        sha256: crate::hex::lower(&Sha256::digest(bytes)),
         semantic_sha256,
         size: bytes.len() as u64,
     }
@@ -831,7 +831,7 @@ fn sidecar_descriptor(artifact: &SidecarArtifact) -> Result<SealedSidecarArtifac
         name: artifact.name.clone(),
         path: format!("sidecars/{}/{}", artifact.hook_id, artifact.name),
         media_type: artifact.media_type.clone(),
-        sha256: format!("{:x}", Sha256::digest(&artifact.bytes)),
+        sha256: crate::hex::lower(&Sha256::digest(&artifact.bytes)),
         size: artifact.bytes.len() as u64,
         public: artifact.public,
     })
@@ -844,7 +844,7 @@ fn verify_file(directory: &Path, descriptor: &SealedArtifact) -> Result<Vec<u8>>
         &descriptor.path,
     )?;
     if bytes.len() as u64 != descriptor.size
-        || format!("{:x}", Sha256::digest(&bytes)) != descriptor.sha256
+        || crate::hex::lower(&Sha256::digest(&bytes)) != descriptor.sha256
     {
         bail!("candidate checksum mismatch for `{}`", descriptor.path);
     }
@@ -858,7 +858,7 @@ fn verify_sidecar_file(directory: &Path, descriptor: &SealedSidecarArtifact) -> 
         &descriptor.path,
     )?;
     if bytes.len() as u64 != descriptor.size
-        || format!("{:x}", Sha256::digest(&bytes)) != descriptor.sha256
+        || crate::hex::lower(&Sha256::digest(&bytes)) != descriptor.sha256
     {
         bail!("candidate checksum mismatch for `{}`", descriptor.path);
     }
