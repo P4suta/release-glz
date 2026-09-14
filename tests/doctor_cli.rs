@@ -403,6 +403,7 @@ impl FakeGitHub {
                         // as a clean end of request, which recorded an empty
                         // one and answered it. The caller then saw a reply to
                         // a request it had not finished sending.
+                        let mut complete = false;
                         while let Ok(count) = stream.read(&mut buffer) {
                             if count == 0 {
                                 break;
@@ -412,8 +413,16 @@ impl FakeGitHub {
                                 .windows(HEADER_TERMINATOR.len())
                                 .any(|window| window == HEADER_TERMINATOR)
                             {
+                                complete = true;
                                 break;
                             }
+                        }
+                        // Answering a request that never finished arriving
+                        // spends one of the queued responses on it, so every
+                        // later request receives the answer meant for the one
+                        // before it. Drop the connection instead.
+                        if !complete {
+                            continue;
                         }
                         thread_requests
                             .lock()
