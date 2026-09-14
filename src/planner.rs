@@ -647,7 +647,7 @@ impl<R: Registry> Planner<R> {
         Some(
             root.join("release-glz")
                 .join("baselines")
-                .join(format!("{:x}.json", digest.finalize())),
+                .join(format!("{}.json", crate::hex::lower(&digest.finalize()))),
         )
     }
 

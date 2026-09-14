@@ -773,7 +773,7 @@ fn hex_package() -> Vec<u8> {
     digest.update(version);
     digest.update(metadata);
     digest.update(&contents);
-    let checksum = format!("{:X}", digest.finalize());
+    let checksum = release_glz::hex::upper(&digest.finalize());
     tar(&[
         ("VERSION", version),
         ("metadata.config", metadata),
@@ -790,7 +790,7 @@ fn hex_package_with_files(files: &[(&str, &[u8])]) -> Vec<u8> {
     digest.update(version);
     digest.update(metadata);
     digest.update(&contents);
-    let checksum = format!("{:X}", digest.finalize());
+    let checksum = release_glz::hex::upper(&digest.finalize());
     tar(&[
         ("VERSION", version),
         ("metadata.config", metadata),

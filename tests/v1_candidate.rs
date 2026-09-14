@@ -874,7 +874,7 @@ fn requested_sbom_and_provenance_are_built_in_deterministic_evidence() {
     assert_eq!(provenance["_type"], "https://in-toto.io/Statement/v1");
     assert_eq!(
         provenance["subject"][0]["digest"]["sha256"],
-        format!("{:x}", Sha256::digest(&input.package_tarball))
+        release_glz::hex::lower(&Sha256::digest(&input.package_tarball))
     );
     input.sidecars = evidence;
     let sealed = Candidate::seal(&temp.path().join("complete"), input).unwrap();
@@ -1034,7 +1034,7 @@ fn outer_package(
         digest.update(version);
         digest.update(metadata);
         digest.update(contents);
-        format!("{:X}", digest.finalize()).into_bytes()
+        release_glz::hex::upper(&digest.finalize()).into_bytes()
     });
     tar(&[
         ("VERSION", version),
@@ -1093,5 +1093,5 @@ fn append<W: Write>(archive: &mut tar::Builder<W>, path: &str, contents: &[u8]) 
 }
 
 fn hex_sha256(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
+    release_glz::hex::lower(&Sha256::digest(bytes))
 }

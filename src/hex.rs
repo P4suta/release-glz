@@ -17,12 +17,12 @@ const LOWERCASE: &[u8; 16] = b"0123456789abcdef";
 const UPPERCASE: &[u8; 16] = b"0123456789ABCDEF";
 
 /// Render bytes as lowercase hexadecimal.
-pub(crate) fn lower(bytes: &[u8]) -> String {
+pub fn lower(bytes: &[u8]) -> String {
     encode(bytes, LOWERCASE)
 }
 
 /// Render bytes as uppercase hexadecimal.
-pub(crate) fn upper(bytes: &[u8]) -> String {
+pub fn upper(bytes: &[u8]) -> String {
     encode(bytes, UPPERCASE)
 }
 

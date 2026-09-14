@@ -486,7 +486,7 @@ fn outer_package(
         digest.update(version);
         digest.update(metadata);
         digest.update(contents);
-        format!("{:X}", digest.finalize()).into_bytes()
+        release_glz::hex::upper(&digest.finalize()).into_bytes()
     });
     let mut files = vec![
         ("VERSION", version),

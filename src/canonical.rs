@@ -27,10 +27,9 @@ pub fn canonical_json_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>> {
 /// The lowercase hexadecimal result is what the public contract calls an
 /// intent or candidate digest.
 pub fn canonical_sha256<T: Serialize>(value: &T) -> Result<String> {
-    Ok(format!(
-        "{:x}",
-        Sha256::digest(canonical_json_bytes(value)?)
-    ))
+    Ok(crate::hex::lower(&Sha256::digest(canonical_json_bytes(
+        value,
+    )?)))
 }
 
 fn write_value(value: &Value, output: &mut Vec<u8>) -> Result<()> {
