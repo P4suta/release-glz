@@ -1,0 +1,16 @@
+name = "release-glz"
+summary = "Prepare and reconcile immutable Gleam package releases to Hex"
+install = "cargo install --git https://github.com/P4suta/release-glz --locked release-glz"
+usage_language = "sh"
+usage = "release-glz --help"
+documentation_index = true
+copyright = "2026 release-glz contributors"
+license = "MIT OR Apache-2.0"
+
+[[consent]]
+contributor = "P4suta"
+evidence = "https://github.com/P4suta/release-glz/commit/506120640917988a660b9e2e3eb18f6c81bab4fb"
+
+[[consent]]
+contributor = "Yasunobu"
+evidence = "https://github.com/P4suta/release-glz/commit/9a90c074b736cb83bbf0b715544f76a3c33a7c71"

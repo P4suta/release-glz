@@ -1,41 +1,42 @@
 # Contributing
 
-Every behavior change is developed with TDD: add the smallest failing test
-(RED), implement only enough production behavior to pass (GREEN), then refactor
-with the suite green. Bug fixes need a regression test that demonstrates the
-original failure. Security and state-machine changes should begin at the pure
-boundary, then add adapter contract and end-to-end tests.
+Begin behavior changes with a failing test, implement the required behavior, and refactor with the suite passing.
+Keep regression cases for bugs and boundary tests for security and state transitions.
 
-Tests must not publish a real package or use a real credential. Use loopback
-fake Hex/GitHub services, local bare git repositories, committed fixture
-snapshots, and fake argv-based hooks. Keep secret redaction assertions on every
-new error path.
+Tests use loopback Hex and GitHub services, local bare Git repositories, committed fixtures, and fake hooks.
+Never publish a package or use a registry credential in tests.
+Keep secret-redaction assertions on new error paths.
 
-Run the local gates before opening a pull request:
+Run the fast checks before opening a pull request:
 
 ```console
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace --all-targets
-cargo doc --workspace --no-deps
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+cargo test --workspace --all-targets --locked
+cargo doc --workspace --no-deps --locked
 npm test --prefix action
-cargo deny check
-cargo audit
-cargo machete
+node --test scripts/*.test.js
+node scripts/verify-workflows.js .github/workflows
+node scripts/de-shell.js .github/workflows
+actionlint
+jq -L .github -n -e -f .github/check-required.jq
 ```
 
-Workflow changes must also pass actionlint, zizmor, and the repository's
-workflow-verifier/de-shell scripts. Fuzz targets cover archive extraction,
-configuration parsing, Release PR markers, and package API interfaces. Release
-assurance requires at least 90% line and 85% branch coverage, and zero critical
-mutation survivors in version, registry, archive, and reconciler code.
+Ordinary CI uses one Linux Rust gate and always checks workflow metadata, Action behavior, and distribution evidence tools.
+Other native platforms and the minimum and configured Gleam versions run through shipping assurance.
+Distribution builds and smokes every supported native release target.
 
-Public JSON is a compatibility contract. All commands use `command/v2`, while
-`plan/v2`, `candidate/v1`, `state/v1`, and `hook/v1` evolve independently.
-Update schemas, golden tests, docs, human output, and Action outputs together.
-Paths crossing the public boundary are repository-relative `/` strings.
+The reusable [shipping assurance workflow](.github/workflows/assurance.yml) runs on the exact release candidate before checksum preparation or publication.
+It also supports an explicit manual run.
+It checks dependency policy, generated workflows, coverage, all configured critical-path mutations, and the four parser fuzz targets.
+Parser fuzz smoke uses 10,000 runs per target with seed 1.
+Release coverage requires at least 90% lines and 85% branches, with no viable critical-path mutation survivors.
+Workflow changes must pass zizmor against both repository workflows and the generated consumer workflow during shipping assurance.
 
-Never weaken a failing assurance threshold or replace a pinned Action SHA to
-make CI pass. Distribution checksum placeholders are intentionally fail-closed;
-the release preparation workflow must generate real manifests for the exact
-tag commit before v1 publication.
+Public JSON is a compatibility contract.
+Commands use `command/v2`, while `plan/v2`, `candidate/v1`, `state/v1`, and `hook/v1` evolve independently.
+Update schemas, fixtures, documentation, human output, and Action outputs together.
+Public paths use repository-relative `/` strings.
+
+Keep assurance thresholds and immutable Action references.
+The release preparation workflow must generate real checksum manifests for the exact tag commit before v1 publication.

@@ -98,6 +98,9 @@ fn distribution_is_attested_and_uploaded_to_a_draft_exactly_once() {
             .trim_start_matches("- ")
             .starts_with("uses:")
     }) {
+        if line.trim() == "uses: ./.github/workflows/assurance.yml" {
+            continue;
+        }
         let reference = line
             .split_once('@')
             .unwrap_or_else(|| panic!("missing immutable pin: {line}"))
@@ -107,6 +110,36 @@ fn distribution_is_attested_and_uploaded_to_a_draft_exactly_once() {
             .unwrap();
         assert_eq!(reference.len(), 40, "mutable action reference: {line}");
         assert!(reference.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    }
+}
+
+#[test]
+fn distribution_requires_same_source_assurance_before_preparation_and_publication() {
+    let source = fs::read_to_string(".github/workflows/distribute.yml").unwrap();
+    let workflow: serde_yaml::Value = serde_yaml::from_str(&source).unwrap();
+    let jobs = &workflow["jobs"];
+    assert_eq!(jobs["assurance"]["needs"].as_str(), Some("validate"));
+    assert_eq!(
+        jobs["assurance"]["uses"].as_str(),
+        Some("./.github/workflows/assurance.yml")
+    );
+    assert_eq!(
+        jobs["assurance"]["permissions"]["contents"].as_str(),
+        Some("read")
+    );
+    assert!(jobs["assurance"]["secrets"].is_null());
+    for stage in ["prepare", "release"] {
+        let prerequisites = jobs[stage]["needs"].as_sequence().unwrap();
+        assert!(
+            prerequisites
+                .iter()
+                .any(|value| value.as_str() == Some("assurance"))
+        );
+        assert!(
+            jobs[stage]["if"]
+                .as_str()
+                .is_some_and(|condition| !condition.contains("always()"))
+        );
     }
 }
 

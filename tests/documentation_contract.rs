@@ -1,8 +1,10 @@
 use std::fs;
 
 #[test]
-fn readme_documents_the_v1_candidate_first_contract() {
-    let readme = fs::read_to_string("README.md").unwrap();
+fn project_guide_documents_the_v1_candidate_first_contract() {
+    let overview = fs::read_to_string("README.md").unwrap();
+    assert!(overview.contains("](docs/README.md)"));
+    let readme = fs::read_to_string("docs/README.md").unwrap();
     for required in [
         "ReleasePlan",
         "Candidate",
@@ -23,8 +25,8 @@ fn readme_documents_the_v1_candidate_first_contract() {
         "partially_released",
         "GitHub Release",
         "gh attestation verify",
-        "To update",
-        "To uninstall",
+        "cargo install --git https://github.com/P4suta/release-glz --locked release-glz",
+        "cargo uninstall release-glz",
         "--profile public",
         "--profile organization",
         "--profile private",
@@ -34,7 +36,10 @@ fn readme_documents_the_v1_candidate_first_contract() {
         "prepare",
         "promote",
     ] {
-        assert!(readme.contains(required), "README is missing `{required}`");
+        assert!(
+            readme.contains(required),
+            "project guide is missing `{required}`"
+        );
     }
     assert!(!readme.contains("merged Release PR is the only publication approval"));
     assert!(!readme.contains("run `gleam publish --yes`"));

@@ -91,7 +91,8 @@ function verifyWorkflow(filename, source) {
   }
 
   for (const job of jobBlocks(source)) {
-    if (!/^\s+timeout-minutes:\s*[1-9]\d*\s*(?:#.*)?$/m.test(job.source)) {
+    const localWorkflow = /^    uses: \.\/\.github\/workflows\/[A-Za-z0-9_-]+\.ya?ml\s*$/m.test(job.source);
+    if (!localWorkflow && !/^\s+timeout-minutes:\s*[1-9]\d*\s*(?:#.*)?$/m.test(job.source)) {
       throw new Error(`${filename}: job ${job.name} must set timeout-minutes`);
     }
     if (!/^\s+permissions:\s*(?:\{\}\s*)?(?:#.*)?$/m.test(job.source)) {

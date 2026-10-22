@@ -974,6 +974,7 @@ mod tests {
     fn repository_workflows_and_action_metadata_are_valid_yaml() {
         for source in [
             include_str!("../.github/workflows/ci.yml"),
+            include_str!("../.github/workflows/assurance.yml"),
             include_str!("../.github/workflows/distribute.yml"),
             include_str!("../action.yml"),
         ] {
@@ -981,6 +982,7 @@ mod tests {
         }
         for source in [
             include_str!("../.github/workflows/ci.yml"),
+            include_str!("../.github/workflows/assurance.yml"),
             include_str!("../.github/workflows/distribute.yml"),
         ] {
             for line in source.lines().filter(|line| {
@@ -988,6 +990,9 @@ mod tests {
                     .trim_start_matches("- ")
                     .starts_with("uses:")
             }) {
+                if line.trim() == "uses: ./.github/workflows/assurance.yml" {
+                    continue;
+                }
                 let reference = line
                     .split_once('@')
                     .unwrap()

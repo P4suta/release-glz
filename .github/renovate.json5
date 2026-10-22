@@ -1,0 +1,17 @@
+{
+  "extends": ["github>P4suta/renovate-config"],
+  "packageRules": [
+    {
+      "description": "Keep crate updates compatible with Rust 1.88.",
+      "matchManagers": ["cargo"],
+      "constraints": { "rust": "1.88.0" },
+      "constraintsFiltering": "strict",
+    },
+    {
+      "description": "Keep minimum compiler checks on Rust 1.88.",
+      "matchDatasources": ["rust-version"],
+      "matchCurrentVersion": "/^1\\.88(?:\\.0)?$/",
+      "allowedVersions": ">=1.88 <1.89",
+    },
+  ],
+}

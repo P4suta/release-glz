@@ -2,6 +2,29 @@ use std::fs;
 use std::path::Path;
 
 #[test]
+fn routine_ci_uses_one_selected_linux_gate_without_shipping_campaigns() {
+    let yaml = fs::read_to_string(".github/workflows/ci.yml").unwrap();
+    let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
+    let triggers = parsed["on"].as_mapping().unwrap();
+    assert!(triggers.contains_key("pull_request"));
+    assert!(triggers.contains_key("merge_group"));
+    assert!(!triggers.contains_key("push"));
+    assert!(!triggers.contains_key("schedule"));
+    assert_eq!(
+        parsed["concurrency"]["cancel-in-progress"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        parsed["jobs"]["checks"]["runs-on"].as_str(),
+        Some("ubuntu-24.04")
+    );
+    assert!(parsed["jobs"]["checks"]["strategy"].is_null());
+    for campaign in ["cargo mutants", "cargo fuzz", "cargo llvm-cov"] {
+        assert!(!yaml.contains(campaign), "routine CI starts {campaign}");
+    }
+}
+
+#[test]
 fn assurance_workflow_has_fixed_fail_closed_shipping_gates() {
     let yaml = fs::read_to_string(".github/workflows/assurance.yml").unwrap();
     serde_yaml::from_str::<serde_yaml::Value>(&yaml).unwrap();
@@ -54,10 +77,12 @@ fn assurance_workflow_has_fixed_fail_closed_shipping_gates() {
         .expect("assurance workflow must declare permissions")
         .0;
     assert!(triggers.contains("workflow_dispatch:"));
-    assert!(triggers.contains("branches: [main]"));
+    assert!(triggers.contains("workflow_call:"));
+    assert!(!triggers.contains("push:"));
+    assert!(!triggers.contains("schedule:"));
     assert!(
         !triggers.contains("pull_request:"),
-        "expensive assurance must be manual before merge or run once after merge"
+        "expensive assurance must run on demand or for a release candidate"
     );
 
     for line in yaml.lines().filter(|line| {
@@ -124,6 +149,32 @@ fn every_required_parser_has_a_bounded_fuzz_target() {
 }
 
 #[test]
+fn fuzz_smoke_uses_fixed_run_counts_and_seeds() {
+    let yaml = fs::read_to_string(".github/workflows/assurance.yml").unwrap();
+    let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
+    let steps = parsed["jobs"]["fuzz"]["steps"].as_sequence().unwrap();
+    for target in ["archive", "config", "pr_marker", "api_interface"] {
+        let prefix = format!("cargo fuzz run {target} -- ");
+        let command = steps
+            .iter()
+            .filter_map(|step| step["run"].as_str())
+            .find(|run| run.starts_with(&prefix))
+            .unwrap_or_else(|| panic!("missing fuzz command for {target}"));
+        for flag in ["-runs=", "-seed="] {
+            let value = command
+                .split_whitespace()
+                .find_map(|word| word.strip_prefix(flag))
+                .and_then(|value| value.parse::<u32>().ok());
+            assert!(
+                value.is_some_and(|value| value > 0),
+                "{target} requires a fixed positive {flag}"
+            );
+        }
+        assert!(!command.contains("-max_total_time="));
+    }
+}
+
+#[test]
 fn dependency_policy_is_explicit_and_deny_by_default() {
     let policy = fs::read_to_string("deny.toml").unwrap();
     assert!(policy.contains("unknown-registry = \"deny\""));
@@ -133,34 +184,51 @@ fn dependency_policy_is_explicit_and_deny_by_default() {
 }
 
 #[test]
-fn ci_exercises_minimum_configured_and_current_gleam_versions() {
+fn release_assurance_covers_native_platforms_and_gleam_versions() {
     let yaml = fs::read_to_string(".github/workflows/ci.yml").unwrap();
     let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
-    let matrix = parsed["jobs"]["test"]["strategy"]["matrix"]["gleam"]
+    let assurance = fs::read_to_string(".github/workflows/assurance.yml").unwrap();
+    let shipping: serde_yaml::Value = serde_yaml::from_str(&assurance).unwrap();
+    let current = parsed["jobs"]["checks"]["steps"]
         .as_sequence()
         .unwrap()
         .iter()
-        .map(|value| value.as_str().unwrap())
-        .collect::<Vec<_>>();
-    for version in ["1.9.0", "1.12.0", "1.18.1"] {
-        assert!(
-            matrix.contains(&version),
-            "Gleam compatibility matrix is missing {version}"
-        );
-    }
-    assert!(
-        !matrix.contains(&"1.12.3"),
-        "matrix must contain published releases"
+        .find_map(|step| step["with"]["gleam-version"].as_str())
+        .expect("the fast gate must use a fixed Gleam version");
+    let matrix = shipping["jobs"]["compatibility"]["strategy"]["matrix"]["include"]
+        .as_sequence()
+        .unwrap()
+        .iter()
+        .map(|value| {
+            (
+                value["os"].as_str().unwrap(),
+                value["gleam"].as_str().unwrap(),
+            )
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        matrix,
+        std::collections::BTreeSet::from([
+            ("ubuntu-24.04", "1.9.0"),
+            ("ubuntu-24.04", "1.12.0"),
+            ("ubuntu-24.04", current),
+            ("macos-15", current),
+            ("windows-2025", current),
+        ])
     );
-    assert!(yaml.contains("gleam-version: ${{ matrix.gleam }}"));
-    assert!(yaml.contains("matrix.gleam"));
+    assert!(assurance.contains("gleam-version: ${{ matrix.gleam }}"));
+    assert!(
+        shipping["jobs"]["compatibility"]["steps"]
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .any(|step| step["run"].as_str()
+                == Some("cargo test --workspace --all-targets --locked"))
+    );
     assert!(yaml.contains("RUST_TEST_THREADS: 1"));
     let required = &parsed["jobs"]["required"];
-    assert_eq!(required["name"].as_str(), Some("Required CI"));
-    assert_eq!(
-        required["if"].as_str(),
-        Some("${{ always() && !cancelled() }}")
-    );
+    assert_eq!(required["name"].as_str(), Some("required"));
+    assert_eq!(required["if"].as_str(), Some("always()"));
     assert_eq!(
         required["needs"]
             .as_sequence()
@@ -168,24 +236,17 @@ fn ci_exercises_minimum_configured_and_current_gleam_versions() {
             .iter()
             .map(|value| value.as_str().unwrap())
             .collect::<Vec<_>>(),
-        ["test", "lint"]
+        ["changes", "checks"]
     );
-    let required_run = required["steps"][0]["run"].as_str().unwrap();
-    assert!(required_run.contains(r#"test "$TEST_RESULT" = success"#));
-    assert!(required_run.contains(r#"test "$LINT_RESULT" = success"#));
-    for test in [
-        "scripts/check-coverage.test.js",
-        "scripts/generate-action-checksums.test.js",
-        "scripts/generate-provenance.test.js",
-        "scripts/generate-sbom.test.js",
-        "scripts/package-windows.test.js",
-        "scripts/verify-release-assets.test.js",
-        "scripts/workflow-tools.test.js",
-    ] {
-        assert!(yaml.contains(test), "CI does not execute {test}");
-    }
-
-    let assurance = fs::read_to_string(".github/workflows/assurance.yml").unwrap();
+    let required_run = required["steps"]
+        .as_sequence()
+        .unwrap()
+        .iter()
+        .find_map(|step| step["run"].as_str())
+        .unwrap();
+    assert!(required_run.contains("'include \"required\"; required($full)'"));
+    assert!(yaml.contains("node --test scripts/*.test.js"));
+    assert!(yaml.contains(".github/check-required.jq"));
     assert!(assurance.contains("RUST_TEST_THREADS: 1"));
 }
 
