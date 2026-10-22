@@ -47,6 +47,13 @@ jobs:
           fi
           printf 'value=%s\n' "$REQUESTED_VERSION" >> "$GITHUB_OUTPUT"
 
+  assurance:
+    name: Verify release candidate
+    needs: validate
+    permissions:
+      contents: read
+    uses: ./.github/workflows/assurance.yml
+
   build:
     name: Build and smoke ${{ matrix.target }}
     needs: validate
@@ -138,7 +145,7 @@ jobs:
   prepare:
     name: Prepare checksum manifest for review
     if: github.event_name == 'workflow_dispatch'
-    needs: [validate, build]
+    needs: [validate, build, assurance]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -179,7 +186,7 @@ jobs:
   release:
     name: Attest and finalize immutable Release
     if: github.event_name == 'push'
-    needs: [validate, build]
+    needs: [validate, build, assurance]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:

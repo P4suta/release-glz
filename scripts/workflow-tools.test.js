@@ -29,6 +29,26 @@ test("workflow verifier accepts immutable actions and least-privilege jobs", () 
   assert.doesNotThrow(() => rejectExpressionInterpolation("safe.yml", safe));
 });
 
+test("workflow verifier accepts a local reusable job with timeouts in the called workflow", () => {
+  const caller = `name: Caller
+on: workflow_dispatch
+permissions: {}
+jobs:
+  assurance:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/assurance.yml
+`;
+  assert.doesNotThrow(() => verifyWorkflow("caller.yml", caller));
+  for (const reference of [
+    "./.github/workflows/../other.yml",
+    "./.github/workflows/assurance.yml@main",
+    `owner/repo/.github/workflows/check.yml@${"a".repeat(40)}`,
+  ]) {
+    assert.throws(() => verifyWorkflow("caller.yml", caller.replace("./.github/workflows/assurance.yml", reference)), /timeout-minutes/);
+  }
+});
+
 test("workflow verifier rejects mutable actions, implicit timeouts, and persistent checkout credentials", () => {
   assert.throws(() => verifyWorkflow("mutable.yml", safe.replace(`${"a".repeat(40)}`, "v7")), /full commit SHA/);
   assert.throws(() => verifyWorkflow("timeout.yml", safe.replace("    timeout-minutes: 10\n", "")), /timeout-minutes/);
