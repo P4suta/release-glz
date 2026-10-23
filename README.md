@@ -11,7 +11,7 @@ cargo install --git https://github.com/P4suta/release-glz --locked release-glz
 ## Usage
 
 ```sh
-release-glz --help
+release-glz init --profile public --diff
 ```
 
 ## Documentation
