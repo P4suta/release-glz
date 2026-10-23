@@ -134,7 +134,7 @@ Real publication also requires approval evidence supplied by the protected workf
 | `verify --candidate <DIR> [--online]` | Verifies checksums, semantic fingerprints, source, policy, inventory, and hook evidence; online mode also observes registry and GitHub. |
 | `release --candidate <DIR>` | Publishes the sealed bytes through the monotonic reconciler; `--dry-run` reports all remaining effects. |
 | `status [--candidate <DIR>] [--online]` | Reports the current state and next safe command, including partial releases. |
-| `doctor [--online] [--candidate-build]` | Defaults to local schema/compiler/workflow checks. Online mode audits registry credentials and GitHub protections; Candidate-build mode uses isolated caches and no credentials. |
+| `doctor [--online] [--candidate-build]` | Defaults to local schema/compiler/workflow checks; online mode audits registry credentials and GitHub protections; candidate-build mode uses isolated caches and no credentials. |
 | `release-pr` / `update` | Maintains the rolling managed PR; when no release is required it closes the verified PR and removes its unchanged managed branch. |
 | `prerelease` / `set-version` | Selects a channel or raises the automatically required version; neither can lower the safety requirement. |
 | `init` / `migrate` | Requires exactly one of `--check`, `--diff`, or `--update`; modified managed files are never overwritten without an explicit update. |
