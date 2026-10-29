@@ -42,6 +42,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   It no longer runs a program that the undocumented `RELEASE_GLZ_BINARY` variable names, which an earlier step could set without either check.
 - The Action pauses workflow commands with an unpredictable token while it runs release-glz and writes its diagnostics.
   A line of compiler, git, or registry output that starts with `::` can no longer run a workflow command in the step.
+- Every Action download has a ten-minute total deadline across its redirects, besides the idle timeout of one minute.
+  A server that trickled bytes could otherwise keep the download going until the job timed out.
 - Publication takes its policy from the source commit instead of the Candidate.
   `release`, `verify --online`, and `status --online` refuse a Candidate whose registry, credential variable, hooks, approval policy, release notes, or other policy field differs from the configuration committed at its source.
   Build code in `prepare` could otherwise rewrite the Candidate so that the publish job sent the registry credential elsewhere or ran other notify commands.
