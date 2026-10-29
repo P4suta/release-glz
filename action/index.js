@@ -45,8 +45,11 @@ const CHECKSUM_LIST_LIMIT = 64 * KIB;
 /// Entries an archive this Action unpacks may contain.
 const ARCHIVE_ENTRY_LIMIT = 32;
 
-/// Milliseconds one download may take before it is abandoned.
+/// Milliseconds a download connection may stay silent before it is abandoned.
 const DOWNLOAD_TIMEOUT_MS = 60 * SECOND_MS;
+
+/// Milliseconds one download may take in total, across its redirects, however steadily the server sends.
+const DOWNLOAD_TOTAL_TIMEOUT_MS = 10 * MINUTE_MS;
 
 /// Milliseconds a terminated child is given to exit before it is killed.
 const TERMINATE_GRACE_MS = 5 * SECOND_MS;
@@ -248,6 +251,8 @@ function isAllowedDownloadRedirect(initial, target) {
 function download(url, destination, options = {}) {
   const maxBytes = options.maxBytes ?? DOWNLOAD_LIMIT;
   const timeoutMs = options.timeoutMs ?? DOWNLOAD_TIMEOUT_MS;
+  const totalTimeoutMs = options.totalTimeoutMs ?? DOWNLOAD_TOTAL_TIMEOUT_MS;
+  const deadline = options.deadline ?? Date.now() + totalTimeoutMs;
   const allowHttpLoopback = options.allowHttpLoopback === true;
   const redirects = options.redirects ?? 0;
   const initialUrl = options.initialUrl ?? url;
@@ -270,9 +275,11 @@ function download(url, destination, options = {}) {
 
   return new Promise((resolve, reject) => {
     let settled = false;
+    let deadlineTimer;
     const fail = (error) => {
       if (settled) return;
       settled = true;
+      clearTimeout(deadlineTimer);
       try {
         fs.unlinkSync(destination);
       } catch (unlinkError) {
@@ -302,9 +309,12 @@ function download(url, destination, options = {}) {
             return;
           }
           settled = true;
+          clearTimeout(deadlineTimer);
           download(next.toString(), destination, {
             maxBytes,
             timeoutMs,
+            totalTimeoutMs,
+            deadline,
             allowHttpLoopback,
             redirects: redirects + 1,
             initialUrl,
@@ -338,6 +348,7 @@ function download(url, destination, options = {}) {
             if (error) return fail(error);
             if (!settled) {
               settled = true;
+              clearTimeout(deadlineTimer);
               resolve();
             }
           });
@@ -346,6 +357,11 @@ function download(url, destination, options = {}) {
     );
     request.on("timeout", () => request.destroy(new Error(`Download timed out: ${url}`)));
     request.on("error", fail);
+    // The idle timeout above ends only a silent connection, so a server that trickles bytes needs this total deadline across redirects.
+    deadlineTimer = setTimeout(
+      () => request.destroy(new Error(`Download passed its ${totalTimeoutMs} ms deadline: ${url}`)),
+      Math.max(deadline - Date.now(), 0),
+    );
   });
 }
 

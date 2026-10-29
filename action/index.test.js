@@ -301,6 +301,44 @@ test("download follows only same-origin redirects and enforces the byte limit", 
   );
 });
 
+test("download stops a server that trickles bytes at its total deadline", {
+  timeout: 10_000,
+}, async (t) => {
+  const sockets = new Set();
+  const server = http.createServer((request, response) => {
+    if (request.url === "/redirect") {
+      response.writeHead(302, { location: "/slow" }).end();
+      return;
+    }
+    response.writeHead(200, { "content-length": "1000000" });
+    const trickle = setInterval(() => response.write("x"), 20);
+    response.on("close", () => clearInterval(trickle));
+  });
+  server.on("connection", (socket) => {
+    sockets.add(socket);
+    socket.on("close", () => sockets.delete(socket));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => {
+    for (const socket of sockets) socket.destroy();
+    server.close();
+  });
+  const { port } = server.address();
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "release-glz-deadline-test-"));
+  const destination = path.join(directory, "file");
+  const started = Date.now();
+  await assert.rejects(
+    download(`http://127.0.0.1:${port}/redirect`, destination, {
+      allowHttpLoopback: true,
+      timeoutMs: 5_000,
+      totalTimeoutMs: 300,
+    }),
+    /deadline/,
+  );
+  assert.ok(Date.now() - started < 5_000, "the idle timeout ended the download instead");
+  assert.equal(fs.existsSync(destination), false);
+});
+
 test("download permits only GitHub's exact HTTPS release asset redirect hosts", () => {
   const github =
     "https://github.com/P4suta/release-glz/releases/download/v1.0.0/release-glz.tar.gz";
