@@ -51,6 +51,9 @@ const DOWNLOAD_TIMEOUT_MS = 60 * SECOND_MS;
 /// Milliseconds a terminated child is given to exit before it is killed.
 const TERMINATE_GRACE_MS = 5 * SECOND_MS;
 
+/// Random bytes in the token that resumes workflow commands, which output from release-glz can't guess.
+const WORKFLOW_COMMAND_TOKEN_BYTES = 16;
+
 /// Bounds on the `timeout-seconds` input, matching the manifest's hook bounds.
 const MIN_TIMEOUT_SECONDS = 1;
 const MAX_TIMEOUT_SECONDS = 3600;
@@ -438,7 +441,7 @@ function runProcess(executable, args, options = {}) {
     });
     child.stderr.on("data", (chunk) => {
       stderr = collect("stderr", stderr, chunk);
-      if (options.streamStderr !== false) process.stderr.write(chunk);
+      if (options.streamStderr !== false) (options.stderr ?? process.stderr).write(chunk);
     });
     child.on("error", stop);
     const timer = setTimeout(
@@ -848,7 +851,12 @@ async function acquireBinary(environment = process.env) {
   }
 }
 
-async function main(environment = process.env, stdout = process.stdout, acquire = acquireBinary) {
+async function main(
+  environment = process.env,
+  stdout = process.stdout,
+  acquire = acquireBinary,
+  stderr = process.stderr,
+) {
   const command = environment.INPUT_COMMAND;
   const args = buildCommandArgs(command, environment);
   const acquired = await acquire(environment);
@@ -877,6 +885,7 @@ async function main(environment = process.env, stdout = process.stdout, acquire 
         timeoutMs: timeoutSeconds * SECOND_MS,
         maxOutputBytes: PROCESS_OUTPUT_LIMIT,
         signal: controller.signal,
+        stderr,
       });
     } catch (error) {
       if (typeof error.stdout === "string" && error.stdout.trim()) {
@@ -907,10 +916,31 @@ async function main(environment = process.env, stdout = process.stdout, acquire 
   }
 }
 
+/// Pause workflow commands until the returned function runs, so text that release-glz relays can't issue one.
+function pauseWorkflowCommands(stream) {
+  const token = crypto.randomBytes(WORKFLOW_COMMAND_TOKEN_BYTES).toString("hex");
+  stream.write(`::stop-commands::${token}\n`);
+  return () => stream.write(`::${token}::\n`);
+}
+
+/// Run the Action and return its exit code, with workflow commands paused until the last diagnostic is written.
+async function run(environment = process.env, io = {}) {
+  const stderr = io.stderr ?? process.stderr;
+  const resume = pauseWorkflowCommands(stderr);
+  try {
+    await main(environment, io.stdout ?? process.stdout, io.acquire ?? acquireBinary, stderr);
+    return 0;
+  } catch (error) {
+    stderr.write(`release-glz action failed: ${error.message}\n`);
+    return error.exitCode || 1;
+  } finally {
+    resume();
+  }
+}
+
 if (require.main === module) {
-  main().catch((error) => {
-    process.stderr.write(`release-glz action failed: ${error.message}\n`);
-    process.exitCode = error.exitCode || 1;
+  run().then((code) => {
+    process.exitCode = code;
   });
 }
 
@@ -927,6 +957,7 @@ module.exports = {
   normalizedVersion,
   parseCommandEnvelope,
   resultOutputs,
+  run,
   runProcess,
   setOutput,
   sha256,
