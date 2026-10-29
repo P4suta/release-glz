@@ -21,6 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- On Windows, a hook runs in a job object from its first instruction, and a hook that times out ends together with every process it started.
+  Only the hook's own process used to end, so its children kept running and could hold its pipes open after release-glz moved on.
 - Archive validation refuses, on every host, a path that some supported OS can't store under the same name, and two entries that collide once letter case no longer counts.
   That covers a colon, a character or device name that Windows forbids, such as `aux.html`, and a component that ends in a dot or a space.
   A package, documentation archive, or source snapshot with such a path now fails instead of extracting into a different tree on macOS or Windows.
