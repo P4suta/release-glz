@@ -291,52 +291,6 @@ impl GitRepo {
         Ok(())
     }
 
-    /// Create a lightweight tag at a commit.
-    pub fn create_tag(&self, tag: &str, sha: &str) -> Result<()> {
-        // A lightweight tag needs no CI git identity and points directly at the approved merge commit, which also simplifies conflict checks.
-        self.run(["tag", "--end-of-options", tag, sha])?;
-        Ok(())
-    }
-
-    /// Create an annotated tag at a commit, with a fixed committer identity.
-    pub fn create_annotated_tag(&self, tag: &str, sha: &str, message: &str) -> Result<()> {
-        let output = git_command(&self.root)
-            .args([
-                "tag",
-                "--annotate",
-                "--message",
-                message,
-                "--end-of-options",
-                tag,
-                sha,
-            ])
-            .env("GIT_COMMITTER_NAME", "release-glz")
-            .env(
-                "GIT_COMMITTER_EMAIL",
-                "release-glz@users.noreply.github.com",
-            )
-            .output()
-            .context("failed to create annotated release tag")?;
-        if !output.status.success() {
-            bail!(
-                "git could not create annotated tag `{tag}`: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            );
-        }
-        Ok(())
-    }
-
-    /// Push one tag to `origin`.
-    pub fn push_tag(&self, tag: &str) -> Result<()> {
-        self.run([
-            "push",
-            "--end-of-options",
-            "origin",
-            &format!("refs/tags/{tag}"),
-        ])?;
-        Ok(())
-    }
-
     /// Run a git command in this repository and return its stdout.
     pub fn run<I, S>(&self, args: I) -> Result<String>
     where

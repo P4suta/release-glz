@@ -78,7 +78,7 @@ fn local_and_remote_tag_state_never_conflates_lightweight_and_annotated_tags() {
     assert_eq!(repo.tag_state("missing").unwrap(), None);
     assert_eq!(repo.remote_tag_state("missing").unwrap(), None);
 
-    repo.create_tag("v1.0.0", &head).unwrap();
+    run_git(&work, &["tag", "v1.0.0", &head]);
     let local = repo.tag_state("v1.0.0").unwrap().unwrap();
     assert_eq!(local.target_sha, head);
     assert!(!local.annotated);
@@ -95,8 +95,17 @@ fn local_and_remote_tag_state_never_conflates_lightweight_and_annotated_tags() {
     assert!(!remote.annotated);
     assert_eq!(repo.remote_tag_sha("v1.0.0").unwrap(), Some(head.clone()));
 
-    repo.create_annotated_tag("v1.0.1", &head, "release 1.0.1")
-        .unwrap();
+    run_git(
+        &work,
+        &[
+            "tag",
+            "--annotate",
+            "--message",
+            "release 1.0.1",
+            "v1.0.1",
+            &head,
+        ],
+    );
     run_git(
         &bare,
         &[
@@ -116,14 +125,6 @@ fn git_effect_failures_are_errors_and_never_report_success() {
     let work = temp.path().join("work");
     init_repo(&work, "main");
     let repo = GitRepo::discover(&work).unwrap();
-    let head = repo.head().unwrap();
-    repo.create_tag("v1.0.0", &head).unwrap();
-    assert!(repo.create_tag("v1.0.0", &head).is_err());
-    assert!(
-        repo.create_annotated_tag("v1.0.0", &head, "duplicate")
-            .is_err()
-    );
-    assert!(repo.push_tag("v1.0.0").is_err());
     assert!(
         repo.archive("refs/heads/missing", &temp.path().join("archive"))
             .is_err()

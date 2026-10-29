@@ -65,6 +65,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The `update` command, which ran the same code as `release-pr`; use `release-glz release-pr`.
 - `HexRegistry::default` and `Planner::default`, which no command used and which read registry locations from `RELEASE_GLZ_HEX_*` variables.
   Build a registry from the manifest configuration instead.
+- The undocumented `RELEASE_GLZ_POLL_ATTEMPTS` and `RELEASE_GLZ_POLL_INTERVAL_MS` variables, which changed how long publication waited for the registry.
+  A library caller sets `VisibilityPoll` through `HexRegistry::with_visibility_poll` instead.
+- `GitHubClient::create_release`, which published a Release in one request and let GitHub create a missing tag.
+  It bypassed the draft and its checks.
+- `GitRepo::create_tag`, `GitRepo::create_annotated_tag`, and `GitRepo::push_tag`, which wrote and pushed tags with the local git.
+  release-glz creates its tag through the GitHub Git Data API, and nothing outside the tests called them.
 
 ### Fixed
 
