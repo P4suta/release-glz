@@ -52,7 +52,8 @@ jobs:
     needs: validate
     permissions:
       contents: read
-    uses: ./.github/workflows/assurance.yml
+    # actionlint 1.7.12, which CI pins, and scripts/verify-workflows.js reject the `$/` self-repository form.
+    uses: ./.github/workflows/assurance.yml # zizmor: ignore[self-repository]
 
   build:
     name: Build and smoke ${{ matrix.target }}
@@ -87,7 +88,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+      # Unlike a bare `rustup` step, the action installs rustup on any of the six runner images that lacks it.
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # zizmor: ignore[superfluous-actions]
         with:
           toolchain: 1.88.0
           targets: ${{ matrix.target }}
@@ -190,10 +192,9 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
-      actions: read
-      attestations: write
-      contents: write
-      id-token: write
+      attestations: write # actions/attest stores the provenance and SBOM attestations.
+      contents: write # gh release creates the draft, uploads its assets, and publishes it.
+      id-token: write # actions/attest signs with a Sigstore certificate for the job's OIDC token.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

@@ -31,6 +31,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   A package, documentation archive, or source snapshot with such a path now fails instead of extracting into a different tree on macOS or Windows.
 - No configured hook may take the id `release-glz`, which marks the SBOM and provenance that release-glz builds itself.
   Such a hook's output used to count as built-in evidence.
+- The job that publishes release-glz's own GitHub Release no longer holds `actions: read`, which none of its steps used.
+  Each permission it keeps names the steps that need it.
 - The files digest of a Release PR commit starts from a domain tag and puts a length before every path and content.
   Two different file sets could hash the same input before, and an open Release PR gets one rebuilt commit under the new digest.
 - Redaction finds every occurrence of every secret before it replaces any, and replaces each run of covered text once.

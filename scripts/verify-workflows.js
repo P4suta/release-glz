@@ -94,9 +94,9 @@ function verifyWorkflow(filename, source) {
   }
 
   for (const job of jobBlocks(source)) {
-    const localWorkflow = /^ {4}uses: \.\/\.github\/workflows\/[A-Za-z0-9_-]+\.ya?ml\s*$/m.test(
-      job.source,
-    );
+    // YAML starts a comment only after whitespace, so `.yml#x` stays part of the path.
+    const localWorkflow =
+      /^ {4}uses: \.\/\.github\/workflows\/[A-Za-z0-9_-]+\.ya?ml(?:\s+#.*)?\s*$/m.test(job.source);
     if (!localWorkflow && !/^\s+timeout-minutes:\s*[1-9]\d*\s*(?:#.*)?$/m.test(job.source)) {
       throw new Error(`${filename}: job ${job.name} must set timeout-minutes`);
     }
