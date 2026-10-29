@@ -111,6 +111,27 @@ The normal GitHub path creates one rolling Release PR.
 A secret-free Candidate job checks out an exact commit, while the protected Environment job downloads that same Actions artifact and publishes it.
 External Actions and release-glz itself are pinned to full commit SHAs in the generated workflow.
 
+### Generated workflow
+
+The workflow runs for pushes to the default branch and for manual dispatches.
+A job that runs the compiler holds no write permission, and a job that can write never installs the compiler.
+
+| Job | Runs | Compiler | Permissions |
+|---|---|---|---|
+| `plan` | every push and `prepare` dispatch | yes | `contents: read`, `pull-requests: read` |
+| `release-pr` | every push, from the plan artifact | no | `contents: write`, `pull-requests: write` |
+| `rehearse-release-pr` | when `release-pr` wrote or confirmed a head | yes | `contents: read` |
+| `bind-release-pr` | after that rehearsal | no | `contents: read`, `pull-requests: write` |
+| `prepare` | a push that requires a release, or a `prepare` dispatch | yes | `contents: read`, `pull-requests: read` |
+| `validate-promotion` | a `promote` dispatch | no | none |
+| `authorize` | a push with a sealed Candidate | no | `contents: read`, `pull-requests: read` |
+| `publish` | an approved Candidate | no | `actions: read`, `contents: write`, `id-token: write`, `pull-requests: read`, and the Environment secret |
+
+`GITHUB_TOKEN` writes the Release PR, and GitHub starts no workflow run for events that token causes.
+The push run that wrote the Release PR therefore rehearses the new head itself and binds its intent.
+Merge the Release PR only after that run's `bind-release-pr` job succeeds, because a merge without a bound intent stops publication at `blocked`.
+`release-pr`, `bind-release-pr`, and `publish` each serialize per package, and no other job waits for them.
+
 The equivalent local inspection flow is:
 
 ```console
