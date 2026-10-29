@@ -109,7 +109,8 @@ fn distribution_is_attested_and_uploaded_to_a_draft_exactly_once() {
             .trim_start_matches("- ")
             .starts_with("uses:")
     }) {
-        if line.trim() == "uses: ./.github/workflows/assurance.yml" {
+        let code = line.split_once(" #").map_or(line, |(code, _)| code);
+        if code.trim() == "uses: ./.github/workflows/assurance.yml" {
             continue;
         }
         let reference = line

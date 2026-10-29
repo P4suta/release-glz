@@ -1063,7 +1063,8 @@ mod tests {
                     .trim_start_matches("- ")
                     .starts_with("uses:")
             }) {
-                if line.trim() == "uses: ./.github/workflows/assurance.yml" {
+                let code = line.split_once(" #").map_or(line, |(code, _)| code);
+                if code.trim() == "uses: ./.github/workflows/assurance.yml" {
                     continue;
                 }
                 let reference = line
