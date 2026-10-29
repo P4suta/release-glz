@@ -11,7 +11,7 @@ use release_glz::config::{
     ApprovalConfig, ApprovalMode, AuthKind, HookConfig, Manifest, OutputConfig, RegistryProvider,
 };
 use release_glz::hooks::SidecarArtifact;
-use release_glz::release::SourceBoundCandidate;
+use release_glz::release::{LiveReleaseTarget, SourceBoundCandidate};
 use release_glz_test_support::{git, init_repository, isolated_command};
 use semver::Version;
 use sha2::{Digest, Sha256};
@@ -387,6 +387,7 @@ fn candidate_verification_rejects_every_manifest_identity_and_digest_tamper() {
             "tag",
             "candidate.tag must end with the Candidate version `v1.2.3`",
         ),
+        ("tag-ref", "candidate.tag contains a dangerous git ref form"),
         (
             "source-sha",
             "candidate source commit must be a full lowercase SHA",
@@ -398,6 +399,10 @@ fn candidate_verification_rejects_every_manifest_identity_and_digest_tamper() {
         (
             "credential-env",
             "candidate registry credential_env is not a safe environment variable name",
+        ),
+        (
+            "registry-url-without-host",
+            "candidate registry api_url must be an absolute hierarchical URL",
         ),
         ("branch-prefix", "candidate release branch prefix is unsafe"),
         (
@@ -427,9 +432,13 @@ fn candidate_verification_rejects_every_manifest_identity_and_digest_tamper() {
             "schema" => manifest["schema"] = "candidate/v2".into(),
             "package" => manifest["package"] = "Widget".into(),
             "tag" => manifest["tag"] = "v9.9.9".into(),
+            "tag-ref" => manifest["tag"] = "refs/tags/v1.2.3".into(),
             "source-sha" => manifest["source"]["commit_sha"] = "A".repeat(40).into(),
             "source-path" => manifest["source"]["manifest_path"] = "../gleam.toml".into(),
             "credential-env" => manifest["registry"]["credential_env"] = "TOKEN=value".into(),
+            "registry-url-without-host" => {
+                manifest["registry"]["api_url"] = "file:///registry".into()
+            }
             "branch-prefix" => manifest["release_branch_prefix"] = "".into(),
             "release-notes" => manifest["release_notes"] = "bad\0notes".into(),
             "artifact-path" => {
@@ -541,6 +550,71 @@ fn publication_binds_a_candidate_whose_policy_matches_its_source_commit() {
     .unwrap();
     let bound = SourceBoundCandidate::bind(sealed.clone(), &repository.join("gleam.toml")).unwrap();
     assert_eq!(bound.manifest(), &sealed);
+}
+
+#[test]
+fn a_private_publication_needs_its_registry_credential_before_it_builds_a_target() {
+    let unset = "RELEASE_GLZ_TEST_UNSET_CREDENTIAL";
+    assert!(std::env::var_os(unset).is_none());
+    let public = POLICY_SOURCE.replace("HEXPM_API_KEY", unset);
+    let private = public.replace(
+        concat!(
+            "provider = \"hexpm\"\n",
+            "api_url = \"https://hex.pm/api\"\n",
+            "repository_url = \"https://repo.hex.pm\"\n",
+            "docs_url = \"https://repo.hex.pm/docs\"\n",
+        ),
+        concat!(
+            "provider = \"hexpm\"\n",
+            "repository = \"acme\"\n",
+            "api_url = \"https://hex.pm/api\"\n",
+            "repository_url = \"https://repo.hex.pm/repos/acme\"\n",
+            "docs_url = \"https://repo.hex.pm/repos/acme/docs\"\n",
+        ),
+    );
+    assert_ne!(private, public);
+    for (case, source, expected) in [
+        ("public", public.as_str(), None),
+        (
+            "private",
+            private.as_str(),
+            Some(format!(
+                "private registry credential environment `{unset}` is not set"
+            )),
+        ),
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        let (repository, sha) = policy_repository_from(temp.path(), source);
+        let sealed = Candidate::seal(
+            &temp.path().join("candidate"),
+            honest_policy_input(&repository, &sha),
+        )
+        .unwrap();
+        let bound = SourceBoundCandidate::bind(sealed, &repository.join("gleam.toml")).unwrap();
+        let error = LiveReleaseTarget::from_candidate(bound)
+            .err()
+            .map(|error| error.to_string());
+        assert_eq!(error, expected, "{case}");
+    }
+}
+
+#[test]
+fn a_sealed_file_with_its_size_but_other_bytes_fails_its_checksum() {
+    let temp = tempfile::tempdir().unwrap();
+    let directory = temp.path().join("candidate");
+    Candidate::seal(&directory, fresh_candidate_input()).unwrap();
+    let path = directory.join("artifacts/package.tar");
+    let mut bytes = fs::read(&path).unwrap();
+    let last = bytes.len() - 1;
+    bytes[last] ^= 0xff;
+    fs::write(&path, bytes).unwrap();
+
+    let error = Candidate::verify(&directory).unwrap_err().to_string();
+
+    assert_eq!(
+        error,
+        "candidate checksum mismatch for `artifacts/package.tar`"
+    );
 }
 
 #[test]
@@ -704,9 +778,14 @@ fn release_refuses_a_forged_candidate_before_it_needs_any_token() {
 
 /// A committed copy of [`POLICY_SOURCE`] and the SHA of its commit.
 fn policy_repository(temp: &std::path::Path) -> (std::path::PathBuf, String) {
+    policy_repository_from(temp, POLICY_SOURCE)
+}
+
+/// A committed copy of `source` and the SHA of its commit.
+fn policy_repository_from(temp: &std::path::Path, source: &str) -> (std::path::PathBuf, String) {
     let repository = temp.join("repo");
     fs::create_dir_all(&repository).unwrap();
-    fs::write(repository.join("gleam.toml"), POLICY_SOURCE).unwrap();
+    fs::write(repository.join("gleam.toml"), source).unwrap();
     init_repository(&repository);
     for (name, value) in [
         ("core.hooksPath", ".git/no-hooks"),
@@ -1239,6 +1318,47 @@ fn requested_sbom_and_provenance_are_built_in_deterministic_evidence() {
     );
     missing.outputs.sbom = true;
     assert!(Candidate::seal(&temp.path().join("missing"), missing).is_err());
+}
+
+#[test]
+fn a_package_is_private_on_an_organization_or_a_hex_compatible_registry() {
+    let temp = tempfile::tempdir().unwrap();
+    let public_registry = concat!(
+        "provider = \"hexpm\"\n",
+        "api_url = \"https://hex.pm/api\"\n",
+        "repository_url = \"https://repo.hex.pm\"\n",
+        "docs_url = \"https://repo.hex.pm/docs\"\n",
+    );
+    assert!(POLICY_SOURCE.contains(public_registry));
+    for (case, registry, private) in [
+        ("public hex.pm", public_registry, false),
+        (
+            "a hex.pm organization",
+            concat!(
+                "provider = \"hexpm\"\n",
+                "repository = \"acme\"\n",
+                "api_url = \"https://hex.pm/api\"\n",
+                "repository_url = \"https://repo.hex.pm/repos/acme\"\n",
+                "docs_url = \"https://repo.hex.pm/repos/acme/docs\"\n",
+            ),
+            true,
+        ),
+        (
+            "a hex-compatible registry",
+            concat!(
+                "provider = \"hex-compatible\"\n",
+                "api_url = \"https://packages.example/api\"\n",
+                "repository_url = \"https://packages.example/repo\"\n",
+                "docs_url = \"https://packages.example/repo/docs\"\n",
+            ),
+            true,
+        ),
+    ] {
+        let source = POLICY_SOURCE.replace(public_registry, registry);
+        let manifest = Manifest::parse(temp.path().join("gleam.toml"), source).unwrap();
+        let policy = SealedPolicy::from_source(&manifest, temp.path(), "gleam.toml").unwrap();
+        assert_eq!(policy.private, private, "{case}");
+    }
 }
 
 #[test]
