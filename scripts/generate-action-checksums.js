@@ -36,8 +36,11 @@ function argumentsFrom(argv) {
     if (Object.hasOwn(values, option)) throw new Error(`duplicate option ${option}`);
     values[option] = value;
   }
-  if (!values["--artifacts"] || !values["--version"] ||
-      Boolean(values["--out"]) === Boolean(values["--check"])) {
+  if (
+    !values["--artifacts"] ||
+    !values["--version"] ||
+    Boolean(values["--out"]) === Boolean(values["--check"])
+  ) {
     throw new Error("usage: --artifacts DIR --version vX.Y.Z (--out FILE | --check FILE)");
   }
   if (!/^v\d+\.\d+\.\d+$/.test(values["--version"])) {
@@ -48,7 +51,12 @@ function argumentsFrom(argv) {
 
 function digestRegularFile(file) {
   const metadata = fs.lstatSync(file);
-  if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size === 0 || metadata.size > MAX_ARCHIVE_BYTES) {
+  if (
+    !metadata.isFile() ||
+    metadata.isSymbolicLink() ||
+    metadata.size === 0 ||
+    metadata.size > MAX_ARCHIVE_BYTES
+  ) {
     throw new Error(`${path.basename(file)} is not a bounded regular release archive`);
   }
   return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
@@ -59,11 +67,15 @@ function render(directory, version) {
   for (const archive of archives) {
     artifacts[archive] = digestRegularFile(path.join(directory, archive));
   }
-  return `${JSON.stringify({
-    schema: "release-glz-action-checksums/v1",
-    version,
-    artifacts,
-  }, null, 2)}\n`;
+  return `${JSON.stringify(
+    {
+      schema: "release-glz-action-checksums/v1",
+      version,
+      artifacts,
+    },
+    null,
+    2,
+  )}\n`;
 }
 
 function writeAtomically(destination, contents) {
@@ -74,7 +86,9 @@ function writeAtomically(destination, contents) {
   try {
     fs.renameSync(temporary, destination);
   } catch (error) {
-    try { fs.unlinkSync(temporary); } catch {}
+    try {
+      fs.unlinkSync(temporary);
+    } catch {}
     throw error;
   }
 }
@@ -84,14 +98,19 @@ function main(argv = process.argv.slice(2)) {
   const rendered = render(options["--artifacts"], options["--version"]);
   if (options["--check"]) {
     const actual = fs.readFileSync(options["--check"], "utf8");
-    if (actual !== rendered) throw new Error("checked-in Action checksum manifest does not match release archives");
+    if (actual !== rendered)
+      throw new Error("checked-in Action checksum manifest does not match release archives");
     return;
   }
   writeAtomically(options["--out"], rendered);
 }
 
 if (require.main === module) {
-  try { main(); } catch (error) { fail(error.message); }
+  try {
+    main();
+  } catch (error) {
+    fail(error.message);
+  }
 }
 
 module.exports = { argumentsFrom, render };

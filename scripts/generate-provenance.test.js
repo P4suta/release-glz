@@ -26,10 +26,14 @@ test("generates one deterministic SLSA statement for every supported archive", (
   populate(right);
 
   const common = [
-    "--repository", "P4suta/release-glz",
-    "--source", "a".repeat(40),
-    "--version", "v1.0.0",
-    "--run-id", "123456",
+    "--repository",
+    "P4suta/release-glz",
+    "--source",
+    "a".repeat(40),
+    "--version",
+    "v1.0.0",
+    "--run-id",
+    "123456",
   ];
   const first = run(["--artifacts", left, ...common]);
   const second = run(["--artifacts", right, ...common]);
@@ -43,7 +47,8 @@ test("generates one deterministic SLSA statement for every supported archive", (
     assert.equal(leftBytes.toString("utf8").trim().split("\n").length, 1);
 
     const statement = JSON.parse(leftBytes);
-    const expectedDigest = crypto.createHash("sha256")
+    const expectedDigest = crypto
+      .createHash("sha256")
       .update(fs.readFileSync(path.join(left, archive)))
       .digest("hex");
     assert.equal(statement._type, "https://in-toto.io/Statement/v1");
@@ -53,7 +58,10 @@ test("generates one deterministic SLSA statement for every supported archive", (
       statement.predicate.buildDefinition.resolvedDependencies[0].digest.gitCommit,
       "a".repeat(40),
     );
-    assert.match(statement.predicate.runDetails.builder.id, /distribute\.yml@refs\/tags\/v1\.0\.0$/);
+    assert.match(
+      statement.predicate.runDetails.builder.id,
+      /distribute\.yml@refs\/tags\/v1\.0\.0$/,
+    );
     assert.match(statement.predicate.runDetails.metadata.invocationId, /actions\/runs\/123456$/);
   }
 });
@@ -67,21 +75,31 @@ test("rejects ambiguous source identity and incomplete archive sets", (context) 
   populate(complete);
   fs.unlinkSync(path.join(root, archives[0]));
   const incomplete = run([
-    "--artifacts", root,
-    "--repository", "P4suta/release-glz",
-    "--source", "b".repeat(40),
-    "--version", "v1.0.0",
-    "--run-id", "9",
+    "--artifacts",
+    root,
+    "--repository",
+    "P4suta/release-glz",
+    "--source",
+    "b".repeat(40),
+    "--version",
+    "v1.0.0",
+    "--run-id",
+    "9",
   ]);
   assert.notEqual(incomplete.status, 0);
   assert.match(incomplete.stderr, /bounded regular release archive|ENOENT/);
 
   const unsafe = run([
-    "--artifacts", complete,
-    "--repository", "owner/repo?token=secret",
-    "--source", "not-a-full-sha",
-    "--version", "main",
-    "--run-id", "run",
+    "--artifacts",
+    complete,
+    "--repository",
+    "owner/repo?token=secret",
+    "--source",
+    "not-a-full-sha",
+    "--version",
+    "main",
+    "--run-id",
+    "run",
   ]);
   assert.notEqual(unsafe.status, 0);
   assert.doesNotMatch(unsafe.stderr, /secret/);
@@ -95,9 +113,10 @@ function populate(directory) {
 }
 
 function run(args) {
-  const result = spawnSync(process.execPath, [
-    path.join(__dirname, "generate-provenance.js"),
-    ...args,
-  ], { encoding: "utf8" });
+  const result = spawnSync(
+    process.execPath,
+    [path.join(__dirname, "generate-provenance.js"), ...args],
+    { encoding: "utf8" },
+  );
   return { status: result.status, stdout: result.stdout, stderr: result.stderr };
 }

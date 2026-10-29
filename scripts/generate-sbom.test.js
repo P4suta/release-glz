@@ -35,19 +35,23 @@ test("generates deterministic CycloneDX and third-party license documents", () =
     ],
     workspace_members: ["path+file:///repo#release-glz@1.0.0"],
     resolve: {
-      nodes: [{
-        id: "path+file:///repo#release-glz@1.0.0",
-        deps: [
-          { pkg: "registry+zeta@2.0.0", dep_kinds: [{ kind: null, target: null }] },
-          { pkg: "registry+alpha@1.2.3", dep_kinds: [{ kind: null, target: null }] },
-        ],
-      }, {
-        id: "registry+zeta@2.0.0",
-        deps: [],
-      }, {
-        id: "registry+alpha@1.2.3",
-        deps: [],
-      }],
+      nodes: [
+        {
+          id: "path+file:///repo#release-glz@1.0.0",
+          deps: [
+            { pkg: "registry+zeta@2.0.0", dep_kinds: [{ kind: null, target: null }] },
+            { pkg: "registry+alpha@1.2.3", dep_kinds: [{ kind: null, target: null }] },
+          ],
+        },
+        {
+          id: "registry+zeta@2.0.0",
+          deps: [],
+        },
+        {
+          id: "registry+alpha@1.2.3",
+          deps: [],
+        },
+      ],
     },
   };
   const lock = `
@@ -71,7 +75,10 @@ checksum = "${"a".repeat(64)}"
   assert.equal(documents.sbom.components[0].hashes[0].content, "a".repeat(64));
   assert.deepEqual(
     documents.licenses.packages.map((entry) => [entry.name, entry.license]),
-    [["alpha", "Apache-2.0"], ["zeta", "NOASSERTION"]],
+    [
+      ["alpha", "Apache-2.0"],
+      ["zeta", "NOASSERTION"],
+    ],
   );
   assert.equal(
     JSON.stringify(documents),
@@ -109,21 +116,25 @@ test("includes only the union of runtime dependencies for shipped targets", () =
     packages,
     workspace_members: ["root"],
     resolve: {
-      nodes: [{
-        id: "root",
-        deps: [
-          { pkg: "runtime", dep_kinds: [{ kind: null, target: null }] },
-          { pkg: targetDependency, dep_kinds: [{ kind: null, target: "filtered" }] },
-          { pkg: "dev-only", dep_kinds: [{ kind: "dev", target: null }] },
-          { pkg: "build-only", dep_kinds: [{ kind: "build", target: null }] },
-        ],
-      }, {
-        id: "runtime",
-        deps: [],
-      }, {
-        id: targetDependency,
-        deps: [],
-      }],
+      nodes: [
+        {
+          id: "root",
+          deps: [
+            { pkg: "runtime", dep_kinds: [{ kind: null, target: null }] },
+            { pkg: targetDependency, dep_kinds: [{ kind: null, target: "filtered" }] },
+            { pkg: "dev-only", dep_kinds: [{ kind: "dev", target: null }] },
+            { pkg: "build-only", dep_kinds: [{ kind: "build", target: null }] },
+          ],
+        },
+        {
+          id: "runtime",
+          deps: [],
+        },
+        {
+          id: targetDependency,
+          deps: [],
+        },
+      ],
     },
   });
 
@@ -162,15 +173,12 @@ test("compares workspace identity independently of metadata member order", () =>
     },
   });
 
-  assert.doesNotThrow(() => generateDocuments(
-    [snapshot(["root", "helper"]), snapshot(["helper", "root"])],
-    new Map(),
-  ));
+  assert.doesNotThrow(() =>
+    generateDocuments([snapshot(["root", "helper"]), snapshot(["helper", "root"])], new Map()),
+  );
   assert.throws(
-    () => generateDocuments(
-      [snapshot(["root", "helper"]), snapshot(["root", "different"])],
-      new Map(),
-    ),
+    () =>
+      generateDocuments([snapshot(["root", "helper"]), snapshot(["root", "different"])], new Map()),
     /disagree on workspace identity/,
   );
 });

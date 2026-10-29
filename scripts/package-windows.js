@@ -10,8 +10,8 @@ const MIB = 1024 * KIB;
 const ENTRY_NAME = "release-glz.exe";
 const MAX_BINARY_BYTES = 128 * MIB;
 
-// ZIP layout, from APPNOTE.TXT sections 4.3.7, 4.3.12, and 4.3.16. `*_AT`
-// names are byte offsets within their record.
+// ZIP layout, from APPNOTE.TXT sections 4.3.7, 4.3.12, and 4.3.16.
+// `*_AT` names are byte offsets within their record.
 const LOCAL = Object.freeze({
   BYTES: 30,
   SIGNATURE: 0x04034b50,
@@ -69,8 +69,7 @@ const VERSION_NEEDED = 20;
 const VERSION_MADE_BY_UNIX = 0x0314;
 const FLAG_UTF8_NAMES = 0x0800;
 const METHOD_STORED = 0;
-// 1980-01-01 00:00, the earliest instant a ZIP date can hold, so the archive
-// does not record when it was built.
+// 1980-01-01 00:00, the earliest instant a ZIP date can hold, so the archive does not record when it was built.
 const DOS_DATE = 0x0021;
 const DOS_TIME = 0;
 const UNIX_MODE_EXECUTABLE = 0o100755;
@@ -81,13 +80,15 @@ const NO_INTERNAL_ATTRIBUTES = 0;
 const FIRST_DISK = 0;
 const FIRST_ENTRY_OFFSET = 0;
 const ENTRY_COUNT = 1;
-const CRC_TABLE = Object.freeze(Array.from({ length: 256 }, (_, index) => {
-  let value = index;
-  for (let bit = 0; bit < 8; bit += 1) {
-    value = (value & 1) ? (0xedb88320 ^ (value >>> 1)) : (value >>> 1);
-  }
-  return value >>> 0;
-}));
+const CRC_TABLE = Object.freeze(
+  Array.from({ length: 256 }, (_, index) => {
+    let value = index;
+    for (let bit = 0; bit < 8; bit += 1) {
+      value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
+    }
+    return value >>> 0;
+  }),
+);
 
 function crc32(bytes) {
   let crc = 0xffffffff;
@@ -107,8 +108,12 @@ function outputMustNotExist(output) {
 
 function createStoredZip(binary, output) {
   const metadata = fs.lstatSync(binary);
-  if (!metadata.isFile() || metadata.isSymbolicLink() ||
-      metadata.size === 0 || metadata.size > MAX_BINARY_BYTES) {
+  if (
+    !metadata.isFile() ||
+    metadata.isSymbolicLink() ||
+    metadata.size === 0 ||
+    metadata.size > MAX_BINARY_BYTES
+  ) {
     throw new Error("binary is not a bounded regular executable");
   }
   outputMustNotExist(output);
@@ -145,8 +150,10 @@ function createStoredZip(binary, output) {
   central.writeUInt16LE(NO_COMMENT, CENTRAL.COMMENT_LENGTH_AT);
   central.writeUInt16LE(FIRST_DISK, CENTRAL.DISK_NUMBER_AT);
   central.writeUInt16LE(NO_INTERNAL_ATTRIBUTES, CENTRAL.INTERNAL_ATTRIBUTES_AT);
-  central.writeUInt32LE((UNIX_MODE_EXECUTABLE << UNIX_MODE_SHIFT) >>> 0,
-    CENTRAL.EXTERNAL_ATTRIBUTES_AT);
+  central.writeUInt32LE(
+    (UNIX_MODE_EXECUTABLE << UNIX_MODE_SHIFT) >>> 0,
+    CENTRAL.EXTERNAL_ATTRIBUTES_AT,
+  );
   central.writeUInt32LE(FIRST_ENTRY_OFFSET, CENTRAL.LOCAL_HEADER_OFFSET_AT);
 
   const centralOffset = local.length + name.length + contents.length;
@@ -168,8 +175,7 @@ function createStoredZip(binary, output) {
 }
 
 function argumentsFrom(argv) {
-  if (argv.length !== 4 || argv[0] !== "--binary" || argv[2] !== "--out" ||
-      !argv[1] || !argv[3]) {
+  if (argv.length !== 4 || argv[0] !== "--binary" || argv[2] !== "--out" || !argv[1] || !argv[3]) {
     throw new Error("usage: --binary FILE --out FILE");
   }
   if (path.resolve(argv[1]) === path.resolve(argv[3])) {

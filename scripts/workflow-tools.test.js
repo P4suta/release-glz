@@ -45,14 +45,34 @@ jobs:
     "./.github/workflows/assurance.yml@main",
     `owner/repo/.github/workflows/check.yml@${"a".repeat(40)}`,
   ]) {
-    assert.throws(() => verifyWorkflow("caller.yml", caller.replace("./.github/workflows/assurance.yml", reference)), /timeout-minutes/);
+    assert.throws(
+      () =>
+        verifyWorkflow(
+          "caller.yml",
+          caller.replace("./.github/workflows/assurance.yml", reference),
+        ),
+      /timeout-minutes/,
+    );
   }
 });
 
 test("workflow verifier rejects mutable actions, implicit timeouts, and persistent checkout credentials", () => {
-  assert.throws(() => verifyWorkflow("mutable.yml", safe.replace(`${"a".repeat(40)}`, "v7")), /full commit SHA/);
-  assert.throws(() => verifyWorkflow("timeout.yml", safe.replace("    timeout-minutes: 10\n", "")), /timeout-minutes/);
-  assert.throws(() => verifyWorkflow("credentials.yml", safe.replace("persist-credentials: false", "persist-credentials: true")), /credentials/);
+  assert.throws(
+    () => verifyWorkflow("mutable.yml", safe.replace(`${"a".repeat(40)}`, "v7")),
+    /full commit SHA/,
+  );
+  assert.throws(
+    () => verifyWorkflow("timeout.yml", safe.replace("    timeout-minutes: 10\n", "")),
+    /timeout-minutes/,
+  );
+  assert.throws(
+    () =>
+      verifyWorkflow(
+        "credentials.yml",
+        safe.replace("persist-credentials: false", "persist-credentials: true"),
+      ),
+    /credentials/,
+  );
 });
 
 test("workflow verifier rejects a POSIX variable in an implicit shell on a varying runner", () => {
@@ -71,8 +91,7 @@ jobs:
           persist-credentials: false
 ${step}`;
 
-  // PowerShell is the default shell on a Windows runner and leaves `$TARGET`
-  // empty, so an implicit shell here builds nothing instead of failing.
+  // PowerShell is the default shell on a Windows runner and leaves `$TARGET` empty, so an implicit shell here builds nothing instead of failing.
   const implicit = matrixJob(`      - env:
           TARGET: \${{ matrix.target }}
         run: cargo build --target "$TARGET"
@@ -92,22 +111,28 @@ ${step}`;
   assert.doesNotThrow(() => verifyWorkflow("distribute.yml", noVariable));
 
   // A runner fixed to one operating system has a known default shell.
-  const fixedRunner = explicit.replace("runs-on: \${{ matrix.runner }}", "runs-on: ubuntu-24.04");
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: the text is a GitHub Actions expression.
+  const fixedRunner = explicit.replace("runs-on: ${{ matrix.runner }}", "runs-on: ubuntu-24.04");
   assert.doesNotThrow(() =>
     verifyWorkflow("distribute.yml", fixedRunner.replace("        shell: bash\n", "")),
   );
 });
 
 test("de-shell rejects expression interpolation inside command text", () => {
-  const unsafe = safe.replace("printf '%s\\n' \"$VALUE\"", "echo \${{ github.event.pull_request.title }}");
+  const unsafe = safe.replace(
+    "printf '%s\\n' \"$VALUE\"",
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: the text is a GitHub Actions expression.
+    "echo ${{ github.event.pull_request.title }}",
+  );
   assert.throws(() => rejectExpressionInterpolation("unsafe.yml", unsafe), /expression.*run/i);
 });
 
 test("both workflow validators reject quoted mapping keys before regex inspection", () => {
   for (const key of ["uses", "run", "permissions", "pull_request_target"]) {
-    const quoted = key === "pull_request_target"
-      ? `"pull_request_target":\n${safe}`
-      : safe.replace(new RegExp(`^(\\s*(?:-\\s*)?)${key}:`, "m"), `$1"${key}":`);
+    const quoted =
+      key === "pull_request_target"
+        ? `"pull_request_target":\n${safe}`
+        : safe.replace(new RegExp(`^(\\s*(?:-\\s*)?)${key}:`, "m"), `$1"${key}":`);
     assert.throws(() => verifyWorkflow(`${key}.yml`, quoted), /quoted.*key/i, key);
     assert.throws(() => rejectExpressionInterpolation(`${key}.yml`, quoted), /quoted.*key/i, key);
   }

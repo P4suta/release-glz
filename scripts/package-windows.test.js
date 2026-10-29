@@ -58,10 +58,7 @@ test("CLI refuses symlink, empty, oversized, and existing output paths", (contex
   assert.notEqual(emptyResult.status, 0);
   assert.match(emptyResult.stderr, /bounded regular executable/);
 
-  const oversizedResult = run([
-    "--binary", oversized,
-    "--out", path.join(root, "oversized.zip"),
-  ]);
+  const oversizedResult = run(["--binary", oversized, "--out", path.join(root, "oversized.zip")]);
   assert.notEqual(oversizedResult.status, 0);
   assert.match(oversizedResult.stderr, /bounded regular executable/);
 
@@ -71,8 +68,12 @@ test("CLI refuses symlink, empty, oversized, and existing output paths", (contex
 });
 
 function run(args) {
-  const result = spawnSync(process.execPath, [path.join(__dirname, "package-windows.js"), ...args], {
-    encoding: "utf8",
-  });
+  const result = spawnSync(
+    process.execPath,
+    [path.join(__dirname, "package-windows.js"), ...args],
+    {
+      encoding: "utf8",
+    },
+  );
   return { status: result.status, stdout: result.stdout, stderr: result.stderr };
 }

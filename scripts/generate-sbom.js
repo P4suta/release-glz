@@ -74,9 +74,13 @@ function generateDocuments(metadataInput, lockChecksums) {
   const snapshots = Array.isArray(metadataInput) ? metadataInput : [metadataInput];
   if (snapshots.length === 0) throw new Error("cargo metadata has no target snapshots");
   for (const metadata of snapshots) {
-    if (!metadata || !Array.isArray(metadata.packages) ||
-        !Array.isArray(metadata.workspace_members) ||
-        !metadata.resolve || !Array.isArray(metadata.resolve.nodes)) {
+    if (
+      !metadata ||
+      !Array.isArray(metadata.packages) ||
+      !Array.isArray(metadata.workspace_members) ||
+      !metadata.resolve ||
+      !Array.isArray(metadata.resolve.nodes)
+    ) {
       throw new Error("cargo metadata has an unsupported shape");
     }
   }
@@ -101,13 +105,14 @@ function generateDocuments(metadataInput, lockChecksums) {
   const dependencies = [...runtime]
     .filter((id) => !workspace.has(id))
     .map((id) => packages.get(id) || missingPackage(id))
-    .sort((left, right) =>
-      left.name.localeCompare(right.name)
-        || left.version.localeCompare(right.version)
-        || String(left.source || "").localeCompare(String(right.source || ""))
+    .sort(
+      (left, right) =>
+        left.name.localeCompare(right.name) ||
+        left.version.localeCompare(right.version) ||
+        String(left.source || "").localeCompare(String(right.source || "")),
     );
   const components = dependencies.map((pkg) =>
-    componentFor(pkg, lockChecksums.get(packageKey(pkg.name, pkg.version)))
+    componentFor(pkg, lockChecksums.get(packageKey(pkg.name, pkg.version))),
   );
   return {
     sbom: {

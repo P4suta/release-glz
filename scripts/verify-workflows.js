@@ -29,7 +29,7 @@ function jobBlocks(source) {
     if (!line.trim() || line.trimStart().startsWith("#")) continue;
     const indent = indentation(line);
     if (indent === 0) break;
-    const match = line.match(/^  ([A-Za-z0-9_-]+):\s*(?:#.*)?$/);
+    const match = line.match(/^ {2}([A-Za-z0-9_-]+):\s*(?:#.*)?$/);
     if (!match) continue;
     let end = index + 1;
     while (end < lines.length && (!lines[end].trim() || indentation(lines[end]) > 2)) end += 1;
@@ -82,8 +82,11 @@ function verifyWorkflow(filename, source) {
     if (!/uses:\s*actions\/checkout@/i.test(lines[index])) continue;
     const stepIndent = indentation(lines[index]);
     let end = index + 1;
-    while (end < lines.length &&
-      (!/^\s*-\s+/.test(lines[end]) || indentation(lines[end]) > stepIndent)) end += 1;
+    while (
+      end < lines.length &&
+      (!/^\s*-\s+/.test(lines[end]) || indentation(lines[end]) > stepIndent)
+    )
+      end += 1;
     const step = lines.slice(index, end).join("\n");
     if (!/^\s*persist-credentials:\s*false\s*(?:#.*)?$/m.test(step)) {
       throw new Error(`${filename}: checkout must disable persistent credentials`);
@@ -91,7 +94,9 @@ function verifyWorkflow(filename, source) {
   }
 
   for (const job of jobBlocks(source)) {
-    const localWorkflow = /^    uses: \.\/\.github\/workflows\/[A-Za-z0-9_-]+\.ya?ml\s*$/m.test(job.source);
+    const localWorkflow = /^ {4}uses: \.\/\.github\/workflows\/[A-Za-z0-9_-]+\.ya?ml\s*$/m.test(
+      job.source,
+    );
     if (!localWorkflow && !/^\s+timeout-minutes:\s*[1-9]\d*\s*(?:#.*)?$/m.test(job.source)) {
       throw new Error(`${filename}: job ${job.name} must set timeout-minutes`);
     }
@@ -102,10 +107,8 @@ function verifyWorkflow(filename, source) {
   }
 }
 
-// Reject a `run` step that expands a POSIX variable while leaving its shell to
-// the runner, when the runner is not fixed to one operating system. PowerShell
-// is the default on Windows and does not expand `$NAME`, so such a step reads
-// an empty value there instead of failing loudly.
+// Reject a `run` step that expands a POSIX variable while leaving its shell to the runner, when the runner is not fixed to one operating system.
+// PowerShell is the default on Windows and does not expand `$NAME`, so such a step reads an empty value there instead of failing loudly.
 function requireExplicitShell(filename, job) {
   const runsOn = job.source.match(/^\s+runs-on:\s*(.+?)\s*(?:#.*)?$/m);
   if (!runsOn) return;
@@ -119,8 +122,11 @@ function requireExplicitShell(filename, job) {
     while (start > 0 && !/^\s*-\s+\S/.test(lines[start])) start -= 1;
     const stepIndent = indentation(lines[start]);
     let end = start + 1;
-    while (end < lines.length &&
-      (!/^\s*-\s+\S/.test(lines[end]) || indentation(lines[end]) > stepIndent)) end += 1;
+    while (
+      end < lines.length &&
+      (!/^\s*-\s+\S/.test(lines[end]) || indentation(lines[end]) > stepIndent)
+    )
+      end += 1;
     const step = lines.slice(start, end).join("\n");
     const posix = step.replace(/\$\{\{[^}]*\}\}/g, "");
     if (!/\$[A-Za-z_{]/.test(posix)) {
@@ -166,7 +172,9 @@ function main(argv = process.argv.slice(2)) {
 }
 
 if (require.main === module) {
-  try { main(); } catch (error) {
+  try {
+    main();
+  } catch (error) {
     process.stderr.write(`workflow verification failed: ${error.message}\n`);
     process.exitCode = 1;
   }

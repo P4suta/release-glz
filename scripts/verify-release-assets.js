@@ -14,13 +14,22 @@ const MAX_ASSET_COUNT = 1024;
 const MAX_ASSET_NAME_LEN = 256;
 
 function safeAssetName(name) {
-  return typeof name === "string" && name.length > 0 && name.length <= MAX_ASSET_NAME_LEN &&
-    name !== "." && name !== ".." && !/[\\/\0\r\n]/.test(name);
+  return (
+    typeof name === "string" &&
+    name.length > 0 &&
+    name.length <= MAX_ASSET_NAME_LEN &&
+    name !== "." &&
+    name !== ".." &&
+    !/[\\/\0\r\n]/.test(name)
+  );
 }
 
 function validateInventory(expectedNames, release, requireComplete = false) {
-  if (!Array.isArray(expectedNames) || expectedNames.length === 0 ||
-      expectedNames.length > MAX_ASSET_COUNT) {
+  if (
+    !Array.isArray(expectedNames) ||
+    expectedNames.length === 0 ||
+    expectedNames.length > MAX_ASSET_COUNT
+  ) {
     throw new Error("expected release inventory is empty or excessive");
   }
   const expected = new Set();
@@ -30,8 +39,7 @@ function validateInventory(expectedNames, release, requireComplete = false) {
     }
     expected.add(name);
   }
-  if (!release || !Array.isArray(release.assets) ||
-      release.assets.length > MAX_ASSET_COUNT) {
+  if (!release || !Array.isArray(release.assets) || release.assets.length > MAX_ASSET_COUNT) {
     throw new Error("GitHub Release response has no bounded assets array");
   }
   const existing = new Set();
@@ -59,8 +67,11 @@ function expectedInventory(directory) {
     throw new Error("artifact inventory must be a real directory");
   }
   const entries = fs.readdirSync(directory, { withFileTypes: true });
-  if (entries.length === 0 || entries.length > MAX_ASSET_COUNT ||
-      entries.some((entry) => !entry.isFile())) {
+  if (
+    entries.length === 0 ||
+    entries.length > MAX_ASSET_COUNT ||
+    entries.some((entry) => !entry.isFile())
+  ) {
     throw new Error("artifact inventory must contain only bounded regular files");
   }
   return entries.map((entry) => entry.name).sort();
@@ -92,8 +103,12 @@ function readBoundedStdin(stream = process.stdin) {
 }
 
 function artifactsArgument(argv) {
-  if ((argv.length !== 2 && argv.length !== 3) || argv[0] !== "--artifacts" ||
-      !argv[1] || (argv.length === 3 && argv[2] !== "--complete")) {
+  if (
+    (argv.length !== 2 && argv.length !== 3) ||
+    argv[0] !== "--artifacts" ||
+    !argv[1] ||
+    (argv.length === 3 && argv[2] !== "--complete")
+  ) {
     throw new Error("usage: verify-release-assets.js --artifacts DIR [--complete]");
   }
   return argv[1];
@@ -108,7 +123,11 @@ async function main(argv = process.argv.slice(2)) {
   } catch {
     throw new Error("GitHub Release response is not valid JSON");
   }
-  validateInventory(expectedInventory(path.resolve(directory)), release, argv.includes("--complete"));
+  validateInventory(
+    expectedInventory(path.resolve(directory)),
+    release,
+    argv.includes("--complete"),
+  );
 }
 
 if (require.main === module) {
