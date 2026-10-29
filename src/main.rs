@@ -25,7 +25,7 @@ use release_glz::doctor::{
     DoctorInput, DoctorReport, assess as assess_doctor, assess_local as assess_doctor_local,
 };
 use release_glz::failure::{FailureClass, classified};
-use release_glz::forge::{GitHubClient, GitHubRepository, IntentBinding};
+use release_glz::forge::{CandidateRun, GitHubClient, GitHubRepository, IntentBinding};
 use release_glz::git::GitRepo;
 use release_glz::gleam::Gleam;
 use release_glz::handoff;
@@ -1554,12 +1554,12 @@ async fn approval_from_environment(
         .unwrap_or(&artifact_digest);
     let artifact_run_id = std::env::var("RELEASE_GLZ_ACTIONS_RUN_ID")
         .context("release approval requires the Candidate-generating Actions run ID")?;
-    if github_oidc.event_name() == "workflow_dispatch" && artifact_run_id == github_oidc.run_id() {
-        return Err(classified(
-            FailureClass::PolicyOrApproval,
-            "manual promotion must consume a Candidate from a completed prior prepare run",
-        ));
-    }
+    let candidate_run = CandidateRun::for_event(
+        github_oidc.event_name(),
+        github_oidc.run_id(),
+        &artifact_run_id,
+    )
+    .map_err(|error| classified(FailureClass::PolicyOrApproval, error))?;
     let repository = GitHubRepository::parse(&manifest.github_repository)?;
     let github = GitHubClient::from_environment(repository)
         .map_err(|error| classified(FailureClass::UsageOrConfig, error))?;
@@ -1569,6 +1569,7 @@ async fn approval_from_environment(
             artifact_digest,
             &artifact_run_id,
             &manifest.source.commit_sha,
+            candidate_run,
         )
         .await
         .context("release approval Actions artifact verification failed")?;
