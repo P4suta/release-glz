@@ -790,9 +790,6 @@ function emitEnvelope(envelope, environment, stdout = process.stdout) {
 }
 
 async function acquireBinary(environment = process.env) {
-  if (environment.RELEASE_GLZ_BINARY) {
-    return { binary: environment.RELEASE_GLZ_BINARY, cleanup: () => {} };
-  }
   const [target, extension] = targetFor();
   const inputVersion = environment.INPUT_VERSION || "";
   const version = normalizedVersion(inputVersion, environment.GITHUB_ACTION_REF);
@@ -851,10 +848,10 @@ async function acquireBinary(environment = process.env) {
   }
 }
 
-async function main(environment = process.env, stdout = process.stdout) {
+async function main(environment = process.env, stdout = process.stdout, acquire = acquireBinary) {
   const command = environment.INPUT_COMMAND;
   const args = buildCommandArgs(command, environment);
-  const acquired = await acquireBinary(environment);
+  const acquired = await acquire(environment);
   const controller = new AbortController();
   const cancel = () => controller.abort();
   process.once("SIGINT", cancel);
