@@ -30,6 +30,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Such a hook's output used to count as built-in evidence.
 - The files digest of a Release PR commit starts from a domain tag and puts a length before every path and content.
   Two different file sets could hash the same input before, and an open Release PR gets one rebuilt commit under the new digest.
+- A Release PR commit counts as generated only when the files it added or modified match the files digest its message records.
+  A maintainer's verified amend that kept the message used to count, so release-glz could adopt it or reset the branch over it.
+  It now takes the path for human work, and a failure to read a file from GitHub fails the run instead of closing the Release PR.
+- The Release PR commit writes only the rendered files that differ from the default branch tip, so its diff lists exactly the files its digest covers.
+  When the tip already holds every rendered file, `release-pr` writes no commit and reports `release_files_current`.
 - A registry `Retry-After` header can ask for at most one minute, so a response can no longer stall a run indefinitely.
 - Candidate verification checks each sealed file again through the handle it opened and reads at most one byte past the file's limit.
   A file swapped after the path check can no longer make verification read without bound.
