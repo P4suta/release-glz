@@ -25,7 +25,7 @@ use release_glz::doctor::{
     DoctorInput, DoctorReport, assess as assess_doctor, assess_local as assess_doctor_local,
 };
 use release_glz::failure::{FailureClass, classified};
-use release_glz::forge::{GitHubClient, GitHubRepository};
+use release_glz::forge::{GitHubClient, GitHubRepository, IntentBinding};
 use release_glz::git::GitRepo;
 use release_glz::gleam::Gleam;
 use release_glz::handoff;
@@ -577,34 +577,37 @@ async fn run(cli: Cli) -> Result<i32> {
                     .map_err(|error| {
                         default_failure_class(error, FailureClass::TemporaryExternal)
                     })?;
-                let (state, pr_url) = if let Some(pull) = merged {
-                    (ReleaseState::AwaitingApproval, Some(pull.html_url))
-                } else if dry_run {
-                    (ReleaseState::Blocked, None)
-                } else {
+                let (state, binding, pr_url) = if let Some(pull) = merged {
                     (
-                        ReleaseState::Planned,
-                        Some(
-                            github
-                                .bind_release_pr_intent(
-                                    &sealed.source.commit_sha,
-                                    &sealed.package,
-                                    &sealed.version.to_string(),
-                                    &sealed.release_branch_prefix,
-                                    &sealed.intent_digest,
-                                )
-                                .await
-                                .map_err(|error| {
-                                    default_failure_class(error, FailureClass::TemporaryExternal)
-                                })?,
-                        ),
+                        ReleaseState::AwaitingApproval,
+                        "merged",
+                        Some(pull.html_url),
                     )
+                } else if dry_run {
+                    (ReleaseState::Blocked, "unbound", None)
+                } else {
+                    match github
+                        .bind_release_pr_intent(
+                            &sealed.source.commit_sha,
+                            &sealed.package,
+                            &sealed.version.to_string(),
+                            &sealed.release_branch_prefix,
+                            &sealed.intent_digest,
+                        )
+                        .await
+                        .map_err(|error| {
+                            default_failure_class(error, FailureClass::TemporaryExternal)
+                        })? {
+                        IntentBinding::Bound { url } => (ReleaseState::Planned, "bound", Some(url)),
+                        IntentBinding::Superseded => (ReleaseState::Planned, "superseded", None),
+                    }
                 };
                 print_result(
                     command_name,
                     &serde_json::json!({
                         "schema": "release-pr-intent/v1",
                         "state": state,
+                        "intent_binding": binding,
                         "version": sealed.version,
                         "intent_digest": sealed.intent_digest,
                         "candidate_digest": sealed.candidate_digest,

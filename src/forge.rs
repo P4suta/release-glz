@@ -186,6 +186,18 @@ impl PullRequest {
     }
 }
 
+/// What binding a Candidate intent to the rolling Release PR did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IntentBinding {
+    /// The open Release PR at the Candidate head carries the intent.
+    Bound {
+        /// Page of the Release PR.
+        url: String,
+    },
+    /// No open managed Release PR has the Candidate head, because a newer head replaced it; nothing was written.
+    Superseded,
+}
+
 /// What one rolling Release PR update left behind.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReleasePrUpdate {
@@ -967,9 +979,10 @@ impl GitHubClient {
         Ok(None)
     }
 
-    /// Record the intent digest on the managed Release PR.
+    /// Record the intent digest on the managed Release PR whose head is `head_sha`.
     ///
     /// Approval is bound to that digest, so a plan that changes afterwards can no longer claim the review the pull request carries.
+    /// When no open managed Release PR for the package has that head, a newer head replaced it, and nothing is written.
     pub async fn bind_release_pr_intent(
         &self,
         head_sha: &str,
@@ -977,27 +990,32 @@ impl GitHubClient {
         version: &str,
         branch_prefix: &str,
         intent_digest: &str,
-    ) -> Result<String> {
+    ) -> Result<IntentBinding> {
         self.require_token()?;
         if !valid_sha256(intent_digest) {
             bail!("Candidate intent digest is not a lowercase SHA-256 digest");
         }
         let pulls = self.open_pull_requests().await?;
         for pull in pulls {
+            if pull.head.sha != head_sha
+                || !pull.is_internal_to(&self.repository)
+                || !pull.head.branch.starts_with(branch_prefix)
+            {
+                continue;
+            }
             let Some(mut marker) = pull.body.as_deref().and_then(parse_marker) else {
                 continue;
             };
-            let structurally_valid = pull.is_internal_to(&self.repository)
-                && marker.package == package
-                && marker.version == version
+            if marker.package != package {
+                continue;
+            }
+            let describes_candidate = marker.version == version
                 && marker.branch == pull.head.branch
                 && marker.head == pull.head.sha
-                && marker.head == head_sha
-                && pull.head.branch.starts_with(branch_prefix)
                 && pull.merged_at.is_none()
                 && pull.merge_commit_sha.is_none();
-            if !structurally_valid {
-                continue;
+            if !describes_candidate {
+                bail!("the managed Release PR at the Candidate head describes another release");
             }
             if self.generated_commit_digest(head_sha).await?.as_deref()
                 != Some(marker.digest.as_str())
@@ -1006,7 +1024,7 @@ impl GitHubClient {
             }
             if let Some(existing) = &marker.intent_digest {
                 if existing == intent_digest {
-                    return Ok(pull.html_url);
+                    return Ok(IntentBinding::Bound { url: pull.html_url });
                 }
                 bail!("managed Release PR is already bound to a different Candidate intent");
             }
@@ -1023,9 +1041,11 @@ impl GitHubClient {
                     &serde_json::json!({"body": body}),
                 )
                 .await?;
-            return Ok(updated.html_url);
+            return Ok(IntentBinding::Bound {
+                url: updated.html_url,
+            });
         }
-        bail!("no matching open verified managed Release PR exists for this Candidate")
+        Ok(IntentBinding::Superseded)
     }
 
     async fn open_pull_requests(&self) -> Result<Vec<PullRequest>> {
