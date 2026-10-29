@@ -25,7 +25,9 @@ use release_glz::doctor::{
     DoctorInput, DoctorReport, assess as assess_doctor, assess_local as assess_doctor_local,
 };
 use release_glz::failure::{FailureClass, classified};
-use release_glz::forge::{CandidateRun, GitHubClient, GitHubRepository, IntentBinding};
+use release_glz::forge::{
+    CandidateRun, GitHubClient, GitHubRepository, IntentBinding, MAX_ATTRIBUTED_COMMITS,
+};
 use release_glz::git::GitRepo;
 use release_glz::gleam::Gleam;
 use release_glz::handoff;
@@ -1418,6 +1420,17 @@ async fn write_rolling_release_pr(
     }
     if plan.release_required {
         let commits = repo.commits_since(plan.baseline.sha.as_deref())?;
+        if commits.len() > MAX_ATTRIBUTED_COMMITS {
+            plan.warnings.push(Diagnostic {
+                code: "changes_listed_by_commit".into(),
+                level: DiagnosticLevel::Warning,
+                message: format!(
+                    "{} commits since the baseline exceed the {MAX_ATTRIBUTED_COMMITS} whose pull requests release-glz looks up, so the changelog lists them by commit subject",
+                    commits.len()
+                ),
+                detail: None,
+            });
+        }
         plan.changes = github
             .changes_for_commits(&commits)
             .await
