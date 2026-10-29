@@ -50,6 +50,8 @@ const MAX_GITHUB_JSON_BYTES: usize = 4 * 1024 * 1024;
 const MAX_GITHUB_ERROR_BYTES: usize = 64 * 1024;
 const GITHUB_GET_ATTEMPTS: usize = 3;
 const OPEN_PULL_REQUEST_PAGE_SIZE: usize = 100;
+/// The object ID that a ref update moves a branch to in order to delete it.
+const NULL_OBJECT_ID: &str = "0000000000000000000000000000000000000000";
 const MAX_OPEN_PULL_REQUEST_PAGES: usize = 100;
 
 /// Characters a GitHub repository name may have.
@@ -1000,10 +1002,13 @@ impl GitHubClient {
     }
 
     /// Close the managed Release PR and remove its unchanged branch.
+    ///
+    /// The branch is deleted only while it still holds the verified generated commit, so a commit pushed after the check stays, and the pull request stays open.
     pub async fn close_managed_release_pr(
         &self,
         package: &str,
         branch_prefix: &str,
+        base: &DefaultBranch,
     ) -> Result<bool> {
         self.require_token()?;
         let pulls = self.open_pull_requests().await?;
@@ -1028,15 +1033,18 @@ impl GitHubClient {
             {
                 continue;
             }
+            self.update_ref(
+                "delete the Release PR branch",
+                base,
+                &marker.branch,
+                &actual,
+                NULL_OBJECT_ID,
+            )
+            .await?;
             self.patch_empty(
                 &format!("pulls/{}", pull.number),
                 &serde_json::json!({"state": "closed"}),
             )
-            .await?;
-            self.delete_empty(&format!(
-                "git/refs/heads/{}",
-                encode_segment(&marker.branch)
-            ))
             .await?;
             return Ok(true);
         }
@@ -1160,6 +1168,16 @@ impl GitHubClient {
                     .context("managed Release PR has no body")?,
                 &marker,
             )?;
+            // The Release PR update serializes in another group, so a newer run may have rewritten the pull request since the list was read.
+            let current: PullRequest = self.get(&format!("pulls/{}", pull.number)).await?;
+            if current.head.sha != pull.head.sha {
+                return Ok(IntentBinding::Superseded);
+            }
+            if current.body != pull.body {
+                bail!(
+                    "the managed Release PR changed while its intent was being bound; the next run binds it"
+                );
+            }
             let updated: PullRequest = self
                 .patch(
                     &format!("pulls/{}", pull.number),
@@ -1460,22 +1478,34 @@ impl GitHubClient {
     ///
     /// The compare-and-swap keeps a commit that someone pushed after `from` was verified.
     async fn reset_branch(&self, base: &DefaultBranch, branch: &str, from: &str) -> Result<()> {
+        self.update_ref("reset the Release PR branch", base, branch, from, &base.tip)
+            .await
+    }
+
+    /// Move `branch` from `from` to `to`, where the null object ID deletes it, failing when the branch no longer holds `from`.
+    async fn update_ref(
+        &self,
+        purpose: &str,
+        base: &DefaultBranch,
+        branch: &str,
+        from: &str,
+        to: &str,
+    ) -> Result<()> {
         let body = serde_json::json!({
-            "query": "mutation ResetReleaseBranch($input: UpdateRefsInput!) { updateRefs(input: $input) { clientMutationId } }",
+            "query": "mutation UpdateReleaseBranch($input: UpdateRefsInput!) { updateRefs(input: $input) { clientMutationId } }",
             "variables": {
                 "input": {
                     "repositoryId": base.repository_id,
                     "refUpdates": [{
                         "name": format!("refs/heads/{branch}"),
                         "beforeOid": from,
-                        "afterOid": base.tip,
+                        "afterOid": to,
                         "force": true
                     }]
                 }
             }
         });
-        self.graphql::<serde_json::Value>("reset the Release PR branch", &body)
-            .await?;
+        self.graphql::<serde_json::Value>(purpose, &body).await?;
         Ok(())
     }
 
@@ -1625,12 +1655,6 @@ impl GitHubClient {
 
     async fn patch_empty<B: Serialize + ?Sized>(&self, path: &str, body: &B) -> Result<()> {
         let _: serde_json::Value = self.send_json(Method::PATCH, path, Some(body)).await?;
-        Ok(())
-    }
-
-    async fn delete_empty(&self, path: &str) -> Result<()> {
-        let url = self.url(path);
-        checked(self.request(Method::DELETE, &url).send().await?, &url).await?;
         Ok(())
     }
 

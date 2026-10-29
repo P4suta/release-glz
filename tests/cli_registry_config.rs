@@ -364,8 +364,11 @@ fn release_pr_closes_a_stale_verified_managed_pr_when_no_release_is_required() {
             )
             .as_bytes(),
         ),
+        http_response(
+            200,
+            br#"{"data":{"updateRefs":{"clientMutationId":null}},"errors":[]}"#,
+        ),
         http_response(200, b"{}"),
-        http_response(204, b""),
     ];
     let (github_requests, github_server) = serve_recording(github_listener, github_responses);
 
@@ -399,12 +402,12 @@ fn release_pr_closes_a_stale_verified_managed_pr_when_no_release_is_required() {
     assert!(
         github_requests[2].starts_with("GET /repos/acme/widget/pulls?state=open&per_page=100 ")
     );
-    assert!(github_requests[5].starts_with("PATCH /repos/acme/widget/pulls/7 "));
-    assert!(github_requests[5].contains("\"state\":\"closed\""));
-    assert!(
-        github_requests[6]
-            .starts_with("DELETE /repos/acme/widget/git/refs/heads/release-glz%2Fwidget ")
-    );
+    assert!(github_requests[5].starts_with("POST /graphql "));
+    assert!(github_requests[5].contains("updateRefs("));
+    assert!(github_requests[5].contains(&format!("\"beforeOid\":\"{head}\"")));
+    assert!(github_requests[5].contains(&format!("\"afterOid\":\"{}\"", "0".repeat(40))));
+    assert!(github_requests[6].starts_with("PATCH /repos/acme/widget/pulls/7 "));
+    assert!(github_requests[6].contains("\"state\":\"closed\""));
     let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(envelope["result"]["state"], "up_to_date");
 }
