@@ -603,6 +603,58 @@ fn publication_refuses_a_checkout_at_another_commit() {
 }
 
 #[test]
+fn a_candidate_path_that_is_not_a_directory_is_a_usage_error() {
+    let temp = tempfile::tempdir().unwrap();
+    let missing = temp.path().join("missing");
+    for arguments in [
+        vec!["verify", "--candidate"],
+        vec!["status", "--candidate"],
+        vec!["release", "--dry-run", "--candidate"],
+    ] {
+        let output = isolated_command(env!("CARGO_BIN_EXE_release-glz"))
+            .current_dir(temp.path())
+            .args(["--output", "json"])
+            .args(&arguments)
+            .arg(&missing)
+            .output()
+            .unwrap();
+        let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        let message = envelope["diagnostics"][0]["message"].as_str().unwrap();
+        assert_eq!(output.status.code(), Some(2), "{arguments:?}: {message}");
+        assert_eq!(envelope["diagnostics"][0]["code"], "usage_or_config");
+        assert!(
+            message.contains(&missing.display().to_string()),
+            "{arguments:?}: {message}"
+        );
+    }
+}
+
+#[test]
+fn offline_candidate_commands_need_no_manifest_in_the_working_directory() {
+    let temp = tempfile::tempdir().unwrap();
+    let candidate = temp.path().join("candidate");
+    Candidate::seal(&candidate, fresh_candidate_input()).unwrap();
+    let elsewhere = temp.path().join("elsewhere");
+    fs::create_dir(&elsewhere).unwrap();
+    for command in ["verify", "status"] {
+        let output = isolated_command(env!("CARGO_BIN_EXE_release-glz"))
+            .current_dir(&elsewhere)
+            .args(["--output", "json", command, "--candidate"])
+            .arg(&candidate)
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{command}: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(envelope["ok"], true, "{command}");
+    }
+}
+
+#[test]
 fn release_refuses_a_forged_candidate_before_it_needs_any_token() {
     let temp = tempfile::tempdir().unwrap();
     let (repository, sha) = policy_repository(temp.path());

@@ -61,6 +61,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A `--candidate` path that isn't a directory exits 2 as a usage error instead of 4 as a conflict.
+  Offline `verify --candidate` and `status --candidate` no longer need a manifest in the working directory, and the exit code table describes partial releases and inspection commands.
 - Publication after a merged Release PR can succeed.
   The push run's publish job consumes the Candidate that its own `prepare` job uploaded.
   The artifact check had required that run to have completed, which it can't have while it publishes.

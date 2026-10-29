@@ -314,6 +314,11 @@ Exit code meanings are stable:
 | 6 | Hook failure |
 | 7 | Partial release requiring resume |
 
+A release run that stops after it published part of a release exits 7 whatever stopped it, including a required notify hook that fails after publication.
+Inspection commands, `status`, `verify --online`, and `release --dry-run`, exit 0 whenever they can report a state, and that `state` names what remains.
+A `--candidate` path that isn't a directory exits 2, and only a Candidate that fails its own checks exits 4.
+Offline `verify --candidate` and `status --candidate` read only the Candidate, so they need no manifest in the working directory.
+
 The Action parses the same envelope even after a non-zero CLI exit, preserves its diagnostics, next action, and original exit code, and exposes `state`, `release-required`, `version`, `intent-digest`, `candidate-digest`, `pr-url`, `release-pr-head`, `intent-binding`, `hex-url`, `github-release-url`, and `next-action`.
 `next-action-argv` is the JSON-encoded canonical argv array.
 The Action's `plan-file` input becomes `plan --out` or `release-pr --plan`, and no other command accepts it.
