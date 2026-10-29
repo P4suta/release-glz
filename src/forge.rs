@@ -54,6 +54,11 @@ const OPEN_PULL_REQUEST_PAGE_SIZE: usize = 100;
 const NULL_OBJECT_ID: &str = "0000000000000000000000000000000000000000";
 const MAX_OPEN_PULL_REQUEST_PAGES: usize = 100;
 
+/// Commits whose pull requests one Release PR update looks up, which bounds its API requests on a long history.
+///
+/// A release normally holds far fewer, and a first release over a long history lists its commits by subject instead.
+pub const MAX_ATTRIBUTED_COMMITS: usize = 200;
+
 /// Characters a GitHub repository name may have.
 const MAX_NAME_LEN: usize = 100;
 
@@ -686,7 +691,12 @@ impl GitHubClient {
     }
 
     /// Collect the change entries for a range of commits.
+    ///
+    /// Over [`MAX_ATTRIBUTED_COMMITS`] commits, every entry comes from its commit subject without a lookup.
     pub async fn changes_for_commits(&self, commits: &[Commit]) -> Result<Vec<ChangeEntry>> {
+        if commits.len() > MAX_ATTRIBUTED_COMMITS {
+            return Ok(commits.iter().map(commit_change).collect());
+        }
         let mut seen = BTreeSet::new();
         let mut output = Vec::new();
         for commit in commits {
@@ -704,14 +714,7 @@ impl GitHubClient {
                     });
                 }
             } else {
-                output.push(ChangeEntry {
-                    category: default_category(&commit.subject),
-                    title: commit.subject.clone(),
-                    pull_request: None,
-                    author: Some(commit.author_name.clone()),
-                    url: None,
-                    labels: vec![],
-                });
+                output.push(commit_change(commit));
             }
         }
         Ok(output)
@@ -831,9 +834,18 @@ impl GitHubClient {
         #[derive(Deserialize)]
         struct RepositoryNode {
             node_id: String,
+            full_name: String,
             default_branch: String,
         }
         let repository: RepositoryNode = self.get("").await?;
+        // GitHub resolves a slug in any letter case, but OIDC and the Actions run checks compare it exactly, so a difference would fail only at publication.
+        if repository.full_name != self.repository.full_name() {
+            bail!(
+                "the configured repository `{}` differs from GitHub's `{}`; use GitHub's spelling",
+                self.repository.full_name(),
+                repository.full_name
+            );
+        }
         let tip = self
             .ref_sha(&repository.default_branch)
             .await?
@@ -1820,6 +1832,18 @@ fn retryable_status(status: StatusCode) -> bool {
             | StatusCode::SERVICE_UNAVAILABLE
             | StatusCode::GATEWAY_TIMEOUT
     )
+}
+
+/// The change entry of a commit that no merged pull request describes.
+fn commit_change(commit: &Commit) -> ChangeEntry {
+    ChangeEntry {
+        category: default_category(&commit.subject),
+        title: commit.subject.clone(),
+        pull_request: None,
+        author: Some(commit.author_name.clone()),
+        url: None,
+        labels: vec![],
+    }
 }
 
 fn files_digest(files: &BTreeMap<String, Vec<u8>>) -> String {
