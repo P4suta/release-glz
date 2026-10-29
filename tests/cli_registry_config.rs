@@ -971,7 +971,8 @@ struct HttpResponse {
 }
 
 /// The GitHub repository of the fixture package, whose default branch is `main`.
-const REPOSITORY: &str = r#"{"node_id":"R_widget","full_name":"acme/widget","default_branch":"main","private":false}"#;
+const REPOSITORY: &str =
+    r#"{"node_id":"R_widget","full_name":"acme/widget","default_branch":"main","private":false}"#;
 
 fn http_response(status: u16, body: &[u8]) -> HttpResponse {
     HttpResponse {
