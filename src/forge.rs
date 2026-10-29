@@ -53,6 +53,12 @@ const OPEN_PULL_REQUEST_PAGE_SIZE: usize = 100;
 /// The tag that starts every files digest, so no other SHA-256 input that release-glz hashes can match one.
 const FILES_DIGEST_DOMAIN: &[u8] = b"release-glz release-pr-files\0";
 
+/// Files a generated commit changes at most, which bounds the blobs that recognizing one reads.
+const MAX_GENERATED_FILES: usize = 2;
+
+/// Bytes a file in a generated commit may hold, so its base64 blob fits in one bounded GitHub response.
+const MAX_GENERATED_FILE_BYTES: usize = 2 * 1024 * 1024;
+
 /// The object ID that a ref update moves a branch to in order to delete it.
 const NULL_OBJECT_ID: &str = "0000000000000000000000000000000000000000";
 const MAX_OPEN_PULL_REQUEST_PAGES: usize = 100;
@@ -630,15 +636,35 @@ impl std::fmt::Debug for GitHubClient {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-struct GitCommitResponse {
+struct CommitResponse {
+    commit: CommitDetails,
+    parents: Vec<GitObject>,
+    files: Vec<CommitFile>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct CommitDetails {
     message: String,
     verification: CommitVerification,
-    parents: Vec<GitObject>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 struct CommitVerification {
     verified: bool,
+}
+
+/// One file that a commit changed relative to its parent.
+#[derive(Debug, Clone, Deserialize)]
+struct CommitFile {
+    filename: String,
+    status: String,
+    sha: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct BlobResponse {
+    content: String,
+    encoding: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -877,6 +903,18 @@ impl GitHubClient {
         files: &BTreeMap<String, Vec<u8>>,
     ) -> Result<ReleasePrUpdate> {
         self.require_token()?;
+        // A commit outside the bounds that recognize a generated commit would count as human on the next run.
+        if files.is_empty() || files.len() > MAX_GENERATED_FILES {
+            bail!(
+                "a Release PR commit changes 1 to {MAX_GENERATED_FILES} files, not {}",
+                files.len()
+            );
+        }
+        if let Some(path) = files.iter().find_map(|(path, contents)| {
+            (contents.len() > MAX_GENERATED_FILE_BYTES).then_some(path)
+        }) {
+            bail!("Release PR file `{path}` exceeds 2 MiB");
+        }
         let digest = files_digest(files);
         let pulls = self.open_pull_requests().await?;
         // A pull request that only copies the marker names a branch other than its own, and closing it would close someone else's work.
@@ -1550,25 +1588,69 @@ impl GitHubClient {
     /// The digest and parent of a commit that release-glz created, or `None` for any other commit.
     ///
     /// A generated commit is server-verified and has exactly one parent, since a merge commit could bring in other work.
+    /// It only adds or modifies files, and the files digest of their contents equals the digest its message records, so an amended commit that keeps the message doesn't count.
+    /// A failure to read a file is an error rather than `None`, because `None` leads a caller to close the Release PR.
     async fn generated_commit(&self, sha: &str) -> Result<Option<GeneratedCommit>> {
-        let commit: GitCommitResponse = self.get(&format!("git/commits/{sha}")).await?;
+        let commit: CommitResponse = self.get(&format!("commits/{sha}")).await?;
         let [parent] = commit.parents.as_slice() else {
             return Ok(None);
         };
-        if !commit.verification.verified {
+        if !commit.commit.verification.verified {
             return Ok(None);
         }
-        Ok(commit
-            .message
-            .lines()
-            .find_map(|line| {
-                line.strip_prefix("release-glz-digest: ")
-                    .filter(|digest| valid_sha256(digest))
-            })
-            .map(|digest| GeneratedCommit {
-                digest: digest.to_owned(),
-                parent: parent.sha.clone(),
-            }))
+        let Some(digest) = commit.commit.message.lines().find_map(|line| {
+            line.strip_prefix("release-glz-digest: ")
+                .filter(|digest| valid_sha256(digest))
+        }) else {
+            return Ok(None);
+        };
+        if commit.files.len() > MAX_GENERATED_FILES {
+            return Ok(None);
+        }
+        let mut blobs = BTreeMap::new();
+        for file in &commit.files {
+            let blob = match (file.status.as_str(), file.sha.as_deref()) {
+                ("added" | "modified", Some(blob)) if valid_object_id(blob) => blob,
+                _ => return Ok(None),
+            };
+            if blobs.insert(file.filename.as_str(), blob).is_some() {
+                return Ok(None);
+            }
+        }
+        let mut files = BTreeMap::new();
+        for (path, blob) in blobs {
+            let contents = self.blob(blob).await?;
+            if contents.len() > MAX_GENERATED_FILE_BYTES {
+                return Ok(None);
+            }
+            files.insert(path.to_owned(), contents);
+        }
+        if files_digest(&files) != digest {
+            return Ok(None);
+        }
+        Ok(Some(GeneratedCommit {
+            digest: digest.to_owned(),
+            parent: parent.sha.clone(),
+        }))
+    }
+
+    /// The bytes of a blob, which GitHub sends as base64 broken into lines.
+    async fn blob(&self, sha: &str) -> Result<Vec<u8>> {
+        let blob: BlobResponse = self.get(&format!("git/blobs/{sha}")).await?;
+        if blob.encoding != "base64" {
+            bail!(
+                "GitHub sent blob {sha} as `{}` instead of base64",
+                blob.encoding
+            );
+        }
+        let content = blob
+            .content
+            .bytes()
+            .filter(|byte| !byte.is_ascii_whitespace())
+            .collect::<Vec<_>>();
+        base64::engine::general_purpose::STANDARD
+            .decode(content)
+            .with_context(|| format!("GitHub sent blob {sha} with invalid base64 content"))
     }
 
     fn require_token(&self) -> Result<()> {

@@ -34,7 +34,7 @@ use release_glz::handoff;
 use release_glz::model::{
     Diagnostic, DiagnosticLevel, NextAction, PrereleaseChannel, ReleaseState,
 };
-use release_glz::planner::{PlanOptions, Planner, prepare_release_files};
+use release_glz::planner::{PlanOptions, Planner, release_commit_changes};
 use release_glz::reconciler::ApprovalEvidence;
 use release_glz::registry::{HexRegistry, RegistryCredentialAudit};
 use release_glz::rehearse::{Rehearsal, RehearseOptions};
@@ -1429,8 +1429,18 @@ async fn write_rolling_release_pr(
             .changes_for_commits(&commits)
             .await
             .map_err(|error| default_failure_class(error, FailureClass::TemporaryExternal))?;
-        let files = prepare_release_files(&manifest, &repo, &plan, &plan.changes)?;
-        if let Some(base) = &base {
+        let files = release_commit_changes(&manifest, &repo, &plan, &plan.changes)?;
+        if files.is_empty() {
+            plan.warnings.push(Diagnostic {
+                code: "release_files_current".into(),
+                level: DiagnosticLevel::Warning,
+                message: format!(
+                    "the checkout already holds the release files for {} {}, so a Release PR commit would change nothing",
+                    plan.package, plan.version
+                ),
+                detail: None,
+            });
+        } else if let Some(base) = &base {
             let update = github
                 .upsert_release_pr(&plan, base, &manifest.release.release_branch_prefix, &files)
                 .await

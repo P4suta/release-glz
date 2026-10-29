@@ -870,6 +870,24 @@ pub fn prepare_release_files(
     ]))
 }
 
+/// Render the files that a Release PR commit on top of `HEAD` changes.
+///
+/// A rendered file whose bytes equal its blob at `HEAD` drops out, so the commit's diff against its parent lists exactly these files, which its digest covers.
+pub fn release_commit_changes(
+    manifest: &Manifest,
+    repo: &GitRepo,
+    plan: &ReleasePlan,
+    entries: &[ChangeEntry],
+) -> Result<BTreeMap<String, Vec<u8>>> {
+    let mut changes = BTreeMap::new();
+    for (path, contents) in prepare_release_files(manifest, repo, plan, entries)? {
+        if repo.head_blob(&path)?.as_deref() != Some(contents.as_slice()) {
+            changes.insert(path, contents);
+        }
+    }
+    Ok(changes)
+}
+
 /// Write those same files into the working tree, skipping unchanged ones.
 pub fn update_local(manifest: &mut Manifest, plan: &ReleasePlan) -> Result<Vec<PathBuf>> {
     let repo = GitRepo::discover(manifest.package_dir())?;
