@@ -13,9 +13,9 @@ anyhow = "1.0.104"
 libfuzzer-sys = "0.4.13"
 release-glz = { path = ".." }
 semver = "1.0.28"
-serde_json = "1.0.149"
+serde_json = "1.0.154"
 sha2 = "0.11.0"
-toml_edit = { version = "0.25.13", features = ["serde"] }
+toml_edit = { version = "0.25.17", features = ["serde"] }
 
 [[bin]]
 name = "archive"
