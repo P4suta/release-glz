@@ -991,7 +991,7 @@ impl GitHubClient {
         Ok(false)
     }
 
-    /// The merged Release PR that introduced a commit, if it was managed.
+    /// The merged Release PR that introduced a commit, if it was managed and carries `intent_digest`.
     pub async fn merged_release_pr_for_head(
         &self,
         sha: &str,
@@ -999,6 +999,32 @@ impl GitHubClient {
         version: &str,
         branch_prefix: &str,
         intent_digest: &str,
+    ) -> Result<Option<PullRequest>> {
+        self.merged_managed_release_pr(sha, package, version, branch_prefix, Some(intent_digest))
+            .await
+    }
+
+    /// The managed Release PR for `version` whose merge produced `sha`, whatever intent it carries.
+    ///
+    /// The push of that merge commit waits for publication, so it must not open another Release PR for the same version.
+    pub async fn merged_release_pr_at(
+        &self,
+        sha: &str,
+        package: &str,
+        version: &str,
+        branch_prefix: &str,
+    ) -> Result<Option<PullRequest>> {
+        self.merged_managed_release_pr(sha, package, version, branch_prefix, None)
+            .await
+    }
+
+    async fn merged_managed_release_pr(
+        &self,
+        sha: &str,
+        package: &str,
+        version: &str,
+        branch_prefix: &str,
+        intent_digest: Option<&str>,
     ) -> Result<Option<PullRequest>> {
         let pulls: Vec<PullRequest> = self.get(&format!("commits/{sha}/pulls")).await?;
         for pull in pulls {
@@ -1013,7 +1039,8 @@ impl GitHubClient {
                 && marker.branch == pull.head.branch
                 && marker.head == pull.head.sha
                 && pull.head.branch.starts_with(branch_prefix)
-                && marker.intent_digest.as_deref() == Some(intent_digest);
+                && intent_digest
+                    .is_none_or(|intent| marker.intent_digest.as_deref() == Some(intent));
             if !structurally_valid {
                 continue;
             }
