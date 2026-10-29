@@ -1,6 +1,5 @@
 use std::fs;
 use std::path::Path;
-use std::process::Command;
 
 use anyhow::{Result, bail};
 use async_trait::async_trait;
@@ -14,7 +13,13 @@ use release_glz::model::{
 };
 use release_glz::planner::{PlanOptions, Planner, prepare_release_files, update_local};
 use release_glz::registry::{HexRelease, PackageState, Registry};
+use release_glz_test_support::require_gleam;
 use semver::Version;
+
+/// A planner that writes no baseline cache unless a test names one, so no run touches the user's cache directory.
+fn uncached_planner<R: Registry>(registry: R, gleam: Gleam) -> Planner<R> {
+    Planner::new(registry, gleam).with_baseline_cache_dir(None)
+}
 
 #[derive(Clone)]
 struct MockRegistry {
@@ -75,17 +80,14 @@ impl Registry for ExistingRegistry {
 #[tokio::test]
 async fn initial_plan_covers_empty_registry_version_floor_and_prerelease_train_edges() -> Result<()>
 {
-    if Command::new("gleam").arg("--version").output().is_err() {
-        eprintln!("skipping Gleam smoke test because gleam is not installed");
-        return Ok(());
-    }
+    require_gleam();
     let temp = tempfile::tempdir()?;
     let package = temp.path();
     init_gleam_fixture(package, "initial_fixture", "1.0.0")?;
     let manifest_path = package.join("gleam.toml");
 
     for empty_package in [false, true] {
-        let planner = Planner::new(InitialRegistry { empty_package }, Gleam::default());
+        let planner = uncached_planner(InitialRegistry { empty_package }, Gleam::default());
         let plan = planner
             .plan(&PlanOptions {
                 manifest_path: manifest_path.clone(),
@@ -97,7 +99,7 @@ async fn initial_plan_covers_empty_registry_version_floor_and_prerelease_train_e
         assert_eq!(plan.reasons[0].kind, ReasonKind::InitialRelease);
     }
 
-    let planner = Planner::new(
+    let planner = uncached_planner(
         InitialRegistry {
             empty_package: false,
         },
@@ -151,10 +153,7 @@ async fn initial_plan_covers_empty_registry_version_floor_and_prerelease_train_e
 #[tokio::test]
 async fn unchanged_existing_release_is_noop_but_explicit_train_and_retirement_are_reported()
 -> Result<()> {
-    if Command::new("gleam").arg("--version").output().is_err() {
-        eprintln!("skipping Gleam smoke test because gleam is not installed");
-        return Ok(());
-    }
+    require_gleam();
     let temp = tempfile::tempdir()?;
     let package = temp.path();
     init_gleam_fixture(package, "noop_fixture", "1.0.0")?;
@@ -172,7 +171,7 @@ async fn unchanged_existing_release_is_noop_but_explicit_train_and_retirement_ar
         retired,
     };
 
-    let plan = Planner::new(registry(false), gleam.clone())
+    let plan = uncached_planner(registry(false), gleam.clone())
         .plan(&PlanOptions {
             manifest_path: manifest_path.clone(),
             ..PlanOptions::default()
@@ -184,7 +183,7 @@ async fn unchanged_existing_release_is_noop_but_explicit_train_and_retirement_ar
     assert!(plan.required_approvals.is_empty());
     assert!(plan.stages.is_empty());
 
-    let explicit = Planner::new(registry(false), gleam.clone())
+    let explicit = uncached_planner(registry(false), gleam.clone())
         .plan(&PlanOptions {
             manifest_path: manifest_path.clone(),
             version_override: Some(Version::new(1, 0, 1)),
@@ -200,7 +199,7 @@ async fn unchanged_existing_release_is_noop_but_explicit_train_and_retirement_ar
             .any(|reason| reason.kind == ReasonKind::ExplicitVersion)
     );
 
-    let alpha = Planner::new(registry(false), gleam.clone())
+    let alpha = uncached_planner(registry(false), gleam.clone())
         .plan(&PlanOptions {
             manifest_path: manifest_path.clone(),
             prerelease_override: Some(Some(PrereleaseChannel::Alpha)),
@@ -215,7 +214,7 @@ async fn unchanged_existing_release_is_noop_but_explicit_train_and_retirement_ar
             .any(|reason| reason.kind == ReasonKind::Prerelease)
     );
 
-    let retired = Planner::new(registry(true), gleam.clone())
+    let retired = uncached_planner(registry(true), gleam.clone())
         .plan(&PlanOptions {
             manifest_path: manifest_path.clone(),
             ..PlanOptions::default()
@@ -229,7 +228,7 @@ async fn unchanged_existing_release_is_noop_but_explicit_train_and_retirement_ar
             .any(|reason| reason.kind == ReasonKind::RetiredBaseline)
     );
 
-    let behind = Planner::new(
+    let behind = uncached_planner(
         ExistingRegistry {
             version: Version::new(1, 1, 0),
             source,
@@ -252,10 +251,7 @@ async fn unchanged_existing_release_is_noop_but_explicit_train_and_retirement_ar
 #[tokio::test]
 async fn existing_prerelease_trains_move_forward_promote_and_reject_backward_core_reuse()
 -> Result<()> {
-    if Command::new("gleam").arg("--version").output().is_err() {
-        eprintln!("skipping Gleam smoke test because gleam is not installed");
-        return Ok(());
-    }
+    require_gleam();
     let temp = tempfile::tempdir()?;
     let package = temp.path();
     init_gleam_fixture(package, "train_fixture", "1.1.0-rc.1")?;
@@ -274,7 +270,7 @@ async fn existing_prerelease_trains_move_forward_promote_and_reject_backward_cor
         retired: false,
     };
 
-    let promoted = Planner::new(registry("1.1.0-rc.1".parse()?), gleam.clone())
+    let promoted = uncached_planner(registry("1.1.0-rc.1".parse()?), gleam.clone())
         .plan(&PlanOptions {
             manifest_path: manifest_path.clone(),
             prerelease_override: Some(None),
@@ -283,7 +279,7 @@ async fn existing_prerelease_trains_move_forward_promote_and_reject_backward_cor
         .await?;
     assert_eq!(promoted.version, Version::new(1, 1, 0));
 
-    let same = Planner::new(registry("1.1.0-rc.1".parse()?), gleam.clone())
+    let same = uncached_planner(registry("1.1.0-rc.1".parse()?), gleam.clone())
         .plan(&PlanOptions {
             manifest_path: manifest_path.clone(),
             prerelease_override: Some(Some(PrereleaseChannel::Rc)),
@@ -293,7 +289,7 @@ async fn existing_prerelease_trains_move_forward_promote_and_reject_backward_cor
     assert_eq!(same.state, ReleaseState::UpToDate);
     assert_eq!(same.version.to_string(), "1.1.0-rc.1");
 
-    let backward = Planner::new(registry("1.1.0-rc.1".parse()?), gleam.clone())
+    let backward = uncached_planner(registry("1.1.0-rc.1".parse()?), gleam.clone())
         .plan(&PlanOptions {
             manifest_path: manifest_path.clone(),
             prerelease_override: Some(Some(PrereleaseChannel::Beta)),
@@ -304,7 +300,7 @@ async fn existing_prerelease_trains_move_forward_promote_and_reject_backward_cor
         .to_string();
     assert!(backward.contains("backward"), "{backward}");
 
-    let beta = Planner::new(registry("1.1.0-alpha.1".parse()?), gleam)
+    let beta = uncached_planner(registry("1.1.0-alpha.1".parse()?), gleam)
         .plan(&PlanOptions {
             manifest_path,
             prerelease_override: Some(Some(PrereleaseChannel::Beta)),
@@ -319,10 +315,7 @@ async fn existing_prerelease_trains_move_forward_promote_and_reject_backward_cor
 #[tokio::test]
 async fn explicit_baseline_ref_precedes_search_and_legacy_api_override_is_version_scoped()
 -> Result<()> {
-    if Command::new("gleam").arg("--version").output().is_err() {
-        eprintln!("skipping Gleam smoke test because gleam is not installed");
-        return Ok(());
-    }
+    require_gleam();
     let temp = tempfile::tempdir()?;
     let package = temp.path();
     fs::create_dir_all(package.join("src"))?;
@@ -355,7 +348,7 @@ allow_unknown_api_for = ["1.0.0"]
     let gleam = Gleam::default();
     let snapshot = gleam.snapshot(package)?;
     let source = gleam.export_hex_tarball(snapshot.package_dir())?;
-    let plan = Planner::new(
+    let plan = uncached_planner(
         ExistingRegistry {
             version: Version::new(1, 0, 0),
             source,
@@ -403,10 +396,7 @@ impl Registry for MockRegistry {
 
 #[tokio::test]
 async fn plan_uses_hex_api_and_tag_without_dirtying_the_package() -> Result<()> {
-    if Command::new("gleam").arg("--version").output().is_err() {
-        eprintln!("skipping Gleam smoke test because gleam is not installed");
-        return Ok(());
-    }
+    require_gleam();
     let temp = tempfile::tempdir()?;
     let package = temp.path();
     fs::create_dir(package.join("src"))?;
@@ -451,8 +441,8 @@ licences = ["MIT"]
         docs,
     };
     let cache = temp.path().join("xdg-cache");
-    let planner =
-        Planner::new(registry.clone(), gleam.clone()).with_baseline_cache_dir(Some(cache.clone()));
+    let planner = uncached_planner(registry.clone(), gleam.clone())
+        .with_baseline_cache_dir(Some(cache.clone()));
     let options = PlanOptions {
         manifest_path: package.join("gleam.toml"),
         ..PlanOptions::default()
@@ -476,7 +466,7 @@ licences = ["MIT"]
         cache.join("release-glz/baselines").is_dir(),
         "successful bounded fingerprint search was not cached"
     );
-    let cached = Planner::new(registry.clone(), gleam.clone())
+    let cached = uncached_planner(registry.clone(), gleam.clone())
         .with_baseline_cache_dir(Some(cache.clone()))
         .with_baseline_search_limit(1)
         .plan(&options)
@@ -492,7 +482,7 @@ licences = ["MIT"]
     let mut poisoned: serde_json::Value = serde_json::from_slice(&fs::read(&cache_file)?)?;
     poisoned["sha"] = serde_json::Value::String("f".repeat(40));
     fs::write(&cache_file, serde_json::to_vec(&poisoned)?)?;
-    let poisoned = Planner::new(registry.clone(), gleam.clone())
+    let poisoned = uncached_planner(registry.clone(), gleam.clone())
         .with_baseline_cache_dir(Some(cache))
         .with_baseline_search_limit(1)
         .plan(&options)
@@ -501,7 +491,7 @@ licences = ["MIT"]
         .to_string();
     assert!(poisoned.contains("bounded"), "{poisoned}");
 
-    let bounded = Planner::new(registry, gleam.clone())
+    let bounded = uncached_planner(registry, gleam.clone())
         .with_baseline_cache_dir(None)
         .with_baseline_search_limit(1)
         .plan(&options)
@@ -524,7 +514,7 @@ licences = ["MIT"]
     assert_eq!(committed.version, Version::new(1, 1, 0));
     assert_eq!(committed.api.impact, Bump::Minor);
 
-    let fallback = Planner::new(
+    let fallback = uncached_planner(
         MockRegistry {
             version: Version::new(1, 0, 0),
             source,
@@ -539,10 +529,7 @@ licences = ["MIT"]
 
 #[tokio::test]
 async fn breaking_zero_major_release_stays_on_the_zero_major_line() -> Result<()> {
-    if Command::new("gleam").arg("--version").output().is_err() {
-        eprintln!("skipping Gleam smoke test because gleam is not installed");
-        return Ok(());
-    }
+    require_gleam();
     let temp = tempfile::tempdir()?;
     let package = temp.path();
     fs::create_dir(package.join("src"))?;
@@ -583,7 +570,7 @@ allow_version_zero = true
     git(package, &["add", "."])?;
     git(package, &["commit", "-m", "feat!: replace API"])?;
 
-    let planner = Planner::new(
+    let planner = uncached_planner(
         MockRegistry {
             version: Version::new(0, 4, 0),
             source,
@@ -606,17 +593,7 @@ allow_version_zero = true
 #[tokio::test]
 async fn structured_api_exception_requires_an_active_expiry_and_resolvable_baseline() -> Result<()>
 {
-    let gleam_version = match Command::new("gleam").arg("--version").output() {
-        Ok(output) if output.status.success() => String::from_utf8(output.stdout)?
-            .split_whitespace()
-            .find(|word| word.chars().next().is_some_and(|c| c.is_ascii_digit()))
-            .unwrap()
-            .to_owned(),
-        _ => {
-            eprintln!("skipping Gleam smoke test because gleam is not installed");
-            return Ok(());
-        }
-    };
+    let gleam_version = require_gleam();
     let temp = tempfile::tempdir()?;
     let package = temp.path();
     fs::create_dir(package.join("src"))?;
@@ -649,7 +626,7 @@ async fn structured_api_exception_requires_an_active_expiry_and_resolvable_basel
     git(package, &["add", "."])?;
     git(package, &["commit", "-m", "feat!: replace API"])?;
 
-    let planner = Planner::new(
+    let planner = uncached_planner(
         MockRegistry {
             version: Version::new(1, 0, 0),
             source,
@@ -922,22 +899,6 @@ fn init_gleam_fixture(package: &Path, name: &str, version: &str) -> Result<()> {
 }
 
 fn git(directory: &Path, args: &[&str]) -> Result<()> {
-    let executable = if Path::new("/usr/bin/git").is_file() {
-        "/usr/bin/git"
-    } else {
-        "git"
-    };
-    let output = Command::new(executable)
-        .arg("-C")
-        .arg(directory)
-        .args(args)
-        .output()?;
-    if !output.status.success() {
-        bail!(
-            "git {:?} failed: {}",
-            args,
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
+    release_glz_test_support::git(directory, args);
     Ok(())
 }

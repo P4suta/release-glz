@@ -1,0 +1,7 @@
+[user]
+	name = release-glz test
+	email = release-glz-test@example.invalid
+[commit]
+	gpgsign = false
+[tag]
+	gpgsign = false

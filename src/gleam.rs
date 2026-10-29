@@ -1,8 +1,6 @@
 //! The Gleam compiler as an external process.
 //!
-//! Every invocation runs against a snapshot rather than the working tree, and
-//! output is redacted before it is shown, because compiler errors can echo a
-//! configured registry credential.
+//! Every invocation runs against a snapshot rather than the working tree, and output is redacted before it is shown, because compiler errors can echo a configured registry credential.
 
 #[cfg(any(windows, test))]
 use std::collections::BTreeMap;
@@ -18,8 +16,15 @@ use serde::Deserialize;
 use tempfile::TempDir;
 
 use crate::config::Manifest;
+use crate::process;
 #[cfg(any(windows, test))]
 use crate::units::MIB;
+
+/// The oldest compiler release whose package exports release-glz reads.
+pub(crate) const MINIMUM_SUPPORTED_COMPILER: Version = Version::new(1, 9, 0);
+
+/// Permission bits recorded for every file in a documentation archive.
+const DOCUMENTATION_FILE_MODE: u32 = 0o644;
 
 /// Size the compiler's package information may reach before it is refused.
 #[cfg(any(windows, test))]
@@ -29,17 +34,27 @@ const MAX_PACKAGE_INFORMATION_BYTES: u64 = MIB;
 #[cfg(any(windows, test))]
 const MAX_MANIFEST_BYTES: u64 = 4 * MIB;
 
-/// The one compiler release whose Windows `export hex-tarball` is recovered
-/// from rather than trusted.
+/// The one compiler release whose Windows `export hex-tarball` is recovered from rather than trusted.
 #[cfg(any(windows, test))]
-fn windows_hex_tarball_regression_version() -> Version {
-    Version::new(1, 18, 1)
-}
+const WINDOWS_HEX_TARBALL_REGRESSION: Version = Version::new(1, 18, 1);
+
+/// Origins of the forges Gleam names by kind in `gleam.toml`.
+#[cfg(any(windows, test))]
+const GITHUB_ORIGIN: &str = "https://github.com";
+#[cfg(any(windows, test))]
+const GITLAB_ORIGIN: &str = "https://gitlab.com";
+#[cfg(any(windows, test))]
+const BITBUCKET_ORIGIN: &str = "https://bitbucket.com";
+#[cfg(any(windows, test))]
+const CODEBERG_ORIGIN: &str = "https://codeberg.org";
+#[cfg(any(windows, test))]
+const SOURCEHUT_ORIGIN: &str = "https://git.sr.ht";
+#[cfg(any(windows, test))]
+const TANGLED_ORIGIN: &str = "https://tangled.sh";
 
 /// A package directory in a temporary tree.
 ///
-/// The temporary directory is owned by the snapshot, so the files stay
-/// readable exactly as long as the snapshot does.
+/// The temporary directory is owned by the snapshot, so the files stay readable exactly as long as the snapshot does.
 #[derive(Debug)]
 pub struct PackageSnapshot {
     _temp: TempDir,
@@ -72,7 +87,7 @@ impl Default for Gleam {
 impl Gleam {
     /// Version of the installed compiler.
     pub fn installed_version(&self) -> Result<Version> {
-        let output = self.command(Path::new("."))?.arg("--version").output()?;
+        let output = process::output(self.command(Path::new("."))?.arg("--version"))?;
         check_output(&output, "gleam --version", None)?;
         let stdout = String::from_utf8_lossy(&output.stdout);
         stdout
@@ -84,8 +99,10 @@ impl Gleam {
     /// The installed version, once it is known to be supported.
     pub fn ensure_supported(&self) -> Result<Version> {
         let version = self.installed_version()?;
-        if version < Version::new(1, 9, 0) {
-            bail!("release-glz requires Gleam 1.9 or newer; found {version}");
+        if version < MINIMUM_SUPPORTED_COMPILER {
+            bail!(
+                "release-glz requires Gleam {MINIMUM_SUPPORTED_COMPILER} or newer; found {version}"
+            );
         }
         Ok(version)
     }
@@ -126,10 +143,7 @@ impl Gleam {
     /// Export the Hex package tarball for a package directory.
     pub fn export_hex_tarball(&self, package_dir: &Path) -> Result<Vec<u8>> {
         let manifest = Manifest::load(package_dir.join("gleam.toml"))?;
-        let output = self
-            .command(package_dir)?
-            .args(["export", "hex-tarball"])
-            .output()?;
+        let output = process::output(self.command(package_dir)?.args(["export", "hex-tarball"]))?;
         let credential = configured_registry_secret(&manifest);
         if !output.status.success() {
             #[cfg(windows)]
@@ -162,10 +176,12 @@ impl Gleam {
     ) -> Result<Vec<u8>> {
         const OUTPUT: &str = "build/release-glz-package-information.json";
         fs::create_dir_all(package_dir.join("build"))?;
-        let output = self
-            .command(package_dir)?
-            .args(["export", "package-information", "--out", OUTPUT])
-            .output()?;
+        let output = process::output(self.command(package_dir)?.args([
+            "export",
+            "package-information",
+            "--out",
+            OUTPUT,
+        ]))?;
         check_output(
             &output,
             "gleam export package-information",
@@ -182,11 +198,11 @@ impl Gleam {
     pub fn export_package_interface(&self, package_dir: &Path) -> Result<Vec<u8>> {
         let manifest = Manifest::load(package_dir.join("gleam.toml"))?;
         let path = package_dir.join("release-glz-package-interface.json");
-        let output = self
-            .command(package_dir)?
-            .args(["export", "package-interface", "--out"])
-            .arg(&path)
-            .output()?;
+        let output = process::output(
+            self.command(package_dir)?
+                .args(["export", "package-interface", "--out"])
+                .arg(&path),
+        )?;
         let credential = configured_registry_secret(&manifest);
         check_output(
             &output,
@@ -203,10 +219,7 @@ impl Gleam {
     }
 
     fn build_docs_with(&self, package_dir: &Path, manifest: &Manifest) -> Result<()> {
-        let output = self
-            .command(package_dir)?
-            .args(["docs", "build"])
-            .output()?;
+        let output = process::output(self.command(package_dir)?.args(["docs", "build"]))?;
         let credential = configured_registry_secret(manifest);
         check_output(&output, "gleam docs build", credential.as_deref())
     }
@@ -262,7 +275,7 @@ fn deterministic_tar_gz(root: &Path) -> Result<Vec<u8>> {
         }
         let mut header = tar::Header::new_gnu();
         header.set_size(size);
-        header.set_mode(0o644);
+        header.set_mode(DOCUMENTATION_FILE_MODE);
         header.set_uid(0);
         header.set_gid(0);
         header.set_mtime(0);
@@ -323,7 +336,7 @@ fn check_output(output: &Output, action: &str, configured_secret: Option<&str>) 
 
 #[cfg(any(windows, test))]
 fn is_windows_hex_tarball_regression(version: &Version, stderr: &[u8]) -> bool {
-    version == &windows_hex_tarball_regression_version()
+    version == &WINDOWS_HEX_TARBALL_REGRESSION
         && String::from_utf8_lossy(stderr).contains("Cannot add path to tar archive")
         && String::from_utf8_lossy(stderr).contains("is outside this Gleam project")
 }
@@ -659,27 +672,27 @@ fn repository_url(repository: &PackageRepository) -> Result<String> {
     let url = match repository.kind.as_str() {
         "github" => {
             let (user, repo) = identity()?;
-            format!("https://github.com/{user}/{repo}")
+            format!("{GITHUB_ORIGIN}/{user}/{repo}")
         }
         "gitlab" => {
             let (user, repo) = identity()?;
-            format!("https://gitlab.com/{user}/{repo}")
+            format!("{GITLAB_ORIGIN}/{user}/{repo}")
         }
         "bitbucket" => {
             let (user, repo) = identity()?;
-            format!("https://bitbucket.com/{user}/{repo}")
+            format!("{BITBUCKET_ORIGIN}/{user}/{repo}")
         }
         "codeberg" => {
             let (user, repo) = identity()?;
-            format!("https://codeberg.org/{user}/{repo}")
+            format!("{CODEBERG_ORIGIN}/{user}/{repo}")
         }
         "sourcehut" => {
             let (user, repo) = identity()?;
-            format!("https://git.sr.ht/~{user}/{repo}")
+            format!("{SOURCEHUT_ORIGIN}/~{user}/{repo}")
         }
         "tangled" => {
             let (user, repo) = identity()?;
-            format!("https://tangled.sh/{user}/{repo}")
+            format!("{TANGLED_ORIGIN}/{user}/{repo}")
         }
         "gitea" | "forgejo" => {
             let (user, repo) = identity()?;
@@ -842,7 +855,7 @@ mod tests {
     }
 
     #[test]
-    fn compiler_output_fallback_builds_a_valid_deterministic_hex_v3_package() {
+    fn compiler_output_fallback_builds_a_valid_deterministic_hex_package() {
         let temp = tempfile::tempdir().unwrap();
         let package = temp.path();
         for directory in [

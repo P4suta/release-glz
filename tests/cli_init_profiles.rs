@@ -2,19 +2,15 @@
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use release_glz::config::{AuthKind, Manifest, RegistryProvider};
+use release_glz_test_support::{git, init_repository, isolated_command};
 
 const ACTION_SHA: &str = "abcdef0123456789abcdef0123456789abcdef01";
 
 fn package(version: &str) -> (tempfile::TempDir, PathBuf) {
     let temp = tempfile::tempdir().unwrap();
-    Command::new("git")
-        .args(["init", "--initial-branch=trunk"])
-        .current_dir(temp.path())
-        .output()
-        .unwrap();
+    git(temp.path(), &["init", "--initial-branch=trunk"]);
     std::fs::write(
         temp.path().join("gleam.toml"),
         format!(
@@ -31,7 +27,7 @@ fn package(version: &str) -> (tempfile::TempDir, PathBuf) {
 }
 
 fn init(root: &Path, gleam: &Path, arguments: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_release-glz"))
+    isolated_command(env!("CARGO_BIN_EXE_release-glz"))
         .current_dir(root)
         .env("RELEASE_GLZ_GLEAM", gleam)
         .args(["--output", "json", "init"])
@@ -251,7 +247,7 @@ fn organization_and_private_profiles_require_exact_non_secret_inputs() {
 fn malformed_github_environment_urls_return_a_usage_envelope_instead_of_panicking() {
     for variable in ["GITHUB_API_URL", "GITHUB_GRAPHQL_URL"] {
         let (temp, gleam) = package("1.0.0");
-        let output = Command::new(env!("CARGO_BIN_EXE_release-glz"))
+        let output = isolated_command(env!("CARGO_BIN_EXE_release-glz"))
             .current_dir(temp.path())
             .env("RELEASE_GLZ_GLEAM", &gleam)
             .env(variable, "not-a-valid-github-url")
@@ -373,11 +369,7 @@ fn zero_version_existing_configuration_and_missing_mode_fail_closed() {
 #[test]
 fn manifest_paths_with_spaces_remain_single_canonical_argv_elements() {
     let temp = tempfile::tempdir().unwrap();
-    Command::new("git")
-        .args(["init", "--initial-branch=main"])
-        .current_dir(temp.path())
-        .output()
-        .unwrap();
+    init_repository(temp.path());
     let package = temp.path().join("package with space");
     std::fs::create_dir(&package).unwrap();
     std::fs::write(
@@ -391,7 +383,7 @@ fn manifest_paths_with_spaces_remain_single_canonical_argv_elements() {
     permissions.set_mode(0o755);
     std::fs::set_permissions(&gleam, permissions).unwrap();
     let relative = "package with space/gleam.toml";
-    let check = Command::new(env!("CARGO_BIN_EXE_release-glz"))
+    let check = isolated_command(env!("CARGO_BIN_EXE_release-glz"))
         .current_dir(temp.path())
         .env("RELEASE_GLZ_GLEAM", &gleam)
         .args([

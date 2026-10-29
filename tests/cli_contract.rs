@@ -1,7 +1,9 @@
 use std::process::Command;
 
+use release_glz_test_support::isolated_command;
+
 fn binary() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_release-glz"))
+    isolated_command(env!("CARGO_BIN_EXE_release-glz"))
 }
 
 #[test]

@@ -18,7 +18,7 @@ fn rule<'a>(ruleset: &'a Value, kind: &str) -> &'a Value {
 #[test]
 fn default_branch_requires_checked_linear_changes() {
     let ruleset = load(".github/rulesets/main.json");
-    assert_eq!(ruleset["name"], "Protect main");
+    assert_eq!(ruleset["name"], "main");
     assert_eq!(ruleset["target"], "branch");
     assert_eq!(ruleset["enforcement"], "active");
     assert_eq!(ruleset["bypass_actors"], json!([]));
@@ -47,7 +47,7 @@ fn default_branch_requires_checked_linear_changes() {
 
     let pull_request = &rule(&ruleset, "pull_request")["parameters"];
     assert_eq!(pull_request["allowed_merge_methods"], json!(["squash"]));
-    assert_eq!(pull_request["dismiss_stale_reviews_on_push"], false);
+    assert_eq!(pull_request["dismiss_stale_reviews_on_push"], true);
     assert_eq!(pull_request["required_approving_review_count"], 0);
     assert_eq!(pull_request["required_review_thread_resolution"], true);
 
@@ -55,17 +55,39 @@ fn default_branch_requires_checked_linear_changes() {
     assert_eq!(checks["strict_required_status_checks_policy"], true);
     assert_eq!(
         checks["required_status_checks"],
-        json!([
-            {"context": "Required CI", "integration_id": 15368},
-            {"context": "CodeRabbit", "integration_id": 347564}
-        ])
+        json!([{"context": "required", "integration_id": 15368}])
     );
+}
+
+#[test]
+fn the_required_check_is_the_ci_job_that_aggregates_every_selected_check() {
+    let ruleset = load(".github/rulesets/main.json");
+    let contexts = rule(&ruleset, "required_status_checks")["parameters"]["required_status_checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|check| check["context"].as_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    let ci: serde_yaml::Value =
+        serde_yaml::from_str(&fs::read_to_string(".github/workflows/ci.yml").unwrap()).unwrap();
+    let job_names = ci["jobs"]
+        .as_mapping()
+        .unwrap()
+        .values()
+        .filter_map(|job| job["name"].as_str().map(str::to_owned))
+        .collect::<Vec<_>>();
+    for context in contexts {
+        assert!(
+            job_names.contains(&context),
+            "the ruleset requires `{context}`, which no CI job reports"
+        );
+    }
 }
 
 #[test]
 fn release_tags_are_immutable_after_creation() {
     let ruleset = load(".github/rulesets/release-tags.json");
-    assert_eq!(ruleset["name"], "Protect release tags");
+    assert_eq!(ruleset["name"], "release tags");
     assert_eq!(ruleset["target"], "tag");
     assert_eq!(ruleset["enforcement"], "active");
     assert_eq!(ruleset["bypass_actors"], json!([]));
@@ -75,7 +97,8 @@ fn release_tags_are_immutable_after_creation() {
     );
     rule(&ruleset, "deletion");
     rule(&ruleset, "non_fast_forward");
-    assert_eq!(ruleset["rules"].as_array().unwrap().len(), 2);
+    rule(&ruleset, "update");
+    assert_eq!(ruleset["rules"].as_array().unwrap().len(), 3);
 }
 
 #[test]

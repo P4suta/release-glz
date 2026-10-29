@@ -1,5 +1,5 @@
 {
-  "name": "Protect release tags",
+  "name": "release tags",
   "target": "tag",
   "enforcement": "active",
   "bypass_actors": [],
@@ -15,6 +15,9 @@
     },
     {
       "type": "non_fast_forward"
+    },
+    {
+      "type": "update"
     }
   ]
 }

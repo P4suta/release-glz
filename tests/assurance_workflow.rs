@@ -1,6 +1,19 @@
 use std::fs;
 use std::path::Path;
 
+/// The one compiler release whose Windows Hex export the compatibility fallback recovers from, which shipping assurance keeps running natively.
+const WINDOWS_HEX_TARBALL_REGRESSION: &str = "1.18.1";
+
+fn pinned_tool(tool: &str) -> String {
+    fs::read_to_string("mise.toml")
+        .unwrap()
+        .parse::<toml_edit::DocumentMut>()
+        .unwrap()["tools"][tool]
+        .as_str()
+        .unwrap_or_else(|| panic!("mise.toml pins no {tool}"))
+        .to_owned()
+}
+
 #[test]
 fn routine_ci_uses_one_selected_linux_gate_without_shipping_campaigns() {
     let yaml = fs::read_to_string(".github/workflows/ci.yml").unwrap();
@@ -51,7 +64,7 @@ fn assurance_workflow_has_fixed_fail_closed_shipping_gates() {
         "actionlint",
         "zizmor",
         "rustup toolchain install 1.97.0 --profile minimal",
-        "cargo +1.97.0 install --locked zizmor --version 1.29.0",
+        "cargo +1.97.0 install --locked zizmor --version",
         "scripts/verify-workflows.js",
         "scripts/de-shell.js",
         "tests/fixtures/workflow/gleam.toml",
@@ -68,7 +81,7 @@ fn assurance_workflow_has_fixed_fail_closed_shipping_gates() {
     assert!(yaml.contains("permissions: {}"));
     assert!(!yaml.contains("cargo mutants --jobs"));
     assert!(!yaml.contains("RELEASE_GLZ_ACTION_SHA"));
-    assert!(!yaml.contains("cargo install --locked zizmor --version 1.29.0"));
+    assert!(!yaml.contains("cargo install --locked zizmor --version"));
     assert!(!yaml.contains("continue-on-error: true"));
     assert!(Path::new("tests/fixtures/workflow/gleam.toml").is_file());
 
@@ -214,6 +227,7 @@ fn release_assurance_covers_native_platforms_and_gleam_versions() {
             ("ubuntu-24.04", current),
             ("macos-15", current),
             ("windows-2025", current),
+            ("windows-2025", WINDOWS_HEX_TARBALL_REGRESSION),
         ])
     );
     assert!(assurance.contains("gleam-version: ${{ matrix.gleam }}"));
@@ -225,7 +239,10 @@ fn release_assurance_covers_native_platforms_and_gleam_versions() {
             .any(|step| step["run"].as_str()
                 == Some("cargo test --workspace --all-targets --locked"))
     );
-    assert!(yaml.contains("RUST_TEST_THREADS: 1"));
+    assert!(
+        parsed["env"]["RUST_TEST_THREADS"].is_null(),
+        "the fast gate runs tests in parallel, as developers do"
+    );
     let required = &parsed["jobs"]["required"];
     assert_eq!(required["name"].as_str(), Some("required"));
     assert_eq!(required["if"].as_str(), Some("always()"));
@@ -247,27 +264,166 @@ fn release_assurance_covers_native_platforms_and_gleam_versions() {
     assert!(required_run.contains("'include \"required\"; required($full)'"));
     assert!(yaml.contains("node --test scripts/*.test.js"));
     assert!(yaml.contains(".github/check-required.jq"));
-    assert!(assurance.contains("RUST_TEST_THREADS: 1"));
+    assert!(
+        shipping["env"]["RUST_TEST_THREADS"].is_null(),
+        "shipping assurance runs tests in parallel, as developers do"
+    );
 }
 
 #[test]
-fn coverage_job_installs_current_gleam_before_measuring() {
+fn every_job_that_runs_compiler_tests_installs_the_pinned_gleam() {
     let yaml = fs::read_to_string(".github/workflows/assurance.yml").unwrap();
     let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
-    let steps = parsed["jobs"]["coverage"]["steps"].as_sequence().unwrap();
-    let setup = steps
-        .iter()
-        .find(|step| {
-            step["uses"]
-                .as_str()
-                .is_some_and(|value| value.starts_with("erlef/setup-beam@"))
-        })
-        .expect("coverage job must install Gleam so compiler smoke tests are measured");
+    for job in ["coverage", "mutation"] {
+        let steps = parsed["jobs"][job]["steps"].as_sequence().unwrap();
+        let setup = steps
+            .iter()
+            .find(|step| {
+                step["uses"]
+                    .as_str()
+                    .is_some_and(|value| value.starts_with("erlef/setup-beam@"))
+            })
+            .unwrap_or_else(|| {
+                panic!("the {job} job must install Gleam, because compiler tests fail without it")
+            });
 
-    let reference = setup["uses"].as_str().unwrap().split_once('@').unwrap().1;
-    assert_eq!(reference.len(), 40, "Gleam setup action must be immutable");
-    assert_eq!(setup["with"]["otp-version"].as_str(), Some("28.0"));
-    assert_eq!(setup["with"]["gleam-version"].as_str(), Some("1.18.1"));
+        let reference = setup["uses"].as_str().unwrap().split_once('@').unwrap().1;
+        assert_eq!(reference.len(), 40, "Gleam setup action must be immutable");
+        assert_eq!(
+            setup["with"]["otp-version"].as_str(),
+            Some(pinned_tool("erlang").as_str())
+        );
+        assert_eq!(
+            setup["with"]["gleam-version"].as_str(),
+            Some(pinned_tool("gleam").as_str())
+        );
+    }
+}
+
+#[test]
+fn ci_selects_the_rust_job_for_every_file_a_test_reads() {
+    let filters: serde_yaml::Value =
+        serde_yaml::from_str(&fs::read_to_string(".github/filters/ci.yml").unwrap()).unwrap();
+    let runtime = filters["runtime"]
+        .as_sequence()
+        .unwrap()
+        .iter()
+        .map(|pattern| pattern.as_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    let mut read = Vec::new();
+    for entry in fs::read_dir("tests").unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_some_and(|extension| extension == "rs") {
+            let source = fs::read_to_string(&path).unwrap();
+            for opening in ["include_str!(\"../", "read_to_string(\"", "read_dir(\""] {
+                for (index, _) in source.match_indices(opening) {
+                    let rest = &source[index + opening.len()..];
+                    read.push(rest[..rest.find('"').unwrap()].to_owned());
+                }
+            }
+        }
+    }
+    assert!(read.len() > 10, "found too few test inputs: {read:?}");
+    for input in read {
+        assert!(
+            runtime.iter().any(|pattern| glob_matches(pattern, &input))
+                || runtime
+                    .iter()
+                    .any(|pattern| glob_matches(pattern, &format!("{input}/file"))),
+            "CI skips the Rust job when `{input}` changes, although a test reads it"
+        );
+    }
+}
+
+fn glob_matches(pattern: &str, path: &str) -> bool {
+    fn segments(pattern: &[&str], path: &[&str]) -> bool {
+        match (pattern.split_first(), path.split_first()) {
+            (None, None) => true,
+            (Some((&"**", rest)), _) => {
+                segments(rest, path) || (!path.is_empty() && segments(pattern, &path[1..]))
+            }
+            (Some((first, rest)), Some((name, remaining))) => {
+                segment(first, name) && segments(rest, remaining)
+            }
+            _ => false,
+        }
+    }
+    fn segment(pattern: &str, name: &str) -> bool {
+        match pattern.split_once('*') {
+            None => pattern == name,
+            Some((prefix, suffix)) => {
+                name.len() >= prefix.len() + suffix.len()
+                    && name.starts_with(prefix)
+                    && name.ends_with(suffix)
+            }
+        }
+    }
+    let pattern = pattern.split('/').collect::<Vec<_>>();
+    let path = path.split('/').collect::<Vec<_>>();
+    segments(&pattern, &path)
+}
+
+#[test]
+fn local_tool_pins_match_the_versions_ci_installs() {
+    let pin = pinned_tool;
+    let ci = fs::read_to_string(".github/workflows/ci.yml").unwrap();
+    let parsed: serde_yaml::Value = serde_yaml::from_str(&ci).unwrap();
+    let steps = |job: &str| parsed["jobs"][job]["steps"].as_sequence().unwrap().clone();
+    let with = |job: &str, action: &str, input: &str| {
+        steps(job)
+            .iter()
+            .find(|step| {
+                step["uses"]
+                    .as_str()
+                    .is_some_and(|value| value.starts_with(action))
+            })
+            .and_then(|step| step["with"][input].as_str().map(str::to_owned))
+            .unwrap_or_else(|| panic!("{job} sets no {action} {input}"))
+    };
+
+    let rust = pin("rust");
+    assert!(
+        steps("checks").iter().any(|step| step["run"]
+            .as_str()
+            .is_some_and(|run| run.contains(&format!("rustup default {rust}")))),
+        "the fast gate must use the pinned Rust {rust}"
+    );
+    let manifest = fs::read_to_string("Cargo.toml")
+        .unwrap()
+        .parse::<toml_edit::DocumentMut>()
+        .unwrap();
+    let minimum = manifest["package"]["rust-version"].as_str().unwrap();
+    assert!(
+        rust.starts_with(&format!("{minimum}.")),
+        "Rust {rust} is not the declared minimum {minimum}"
+    );
+    assert_eq!(
+        with("checks", "erlef/setup-beam@", "gleam-version"),
+        pin("gleam")
+    );
+    assert_eq!(
+        with("checks", "erlef/setup-beam@", "otp-version"),
+        pin("erlang")
+    );
+    assert_eq!(
+        with("changes", "actions/setup-node@", "node-version"),
+        pin("node")
+    );
+    assert!(
+        ci.contains(&format!(
+            "actionlint/releases/download/v{0}/actionlint_{0}_",
+            pin("actionlint")
+        )),
+        "CI must install the pinned actionlint"
+    );
+    let assurance = fs::read_to_string(".github/workflows/assurance.yml").unwrap();
+    assert!(
+        assurance.contains(&format!(
+            "install --locked zizmor --version {}",
+            pin("aqua:zizmorcore/zizmor")
+        )),
+        "shipping assurance must install the pinned zizmor"
+    );
 }
 
 #[test]
