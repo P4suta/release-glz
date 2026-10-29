@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 use base64::Engine as _;
 use release_glz::forge::{
     CandidateRun, DefaultBranch, GitHubClient, GitHubRelease, GitHubRepository, IntentBinding,
+    MAX_ATTRIBUTED_COMMITS,
 };
 use release_glz::git::Commit;
 use release_glz::model::{ApiDiff, Baseline, BaselineSource, Bump, ReleasePlan, ReleaseState};
@@ -1293,6 +1294,60 @@ async fn commit_changes_prefer_merged_pr_metadata_and_deduplicate_pr_numbers() {
     assert_eq!(changes[1].title, "fix: unmerged fallback");
     assert_eq!(changes[1].pull_request, None);
     assert_eq!(changes[2].title, "docs: no PR fallback");
+}
+
+#[tokio::test]
+async fn change_attribution_looks_up_at_most_a_fixed_number_of_commits() {
+    let commits: Vec<_> = (0..=MAX_ATTRIBUTED_COMMITS)
+        .map(|index| commit(&format!("{index:040x}"), &format!("fix: change {index}")))
+        .collect();
+
+    let silent = FakeServer::start(vec![]).await;
+    let changes = test_client(&silent, Some("token"))
+        .changes_for_commits(&commits)
+        .await
+        .unwrap();
+    assert!(silent.requests().is_empty());
+    assert_eq!(changes.len(), commits.len());
+    assert!(changes.iter().all(|change| change.pull_request.is_none()));
+    assert_eq!(changes[0].title, "fix: change 0");
+
+    let at_bound = &commits[..MAX_ATTRIBUTED_COMMITS];
+    let server = FakeServer::start(
+        (0..MAX_ATTRIBUTED_COMMITS)
+            .map(|_| response(200, "[]"))
+            .collect(),
+    )
+    .await;
+    let changes = test_client(&server, Some("token"))
+        .changes_for_commits(at_bound)
+        .await
+        .unwrap();
+    assert_eq!(server.requests().len(), MAX_ATTRIBUTED_COMMITS);
+    assert_eq!(changes.len(), MAX_ATTRIBUTED_COMMITS);
+}
+
+#[tokio::test]
+async fn a_repository_spelled_differently_from_github_fails_before_any_write() {
+    for full_name in ["O/r", "o/R", "other/r"] {
+        let server = FakeServer::start(vec![response(
+            200,
+            &serde_json::json!({
+                "node_id": "R_repository",
+                "full_name": full_name,
+                "default_branch": "main"
+            })
+            .to_string(),
+        )])
+        .await;
+        let error = test_client(&server, Some("token"))
+            .default_branch()
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(&format!("`{full_name}`")), "{error}");
+        assert_eq!(server.requests().len(), 1, "{full_name}");
+    }
 }
 
 #[tokio::test]

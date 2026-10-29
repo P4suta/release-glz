@@ -70,6 +70,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Closing a stale Release PR deletes its branch through a compare-and-swap on the verified generated commit and only then closes the pull request.
   A commit that someone pushes after the check now keeps both the branch and the open pull request.
 - Binding an intent reads the Release PR again just before it writes, and writes nothing over a head or body that a newer run replaced.
+- `release-pr` fails before any write when `[repository]` spells the slug differently from GitHub, including letter case.
+  OIDC and the Actions run checks compare the slug exactly, so such a configuration used to fail only at publication.
+- `release-pr` looks up the pull requests of at most 200 commits since the baseline.
+  Over that, as on a first release over a long history, it lists every commit by subject and reports `changes_listed_by_commit`.
 - `release-glz prerelease stable` no longer writes an empty `[tools.release-glz]` table into a manifest that has none, so `init` still accepts that manifest afterward.
 - A plan's `hex_url` names a package page only once the planned version is on the registry.
   It points at the Organization page for a Hex.pm Organization package and stays empty for a Hex-compatible registry, which serves no package pages.
