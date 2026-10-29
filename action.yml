@@ -64,6 +64,8 @@ outputs:
     description: Rolling Release PR URL
   release-pr-head:
     description: Commit at the head of the rolling Release PR that release-pr wrote or confirmed
+  intent-binding:
+    description: What release-pr --candidate did with the intent; bound, merged, superseded, or unbound
   hex-url:
     description: Hex package release URL
   github-release-url:

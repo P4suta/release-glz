@@ -142,6 +142,14 @@ test("accepts only command envelope schema v2 and extracts domain outputs", () =
   assert.equal(written["pr-url"], "https://github.test/acme/widget/pull/9");
   assert.equal(written["release-pr-head"], "b".repeat(40));
   assert.equal(resultOutputs(envelope)["release-pr-head"], "");
+  const superseded = resultOutputs({
+    ...envelope,
+    command: "release-pr",
+    result: { schema: "release-pr-intent/v1", state: "planned", intent_binding: "superseded" },
+  });
+  assert.equal(superseded["intent-binding"], "superseded");
+  assert.equal(superseded["pr-url"], "");
+  assert.equal(resultOutputs(envelope)["intent-binding"], "");
 });
 
 test("the Action metadata declares exactly the inputs it reads and the outputs it writes", () => {

@@ -14,6 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The writing job refuses a plan file that isn't a `plan/v2` document, carries an unknown field, already names a Release PR, describes another package or manifest version, or names a baseline outside the checked-out history.
 - `plan/v2` gains `release_pr_head`, the Release PR head commit that `release-pr` wrote or confirmed.
 - The Action accepts a `plan-file` input for `plan` and `release-pr`, and it exposes a `release-pr-head` output.
+- The `release-pr --candidate` result reports `intent_binding`, and the Action exposes it as `intent-binding`.
+  A Candidate whose head a newer Release PR head replaced reports `superseded`, writes nothing, and exits with status 0 instead of failing.
+  A Release PR at the Candidate head whose marker describes another release is refused.
 
 ### Security
 

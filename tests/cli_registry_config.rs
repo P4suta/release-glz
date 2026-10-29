@@ -18,36 +18,8 @@ fn sealed_candidate_cli_lifecycle_reuses_one_candidate_without_rebuilding() {
     let temp = tempfile::tempdir().unwrap();
     let (registry_listener, registry_url) = bound_listener();
     let (github_listener, github_url) = bound_listener();
-    let manifest = manifest(&registry_url).replace("docs = true", "docs = false");
-    let readme = b"# Widget\n";
-    let source = b"pub fn widget() -> Int { 1 }\n";
-    std::fs::create_dir(temp.path().join("src")).unwrap();
-    std::fs::write(temp.path().join("gleam.toml"), &manifest).unwrap();
-    std::fs::write(temp.path().join("README.md"), readme).unwrap();
-    std::fs::write(temp.path().join("src/widget.gleam"), source).unwrap();
-    git(temp.path(), &["init", "--initial-branch=main"]);
-    git(temp.path(), &["config", "core.hooksPath", ".git/no-hooks"]);
-    git(
-        temp.path(),
-        &["config", "user.email", "fixture@example.test"],
-    );
-    git(temp.path(), &["config", "user.name", "Fixture"]);
-    git(temp.path(), &["config", "commit.gpgsign", "false"]);
-    git(temp.path(), &["config", "tag.gpgsign", "false"]);
-    git(temp.path(), &["add", "."]);
-    git(temp.path(), &["commit", "-m", "feat: initial package"]);
+    let gleam = initialize_initial_package(temp.path(), &registry_url);
     let source_sha = git_output(temp.path(), &["rev-parse", "HEAD"]);
-
-    let package = hex_package_with_files(&[
-        ("gleam.toml", manifest.as_bytes()),
-        ("README.md", readme),
-        ("src/widget.gleam", source),
-    ]);
-    let package_path = temp.path().join("fixture.tar");
-    std::fs::write(&package_path, &package).unwrap();
-    let interface_path = temp.path().join("interface.json");
-    std::fs::write(&interface_path, br#"{"modules":{}}"#).unwrap();
-    let gleam = fake_gleam(temp.path());
     let candidate = temp.path().join("candidate");
 
     // These uncommitted bytes must never become the Candidate source.
@@ -707,6 +679,74 @@ fn a_handed_off_plan_that_does_not_describe_the_checkout_is_refused_before_any_r
 }
 
 #[test]
+fn a_candidate_whose_head_the_release_pr_left_binds_nothing_and_succeeds() {
+    let temp = tempfile::tempdir().unwrap();
+    let (_registry_listener, registry_url) = bound_listener();
+    let gleam = initialize_initial_package(temp.path(), &registry_url);
+    let source_sha = git_output(temp.path(), &["rev-parse", "HEAD"]);
+    let candidate = temp.path().join("candidate");
+    let rehearse = candidate_command(temp.path(), &gleam)
+        .args([
+            "--output",
+            "json",
+            "rehearse",
+            "--ref",
+            &source_sha,
+            "--out",
+        ])
+        .arg(&candidate)
+        .output()
+        .unwrap();
+    assert_success(&rehearse, "rehearse");
+
+    let (github_listener, github_url) = bound_listener();
+    let moved_head = "e".repeat(40);
+    let moved = format!(
+        r#"[{{"number":7,"title":"chore(release): widget 1.0.0","body":"<!-- release-glz:managed package=widget branch=release-glz/widget head={moved_head} digest={} version=1.0.0 intent=pending -->","html_url":"https://github.test/acme/widget/pull/7","merge_commit_sha":null,"merged_at":null,"user":{{"login":"bot"}},"labels":[],"head":{{"ref":"release-glz/widget","sha":"{moved_head}","repo":{{"full_name":"acme/widget","default_branch":"main"}}}},"base":{{"ref":"main","repo":{{"full_name":"acme/widget","default_branch":"main"}}}}}}]"#,
+        "d".repeat(64)
+    );
+    let (github_requests, github_server) = serve_recording(
+        github_listener,
+        vec![
+            http_response(200, b"[]"),
+            http_response(200, moved.as_bytes()),
+        ],
+    );
+    let (refusing, compiler_runs) = refusing_gleam(temp.path());
+
+    let bound = isolated_command(env!("CARGO_BIN_EXE_release-glz"))
+        .current_dir(temp.path())
+        .args(["--output", "json", "release-pr", "--candidate"])
+        .arg(&candidate)
+        .env("RELEASE_GLZ_GLEAM", &refusing)
+        .env("GITHUB_TOKEN", "github-value")
+        .env("GITHUB_API_URL", &github_url)
+        .env("GITHUB_GRAPHQL_URL", format!("{github_url}/graphql"))
+        .output()
+        .unwrap();
+    github_server.join().unwrap();
+
+    assert_success(&bound, "release-pr --candidate");
+    let result = &json(&bound)["result"];
+    assert_eq!(result["schema"], "release-pr-intent/v1");
+    assert_eq!(result["intent_binding"], "superseded");
+    assert_eq!(result["state"], "planned");
+    assert_eq!(result["pr_url"], serde_json::Value::Null);
+    let github_requests: Vec<_> = github_requests.try_iter().collect();
+    assert_eq!(github_requests.len(), 2, "{github_requests:#?}");
+    assert!(github_requests[0].starts_with(&format!(
+        "GET /repos/acme/widget/commits/{source_sha}/pulls "
+    )));
+    assert!(
+        github_requests[1].starts_with("GET /repos/acme/widget/pulls?state=open&per_page=100 ")
+    );
+    assert!(
+        !compiler_runs.exists(),
+        "release-pr --candidate ran the compiler"
+    );
+}
+
+#[test]
 fn top_level_diagnostics_redact_the_configured_registry_credential() {
     let temp = tempfile::tempdir().unwrap();
     let secret = "custom-registry-value-that-must-never-escape";
@@ -960,14 +1000,12 @@ fn initialize_initial_package(
     registry_url: &str,
 ) -> std::path::PathBuf {
     let manifest = manifest(registry_url).replace("docs = true", "docs = false");
+    let readme = b"# Widget\n";
+    let source = b"pub fn widget() -> Int { 1 }\n";
     std::fs::create_dir(directory.join("src")).unwrap();
-    std::fs::write(directory.join("gleam.toml"), manifest).unwrap();
-    std::fs::write(directory.join("README.md"), "# Widget\n").unwrap();
-    std::fs::write(
-        directory.join("src/widget.gleam"),
-        "pub fn widget() -> Int { 1 }\n",
-    )
-    .unwrap();
+    std::fs::write(directory.join("gleam.toml"), &manifest).unwrap();
+    std::fs::write(directory.join("README.md"), readme).unwrap();
+    std::fs::write(directory.join("src/widget.gleam"), source).unwrap();
     git(directory, &["init", "--initial-branch=main"]);
     git(directory, &["config", "core.hooksPath", ".git/no-hooks"]);
     git(directory, &["config", "user.email", "fixture@example.test"]);
@@ -977,7 +1015,12 @@ fn initialize_initial_package(
     git(directory, &["add", "."]);
     git(directory, &["commit", "-m", "feat: initial package"]);
 
-    std::fs::write(directory.join("fixture.tar"), hex_package()).unwrap();
+    let package = hex_package_with_files(&[
+        ("gleam.toml", manifest.as_bytes()),
+        ("README.md", readme),
+        ("src/widget.gleam", source),
+    ]);
+    std::fs::write(directory.join("fixture.tar"), package).unwrap();
     std::fs::write(directory.join("interface.json"), br#"{"modules":{}}"#).unwrap();
     fake_gleam(directory)
 }

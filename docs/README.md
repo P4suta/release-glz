@@ -136,6 +136,7 @@ Real publication also requires approval evidence supplied by the protected workf
 | `status [--candidate <DIR>] [--online]` | Reports the current state and next safe command, including partial releases. |
 | `doctor [--online] [--candidate-build]` | Defaults to local schema/compiler/workflow checks; online mode audits registry credentials and GitHub protections; candidate-build mode uses isolated caches and no credentials. |
 | `release-pr [--plan <FILE>]` | Maintains the rolling managed PR; when no release is required it closes the verified PR and removes its unchanged managed branch. The result's `release_pr_head` names the head commit it wrote or confirmed. |
+| `release-pr --candidate <DIR>` | Binds the Candidate's `intent_digest` to the open Release PR whose head is the Candidate's source commit. Its `release-pr-intent/v1` result reports `intent_binding`: `bound`, `merged` when the merged Release PR already carries the intent, `unbound` in a dry run, or `superseded` when a newer head replaced the Candidate's and nothing was written. |
 | `prerelease` / `set-version` | Selects a channel or raises the automatically required version; neither can lower the safety requirement. |
 | `init` / `migrate` | Requires exactly one of `--check`, `--diff`, or `--update`; modified managed files are never overwritten without an explicit update. |
 | `completion` | Generates bash, zsh, fish, or PowerShell completion source. |
@@ -292,7 +293,7 @@ Exit code meanings are stable:
 | 6 | Hook failure |
 | 7 | Partial release requiring resume |
 
-The Action parses the same envelope even after a non-zero CLI exit, preserves its diagnostics, next action, and original exit code, and exposes `state`, `release-required`, `version`, `intent-digest`, `candidate-digest`, `pr-url`, `release-pr-head`, `hex-url`, `github-release-url`, and `next-action`.
+The Action parses the same envelope even after a non-zero CLI exit, preserves its diagnostics, next action, and original exit code, and exposes `state`, `release-required`, `version`, `intent-digest`, `candidate-digest`, `pr-url`, `release-pr-head`, `intent-binding`, `hex-url`, `github-release-url`, and `next-action`.
 `next-action-argv` is the JSON-encoded canonical argv array.
 The Action's `plan-file` input becomes `plan --out` or `release-pr --plan`, and no other command accepts it.
 

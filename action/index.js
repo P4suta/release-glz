@@ -774,6 +774,7 @@ function resultOutputs(envelope) {
     "candidate-digest": result.candidate_digest || candidate.candidate_digest || "",
     "pr-url": result.pr_url || "",
     "release-pr-head": result.release_pr_head || "",
+    "intent-binding": result.intent_binding || "",
     "hex-url": result.hex_url || "",
     "github-release-url": result.github_release_url || "",
     "next-action": envelope.next_actions[0]?.command || "",
