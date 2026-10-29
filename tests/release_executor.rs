@@ -362,10 +362,18 @@ impl ReleaseTarget for NonConvergingTarget {
         _intent: &ReleaseIntent,
         _payload: ReleasePayload<'_>,
     ) -> Result<()> {
-        self.attempts.fetch_add(1, Ordering::SeqCst);
+        let attempts = self.attempts.fetch_add(1, Ordering::SeqCst) + 1;
+        // A runner without a budget would loop until it ran out of memory, so fail long before that.
+        assert!(
+            attempts <= NON_CONVERGING_ATTEMPT_LIMIT,
+            "the runner kept applying effects that never took hold"
+        );
         Ok(())
     }
 }
+
+/// Attempts a non-converging target accepts before it fails the test, far above any first plan in these fixtures.
+const NON_CONVERGING_ATTEMPT_LIMIT: usize = 10_000;
 
 #[derive(Clone, Default)]
 struct FakeTarget {
