@@ -63,6 +63,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The push run's publish job consumes the Candidate that its own `prepare` job uploaded.
   The artifact check had required that run to have completed, which it can't have while it publishes.
   A push now accepts only its own run, in progress, and a manual promotion still accepts only an earlier run that completed with success.
+- A release with many notify hooks or release assets runs to completion.
+  The runner gave up after a fixed 128 rounds, one effect each, though nothing bounds the number of notify hooks.
+  It now makes up to one attempt for each effect that its first plan lists.
 - A version bump that would carry a component past `u64::MAX`, and a prerelease number past it, is an error instead of a wrapped smaller version or a panic.
   Kani proves the lifecycle and version arithmetic of the new dependency-free `release-glz-core` crate for every input, and shipping assurance runs those proofs.
 - Updating the Release PR considers only a pull request on a branch with the release prefix whose marker names that same branch.
