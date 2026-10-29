@@ -13,7 +13,9 @@ const SERVER_LIFETIME_SECONDS: u64 = 120;
 const ACCEPT_POLL_MILLISECONDS: u64 = 5;
 
 use release_glz::config::{AuthKind, RegistryConfig, RegistryProvider};
-use release_glz::registry::{HexRegistry, PublishOutcome, Registry, RegistryCredentialAudit};
+use release_glz::registry::{
+    HexRegistry, PublishOutcome, Registry, RegistryCredentialAudit, VisibilityPoll,
+};
 use semver::Version;
 
 #[derive(Debug)]
@@ -636,6 +638,76 @@ async fn wait_for_returns_the_observed_ready_state() {
     assert!(release.has_docs);
     assert_eq!(requests.recv().unwrap().path, "/api/packages/widget");
     server.join().unwrap();
+}
+
+/// Polling that a test can finish quickly.
+fn quick_poll(attempts: usize) -> VisibilityPoll {
+    VisibilityPoll {
+        attempts,
+        interval: std::time::Duration::from_millis(1),
+    }
+}
+
+#[tokio::test]
+async fn wait_for_keeps_polling_until_the_release_is_visible() {
+    let (base, requests, server) = server(vec![
+        response(200, br#"{"releases":[],"retirements":{}}"#),
+        response(
+            200,
+            br#"{"releases":[{"version":"1.2.3","has_docs":false}],"retirements":{}}"#,
+        ),
+        response(
+            200,
+            br#"{"releases":[{"version":"1.2.3","has_docs":true}],"retirements":{}}"#,
+        ),
+    ]);
+    let registry = HexRegistry::from_config(&custom_config(&base), None)
+        .unwrap()
+        .with_visibility_poll(quick_poll(3));
+    let version = Version::new(1, 2, 3);
+
+    let state = registry.wait_for("widget", &version, true).await.unwrap();
+
+    assert!(state.release(&version).unwrap().has_docs);
+    for _ in 0..3 {
+        assert_eq!(requests.recv().unwrap().path, "/api/packages/widget");
+    }
+    server.join().unwrap();
+}
+
+#[tokio::test]
+async fn wait_for_stops_after_its_attempts() {
+    let (base, requests, server) = server(vec![
+        response(200, br#"{"releases":[],"retirements":{}}"#),
+        response(200, br#"{"releases":[],"retirements":{}}"#),
+    ]);
+    let registry = HexRegistry::from_config(&custom_config(&base), None)
+        .unwrap()
+        .with_visibility_poll(quick_poll(2));
+
+    let error = registry
+        .wait_for("widget", &Version::new(1, 2, 3), false)
+        .await
+        .unwrap_err()
+        .to_string();
+
+    assert_eq!(
+        error,
+        "timed out waiting for widget 1.2.3 to appear on the registry"
+    );
+    assert_eq!(requests.try_iter().count(), 2);
+    server.join().unwrap();
+}
+
+#[test]
+fn visibility_polling_waits_a_minute_unless_a_caller_sets_it() {
+    assert_eq!(
+        VisibilityPoll::default(),
+        VisibilityPoll {
+            attempts: 20,
+            interval: std::time::Duration::from_secs(3),
+        }
+    );
 }
 
 fn custom_config(base: &str) -> RegistryConfig {

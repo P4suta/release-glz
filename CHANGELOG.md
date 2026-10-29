@@ -65,6 +65,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The `update` command, which ran the same code as `release-pr`; use `release-glz release-pr`.
 - `HexRegistry::default` and `Planner::default`, which no command used and which read registry locations from `RELEASE_GLZ_HEX_*` variables.
   Build a registry from the manifest configuration instead.
+- The undocumented `RELEASE_GLZ_POLL_ATTEMPTS` and `RELEASE_GLZ_POLL_INTERVAL_MS` variables, which changed how long publication waited for the registry.
+  A library caller sets `VisibilityPoll` through `HexRegistry::with_visibility_poll` instead.
 
 ### Fixed
 
