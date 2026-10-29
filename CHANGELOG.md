@@ -70,6 +70,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Kani proves the lifecycle and version arithmetic of the new dependency-free `release-glz-core` crate for every input, and shipping assurance runs those proofs.
 - Updating the Release PR considers only a pull request on a branch with the release prefix whose marker names that same branch.
   The update could otherwise pick, close, and replace a pull request that copied a Release PR body onto another branch.
+- Repairing a stale Release PR marker keeps its intent only when the head stays the same.
+  A marker moved to a new head carried the old head's intent, and the binding then refused the new head's Candidate.
 - Closing a stale Release PR deletes its branch through a compare-and-swap on the verified generated commit and only then closes the pull request.
   A commit that someone pushes after the check now keeps both the branch and the open pull request.
 - Binding an intent reads the Release PR again just before it writes, and writes nothing over a head or body that a newer run replaced.

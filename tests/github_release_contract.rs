@@ -1103,6 +1103,63 @@ async fn a_failed_compare_and_swap_leaves_the_release_branch_and_pr_alone() {
 }
 
 #[tokio::test]
+async fn a_repaired_marker_keeps_an_intent_only_for_the_same_head() {
+    let files = release_files();
+    let digest = release_files_digest(&files);
+    let tip = "c".repeat(40);
+    let actual_head = "b".repeat(40);
+    let intent = "1".repeat(64);
+    for (case, marker_head, expected_intent) in [
+        ("a replaced head", "a".repeat(40), "pending".to_owned()),
+        ("the same head", actual_head.clone(), intent.clone()),
+    ] {
+        let body = managed_body(
+            "widget",
+            "release-glz/widget",
+            &marker_head,
+            &"0".repeat(64),
+            "1.2.3",
+            &intent,
+        );
+        let server = FakeServer::start(vec![
+            response(
+                200,
+                &serde_json::json!([pull_value(7, &body, "release-glz/widget", &marker_head)])
+                    .to_string(),
+            ),
+            response(200, &format!(r#"{{"object":{{"sha":"{actual_head}"}}}}"#)),
+            response(200, &generated_commit_on(&digest, &tip)),
+            response(
+                200,
+                &pull_value(7, &body, "release-glz/widget", &actual_head).to_string(),
+            ),
+        ])
+        .await;
+        test_client(&server, Some("token"))
+            .upsert_release_pr(
+                &release_plan(),
+                &default_branch(&tip),
+                "release-glz/",
+                &files,
+            )
+            .await
+            .unwrap();
+        let requests = server.requests();
+        assert!(
+            requests[3].starts_with("PATCH /repos/o/r/pulls/7 "),
+            "{case}"
+        );
+        let patch = request_json(&requests[3]);
+        let body = patch["body"].as_str().unwrap();
+        assert!(body.contains(&format!("head={actual_head}")), "{case}");
+        assert!(
+            body.contains(&format!("intent={expected_intent} ")),
+            "{case}: {body}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn rolling_release_pr_repairs_a_marker_after_a_verified_commit_race() {
     let files = release_files();
     let digest = release_files_digest(&files);
