@@ -36,10 +36,11 @@ Do not create a GitHub Release, move a tag, or publish any package while an item
 - The tag workflow must regenerate and compare all six archive checksums with `action/checksums.json` before any Release mutation.
 - Require a CycloneDX `release-glz.cdx.json`, `THIRD_PARTY_LICENSES.json`, `SHA256SUMS`, and one in-toto provenance JSONL statement per archive.
 - Require GitHub artifact attestations for every archive and the SBOM attestation.
-  Verify each downloaded archive with `gh attestation verify` against `P4suta/release-glz`.
+  Verify each downloaded archive with `gh attestation verify`, and require `distribute.yml` at the release tag and commit on a GitHub-hosted runner.
 - Keep the GitHub Release in draft state while assets are uploaded.
   Existing assets must have the exact server SHA-256 digest; never clobber or replace an asset.
-- Re-download every asset from the draft, run `sha256sum --check SHA256SUMS`, re-verify all attestations and provenance subjects, and confirm the inventory contains no extra or missing file.
+- Before more uploads and again before finalizing, require every asset's GitHub digest to equal the SHA-256 of the file that the run built.
+- Re-download every asset from the draft, compare each one byte for byte with the run's own build, re-verify all attestations and provenance subjects, and confirm the inventory contains no extra or missing file.
 - Finalize the draft only after every check above succeeds.
   Then test one clean installation for each documented operating-system family and run `release-glz --version`.
 

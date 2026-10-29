@@ -54,7 +54,9 @@ gh release download "$VERSION" --repo P4suta/release-glz --pattern "$ARCHIVE" --
 EXPECTED=$(awk -v archive="$ARCHIVE" '$2 == archive || $2 == ("*" archive) { print $1 }' SHA256SUMS)
 test "${#EXPECTED}" -eq 64
 printf '%s  %s\n' "$EXPECTED" "$ARCHIVE" | sha256sum --check -
-gh attestation verify "$ARCHIVE" --repo P4suta/release-glz
+gh attestation verify "$ARCHIVE" --repo P4suta/release-glz \
+  --signer-workflow P4suta/release-glz/.github/workflows/distribute.yml \
+  --source-ref "refs/tags/$VERSION"
 tar --extract --gzip --file "$ARCHIVE"
 sudo install -m 0755 release-glz /usr/local/bin/release-glz
 release-glz --version
@@ -77,7 +79,9 @@ foreach ($Line in Get-Content SHA256SUMS) {
 if ($ExpectedDigests.Count -ne 1) { throw "checksum manifest must contain the archive exactly once" }
 $Expected = $ExpectedDigests[0]
 if ((Get-FileHash $Archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $Expected) { throw "checksum mismatch" }
-gh attestation verify $Archive --repo P4suta/release-glz
+gh attestation verify $Archive --repo P4suta/release-glz `
+  --signer-workflow P4suta/release-glz/.github/workflows/distribute.yml `
+  --source-ref "refs/tags/$Version"
 Expand-Archive $Archive -DestinationPath .\release-glz-bin
 New-Item -ItemType Directory -Force "$env:LOCALAPPDATA\Programs\release-glz" | Out-Null
 Copy-Item .\release-glz-bin\release-glz.exe "$env:LOCALAPPDATA\Programs\release-glz\release-glz.exe"
