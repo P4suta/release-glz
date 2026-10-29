@@ -1,9 +1,7 @@
 //! The Candidate: the sealed publication unit of the v1 model.
 //!
-//! A Candidate binds one committed source SHA, the exact package and
-//! documentation bytes built from it, the policy that applies, and the hook
-//! evidence collected along the way. `release` publishes these bytes; it
-//! never rebuilds them from a checkout.
+//! A Candidate binds one committed source SHA, the exact package and documentation bytes built from it, the policy that applies, and the hook evidence collected along the way.
+//! `release` publishes these bytes; it never rebuilds them from a checkout.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -40,6 +38,21 @@ const MAX_MANIFEST_BYTES: u64 = MIB;
 /// Bytes of release notes a Candidate may carry.
 const MAX_RELEASE_NOTES_BYTES: usize = MIB as usize;
 
+/// Type of the in-toto statement that carries the Candidate provenance.
+const IN_TOTO_STATEMENT_TYPE: &str = "https://in-toto.io/Statement/v1";
+
+/// Predicate type of SLSA provenance.
+const SLSA_PROVENANCE_TYPE: &str = "https://slsa.dev/provenance/v1";
+
+/// Build type that names how release-glz builds a Candidate.
+const CANDIDATE_BUILD_TYPE: &str = "https://p4suta.github.io/release-glz/build/v1";
+
+/// Identity of the builder that seals a Candidate.
+const CANDIDATE_BUILDER_ID: &str = "https://github.com/P4suta/release-glz";
+
+/// Start of the SLSA URI of a GitHub repository, which `owner/name.git@commit` completes.
+const GITHUB_SOURCE_URI_PREFIX: &str = "git+https://github.com/";
+
 /// The exact commit and manifest a Candidate was built from.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -52,8 +65,7 @@ pub struct CandidateSource {
 
 /// The registry a Candidate is bound to.
 ///
-/// Recorded by value so that publication cannot be redirected by editing
-/// the manifest after the Candidate was approved.
+/// Recorded by value so that publication cannot be redirected by editing the manifest after the Candidate was approved.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RegistryIdentity {
@@ -116,8 +128,7 @@ pub struct SealedArtifact {
     pub sha256: String,
     /// Digest of the normalized contents.
     ///
-    /// Two archives that differ only in compression or timestamps share
-    /// this digest, which is what makes republication detectable.
+    /// Two archives that differ only in compression or timestamps share this digest, which is what makes republication detectable.
     pub semantic_sha256: String,
     /// Size in bytes.
     pub size: u64,
@@ -203,8 +214,7 @@ pub struct CandidateManifest {
     pub intent_digest: String,
     /// Digest of the Candidate itself.
     ///
-    /// An approval binds to this value, so altered bytes can no longer be
-    /// published under an approval that was granted for the original.
+    /// An approval binds to this value, so altered bytes can no longer be published under an approval that was granted for the original.
     pub candidate_digest: String,
 }
 
@@ -261,17 +271,15 @@ pub struct Candidate;
 impl Candidate {
     /// Build the evidence artifacts release-glz produces itself.
     ///
-    /// Evidence from a private repository stays internal unless the manifest
-    /// explicitly permits uploading it.
+    /// Evidence from a private repository stays internal unless the manifest explicitly permits uploading it.
     pub fn built_in_evidence(input: &CandidateInput) -> Result<Vec<SidecarArtifact>> {
         Ok(Self::built_in_evidence_and_artifacts(input)?.0)
     }
 
     /// Build the evidence and hand back the archives it was validated from.
     ///
-    /// One rehearsal needs evidence, an intent digest, and a sealed Candidate
-    /// for the same bytes. Passing the validated archives along means those
-    /// archives are expanded once instead of once per step.
+    /// One rehearsal needs evidence, an intent digest, and a sealed Candidate for the same bytes.
+    /// Passing the validated archives along means those archives are expanded once instead of once per step.
     pub(crate) fn built_in_evidence_and_artifacts(
         input: &CandidateInput,
     ) -> Result<(Vec<SidecarArtifact>, CandidateArtifacts)> {
@@ -319,12 +327,12 @@ impl Candidate {
                 "digest": {"sha256": artifacts.package_interface.sha256}
             }));
             let value = serde_json::json!({
-                "_type": "https://in-toto.io/Statement/v1",
+                "_type": IN_TOTO_STATEMENT_TYPE,
                 "subject": subjects,
-                "predicateType": "https://slsa.dev/provenance/v1",
+                "predicateType": SLSA_PROVENANCE_TYPE,
                 "predicate": {
                     "buildDefinition": {
-                        "buildType": "https://p4suta.github.io/release-glz/build/v1",
+                        "buildType": CANDIDATE_BUILD_TYPE,
                         "externalParameters": {
                             "compiler": input.compiler,
                             "manifestPath": input.source.manifest_path,
@@ -332,12 +340,12 @@ impl Candidate {
                         },
                         "internalParameters": {},
                         "resolvedDependencies": [{
-                            "uri": format!("git+https://github.com/{}.git@{}", input.github_repository, input.source.commit_sha),
+                            "uri": format!("{GITHUB_SOURCE_URI_PREFIX}{}.git@{}", input.github_repository, input.source.commit_sha),
                             "digest": {"gitCommit": input.source.commit_sha}
                         }]
                     },
                     "runDetails": {
-                        "builder": {"id": "https://github.com/P4suta/release-glz"},
+                        "builder": {"id": CANDIDATE_BUILDER_ID},
                         "metadata": {"invocationId": input.source.commit_sha}
                     }
                 }
@@ -355,8 +363,7 @@ impl Candidate {
 
     /// Digest the decision without sealing anything.
     ///
-    /// `plan` and `release-pr` use this to publish an intent digest before
-    /// any artifact exists.
+    /// `plan` and `release-pr` use this to publish an intent digest before any artifact exists.
     pub fn core_intent_digest(input: &CandidateInput) -> Result<String> {
         Self::core_intent_digest_prepared(input, None)
     }
@@ -395,8 +402,7 @@ impl Candidate {
 
     /// Seal a Candidate into a new directory.
     ///
-    /// An existing destination is refused rather than reused: a sealed
-    /// Candidate is never replaced in place.
+    /// An existing destination is refused rather than reused: a sealed Candidate is never replaced in place.
     pub fn seal(directory: &Path, input: CandidateInput) -> Result<CandidateManifest> {
         Self::seal_prepared(directory, input, None)
     }
@@ -516,9 +522,7 @@ impl Candidate {
 
     /// Re-verify a sealed Candidate from its directory alone.
     ///
-    /// Every artifact is re-digested and the manifest is revalidated, so a
-    /// Candidate that was altered after sealing fails here rather than at
-    /// publication time.
+    /// Every artifact is re-digested and the manifest is revalidated, so a Candidate that was altered after sealing fails here rather than at publication time.
     pub fn verify(directory: &Path) -> Result<CandidateManifest> {
         let manifest_bytes = read_regular_limited(
             &directory.join(MANIFEST_FILE),

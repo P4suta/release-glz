@@ -1,5 +1,4 @@
-//! Failure classes shared by the CLI exit status and the `command/v2` error
-//! code.
+//! Failure classes shared by the CLI exit status and the `command/v2` error code.
 
 use std::fmt;
 
@@ -8,45 +7,35 @@ use serde::{Deserialize, Serialize};
 
 /// Stable classes shared by the CLI exit status and machine-readable error code.
 ///
-/// Classification is deliberately carried by the error type. Error message text
-/// is presentation only and can never change the exit status.
+/// Classification is deliberately carried by the error type.
+/// Error message text is presentation only and can never change the exit status.
+/// Each discriminant is the class's exit status, a public contract documented in the README; callers branch on it, so a code can never be reused for another class.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[repr(i32)]
 pub enum FailureClass {
     /// A defect, or a boundary error that carries no more precise class.
-    Internal,
-    /// Invalid arguments, manifest, or repository state that the caller has
-    /// to correct.
-    UsageOrConfig,
+    Internal = 1,
+    /// Invalid arguments, manifest, or repository state that the caller has to correct.
+    UsageOrConfig = 2,
     /// A policy, approval, or authorization requirement that is not met.
-    PolicyOrApproval,
+    PolicyOrApproval = 3,
     /// An already published object differs from what this run would write.
     ///
     /// Republishing is never attempted; the conflict is reported instead.
-    ImmutableStateConflict,
+    ImmutableStateConflict = 4,
     /// A transient registry, GitHub, or network failure that may be retried.
-    TemporaryExternal,
+    TemporaryExternal = 5,
     /// A configured hook failed, timed out, or produced invalid evidence.
-    Hook,
+    Hook = 6,
     /// Publication stopped part way and can be resumed monotonically.
-    PartialRelease,
+    PartialRelease = 7,
 }
 
 impl FailureClass {
     /// The process exit status for this class.
-    ///
-    /// The mapping is a public contract documented in the README; callers
-    /// branch on it, so a code can never be reused for another class.
     pub const fn exit_code(self) -> i32 {
-        match self {
-            Self::Internal => 1,
-            Self::UsageOrConfig => 2,
-            Self::PolicyOrApproval => 3,
-            Self::ImmutableStateConflict => 4,
-            Self::TemporaryExternal => 5,
-            Self::Hook => 6,
-            Self::PartialRelease => 7,
-        }
+        self as i32
     }
 
     /// The stable diagnostic code emitted in `command/v2` output.
@@ -93,14 +82,12 @@ impl fmt::Display for ClassifiedFailure {
 
 impl std::error::Error for ClassifiedFailure {}
 
-/// Wrap any displayable error so its class survives conversion to
-/// [`anyhow::Error`].
+/// Wrap any displayable error so its class survives conversion to [`anyhow::Error`].
 pub fn classified(class: FailureClass, error: impl fmt::Display) -> Error {
     Error::new(ClassifiedFailure::new(class, error.to_string()))
 }
 
-/// Attach a boundary-specific class without replacing a more precise class
-/// already carried by the source error.
+/// Attach a boundary-specific class without replacing a more precise class already carried by the source error.
 pub fn with_default_class(error: Error, fallback: FailureClass) -> Error {
     if classify(&error) == FailureClass::Internal
         && error.downcast_ref::<ClassifiedFailure>().is_none()
@@ -113,8 +100,8 @@ pub fn with_default_class(error: Error, fallback: FailureClass) -> Error {
 
 /// Recover the class of an error, defaulting to [`FailureClass::Internal`].
 ///
-/// Only typed source errors are inspected. Message wording never selects
-/// a class, so rephrasing an error cannot change an exit status.
+/// Only typed source errors are inspected.
+/// Message wording never selects a class, so rephrasing an error cannot change an exit status.
 pub fn classify(error: &Error) -> FailureClass {
     if let Some(classified) = error.downcast_ref::<ClassifiedFailure>() {
         return classified.class();
