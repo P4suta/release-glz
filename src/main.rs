@@ -1431,9 +1431,13 @@ async fn write_rolling_release_pr(
             plan.pr_url = Some(update.url);
             plan.release_pr_head = Some(update.head);
         }
-    } else if base.is_some() {
+    } else if let Some(base) = &base {
         github
-            .close_managed_release_pr(&manifest.package, &manifest.release.release_branch_prefix)
+            .close_managed_release_pr(
+                &manifest.package,
+                &manifest.release.release_branch_prefix,
+                base,
+            )
             .await
             .map_err(|error| default_failure_class(error, FailureClass::TemporaryExternal))?;
     }
