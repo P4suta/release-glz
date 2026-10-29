@@ -45,3 +45,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A failed write of the artifact baseline cache is reported instead of ignored.
 - Commit messages that contain ASCII record or unit separators no longer corrupt the change list.
 - `release-pr` no longer fails with "No such file or directory" when the manifest path names no directory and the changelog doesn't exist yet.
+- The Release PR branch always holds one generated commit on the current default branch tip.
+  When the tip moves, `release-pr` rebuilds that commit on the new tip, so the merged commit carries the content that the bound intent describes.
+  It moves the branch only through a compare-and-swap from the generated commit it last wrote.
+- `release-pr` writes or closes the Release PR only when its checkout is the default branch tip that GitHub reports.
+  A run behind the tip reports `release_pr_superseded` and writes nothing.
+- Requests for the repository itself no longer end in a slash, which GitHub answers with 404, so `doctor --online` can read the repository settings.

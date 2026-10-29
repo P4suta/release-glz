@@ -186,6 +186,23 @@ impl PullRequest {
     }
 }
 
+/// The branch that the rolling Release PR targets, as GitHub reported it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DefaultBranch {
+    /// Branch name.
+    pub name: String,
+    /// Commit at the tip of the branch.
+    pub tip: String,
+    /// GraphQL node id of the repository, which ref updates name.
+    pub repository_id: String,
+}
+
+/// A server-verified commit that this tool created on top of one parent.
+struct GeneratedCommit {
+    digest: String,
+    parent: String,
+}
+
 /// What binding a Candidate intent to the rolling Release PR did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IntentBinding {
@@ -759,13 +776,38 @@ impl GitHubClient {
         })
     }
 
-    /// Create or update the rolling Release PR for a package.
+    /// The default branch as GitHub reports it now, with the commit at its tip.
+    pub async fn default_branch(&self) -> Result<DefaultBranch> {
+        #[derive(Deserialize)]
+        struct RepositoryNode {
+            node_id: String,
+            default_branch: String,
+        }
+        let repository: RepositoryNode = self.get("").await?;
+        let tip = self
+            .ref_sha(&repository.default_branch)
+            .await?
+            .with_context(|| {
+                format!(
+                    "GitHub default branch `{}` does not exist",
+                    repository.default_branch
+                )
+            })?;
+        Ok(DefaultBranch {
+            name: repository.default_branch,
+            tip,
+            repository_id: repository.node_id,
+        })
+    }
+
+    /// Create or update the rolling Release PR for a package on the tip of `base`.
     ///
     /// One pull request is maintained per package, so a superseded plan updates it in place instead of leaving stale proposals open.
+    /// Its branch always holds exactly one generated commit on top of `base.tip`, so merging it brings in nothing that the rehearsed head lacks.
     pub async fn upsert_release_pr(
         &self,
         plan: &ReleasePlan,
-        base: &str,
+        base: &DefaultBranch,
         branch_prefix: &str,
         files: &BTreeMap<String, Vec<u8>>,
     ) -> Result<ReleasePrUpdate> {
@@ -784,15 +826,27 @@ impl GitHubClient {
         if let Some(pull) = managed.as_ref()
             && let Some(marker) = pull.body.as_deref().and_then(parse_marker)
         {
-            let actual = self.ref_sha(&marker.branch).await?;
-            if actual.as_deref() != Some(&marker.head) {
-                let generated_digest = match actual.as_deref() {
-                    Some(actual) => self.generated_commit_digest(actual).await?,
-                    None => None,
-                };
-                if generated_digest.as_deref() == Some(&digest)
-                    && let Some(actual) = actual
+            let actual = match marker.branch == pull.head.branch {
+                true => self.ref_sha(&pull.head.branch).await?,
+                false => None,
+            };
+            let generated = match actual.as_deref() {
+                Some(actual) => self.generated_commit(actual).await?,
+                None => None,
+            };
+            match (actual, generated) {
+                (Some(actual), Some(commit))
+                    if commit.digest == digest && commit.parent == base.tip =>
                 {
+                    if actual == marker.head
+                        && marker.digest == digest
+                        && marker.version == plan.version.to_string()
+                    {
+                        return Ok(ReleasePrUpdate {
+                            url: pull.html_url.clone(),
+                            head: actual,
+                        });
+                    }
                     // The verified commit succeeded but updating the PR body failed.
                     // Repair the marker without creating another commit.
                     let body = pull_body(
@@ -819,7 +873,13 @@ impl GitHubClient {
                         url: updated.html_url,
                         head: actual,
                     });
-                } else if generated_digest.is_none() {
+                }
+                (Some(actual), Some(_)) => {
+                    // The branch holds this tool's commit for an older plan or an older tip.
+                    // Move it back to the tip only if it still holds exactly that commit.
+                    self.reset_branch(base, &pull.head.branch, &actual).await?;
+                }
+                _ => {
                     self.post_empty(
                         &format!("issues/{}/comments", pull.number),
                         &serde_json::json!({"body": "release-glz detected commits not created by the bot. This PR is being closed without overwriting them; a new managed branch will be opened."}),
@@ -832,11 +892,6 @@ impl GitHubClient {
                     .await?;
                     managed = None;
                 }
-            } else if marker.digest == digest && marker.version == plan.version.to_string() {
-                return Ok(ReleasePrUpdate {
-                    url: pull.html_url.clone(),
-                    head: marker.head,
-                });
             }
         }
 
@@ -844,24 +899,15 @@ impl GitHubClient {
             pull.head.branch.clone()
         } else {
             let desired = format!("{branch_prefix}{}", plan.package);
-            if self.ref_sha(&desired).await?.is_some() {
+            let branch = if self.ref_sha(&desired).await?.is_some() {
                 format!("{desired}-{}", Utc::now().timestamp())
             } else {
                 desired
-            }
+            };
+            self.create_ref(&branch, &base.tip).await?;
+            branch
         };
-
-        let parent = if let Some(sha) = self.ref_sha(&branch).await? {
-            sha
-        } else {
-            let base_sha = self
-                .ref_sha(base)
-                .await?
-                .with_context(|| format!("GitHub branch `{base}` does not exist"))?;
-            self.create_ref(&branch, &base_sha).await?;
-            base_sha
-        };
-        let head = self.create_commit(&branch, &parent, plan, files).await?;
+        let head = self.create_commit(&branch, &base.tip, plan, files).await?;
         let body = pull_body(
             plan,
             &ManagedMarker {
@@ -890,7 +936,7 @@ impl GitHubClient {
                     &serde_json::json!({
                         "title": title,
                         "head": branch,
-                        "base": base,
+                        "base": base.name,
                         "body": body,
                         "maintainer_can_modify": false
                     }),
@@ -1285,12 +1331,6 @@ impl GitHubClient {
         files: &BTreeMap<String, Vec<u8>>,
     ) -> Result<String> {
         #[derive(Deserialize)]
-        struct GraphResponse {
-            data: Option<GraphData>,
-            #[serde(default)]
-            errors: Vec<GraphError>,
-        }
-        #[derive(Deserialize)]
         #[serde(rename_all = "camelCase")]
         struct GraphData {
             create_commit_on_branch: GraphCommitPayload,
@@ -1302,10 +1342,6 @@ impl GitHubClient {
         #[derive(Deserialize)]
         struct GraphCommit {
             oid: String,
-        }
-        #[derive(Deserialize)]
-        struct GraphError {
-            message: String,
         }
 
         let additions: Vec<_> = files
@@ -1335,13 +1371,59 @@ impl GitHubClient {
                 }
             }
         });
+        let data: GraphData = self
+            .graphql("create verified release commit", &body)
+            .await?;
+        Ok(data.create_commit_on_branch.commit.oid)
+    }
+
+    /// Move `branch` from `from` back to the tip of `base`, refusing if it no longer points at `from`.
+    ///
+    /// The compare-and-swap keeps a commit that someone pushed after `from` was verified.
+    async fn reset_branch(&self, base: &DefaultBranch, branch: &str, from: &str) -> Result<()> {
+        let body = serde_json::json!({
+            "query": "mutation ResetReleaseBranch($input: UpdateRefsInput!) { updateRefs(input: $input) { clientMutationId } }",
+            "variables": {
+                "input": {
+                    "repositoryId": base.repository_id,
+                    "refUpdates": [{
+                        "name": format!("refs/heads/{branch}"),
+                        "beforeOid": from,
+                        "afterOid": base.tip,
+                        "force": true
+                    }]
+                }
+            }
+        });
+        self.graphql::<serde_json::Value>("reset the Release PR branch", &body)
+            .await?;
+        Ok(())
+    }
+
+    /// Run one GraphQL operation and return its data, refusing a response that reports any error.
+    async fn graphql<T: DeserializeOwned>(
+        &self,
+        purpose: &str,
+        body: &serde_json::Value,
+    ) -> Result<T> {
+        #[derive(Deserialize)]
+        struct GraphResponse<T> {
+            data: Option<T>,
+            #[serde(default)]
+            errors: Vec<GraphError>,
+        }
+        #[derive(Deserialize)]
+        struct GraphError {
+            message: String,
+        }
+
         let response = self
             .request(Method::POST, &self.graphql_url)
-            .json(&body)
+            .json(body)
             .send()
             .await?;
         let status = response.status();
-        let response: GraphResponse = json_response(response, &self.graphql_url)
+        let response: GraphResponse<T> = json_response(response, &self.graphql_url)
             .await
             .context("invalid GitHub GraphQL response")?;
         if !status.is_success() || !response.errors.is_empty() {
@@ -1352,29 +1434,41 @@ impl GitHubClient {
                 .collect::<Vec<_>>()
                 .join("; ");
             let errors = crate::secrets::redact(&errors);
-            bail!("GitHub could not create verified release commit: {errors}");
+            bail!("GitHub could not {purpose}: {errors}");
         }
-        Ok(response
-            .data
-            .context("GitHub GraphQL response had no data")?
-            .create_commit_on_branch
-            .commit
-            .oid)
+        response.data.context("GitHub GraphQL response had no data")
     }
 
     /// The files digest of a commit that release-glz created, or `None` for any other commit.
+    async fn generated_commit_digest(&self, sha: &str) -> Result<Option<String>> {
+        Ok(self
+            .generated_commit(sha)
+            .await?
+            .map(|commit| commit.digest))
+    }
+
+    /// The digest and parent of a commit that release-glz created, or `None` for any other commit.
     ///
     /// A generated commit is server-verified and has exactly one parent, since a merge commit could bring in other work.
-    async fn generated_commit_digest(&self, sha: &str) -> Result<Option<String>> {
+    async fn generated_commit(&self, sha: &str) -> Result<Option<GeneratedCommit>> {
         let commit: GitCommitResponse = self.get(&format!("git/commits/{sha}")).await?;
-        if !commit.verification.verified || commit.parents.len() != 1 {
+        let [parent] = commit.parents.as_slice() else {
+            return Ok(None);
+        };
+        if !commit.verification.verified {
             return Ok(None);
         }
-        Ok(commit.message.lines().find_map(|line| {
-            line.strip_prefix("release-glz-digest: ")
-                .filter(|digest| valid_sha256(digest))
-                .map(str::to_owned)
-        }))
+        Ok(commit
+            .message
+            .lines()
+            .find_map(|line| {
+                line.strip_prefix("release-glz-digest: ")
+                    .filter(|digest| valid_sha256(digest))
+            })
+            .map(|digest| GeneratedCommit {
+                digest: digest.to_owned(),
+                parent: parent.sha.clone(),
+            }))
     }
 
     fn require_token(&self) -> Result<()> {
@@ -1488,14 +1582,18 @@ impl GitHubClient {
         }
     }
 
+    /// The API URL of `path` below the repository, or of the repository itself for an empty path.
+    ///
+    /// GitHub answers the repository URL with a trailing slash with 404.
     fn url(&self, path: &str) -> String {
-        format!(
-            "{}/repos/{}/{}/{}",
-            self.api_url,
-            self.repository.owner,
-            self.repository.name,
-            path.trim_start_matches('/')
-        )
+        let repository = format!(
+            "{}/repos/{}/{}",
+            self.api_url, self.repository.owner, self.repository.name
+        );
+        match path.trim_start_matches('/') {
+            "" => repository,
+            path => format!("{repository}/{path}"),
+        }
     }
 }
 

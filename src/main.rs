@@ -1375,6 +1375,28 @@ async fn write_rolling_release_pr(
         .map_err(|error| default_failure_class(error, FailureClass::UsageOrConfig))?;
     let github = github_client(&manifest)
         .map_err(|error| default_failure_class(error, FailureClass::UsageOrConfig))?;
+    let base = if dry_run {
+        None
+    } else {
+        let base = github
+            .default_branch()
+            .await
+            .map_err(|error| default_failure_class(error, FailureClass::TemporaryExternal))?;
+        if base.tip != repo.head()? {
+            // Only the run for the current tip may write or close the Release PR.
+            plan.warnings.push(Diagnostic {
+                code: "release_pr_superseded".into(),
+                level: DiagnosticLevel::Warning,
+                message: format!(
+                    "`{}` moved on to {}, so the run for that commit writes the Release PR",
+                    base.name, base.tip
+                ),
+                detail: None,
+            });
+            return Ok(plan);
+        }
+        Some(base)
+    };
     if plan.release_required {
         let commits = repo.commits_since(plan.baseline.sha.as_deref())?;
         plan.changes = github
@@ -1382,21 +1404,15 @@ async fn write_rolling_release_pr(
             .await
             .map_err(|error| default_failure_class(error, FailureClass::TemporaryExternal))?;
         let files = prepare_release_files(&manifest, &repo, &plan, &plan.changes)?;
-        if !dry_run {
-            let base = repo.default_branch()?;
+        if let Some(base) = &base {
             let update = github
-                .upsert_release_pr(
-                    &plan,
-                    &base,
-                    &manifest.release.release_branch_prefix,
-                    &files,
-                )
+                .upsert_release_pr(&plan, base, &manifest.release.release_branch_prefix, &files)
                 .await
                 .map_err(|error| default_failure_class(error, FailureClass::TemporaryExternal))?;
             plan.pr_url = Some(update.url);
             plan.release_pr_head = Some(update.head);
         }
-    } else if !dry_run {
+    } else if base.is_some() {
         github
             .close_managed_release_pr(&manifest.package, &manifest.release.release_branch_prefix)
             .await
