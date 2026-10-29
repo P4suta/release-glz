@@ -28,6 +28,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Such a hook's output used to count as built-in evidence.
 - The files digest of a Release PR commit starts from a domain tag and puts a length before every path and content.
   Two different file sets could hash the same input before, and an open Release PR gets one rebuilt commit under the new digest.
+- Redaction finds every occurrence of every secret before it replaces any, and replaces each run of covered text once.
+  A secret inside another, or two that overlapped in the text, used to leave part of one in error messages and logs.
 - A registry `Retry-After` header can ask for at most one minute, so a response can no longer stall a run indefinitely.
 - Candidate verification checks each sealed file again through the handle it opened and reads at most one byte past the file's limit.
   A file swapped after the path check can no longer make verification read without bound.
