@@ -154,6 +154,46 @@ fn operations_and_migration_guides_cover_every_supported_registry_path() {
     }
 }
 
+/// The value in the second column of the threat model's archive limit row that starts with `label`.
+fn archive_limit(threat: &str, label: &str) -> u64 {
+    let row = threat
+        .lines()
+        .skip_while(|line| *line != "## Archive limits")
+        .find(|line| line.starts_with(&format!("| {label} |")))
+        .unwrap_or_else(|| panic!("the threat model states no `{label}` archive limit"));
+    let value = row.split('|').nth(2).unwrap().trim();
+    let (number, unit) = value.split_once(' ').unwrap_or((value, ""));
+    let number: u64 = number.replace(',', "").parse().unwrap();
+    let scale = match unit {
+        "" => 1,
+        "MiB" => 1024 * 1024,
+        other => panic!("unknown archive limit unit `{other}`"),
+    };
+    number * scale
+}
+
+#[test]
+fn threat_model_states_the_default_archive_limits_the_code_enforces() {
+    let threat = fs::read_to_string("docs/threat-model.md").unwrap();
+    let limits = release_glz::artifact::ArchiveLimits::default();
+    assert_eq!(
+        archive_limit(&threat, "Entries in one archive"),
+        u64::try_from(limits.max_entries).unwrap()
+    );
+    assert_eq!(
+        archive_limit(&threat, "Expanded size of one entry"),
+        limits.max_entry_bytes
+    );
+    assert_eq!(
+        archive_limit(&threat, "Expanded size of one archive"),
+        limits.max_total_bytes
+    );
+    assert_eq!(
+        archive_limit(&threat, "Compressed size of one archive"),
+        limits.max_archive_bytes
+    );
+}
+
 #[test]
 fn threat_model_documents_the_narrow_gleam_windows_packaging_fallback() {
     let threat = fs::read_to_string("docs/threat-model.md").unwrap();
