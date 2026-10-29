@@ -476,6 +476,10 @@ fn a_handed_off_plan_writes_the_release_pr_without_the_compiler() {
         .output()
         .unwrap();
     assert_eq!(replanned.status.code(), Some(2), "{replanned:?}");
+    assert!(
+        !compiler_runs.exists(),
+        "plan --out started planning before it refused the existing file"
+    );
     assert_eq!(std::fs::read(&plan_path).unwrap(), plan_bytes);
 
     let (github_listener, github_url) = bound_listener();
