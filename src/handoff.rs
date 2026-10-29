@@ -49,7 +49,8 @@ impl fmt::Display for Refusal {
             ),
             Self::NotAPlan(reason) => write!(
                 formatter,
-                "the plan file is not a plan/v3 document: {reason}"
+                "the plan file is not a {} document: {reason}",
+                ReleasePlan::SCHEMA
             ),
             Self::Schema(schema) => write!(formatter, "the plan file has schema `{schema}`"),
             Self::ReleasePrNamed => formatter.write_str(
