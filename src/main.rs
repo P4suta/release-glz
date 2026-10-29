@@ -11,10 +11,7 @@ use anyhow::{Context, Result, bail};
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::{generate, shells};
 use release_glz::ReleasePlan;
-use release_glz::authorization::{
-    GITHUB_OIDC_ISSUER, GithubOidcClaims, GithubOidcVerifier, OidcAudience, OidcExpectation,
-    validate_github_claims,
-};
+use release_glz::authorization::{GithubOidcVerifier, OidcExpectation};
 use release_glz::candidate::Candidate;
 use release_glz::config::{
     AuthKind, InitializationSettings, Manifest, RegistryConfig, RegistryProvider,
@@ -39,16 +36,12 @@ use release_glz::reconciler::ApprovalEvidence;
 use release_glz::registry::{HexRegistry, RegistryCredentialAudit};
 use release_glz::rehearse::{Rehearsal, RehearseOptions};
 use release_glz::release::{
-    CandidateReleaseRunner, LiveReleaseTarget, ReleaseExecutionOptions, ReleaseReport,
-    SourceBoundCandidate,
+    CandidateReleaseRunner, LiveReleaseTarget, ReleaseReport, SourceBoundCandidate,
 };
 use semver::Version;
 
 /// Seconds the isolated Candidate build may run before it is abandoned.
 const CANDIDATE_BUILD_TIMEOUT_SECONDS: u64 = 1_800;
-
-/// Seconds the locally constructed claims stay valid for, when `doctor` checks an authorization path with no runner to mint a token.
-const LOCAL_CLAIM_LIFETIME_SECONDS: i64 = 60;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -507,8 +500,7 @@ async fn run(cli: Cli) -> Result<i32> {
             let sealed = verified_candidate(&candidate)?;
             if online {
                 let bound = bind_to_source(sealed, &base_options.manifest_path)?;
-                let approval = approved_for_inspection(bound.manifest())?;
-                let report = online_candidate_report(&candidate, bound, approval, true).await?;
+                let report = online_candidate_report(&candidate, bound, OnlineRun::Inspect).await?;
                 print_result("verify", &report, cli.output)?;
             } else {
                 let result = serde_json::json!({
@@ -624,14 +616,18 @@ async fn run(cli: Cli) -> Result<i32> {
             let sealed = verified_candidate(&candidate)?;
             let candidate_digest = sealed.candidate_digest.clone();
             let bound = bind_to_source(sealed, &base_options.manifest_path)?;
-            let approval = if dry_run {
-                approved_for_inspection(bound.manifest())?
+            let run = if dry_run {
+                OnlineRun::Inspect
             } else {
-                approval_from_environment(bound.manifest())
-                    .await
-                    .map_err(|error| default_failure_class(error, FailureClass::PolicyOrApproval))?
+                let approval =
+                    approval_from_environment(bound.manifest())
+                        .await
+                        .map_err(|error| {
+                            default_failure_class(error, FailureClass::PolicyOrApproval)
+                        })?;
+                OnlineRun::Release(Box::new(approval))
             };
-            let report = online_candidate_report(&candidate, bound, approval, dry_run).await?;
+            let report = online_candidate_report(&candidate, bound, run).await?;
             if report.state == ReleaseState::AwaitingApproval && !dry_run {
                 return Err(classified(
                     FailureClass::PolicyOrApproval,
@@ -648,8 +644,8 @@ async fn run(cli: Cli) -> Result<i32> {
                 let sealed = verified_candidate(&candidate)?;
                 if online {
                     let bound = bind_to_source(sealed, &base_options.manifest_path)?;
-                    let approval = approved_for_inspection(bound.manifest())?;
-                    let report = online_candidate_report(&candidate, bound, approval, true).await?;
+                    let report =
+                        online_candidate_report(&candidate, bound, OnlineRun::Inspect).await?;
                     print_result("status", &report, cli.output)?;
                 } else {
                     let next_action = manifest_executable_action(
@@ -1485,73 +1481,31 @@ fn bind_to_source(
         .map_err(|error| default_failure_class(error, FailureClass::UsageOrConfig))
 }
 
+/// What an online command does with a source-bound Candidate.
+enum OnlineRun {
+    /// Report what an approved run would still do, holding no approval evidence.
+    Inspect,
+    /// Apply what is still missing under verified approval evidence.
+    Release(Box<ApprovalEvidence>),
+}
+
 async fn online_candidate_report(
     candidate_directory: &Path,
     candidate: SourceBoundCandidate,
-    approval: ApprovalEvidence,
-    dry_run: bool,
+    run: OnlineRun,
 ) -> Result<ReleaseReport> {
     let target = LiveReleaseTarget::from_candidate(candidate)
         .map_err(|error| default_failure_class(error, FailureClass::PolicyOrApproval))?;
-    CandidateReleaseRunner::new(target)
-        .run(
-            candidate_directory,
-            &approval,
-            ReleaseExecutionOptions { dry_run },
-        )
-        .await
-        .map_err(Into::into)
+    let runner = CandidateReleaseRunner::new(target);
+    match run {
+        OnlineRun::Inspect => runner.inspect(candidate_directory).await,
+        OnlineRun::Release(approval) => runner.run(candidate_directory, &approval).await,
+    }
+    .map_err(Into::into)
 }
 
 fn default_failure_class(error: anyhow::Error, fallback: FailureClass) -> anyhow::Error {
     release_glz::failure::with_default_class(error, fallback)
-}
-
-fn approved_for_inspection(
-    manifest: &release_glz::candidate::CandidateManifest,
-) -> Result<ApprovalEvidence> {
-    let now = chrono::Utc::now().timestamp();
-    let workflow_path = ".github/workflows/release-glz.yml";
-    let github_oidc = validate_github_claims(
-        GithubOidcClaims {
-            issuer: GITHUB_OIDC_ISSUER.into(),
-            audience: OidcAudience::One("release-glz".into()),
-            subject: format!(
-                "repo:{}:environment:{}",
-                manifest.github_repository, manifest.approval.environment
-            ),
-            repository: manifest.github_repository.clone(),
-            environment: Some(manifest.approval.environment.clone()),
-            workflow_ref: format!(
-                "{}/{workflow_path}@refs/heads/inspection",
-                manifest.github_repository
-            ),
-            git_ref: "refs/heads/inspection".into(),
-            source_sha: manifest.source.commit_sha.clone(),
-            run_id: "1".into(),
-            run_attempt: "1".into(),
-            event_name: "push".into(),
-            issued_at: now,
-            not_before: Some(now),
-            expires_at: now + LOCAL_CLAIM_LIFETIME_SECONDS,
-        },
-        &OidcExpectation {
-            repository: manifest.github_repository.clone(),
-            environment: manifest.approval.environment.clone(),
-            workflow_path: workflow_path.into(),
-            source_sha: manifest.source.commit_sha.clone(),
-            run_id: Some("1".into()),
-        },
-        now,
-    )?;
-    Ok(ApprovalEvidence {
-        release_pr_intent_digest: Some(manifest.intent_digest.clone()),
-        environment_candidate_digest: Some(manifest.candidate_digest.clone()),
-        environment: Some(manifest.approval.environment.clone()),
-        source_sha: None,
-        manual_reason: None,
-        github_oidc: Some(github_oidc),
-    })
 }
 
 async fn approval_from_environment(

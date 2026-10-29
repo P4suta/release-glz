@@ -1317,6 +1317,12 @@ dependencies = [
 [[package]]
 name = "release-glz-test-support"
 version = "0.0.0"
+dependencies = [
+ "base64 0.23.1",
+ "ring",
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "reqwest"

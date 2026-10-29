@@ -1,14 +1,16 @@
 use std::collections::BTreeMap;
 
 use release_glz::authorization::{
-    GithubOidcClaims, OidcAudience, OidcExpectation, validate_github_claims,
+    GithubOidcClaims, JwkSet, OidcAudience, OidcExpectation, RsaJwk, VerifiedGithubOidc,
+    verify_github_oidc_token,
 };
 use release_glz::model::ReleaseState;
 use release_glz::reconciler::{
     ApprovalEvidence, ExternalReleaseState, NotifyHookIntent, NotifyObservation, ObservedArtifact,
     ObservedGithubRelease, ObservedTag, ReconcileEffect, ReleaseAsset, ReleaseIntent,
-    notification_key, reconcile,
+    notification_key, preview, reconcile,
 };
+use release_glz_test_support::oidc;
 use semver::Version;
 
 fn intent() -> ReleaseIntent {
@@ -112,6 +114,28 @@ fn approved() -> ApprovalEvidence {
     }
 }
 
+/// The identity in `claims`, signed and then verified, since no other path yields a verified identity.
+fn signed_identity(
+    claims: GithubOidcClaims,
+    expected: &OidcExpectation,
+    now: i64,
+) -> anyhow::Result<VerifiedGithubOidc> {
+    let key = RsaJwk {
+        key_type: "RSA".into(),
+        key_id: Some(oidc::KEY_ID.into()),
+        algorithm: Some("RS256".into()),
+        usage: Some("sig".into()),
+        modulus: oidc::MODULUS.into(),
+        exponent: oidc::EXPONENT.into(),
+    };
+    verify_github_oidc_token(
+        &oidc::sign_rs256(&claims),
+        &JwkSet { keys: vec![key] },
+        expected,
+        now,
+    )
+}
+
 fn oidc_identity(event_name: &str) -> release_glz::authorization::VerifiedGithubOidc {
     oidc_identity_for_ref(event_name, "refs/heads/main")
 }
@@ -139,7 +163,7 @@ fn oidc_identity_with(
     git_ref: &str,
 ) -> release_glz::authorization::VerifiedGithubOidc {
     let now = 1_800_000_000;
-    validate_github_claims(
+    signed_identity(
         GithubOidcClaims {
             issuer: "https://token.actions.githubusercontent.com".into(),
             audience: OidcAudience::One("release-glz".into()),
@@ -166,6 +190,31 @@ fn oidc_identity_with(
         now,
     )
     .unwrap()
+}
+
+#[test]
+fn a_preview_lists_what_reconcile_withholds_without_approval_and_still_checks_the_world() {
+    let observed = ExternalReleaseState::default();
+    let withheld = reconcile(&intent(), &observed, &ApprovalEvidence::default()).unwrap();
+    assert_eq!(withheld.state, ReleaseState::AwaitingApproval);
+    assert!(withheld.effects.is_empty());
+    assert_eq!(
+        preview(&intent(), &observed).unwrap(),
+        reconcile(&intent(), &observed, &approved()).unwrap()
+    );
+
+    let conflicting = ExternalReleaseState {
+        package: Some(ObservedArtifact {
+            sha256: "0".repeat(64),
+        }),
+        ..ExternalReleaseState::default()
+    };
+    assert_eq!(
+        preview(&intent(), &conflicting).unwrap_err().to_string(),
+        reconcile(&intent(), &conflicting, &approved())
+            .unwrap_err()
+            .to_string()
+    );
 }
 
 #[test]

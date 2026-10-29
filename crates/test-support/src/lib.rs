@@ -6,6 +6,8 @@ use std::ffi::OsStr;
 use std::path::Path;
 use std::process::{Command, Output};
 
+pub mod oidc;
+
 /// The only environment variables a spawned binary under test inherits.
 ///
 /// Everything else is withheld, so a developer's GitHub or registry token never reaches a test run.

@@ -21,6 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- A verified approval identity comes only from signature verification of the GitHub OIDC token.
+  `release --dry-run`, `verify --online`, and `status --online` used to build one from invented claims, and only a dry-run flag in another argument kept that evidence from approving a publication.
+  They now inspect through a runner entry point that holds no evidence and applies no effect.
 - Archive validation refuses, on every host, a path that some supported OS can't store under the same name, and two entries that collide once letter case no longer counts.
   That covers a colon, a character or device name that Windows forbids, such as `aux.html`, and a component that ends in a dot or a space.
   A package, documentation archive, or source snapshot with such a path now fails instead of extracting into a different tree on macOS or Windows.
@@ -63,6 +66,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 
 - The `update` command, which ran the same code as `release-pr`; use `release-glz release-pr`.
+- `ReleaseExecutionOptions` and the public `validate_github_claims`.
+  A library caller previews with `CandidateReleaseRunner::inspect` and verifies a token with `verify_github_oidc_token`.
 - `HexRegistry::default` and `Planner::default`, which no command used and which read registry locations from `RELEASE_GLZ_HEX_*` variables.
   Build a registry from the manifest configuration instead.
 - The undocumented `RELEASE_GLZ_POLL_ATTEMPTS` and `RELEASE_GLZ_POLL_INTERVAL_MS` variables, which changed how long publication waited for the registry.

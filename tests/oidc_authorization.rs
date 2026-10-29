@@ -1,11 +1,8 @@
-use base64::Engine;
 use release_glz::authorization::{
     GithubOidcClaims, GithubOidcVerifier, JwkSet, OidcAudience, OidcExpectation, RsaJwk,
-    validate_github_claims, verify_github_oidc_token,
+    VerifiedGithubOidc, verify_github_oidc_token,
 };
-use ring::rand::SystemRandom;
-use ring::rsa::{KeyPairComponents, PublicKeyComponents};
-use ring::signature::{RSA_PKCS1_SHA256, RsaKeyPair};
+use release_glz_test_support::oidc;
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -42,9 +39,18 @@ fn expectation() -> OidcExpectation {
     }
 }
 
+/// Sign `claims` and verify the token against `expected`, the only way to a verified identity.
+fn verify(
+    claims: GithubOidcClaims,
+    expected: &OidcExpectation,
+) -> anyhow::Result<VerifiedGithubOidc> {
+    let (token, key) = sign_claims(&claims);
+    verify_github_oidc_token(&token, &JwkSet { keys: vec![key] }, expected, NOW)
+}
+
 #[test]
 fn exact_github_environment_identity_is_accepted() {
-    let verified = validate_github_claims(claims(), &expectation(), NOW).unwrap();
+    let verified = verify(claims(), &expectation()).unwrap();
     assert_eq!(verified.repository(), "owner/widget");
     assert_eq!(verified.environment(), "release");
     assert_eq!(verified.run_id(), "12345");
@@ -78,7 +84,7 @@ fn every_security_boundary_is_fail_closed() {
     for mutate in mutations {
         let mut candidate = claims();
         mutate(&mut candidate);
-        assert!(validate_github_claims(candidate, &expectation(), NOW).is_err());
+        assert!(verify(candidate, &expectation()).is_err());
     }
 }
 
@@ -86,11 +92,11 @@ fn every_security_boundary_is_fail_closed() {
 fn audience_arrays_are_supported_but_must_contain_release_glz() {
     let mut candidate = claims();
     candidate.audience = OidcAudience::Many(vec!["other".into(), "release-glz".into()]);
-    validate_github_claims(candidate, &expectation(), NOW).unwrap();
+    verify(candidate, &expectation()).unwrap();
 
     let mut candidate = claims();
     candidate.audience = OidcAudience::Many(vec!["other".into()]);
-    assert!(validate_github_claims(candidate, &expectation(), NOW).is_err());
+    assert!(verify(candidate, &expectation()).is_err());
 }
 
 #[test]
@@ -105,7 +111,7 @@ fn optional_and_alternate_valid_github_claim_forms_are_explicit() {
     candidate.run_attempt = "1".into();
     candidate.event_name = "workflow_dispatch".into();
     candidate.not_before = None;
-    let verified = validate_github_claims(candidate, &expected, NOW).unwrap();
+    let verified = verify(candidate, &expected).unwrap();
     assert_eq!(verified.git_ref(), "refs/tags/v1.2.3");
     assert_eq!(verified.run_attempt(), 1);
     assert_eq!(verified.event_name(), "workflow_dispatch");
@@ -146,7 +152,7 @@ fn claim_values_that_match_textually_still_require_canonical_safe_shapes() {
             _ => unreachable!(),
         }
         assert!(
-            validate_github_claims(candidate, &expected, NOW).is_err(),
+            verify(candidate, &expected).is_err(),
             "accepted malformed matching claim {case}"
         );
     }
@@ -270,96 +276,16 @@ impl OidcServer {
 }
 
 fn sign_claims(claims: &GithubOidcClaims) -> (String, RsaJwk) {
-    let decode = |value: &str| {
-        base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .decode(value)
-            .unwrap()
-    };
-    let n = decode(MODULUS);
-    let e = decode("AQAB");
-    let d = decode(PRIVATE_EXPONENT);
-    let p = decode(PRIME_P);
-    let q = decode(PRIME_Q);
-    let dp = decode(EXPONENT_P);
-    let dq = decode(EXPONENT_Q);
-    let inverse_q = decode(INVERSE_Q);
-    let key = RsaKeyPair::from_components(&KeyPairComponents {
-        public_key: PublicKeyComponents { n: &n, e: &e },
-        d: &d,
-        p: &p,
-        q: &q,
-        dP: &dp,
-        dQ: &dq,
-        qInv: &inverse_q,
-    })
-    .unwrap();
-    let encoder = base64::engine::general_purpose::URL_SAFE_NO_PAD;
-    let header = encoder.encode(br#"{"alg":"RS256","kid":"rfc7515"}"#);
-    let payload = encoder.encode(serde_json::to_vec(claims).unwrap());
-    let signing_input = format!("{header}.{payload}");
-    let mut signature = vec![0_u8; key.public().modulus_len()];
-    key.sign(
-        &RSA_PKCS1_SHA256,
-        &SystemRandom::new(),
-        signing_input.as_bytes(),
-        &mut signature,
-    )
-    .unwrap();
-    (
-        format!("{signing_input}.{}", encoder.encode(signature)),
-        public_jwk(),
-    )
+    (oidc::sign_rs256(claims), public_jwk())
 }
 
 fn public_jwk() -> RsaJwk {
     RsaJwk {
         key_type: "RSA".into(),
-        key_id: Some("rfc7515".into()),
+        key_id: Some(oidc::KEY_ID.into()),
         algorithm: Some("RS256".into()),
         usage: Some("sig".into()),
-        modulus: MODULUS.into(),
-        exponent: "AQAB".into(),
+        modulus: oidc::MODULUS.into(),
+        exponent: oidc::EXPONENT.into(),
     }
 }
-
-const MODULUS: &str = concat!(
-    "ofgWCuLjybRlzo0tZWJjNiuSfb4p4fAkd_wWJcyQoTbji9k0l8W26mPddx",
-    "HmfHQp-Vaw-4qPCJrcS2mJPMEzP1Pt0Bm4d4QlL-yRT-SFd2lZS-pCgNMs",
-    "D1W_YpRPEwOWvG6b32690r2jZ47soMZo9wGzjb_7OMg0LOL-bSf63kpaSH",
-    "SXndS5z5rexMdbBYUsLA9e-KXBdQOS-UTo7WTBEMa2R2CapHg665xsmtdV",
-    "MTBQY4uDZlxvb3qCo5ZwKh9kG4LT6_I5IhlJH7aGhyxXFvUK-DWNmoudF8",
-    "NAco9_h9iaGNj8q2ethFkMLs91kzk2PAcDTW9gb54h4FRWyuXpoQ"
-);
-const PRIVATE_EXPONENT: &str = concat!(
-    "Eq5xpGnNCivDflJsRQBXHx1hdR1k6Ulwe2JZD50LpXyWPEAeP88vLNO97I",
-    "jlA7_GQ5sLKMgvfTeXZx9SE-7YwVol2NXOoAJe46sui395IW_GO-pWJ1O0",
-    "BkTGoVEn2bKVRUCgu-GjBVaYLU6f3l9kJfFNS3E0QbVdxzubSu3Mkqzjkn",
-    "439X0M_V51gfpRLI9JYanrC4D4qAdGcopV_0ZHHzQlBjudU2QvXt4ehNYT",
-    "CBr6XCLQUShb1juUO1ZdiYoFaFQT5Tw8bGUl_x_jTj3ccPDVZFD9pIuhLh",
-    "BOneufuBiB4cS98l2SR_RQyGWSeWjnczT0QU91p1DhOVRuOopznQ"
-);
-const PRIME_P: &str = concat!(
-    "4BzEEOtIpmVdVEZNCqS7baC4crd0pqnRH_5IB3jw3bcxGn6QLvnEtfdUdi",
-    "YrqBdss1l58BQ3KhooKeQTa9AB0Hw_Py5PJdTJNPY8cQn7ouZ2KKDcmnPG",
-    "BY5t7yLc1QlQ5xHdwW1VhvKn-nXqhJTBgIPgtldC-KDV5z-y2XDwGUc"
-);
-const PRIME_Q: &str = concat!(
-    "uQPEfgmVtjL0Uyyx88GZFF1fOunH3-7cepKmtH4pxhtCoHqpWmT8YAmZxa",
-    "ewHgHAjLYsp1ZSe7zFYHj7C6ul7TjeLQeZD_YwD66t62wDmpe_HlB-TnBA",
-    "-njbglfIsRLtXlnDzQkv5dTltRJ11BKBBypeeF6689rjcJIDEz9RWdc"
-);
-const EXPONENT_P: &str = concat!(
-    "BwKfV3Akq5_MFZDFZCnW-wzl-CCo83WoZvnLQwCTeDv8uzluRSnm71I3Q",
-    "CLdhrqE2e9YkxvuxdBfpT_PI7Yz-FOKnu1R6HsJeDCjn12Sk3vmAktV2zb",
-    "34MCdy7cpdTh_YVr7tss2u6vneTwrA86rZtu5Mbr1C1XsmvkxHQAdYo0"
-);
-const EXPONENT_Q: &str = concat!(
-    "h_96-mK1R_7glhsum81dZxjTnYynPbZpHziZjeeHcXYsXaaMwkOlODsWa",
-    "7I9xXDoRwbKgB719rrmI2oKr6N3Do9U0ajaHF-NKJnwgjMd2w9cjz3_-ky",
-    "NlxAr2v4IKhGNpmM5iIgOS1VZnOZ68m6_pbLBSp3nssTdlqvd0tIiTHU"
-);
-const INVERSE_Q: &str = concat!(
-    "IYd7DHOhrWvxkwPQsRM2tOgrjbcrfvtQJipd-DlcxyVuuM9sQLdgjVk2o",
-    "y26F0EmpScGLq2MowX7fhd_QJQ3ydy5cY7YIBi87w93IKLEdfnbJtoOPLU",
-    "W0ITrJReOgo1cq9SbsxYawBgfp_gh6A5603k2-ZQwVK0JKSHuLFkuQ3U"
-);

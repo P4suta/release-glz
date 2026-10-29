@@ -1,9 +1,7 @@
 //! GitHub Actions OIDC verification.
 //!
-//! A token proves which repository, workflow, environment, and commit a
-//! publication is running for. Every claim is checked against the sealed
-//! Candidate, so authority comes from the run rather than from a long-lived
-//! credential.
+//! A token proves which repository, workflow, environment, and commit a publication is running for.
+//! Every claim is checked against the sealed Candidate, so authority comes from the run rather than from a long-lived credential.
 
 use anyhow::{Result, bail};
 use base64::Engine;
@@ -20,8 +18,7 @@ use crate::units::{KIB, MIB};
 pub const GITHUB_OIDC_ISSUER: &str = "https://token.actions.githubusercontent.com";
 /// Audience a token has to be minted for.
 ///
-/// A token issued for any other audience is rejected, so a token minted
-/// for a different tool cannot authorize a publication.
+/// A token issued for any other audience is rejected, so a token minted for a different tool cannot authorize a publication.
 pub const RELEASE_GLZ_AUDIENCE: &str = "release-glz";
 /// Seconds of clock difference tolerated when checking a token's validity.
 const CLOCK_SKEW_SECONDS: i64 = 30;
@@ -104,8 +101,7 @@ struct OpenIdConfiguration {
 
 /// Verifier for GitHub Actions OIDC tokens.
 ///
-/// Discovery, the key set, and the token are each fetched under a size
-/// limit and without following redirects.
+/// Discovery, the key set, and the token are each fetched under a size limit and without following redirects.
 #[derive(Debug)]
 pub struct GithubOidcVerifier {
     client: Client,
@@ -137,8 +133,7 @@ impl GithubOidcVerifier {
 
     /// Mint a token from the runner and verify it against the issuer.
     ///
-    /// The claims are then checked against the sealed Candidate, so a valid
-    /// token from another repository, workflow, or commit is refused.
+    /// The claims are then checked against the sealed Candidate, so a valid token from another repository, workflow, or commit is refused.
     pub async fn verify_actions_token(
         &self,
         request_url: &str,
@@ -302,8 +297,7 @@ impl OidcAudience {
     }
 }
 
-/// Claims emitted by GitHub Actions after the compact JWT signature has been
-/// verified against GitHub's OpenID key set.
+/// Claims emitted by GitHub Actions after the compact JWT signature has been verified against GitHub's OpenID key set.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GithubOidcClaims {
     /// Issuer that minted the token.
@@ -364,8 +358,7 @@ pub struct OidcExpectation {
 
 /// Claims that have passed both signature and expectation checks.
 ///
-/// The fields are private: the type exists so that a caller cannot hold
-/// one without the checks having been made.
+/// The fields are private: the type exists so that a caller cannot hold one without the checks having been made.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifiedGithubOidc {
     repository: String,
@@ -422,9 +415,8 @@ impl VerifiedGithubOidc {
 
 /// Check verified claims against what the Candidate expects.
 ///
-/// Issuer, audience, repository, workflow, environment, commit, and the
-/// validity window all have to agree before the claims are accepted.
-pub fn validate_github_claims(
+/// Issuer, audience, repository, workflow, environment, commit, and the validity window all have to agree before the claims are accepted.
+fn validate_github_claims(
     claims: GithubOidcClaims,
     expected: &OidcExpectation,
     now_unix_seconds: i64,

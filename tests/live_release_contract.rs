@@ -4,7 +4,8 @@ use std::sync::{Arc, Mutex};
 
 use flate2::{Compression, write::GzEncoder};
 use release_glz::authorization::{
-    GithubOidcClaims, OidcAudience, OidcExpectation, validate_github_claims,
+    GithubOidcClaims, JwkSet, OidcAudience, OidcExpectation, RsaJwk, VerifiedGithubOidc,
+    verify_github_oidc_token,
 };
 use release_glz::candidate::{
     Candidate, CandidateInput, CandidateSource, HookEvidence, HookKind, RegistryIdentity,
@@ -16,7 +17,8 @@ use release_glz::hooks::SidecarArtifact;
 use release_glz::model::ReleaseState;
 use release_glz::reconciler::{ApprovalEvidence, ReconcileEffect};
 use release_glz::registry::HexRegistry;
-use release_glz::release::{CandidateReleaseRunner, LiveReleaseTarget, ReleaseExecutionOptions};
+use release_glz::release::{CandidateReleaseRunner, LiveReleaseTarget};
+use release_glz_test_support::oidc;
 use semver::Version;
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -59,11 +61,7 @@ async fn live_reconciler_recovers_ambiguous_publish_and_second_run_is_a_no_op() 
     let runner = CandidateReleaseRunner::new(target);
 
     let first = runner
-        .run(
-            &fixture.candidate,
-            &approved(&fixture.manifest),
-            ReleaseExecutionOptions::default(),
-        )
+        .run(&fixture.candidate, &approved(&fixture.manifest))
         .await
         .unwrap();
     assert_eq!(first.state, ReleaseState::Released);
@@ -86,11 +84,7 @@ async fn live_reconciler_recovers_ambiguous_publish_and_second_run_is_a_no_op() 
 
     let mutation_count = github.mutation_count();
     let second = runner
-        .run(
-            &fixture.candidate,
-            &approved(&fixture.manifest),
-            ReleaseExecutionOptions::default(),
-        )
+        .run(&fixture.candidate, &approved(&fixture.manifest))
         .await
         .unwrap();
     assert_eq!(second.state, ReleaseState::Released);
@@ -258,9 +252,31 @@ fn live_fixture(registry_base: &str) -> LiveFixture {
     }
 }
 
+/// The identity in `claims`, signed and then verified, since no other path yields a verified identity.
+fn signed_identity(
+    claims: GithubOidcClaims,
+    expected: &OidcExpectation,
+    now: i64,
+) -> anyhow::Result<VerifiedGithubOidc> {
+    let key = RsaJwk {
+        key_type: "RSA".into(),
+        key_id: Some(oidc::KEY_ID.into()),
+        algorithm: Some("RS256".into()),
+        usage: Some("sig".into()),
+        modulus: oidc::MODULUS.into(),
+        exponent: oidc::EXPONENT.into(),
+    };
+    verify_github_oidc_token(
+        &oidc::sign_rs256(&claims),
+        &JwkSet { keys: vec![key] },
+        expected,
+        now,
+    )
+}
+
 fn approved(manifest: &release_glz::candidate::CandidateManifest) -> ApprovalEvidence {
     let now = 1_800_000_000;
-    let github_oidc = validate_github_claims(
+    let github_oidc = signed_identity(
         GithubOidcClaims {
             issuer: "https://token.actions.githubusercontent.com".into(),
             audience: OidcAudience::One("release-glz".into()),
