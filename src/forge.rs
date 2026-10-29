@@ -452,6 +452,49 @@ struct ActionsWorkflowRepositoryResponse {
     full_name: String,
 }
 
+/// Which run may have produced the Candidate that a publish job consumes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CandidateRun {
+    /// The run that is publishing now, which prepared the Candidate in an earlier job and is still in progress.
+    Current,
+    /// An earlier run that prepared the Candidate and completed with success.
+    Completed,
+}
+
+impl CandidateRun {
+    /// The run a publish job may consume, given its OIDC-verified event and run and the Candidate's run.
+    ///
+    /// A push publishes only the Candidate that its own run prepared, and a manual promotion only one from an earlier run.
+    pub fn for_event(
+        event_name: &str,
+        current_run_id: &str,
+        candidate_run_id: &str,
+    ) -> Result<Self> {
+        match (event_name, current_run_id == candidate_run_id) {
+            ("push", true) => Ok(Self::Current),
+            ("push", false) => {
+                bail!("a push publishes only the Candidate that its own run prepared")
+            }
+            ("workflow_dispatch", false) => Ok(Self::Completed),
+            ("workflow_dispatch", true) => {
+                bail!(
+                    "manual promotion must consume a Candidate from a completed prior prepare run"
+                )
+            }
+            (other, _) => {
+                bail!("only a push or a manual promotion publishes a Candidate, not `{other}`")
+            }
+        }
+    }
+
+    fn admits(self, status: &str, conclusion: Option<&str>) -> bool {
+        match self {
+            Self::Current => status == "in_progress",
+            Self::Completed => status == "completed" && conclusion == Some("success"),
+        }
+    }
+}
+
 /// An Actions artifact whose identity has been checked.
 ///
 /// The fields are private because the type exists to prove that the digest, run, and source commit were verified together.
@@ -718,12 +761,14 @@ impl GitHubClient {
     /// Check that an Actions artifact is the one this release expects.
     ///
     /// Digest, run, and source commit must all agree, so the publish job cannot be handed an artifact built somewhere else.
+    /// `run` states whether that run is the one publishing now, which is still in progress, or an earlier one that succeeded.
     pub async fn verify_actions_artifact(
         &self,
         artifact_id: u64,
         expected_sha256: &str,
         expected_run_id: &str,
         expected_source_sha: &str,
+        run_state: CandidateRun,
     ) -> Result<VerifiedActionsArtifact> {
         self.require_token()?;
         if artifact_id == 0 || !valid_sha256(expected_sha256) {
@@ -763,8 +808,7 @@ impl GitHubClient {
             || run.repository.full_name != self.repository.full_name()
             || run.path != crate::workflow::WORKFLOW_PATH
             || run.head_sha != expected_source_sha
-            || run.status != "completed"
-            || run.conclusion.as_deref() != Some("success")
+            || !run_state.admits(&run.status, run.conclusion.as_deref())
         {
             bail!(
                 "GitHub Actions Candidate run does not match the repository, managed workflow, source, and successful conclusion"
