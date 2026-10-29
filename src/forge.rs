@@ -903,6 +903,8 @@ impl GitHubClient {
                     }
                     // The verified commit succeeded but updating the PR body failed.
                     // Repair the marker without creating another commit.
+                    // An intent belongs to the rehearsal of one head, so it survives only when the head stays.
+                    let intent_digest = marker.intent_digest.filter(|_| marker.head == actual);
                     let body = pull_body(
                         plan,
                         &ManagedMarker {
@@ -911,7 +913,7 @@ impl GitHubClient {
                             head: actual.clone(),
                             digest: digest.clone(),
                             version: plan.version.to_string(),
-                            intent_digest: marker.intent_digest,
+                            intent_digest,
                         },
                     )?;
                     let updated: PullRequest = self
