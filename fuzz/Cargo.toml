@@ -17,6 +17,13 @@ serde_json = "1.0.154"
 sha2 = "0.11.0"
 toml_edit = { version = "0.25.17", features = ["serde"] }
 
+[lib]
+name = "invariants"
+path = "invariants/lib.rs"
+test = false
+doc = false
+bench = false
+
 [[bin]]
 name = "archive"
 path = "fuzz_targets/archive.rs"
