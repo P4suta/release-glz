@@ -1,0 +1,2 @@
+<!-- release-glz:managed package=a -->
+<!-- release-glz:managed package=a branch=b head=h digest=d version=1.0.0 intent=pending -->

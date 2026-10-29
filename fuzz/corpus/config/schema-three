@@ -1,0 +1,5 @@
+name = "future"
+version = "1.0.0"
+
+[tools.release-glz]
+schema = 3

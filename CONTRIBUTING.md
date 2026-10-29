@@ -13,10 +13,16 @@ Tests that build a real package fail when Gleam is missing instead of passing wi
 A test runs the CLI through `release_glz_test_support::isolated_command`, which passes only an explicit environment and never a developer's token.
 Tests run in parallel and write only inside their own temporary directories.
 
+Every parser has a fuzz target in `fuzz/fuzz_targets`, whose properties live in `fuzz/invariants` and whose seeds live in `fuzz/corpus`.
+`cargo test` replays every seed through the same properties, so a property violation fails the ordinary suite.
+Add a seed for each accepted and refused input class that a parser change introduces.
+
 Run the fast checks before opening a pull request:
 
 ```console
 mise x -- cargo fmt --all -- --check
+mise x -- cargo fmt --manifest-path fuzz/Cargo.toml -- --check
+mise x -- cargo fetch --locked --manifest-path fuzz/Cargo.toml
 mise x -- cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 mise x -- cargo test --workspace --all-targets --locked
 mise x -- cargo doc --workspace --no-deps --locked
@@ -34,7 +40,7 @@ Distribution builds and smokes every supported native release target.
 
 The reusable [shipping assurance workflow](.github/workflows/assurance.yml) runs on the exact release candidate before checksum preparation or publication.
 It also supports an explicit manual run.
-It checks dependency policy, generated workflows, coverage, all configured critical-path mutations, and the four parser fuzz targets.
+It checks dependency policy, generated workflows, coverage, all configured critical-path mutations, and every parser fuzz target.
 Parser fuzz smoke uses 10,000 runs per target with seed 1.
 Release coverage requires at least 90% lines and 85% branches, with no viable critical-path mutation survivors.
 Workflow changes must pass zizmor against both repository workflows and the generated consumer workflow during shipping assurance.

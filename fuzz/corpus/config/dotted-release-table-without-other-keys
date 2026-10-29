@@ -1,0 +1,4 @@
+name = "dotted"
+version = "3.0.0"
+tools.release-glz.prerelease = "alpha"
+tools.release-glp.release_branch_prefix = "release-glz/"

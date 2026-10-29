@@ -11,3 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial Hex-native release planner, rolling Release PR manager, resumable
   publisher, GitHub Action, and cross-platform binary distribution workflows.
+
+### Fixed
+
+- `release-glz prerelease stable` no longer writes an empty `[tools.release-glz]` table into a manifest that has none, so `init` still accepts that manifest afterward.

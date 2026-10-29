@@ -962,8 +962,13 @@ dependencies = [
 name = "release-glz-fuzz"
 version = "0.0.0"
 dependencies = [
+ "anyhow",
  "libfuzzer-sys",
  "release-glz",
+ "semver",
+ "serde_json",
+ "sha2",
+ "toml_edit",
 ]
 
 [[package]]

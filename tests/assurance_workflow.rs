@@ -151,11 +151,52 @@ fn mutation_gate_uses_four_explicit_fail_closed_shards() {
     assert!(!command.contains("continue-on-error"));
 }
 
+fn fuzz_targets() -> Vec<String> {
+    fs::read_to_string("fuzz/Cargo.toml")
+        .unwrap()
+        .parse::<toml_edit::DocumentMut>()
+        .unwrap()["bin"]
+        .as_array_of_tables()
+        .expect("the fuzz manifest declares its targets")
+        .iter()
+        .map(|target| target["name"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+#[test]
+fn routine_ci_refuses_an_unformatted_fuzz_workspace_or_a_stale_fuzz_lockfile() {
+    let parsed: serde_yaml::Value =
+        serde_yaml::from_str(&fs::read_to_string(".github/workflows/ci.yml").unwrap()).unwrap();
+    let commands: Vec<_> = parsed["jobs"]["checks"]["steps"]
+        .as_sequence()
+        .unwrap()
+        .iter()
+        .filter_map(|step| step["run"].as_str())
+        .collect();
+    for command in [
+        "cargo fmt --manifest-path fuzz/Cargo.toml -- --check",
+        "cargo fetch --locked --manifest-path fuzz/Cargo.toml",
+    ] {
+        assert!(commands.contains(&command), "routine CI omits `{command}`");
+    }
+}
+
 #[test]
 fn every_required_parser_has_a_bounded_fuzz_target() {
-    let manifest = fs::read_to_string("fuzz/Cargo.toml").unwrap();
-    for target in ["archive", "config", "pr_marker", "api_interface"] {
-        assert!(manifest.contains(&format!("name = \"{target}\"")));
+    let targets = fuzz_targets();
+    for target in [
+        "archive",
+        "config",
+        "pr_marker",
+        "api_interface",
+        "identifiers",
+    ] {
+        assert!(
+            targets.iter().any(|name| name == target),
+            "missing {target}"
+        );
+    }
+    for target in &targets {
         let source = format!("fuzz/fuzz_targets/{target}.rs");
         assert!(Path::new(&source).is_file(), "missing {source}");
     }
@@ -166,7 +207,7 @@ fn fuzz_smoke_uses_fixed_run_counts_and_seeds() {
     let yaml = fs::read_to_string(".github/workflows/assurance.yml").unwrap();
     let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
     let steps = parsed["jobs"]["fuzz"]["steps"].as_sequence().unwrap();
-    for target in ["archive", "config", "pr_marker", "api_interface"] {
+    for target in fuzz_targets() {
         let prefix = format!("cargo fuzz run {target} -- ");
         let command = steps
             .iter()
