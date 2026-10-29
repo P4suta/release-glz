@@ -51,13 +51,13 @@ where
         if secret.is_empty() {
             continue;
         }
-        let mut from = 0;
-        while let Some(offset) = input[from..].find(secret) {
-            let start = from + offset;
-            ranges.push(start..start + secret.len());
-            // Occurrences of one secret can overlap, so the search resumes one character later.
-            from = start + input[start..].chars().next().map_or(1, char::len_utf8);
-        }
+        // Occurrences of one secret can overlap, so every character position is a candidate start.
+        ranges.extend(
+            input
+                .char_indices()
+                .filter(|(start, _)| input[*start..].starts_with(secret))
+                .map(|(start, _)| start..start + secret.len()),
+        );
     }
     ranges.sort_unstable_by_key(|range| range.start);
     let mut output = String::with_capacity(input.len());
