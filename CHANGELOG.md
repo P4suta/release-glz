@@ -51,3 +51,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `release-pr` writes or closes the Release PR only when its checkout is the default branch tip that GitHub reports.
   A run behind the tip reports `release_pr_superseded` and writes nothing.
 - Requests for the repository itself no longer end in a slash, which GitHub answers with 404, so `doctor --online` can read the repository settings.
+- At the merge commit of the Release PR for the planned version, `release-pr` opens no second Release PR for that version.
+  It reports `release_pr_merged` with the merged Release PR while publication waits for approval.

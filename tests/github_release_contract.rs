@@ -406,6 +406,46 @@ async fn a_merged_release_pr_counts_only_from_this_repository_into_its_default_b
 }
 
 #[tokio::test]
+async fn only_the_merged_release_pr_for_the_planned_version_marks_a_commit_as_pending() {
+    let head = "c".repeat(40);
+    let merged = "a".repeat(40);
+    let valid = managed_pull(&head, Some(&merged), &"1".repeat(64));
+    let mut other_version = valid.clone();
+    other_version["body"] = valid["body"]
+        .as_str()
+        .unwrap()
+        .replace("version=1.2.3", "version=1.2.2")
+        .into();
+    let mut fork = valid.clone();
+    fork["head"]["repo"]["full_name"] = "fork/r".into();
+    let mut unbound = valid.clone();
+    unbound["body"] = valid["body"]
+        .as_str()
+        .unwrap()
+        .replace(&format!("intent={}", "1".repeat(64)), "intent=pending")
+        .into();
+    let list = |pull: &serde_json::Value| response(200, &serde_json::json!([pull]).to_string());
+    let server = FakeServer::start(vec![
+        list(&other_version),
+        list(&fork),
+        list(&unbound),
+        response(200, &generated_commit(&"d".repeat(64), 1)),
+    ])
+    .await;
+    let client = test_client(&server, Some("token"));
+    let lookup = || client.merged_release_pr_at(&merged, "widget", "1.2.3", "release-glz/");
+
+    assert!(lookup().await.unwrap().is_none(), "another version");
+    assert!(lookup().await.unwrap().is_none(), "a fork");
+    assert_eq!(
+        lookup().await.unwrap().unwrap().html_url,
+        "https://github.test/o/r/pull/7",
+        "a merged Release PR without a bound intent still marks its version as pending"
+    );
+    assert_eq!(server.requests().len(), 4);
+}
+
+#[tokio::test]
 async fn intent_never_binds_to_a_release_pr_from_a_fork() {
     let head = "c".repeat(40);
     let mut fork = managed_pull(&head, None, "pending");

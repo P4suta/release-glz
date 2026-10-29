@@ -1397,6 +1397,31 @@ async fn write_rolling_release_pr(
         }
         Some(base)
     };
+    if plan.release_required
+        && let Some(base) = &base
+        && let Some(merged) = github
+            .merged_release_pr_at(
+                &base.tip,
+                &plan.package,
+                &plan.version.to_string(),
+                &manifest.release.release_branch_prefix,
+            )
+            .await
+            .map_err(|error| default_failure_class(error, FailureClass::TemporaryExternal))?
+    {
+        // This push is the merge of the Release PR for this version, which now waits for publication.
+        plan.pr_url = Some(merged.html_url);
+        plan.warnings.push(Diagnostic {
+            code: "release_pr_merged".into(),
+            level: DiagnosticLevel::Info,
+            message: format!(
+                "the Release PR for {} {} merged at this commit, so publication of that version is pending",
+                plan.package, plan.version
+            ),
+            detail: None,
+        });
+        return Ok(plan);
+    }
     if plan.release_required {
         let commits = repo.commits_since(plan.baseline.sha.as_deref())?;
         plan.changes = github
