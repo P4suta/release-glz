@@ -1,8 +1,6 @@
-//! GitHub: pull requests, tags, releases, environments, and Actions
-//! artifacts.
+//! GitHub: pull requests, tags, releases, environments, and Actions artifacts.
 //!
-//! Everything observable is read before anything is written, so a resumed
-//! release recognizes what it already created instead of duplicating it.
+//! Everything observable is read before anything is written, so a resumed release recognizes what it already created instead of duplicating it.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -13,13 +11,14 @@ use reqwest::{
     Method, StatusCode,
     header::{CONTENT_TYPE, RETRY_AFTER},
 };
+use semver::Version;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 
 use crate::canonical::SHA256_HEX_LEN;
 use crate::changelog::default_category;
 use crate::config::url_is_http_loopback;
-use crate::git::Commit;
+use crate::git::{Commit, OBJECT_HEX_LEN};
 use crate::model::{ChangeEntry, ReleasePlan};
 use crate::units::GIB;
 
@@ -53,6 +52,33 @@ const GITHUB_GET_ATTEMPTS: usize = 3;
 const OPEN_PULL_REQUEST_PAGE_SIZE: usize = 100;
 const MAX_OPEN_PULL_REQUEST_PAGES: usize = 100;
 
+/// Characters a GitHub repository name may have.
+const MAX_NAME_LEN: usize = 100;
+
+/// Seconds a GitHub connection may take to open.
+const CONNECT_TIMEOUT_SECONDS: u64 = 10;
+
+/// Milliseconds added to the wait before each repeated GET.
+const GET_RETRY_STEP_MS: u64 = 100;
+
+/// The public GitHub REST API, when `GITHUB_API_URL` names none.
+const DEFAULT_GITHUB_API_URL: &str = "https://api.github.com";
+
+/// The public GitHub GraphQL endpoint, when `GITHUB_GRAPHQL_URL` names none.
+const DEFAULT_GITHUB_GRAPHQL_URL: &str = "https://api.github.com/graphql";
+
+/// The opening of the HTML comment that ends a managed Release PR body.
+const MARKER_PREFIX: &str = "<!-- release-glz:managed ";
+
+/// The closing of the managed marker comment.
+const MARKER_SUFFIX: &str = " -->";
+
+/// Every key of a managed marker, in the order the marker writes them.
+const MARKER_KEYS: [&str; 6] = ["package", "branch", "head", "digest", "version", "intent"];
+
+/// The `intent` of a managed marker before a Candidate binds one.
+const PENDING_INTENT: &str = "pending";
+
 /// An `owner/name` repository on GitHub.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitHubRepository {
@@ -81,7 +107,7 @@ impl GitHubRepository {
                 .last()
                 .is_some_and(|byte| byte.is_ascii_alphanumeric())
             && !owner.contains("--");
-        let name_valid = (1..=100).contains(&name.len())
+        let name_valid = (1..=MAX_NAME_LEN).contains(&name.len())
             && name
                 .bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
@@ -137,6 +163,27 @@ pub struct PullRequest {
     pub labels: Vec<Label>,
     /// Head branch and commit.
     pub head: PullHead,
+    /// Branch the pull request merges into.
+    #[serde(default)]
+    pub base: Option<PullBase>,
+}
+
+impl PullRequest {
+    /// Whether the head branch lives in `repository` and the pull request targets its default branch.
+    ///
+    /// Pushing a branch to the repository itself takes write access, which a fork contributor lacks.
+    fn is_internal_to(&self, repository: &GitHubRepository) -> bool {
+        let full_name = repository.full_name();
+        let Some(base) = &self.base else {
+            return false;
+        };
+        self.head
+            .repo
+            .as_ref()
+            .is_some_and(|head| head.full_name.eq_ignore_ascii_case(&full_name))
+            && base.repo.full_name.eq_ignore_ascii_case(&full_name)
+            && base.branch == base.repo.default_branch
+    }
 }
 
 /// A GitHub account.
@@ -161,6 +208,28 @@ pub struct PullHead {
     pub branch: String,
     /// Commit the branch points at.
     pub sha: String,
+    /// Repository the branch lives in, or `None` once its fork is deleted.
+    #[serde(default)]
+    pub repo: Option<PullRepository>,
+}
+
+/// The base of a pull request.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PullBase {
+    /// Branch name.
+    #[serde(rename = "ref")]
+    pub branch: String,
+    /// Repository the pull request merges into.
+    pub repo: PullRepository,
+}
+
+/// A repository that a pull request names.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PullRepository {
+    /// The `owner/name` slug.
+    pub full_name: String,
+    /// The repository's default branch.
+    pub default_branch: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -221,8 +290,7 @@ pub struct GitHubRelease {
     pub target_commitish: String,
     /// Candidate digest recorded in the release body, when present.
     ///
-    /// It is what lets a resumed run recognize its own draft instead of
-    /// adopting one that was created for different bytes.
+    /// It is what lets a resumed run recognize its own draft instead of adopting one that was created for different bytes.
     pub candidate_digest: Option<String>,
     /// Whether the release is still a draft.
     pub draft: bool,
@@ -348,8 +416,7 @@ struct ActionsWorkflowRepositoryResponse {
 
 /// An Actions artifact whose identity has been checked.
 ///
-/// The fields are private because the type exists to prove that the
-/// digest, run, and source commit were verified together.
+/// The fields are private because the type exists to prove that the digest, run, and source commit were verified together.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifiedActionsArtifact {
     id: u64,
@@ -475,6 +542,7 @@ impl std::fmt::Debug for GitHubClient {
 struct GitCommitResponse {
     message: String,
     verification: CommitVerification,
+    parents: Vec<GitObject>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -507,7 +575,7 @@ impl GitHubClient {
             .all(|raw| reqwest::Url::parse(raw).is_ok_and(|url| url_is_http_loopback(&url)));
         let mut client = reqwest::Client::builder()
             .user_agent(concat!("release-glz/", env!("CARGO_PKG_VERSION")))
-            .connect_timeout(std::time::Duration::from_secs(10))
+            .connect_timeout(std::time::Duration::from_secs(CONNECT_TIMEOUT_SECONDS))
             .timeout(std::time::Duration::from_secs(REQUEST_TIMEOUT_SECONDS))
             .redirect(reqwest::redirect::Policy::none());
         if loopback_only {
@@ -528,9 +596,9 @@ impl GitHubClient {
             .or_else(|_| std::env::var("GH_TOKEN"))
             .ok();
         let api_url =
-            std::env::var("GITHUB_API_URL").unwrap_or_else(|_| "https://api.github.com".into());
+            std::env::var("GITHUB_API_URL").unwrap_or_else(|_| DEFAULT_GITHUB_API_URL.into());
         let graphql_url = std::env::var("GITHUB_GRAPHQL_URL")
-            .unwrap_or_else(|_| "https://api.github.com/graphql".into());
+            .unwrap_or_else(|_| DEFAULT_GITHUB_GRAPHQL_URL.into());
         Self::new(repository, api_url, graphql_url, token)
     }
 
@@ -568,8 +636,7 @@ impl GitHubClient {
 
     /// Observe the protections around a publish environment.
     ///
-    /// `doctor --online` reports these so a missing protection is found
-    /// before a release depends on it.
+    /// `doctor --online` reports these so a missing protection is found before a release depends on it.
     pub async fn environment_audit(&self, environment: &str) -> Result<GitHubEnvironmentAudit> {
         if environment.is_empty() {
             bail!("GitHub Environment name must not be empty");
@@ -612,8 +679,7 @@ impl GitHubClient {
 
     /// Check that an Actions artifact is the one this release expects.
     ///
-    /// Digest, run, and source commit must all agree, so the publish job
-    /// cannot be handed an artifact built somewhere else.
+    /// Digest, run, and source commit must all agree, so the publish job cannot be handed an artifact built somewhere else.
     pub async fn verify_actions_artifact(
         &self,
         artifact_id: u64,
@@ -674,8 +740,7 @@ impl GitHubClient {
 
     /// Create or update the rolling Release PR for a package.
     ///
-    /// One pull request is maintained per package, so a superseded plan
-    /// updates it in place instead of leaving stale proposals open.
+    /// One pull request is maintained per package, so a superseded plan updates it in place instead of leaving stale proposals open.
     pub async fn upsert_release_pr(
         &self,
         plan: &ReleasePlan,
@@ -687,10 +752,12 @@ impl GitHubClient {
         let digest = files_digest(files);
         let pulls = self.open_pull_requests().await?;
         let mut managed = pulls.into_iter().find(|pull| {
-            pull.body
-                .as_deref()
-                .and_then(parse_marker)
-                .is_some_and(|marker| marker.package == plan.package)
+            pull.is_internal_to(&self.repository)
+                && pull
+                    .body
+                    .as_deref()
+                    .and_then(parse_marker)
+                    .is_some_and(|marker| marker.package == plan.package)
         });
 
         if let Some(pull) = managed.as_ref()
@@ -702,10 +769,11 @@ impl GitHubClient {
                     Some(actual) => self.generated_commit_digest(actual).await?,
                     None => None,
                 };
-                if generated_digest.as_deref() == Some(&digest) {
-                    // The verified commit succeeded but updating the PR body
-                    // failed. Repair the marker without creating another commit.
-                    let actual = actual.expect("digest requires a commit");
+                if generated_digest.as_deref() == Some(&digest)
+                    && let Some(actual) = actual
+                {
+                    // The verified commit succeeded but updating the PR body failed.
+                    // Repair the marker without creating another commit.
                     let body = pull_body(
                         plan,
                         &ManagedMarker {
@@ -716,7 +784,7 @@ impl GitHubClient {
                             version: plan.version.to_string(),
                             intent_digest: marker.intent_digest,
                         },
-                    );
+                    )?;
                     let updated: PullRequest = self
                         .patch(
                             &format!("pulls/{}", pull.number),
@@ -777,7 +845,7 @@ impl GitHubClient {
                 version: plan.version.to_string(),
                 intent_digest: None,
             },
-        );
+        )?;
         let title = format!("chore(release): {} {}", plan.package, plan.version);
 
         if let Some(pull) = managed {
@@ -817,7 +885,8 @@ impl GitHubClient {
             let Some(marker) = pull.body.as_deref().and_then(parse_marker) else {
                 continue;
             };
-            if marker.package != package
+            if !pull.is_internal_to(&self.repository)
+                || marker.package != package
                 || marker.branch != pull.head.branch
                 || marker.head != pull.head.sha
                 || !marker.branch.starts_with(branch_prefix)
@@ -862,7 +931,8 @@ impl GitHubClient {
             let Some(marker) = pull.body.as_deref().and_then(parse_marker) else {
                 continue;
             };
-            let structurally_valid = pull.merged_at.is_some()
+            let structurally_valid = pull.is_internal_to(&self.repository)
+                && pull.merged_at.is_some()
                 && pull.merge_commit_sha.as_deref() == Some(sha)
                 && marker.package == package
                 && marker.version == version
@@ -883,8 +953,7 @@ impl GitHubClient {
 
     /// Record the intent digest on the managed Release PR.
     ///
-    /// Approval is bound to that digest, so a plan that changes afterwards
-    /// can no longer claim the review the pull request carries.
+    /// Approval is bound to that digest, so a plan that changes afterwards can no longer claim the review the pull request carries.
     pub async fn bind_release_pr_intent(
         &self,
         head_sha: &str,
@@ -902,7 +971,8 @@ impl GitHubClient {
             let Some(mut marker) = pull.body.as_deref().and_then(parse_marker) else {
                 continue;
             };
-            let structurally_valid = marker.package == package
+            let structurally_valid = pull.is_internal_to(&self.repository)
+                && marker.package == package
                 && marker.version == version
                 && marker.branch == pull.head.branch
                 && marker.head == pull.head.sha
@@ -1040,8 +1110,7 @@ impl GitHubClient {
 
     /// Create the draft Release that later stages fill in.
     ///
-    /// Assets are attached while the release is a draft, so consumers never
-    /// see a published release that is still missing artifacts.
+    /// Assets are attached while the release is a draft, so consumers never see a published release that is still missing artifacts.
     pub async fn create_draft_release(
         &self,
         tag: &str,
@@ -1257,17 +1326,17 @@ impl GitHubClient {
             .oid)
     }
 
+    /// The files digest of a commit that release-glz created, or `None` for any other commit.
+    ///
+    /// A generated commit is server-verified and has exactly one parent, since a merge commit could bring in other work.
     async fn generated_commit_digest(&self, sha: &str) -> Result<Option<String>> {
         let commit: GitCommitResponse = self.get(&format!("git/commits/{sha}")).await?;
-        if !commit.verification.verified {
+        if !commit.verification.verified || commit.parents.len() != 1 {
             return Ok(None);
         }
         Ok(commit.message.lines().find_map(|line| {
             line.strip_prefix("release-glz-digest: ")
-                .filter(|digest| {
-                    digest.len() == SHA256_HEX_LEN
-                        && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
-                })
+                .filter(|digest| valid_sha256(digest))
                 .map(str::to_owned)
         }))
     }
@@ -1301,7 +1370,7 @@ impl GitHubClient {
                 Ok(response) => response,
                 Err(_) if attempt + 1 < GITHUB_GET_ATTEMPTS => {
                     tokio::time::sleep(std::time::Duration::from_millis(
-                        100 * (attempt as u64 + 1),
+                        GET_RETRY_STEP_MS * (attempt as u64 + 1),
                     ))
                     .await;
                     continue;
@@ -1524,13 +1593,22 @@ fn files_digest(files: &BTreeMap<String, Vec<u8>>) -> String {
     crate::hex::lower(&digest.finalize())
 }
 
-fn pull_body(plan: &ReleasePlan, marker: &ManagedMarker) -> String {
+/// Text from a commit or a package interface, made unable to open an HTML comment or tag.
+fn inert_text(text: &str) -> String {
+    text.replace('<', "&lt;")
+}
+
+fn pull_body(plan: &ReleasePlan, marker: &ManagedMarker) -> Result<String> {
     let mut output = format!(
         "This rolling Release PR prepares `{}` **{}**.\n\n### Release decision\n\n",
         plan.package, plan.version
     );
     for reason in &plan.reasons {
-        output.push_str(&format!("- **{}**: {}\n", reason.bump, reason.summary));
+        output.push_str(&format!(
+            "- **{}**: {}\n",
+            reason.bump,
+            inert_text(&reason.summary)
+        ));
     }
     let breaking: Vec<_> = plan
         .api
@@ -1541,58 +1619,72 @@ fn pull_body(plan: &ReleasePlan, marker: &ManagedMarker) -> String {
     if !breaking.is_empty() {
         output.push_str("\n### Breaking API changes\n\n");
         for change in breaking {
-            output.push_str(&format!("- {}\n", change.summary));
+            output.push_str(&format!("- {}\n", inert_text(&change.summary)));
         }
     }
     output.push_str(
         "\nMerging this PR approves the semantic `intent_digest`. Publication still requires separate protected Environment approval of the sealed `candidate_digest`.\n\n",
     );
     output.push_str(&format_marker(marker));
-    output
+    if parse_marker(&output).as_ref() != Some(marker) {
+        bail!("the rendered Release PR body does not carry exactly its own marker");
+    }
+    Ok(output)
 }
 
 fn format_marker(marker: &ManagedMarker) -> String {
     format!(
-        "<!-- release-glz:managed package={} branch={} head={} digest={} version={} intent={} -->",
+        "{MARKER_PREFIX}package={} branch={} head={} digest={} version={} intent={}{MARKER_SUFFIX}",
         marker.package,
         marker.branch,
         marker.head,
         marker.digest,
         marker.version,
-        marker.intent_digest.as_deref().unwrap_or("pending")
+        marker.intent_digest.as_deref().unwrap_or(PENDING_INTENT)
     )
 }
 
+/// Byte offset of the one marker that ends a body, if the body has exactly one there.
+fn trailing_marker_start(body: &str) -> Option<usize> {
+    let body = body.trim_end();
+    let start = body.rfind(MARKER_PREFIX)?;
+    let marker_end = body[start..].find(MARKER_SUFFIX)? + start + MARKER_SUFFIX.len();
+    (!body[..start].contains(MARKER_PREFIX) && marker_end == body.len()).then_some(start)
+}
+
 fn parse_marker(body: &str) -> Option<ManagedMarker> {
-    let start = body.find("<!-- release-glz:managed ")? + "<!-- release-glz:managed ".len();
-    let end = body[start..].find(" -->")? + start;
-    let values: BTreeMap<_, _> = body[start..end]
-        .split_whitespace()
-        .filter_map(|part| part.split_once('='))
-        .collect();
-    Some(ManagedMarker {
-        package: (*values.get("package")?).to_owned(),
-        branch: (*values.get("branch")?).to_owned(),
-        head: (*values.get("head")?).to_owned(),
-        digest: (*values.get("digest")?).to_owned(),
-        version: (*values.get("version")?).to_owned(),
-        intent_digest: values
-            .get("intent")
-            .copied()
-            .filter(|digest| {
-                digest.len() == SHA256_HEX_LEN
-                    && digest
-                        .bytes()
-                        .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
-            })
-            .map(str::to_owned),
+    let start = trailing_marker_start(body)? + MARKER_PREFIX.len();
+    let fields = body.trim_end()[start..].strip_suffix(MARKER_SUFFIX)?;
+    let mut values = BTreeMap::new();
+    for field in fields.split_whitespace() {
+        let (key, value) = field.split_once('=')?;
+        if !MARKER_KEYS.contains(&key) || values.insert(key, value).is_some() {
+            return None;
+        }
+    }
+    let [package, branch, head, digest, version, intent] =
+        MARKER_KEYS.map(|key| values.get(key).copied());
+    let (package, branch, head, digest, version, intent) =
+        (package?, branch?, head?, digest?, version?, intent?);
+    let valid = crate::config::validate_package_name(package).is_ok()
+        && !branch.is_empty()
+        && valid_object_id(head)
+        && valid_sha256(digest)
+        && version.parse::<Version>().is_ok()
+        && (intent == PENDING_INTENT || valid_sha256(intent));
+    valid.then(|| ManagedMarker {
+        package: package.to_owned(),
+        branch: branch.to_owned(),
+        head: head.to_owned(),
+        digest: digest.to_owned(),
+        version: version.to_owned(),
+        intent_digest: (intent != PENDING_INTENT).then(|| intent.to_owned()),
     })
 }
 
 /// Parse the managed Release PR marker without exposing its internal fields.
 ///
-/// This entry point also gives fuzzing and callers a bounded, side-effect-free
-/// way to exercise the exact parser used by the GitHub adapter.
+/// This entry point also gives fuzzing and callers a bounded, side-effect-free way to exercise the exact parser used by the GitHub adapter.
 pub fn is_managed_release_pr(body: &str) -> bool {
     parse_marker(body).is_some()
 }
@@ -1609,23 +1701,28 @@ fn parse_candidate_digest(body: &str) -> Option<String> {
 }
 
 fn replace_managed_marker(body: &str, marker: &ManagedMarker) -> Result<String> {
-    let start = body
-        .find("<!-- release-glz:managed ")
-        .context("managed Release PR marker is missing")?;
-    let end = body[start..]
-        .find(" -->")
-        .map(|offset| start + offset + " -->".len())
-        .context("managed Release PR marker is incomplete")?;
-    let mut output = body.to_owned();
-    output.replace_range(start..end, &format_marker(marker));
+    let start = trailing_marker_start(body)
+        .context("managed Release PR body does not end in exactly one marker")?;
+    let output = format!("{}{}", &body[..start], format_marker(marker));
+    if parse_marker(&output).as_ref() != Some(marker) {
+        bail!("the updated Release PR body does not carry exactly its own marker");
+    }
     Ok(output)
 }
 
-fn valid_sha256(value: &str) -> bool {
-    value.len() == SHA256_HEX_LEN
+fn lowercase_hex(value: &str, length: usize) -> bool {
+    value.len() == length
         && value
             .bytes()
             .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+}
+
+fn valid_sha256(value: &str) -> bool {
+    lowercase_hex(value, SHA256_HEX_LEN)
+}
+
+fn valid_object_id(value: &str) -> bool {
+    lowercase_hex(value, OBJECT_HEX_LEN)
 }
 
 fn encode_segment(value: &str) -> String {
@@ -1648,19 +1745,33 @@ mod tests {
         ApiChange, ApiChangeKind, ApiDiff, ApiStatus, Baseline, BaselineSource, Bump,
         ReleaseReason, ReleaseState,
     };
-    use semver::Version;
+    fn marker(intent_digest: Option<String>) -> ManagedMarker {
+        ManagedMarker {
+            package: "widget".into(),
+            branch: "release-glz/widget".into(),
+            head: "b".repeat(40),
+            digest: "c".repeat(64),
+            version: "2.0.0".into(),
+            intent_digest,
+        }
+    }
 
     #[test]
     fn managed_marker_round_trips() {
-        let marker = ManagedMarker {
-            package: "one".into(),
-            branch: "release-glz/one".into(),
-            head: "abc".into(),
-            digest: "def".into(),
-            version: "1.2.3".into(),
-            intent_digest: Some("1".repeat(64)),
-        };
-        assert_eq!(parse_marker(&format_marker(&marker)), Some(marker));
+        for intent in [None, Some("1".repeat(64))] {
+            let marker = marker(intent);
+            assert_eq!(parse_marker(&format_marker(&marker)), Some(marker));
+        }
+    }
+
+    #[test]
+    fn replacing_the_marker_keeps_the_body_and_its_single_marker() {
+        let body = format!("Release notes\n\n{}\n", format_marker(&marker(None)));
+        let bound = marker(Some("1".repeat(64)));
+        let replaced = replace_managed_marker(&body, &bound).unwrap();
+        assert!(replaced.starts_with("Release notes\n\n"));
+        assert_eq!(parse_marker(&replaced), Some(bound));
+        assert!(replace_managed_marker("no marker", &marker(None)).is_err());
     }
 
     #[test]
@@ -1714,20 +1825,18 @@ mod tests {
             hex_url: None,
             github_release_url: None,
         };
-        let body = pull_body(
-            &plan,
-            &ManagedMarker {
-                package: "widget".into(),
-                branch: "release-glz/widget".into(),
-                head: "b".repeat(40),
-                digest: "c".repeat(64),
-                version: "2.0.0".into(),
-                intent_digest: None,
-            },
-        );
+        let body = pull_body(&plan, &marker(None)).unwrap();
         assert!(body.contains("Breaking API changes"));
         assert!(body.contains("intent_digest"));
         assert!(body.contains("Environment"));
         assert!(!body.contains("approval to publish to Hex"));
+
+        let injected = format_marker(&marker(Some("e".repeat(64))));
+        let mut hostile = plan.clone();
+        hostile.reasons[0].summary = format!("feat: {injected}");
+        hostile.api.changes[0].summary = injected;
+        let body = pull_body(&hostile, &marker(None)).unwrap();
+        assert_eq!(parse_marker(&body), Some(marker(None)));
+        assert_eq!(body.matches(MARKER_PREFIX).count(), 1);
     }
 }
