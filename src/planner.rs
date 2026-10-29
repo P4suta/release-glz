@@ -800,22 +800,26 @@ fn required_approvals(manifest: &Manifest) -> Vec<ApprovalRequirement> {
 }
 
 fn planned_stages(manifest: &Manifest) -> Vec<ReleaseStage> {
-    let mut stages = vec![
-        ReleaseStage::VerifyHooks,
-        ReleaseStage::PrepareGitTag,
-        ReleaseStage::PrepareGithubDraft,
-        ReleaseStage::PublishPackage,
-    ];
-    if manifest.release.outputs.docs {
-        stages.push(ReleaseStage::PublishDocs);
-    }
-    if manifest.release.outputs.github_release {
-        stages.push(ReleaseStage::FinalizeGithubRelease);
-    }
-    if !manifest.release.hooks.notify.is_empty() {
-        stages.push(ReleaseStage::NotifyHooks);
-    }
-    stages
+    let release = &manifest.release;
+    // Each stage appears only when the configuration gives it something to do, in the order a release runs them.
+    [
+        (!release.hooks.verify.is_empty(), ReleaseStage::VerifyHooks),
+        (true, ReleaseStage::PrepareGitTag),
+        (
+            release.outputs.github_release,
+            ReleaseStage::PrepareGithubDraft,
+        ),
+        (true, ReleaseStage::PublishPackage),
+        (release.outputs.docs, ReleaseStage::PublishDocs),
+        (
+            release.outputs.github_release,
+            ReleaseStage::FinalizeGithubRelease,
+        ),
+        (!release.hooks.notify.is_empty(), ReleaseStage::NotifyHooks),
+    ]
+    .into_iter()
+    .filter_map(|(runs, stage)| runs.then_some(stage))
+    .collect()
 }
 
 /// Render the files a Release PR carries, keyed by repository path.
@@ -967,7 +971,24 @@ mod tests {
 
         manifest.release.outputs.docs = false;
         manifest.release.outputs.github_release = false;
+        manifest.release.hooks.verify.clear();
         manifest.release.hooks.notify.clear();
+        assert_eq!(
+            planned_stages(&manifest),
+            [ReleaseStage::PrepareGitTag, ReleaseStage::PublishPackage]
+        );
+
+        let hook = |id: &str| HookConfig {
+            id: id.into(),
+            argv: vec![id.into()],
+            timeout_seconds: 30,
+            required: false,
+            env: vec![],
+        };
+        manifest.release.outputs.docs = true;
+        manifest.release.outputs.github_release = true;
+        manifest.release.hooks.verify.push(hook("policy"));
+        manifest.release.hooks.notify.push(hook("announce"));
         assert_eq!(
             planned_stages(&manifest),
             [
@@ -975,22 +996,11 @@ mod tests {
                 ReleaseStage::PrepareGitTag,
                 ReleaseStage::PrepareGithubDraft,
                 ReleaseStage::PublishPackage,
+                ReleaseStage::PublishDocs,
+                ReleaseStage::FinalizeGithubRelease,
+                ReleaseStage::NotifyHooks,
             ]
         );
-
-        manifest.release.outputs.docs = true;
-        manifest.release.outputs.github_release = true;
-        manifest.release.hooks.notify.push(HookConfig {
-            id: "announce".into(),
-            argv: vec!["notify".into()],
-            timeout_seconds: 30,
-            required: false,
-            env: vec![],
-        });
-        let stages = planned_stages(&manifest);
-        assert!(stages.contains(&ReleaseStage::PublishDocs));
-        assert!(stages.contains(&ReleaseStage::FinalizeGithubRelease));
-        assert_eq!(stages.last(), Some(&ReleaseStage::NotifyHooks));
     }
 
     #[test]
