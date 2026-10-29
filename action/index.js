@@ -608,15 +608,22 @@ function zipEntryKind(entryPath, externalAttributes) {
   return "file";
 }
 
+// Windows PowerShell runs on .NET Framework, which loads ZipFile only on request and has no overwrite overload.
+const WINDOWS_ZIP_ASSEMBLY = "Add-Type -AssemblyName System.IO.Compression.FileSystem;";
+
 function windowsZipInventoryScript() {
   return [
+    WINDOWS_ZIP_ASSEMBLY,
     "$a=[IO.Compression.ZipFile]::OpenRead($env:RELEASE_GLZ_ARCHIVE);",
     "try {$a.Entries | ForEach-Object { Write-Output ($_.FullName+[char]9+$_.Length+[char]9+$_.ExternalAttributes) }} finally {$a.Dispose()}",
   ].join(" ");
 }
 
 function windowsZipExtractScript() {
-  return "[IO.Compression.ZipFile]::ExtractToDirectory($env:RELEASE_GLZ_ARCHIVE,$env:RELEASE_GLZ_DESTINATION,$false)";
+  return [
+    WINDOWS_ZIP_ASSEMBLY,
+    "[IO.Compression.ZipFile]::ExtractToDirectory($env:RELEASE_GLZ_ARCHIVE,$env:RELEASE_GLZ_DESTINATION)",
+  ].join(" ");
 }
 
 async function extract(archive, extension, destination) {
@@ -967,6 +974,7 @@ module.exports = {
   download,
   expectedChecksum,
   emitEnvelope,
+  extract,
   inventoryTarGz,
   isAllowedDownloadRedirect,
   main,

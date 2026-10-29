@@ -10,6 +10,7 @@ const zlib = require("node:zlib");
 const {
   acquireBinary,
   expectedChecksum,
+  extract,
   inventoryTarGz,
   isAllowedDownloadRedirect,
   buildCommandArgs,
@@ -383,6 +384,37 @@ test("Windows ZIP scripts use environment-bound paths instead of positional Powe
   assert.match(extract, /RELEASE_GLZ_ARCHIVE/);
   assert.match(extract, /RELEASE_GLZ_DESTINATION/);
   assert.doesNotMatch(`${inventory}\n${extract}`, /\$args\[/);
+  for (const script of [inventory, extract]) {
+    assert.match(script, /^Add-Type -AssemblyName System\.IO\.Compression\.FileSystem;/);
+  }
+  assert.match(
+    extract,
+    /ExtractToDirectory\(\$env:RELEASE_GLZ_ARCHIVE,\$env:RELEASE_GLZ_DESTINATION\)$/,
+  );
+});
+
+test("lists and extracts a real ZIP archive with Windows PowerShell", {
+  skip: process.platform !== "win32" && "Windows PowerShell runs only on Windows",
+}, async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "release-glz-zip-"));
+  const source = path.join(root, "release-glz.exe");
+  fs.writeFileSync(source, "binary");
+  const archive = path.join(root, "release-glz.zip");
+  await runProcess(
+    "powershell",
+    [
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "Compress-Archive -LiteralPath $env:RELEASE_GLZ_SOURCE -DestinationPath $env:RELEASE_GLZ_ARCHIVE",
+    ],
+    { env: { ...process.env, RELEASE_GLZ_SOURCE: source, RELEASE_GLZ_ARCHIVE: archive } },
+  );
+  const destination = path.join(root, "extracted");
+
+  await extract(archive, "zip", destination);
+
+  assert.equal(fs.readFileSync(path.join(destination, "release-glz.exe"), "utf8"), "binary");
 });
 
 test("streaming subprocess execution is bounded and times out", async () => {

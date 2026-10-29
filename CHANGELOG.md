@@ -94,6 +94,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `BREAKING CHANGE:` and `BREAKING-CHANGE:` still count only in uppercase.
 - A `--candidate` path that isn't a directory exits 2 as a usage error instead of 4 as a conflict.
   Offline `verify --candidate` and `status --candidate` no longer need a manifest in the working directory, and the exit code table describes partial releases and inspection commands.
+- The Action installs release-glz on Windows.
+  Its archive scripts used `[IO.Compression.ZipFile]` without loading the assembly that Windows PowerShell 5.1 needs, and the extraction passed an argument that only .NET Core accepts.
 - Publication after a merged Release PR can succeed.
   The push run's publish job consumes the Candidate that its own `prepare` job uploaded.
   The artifact check had required that run to have completed, which it can't have while it publishes.
