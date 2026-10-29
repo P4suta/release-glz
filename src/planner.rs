@@ -107,17 +107,6 @@ pub struct Planner<R = HexRegistry> {
     baseline_cache_dir: Option<PathBuf>,
 }
 
-impl Default for Planner<HexRegistry> {
-    fn default() -> Self {
-        Self {
-            registry: HexRegistry::default(),
-            gleam: Gleam::default(),
-            baseline_search_limit: DEFAULT_BASELINE_SEARCH_LIMIT,
-            baseline_cache_dir: default_baseline_cache_dir(),
-        }
-    }
-}
-
 impl<R: Registry> Planner<R> {
     /// Build a planner over a registry and a compiler.
     pub fn new(registry: R, gleam: Gleam) -> Self {

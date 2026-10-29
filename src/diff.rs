@@ -1,10 +1,12 @@
 //! Unified diff rendering for the `--diff` mode of `init` and `migrate`.
 
+/// The path that a unified diff gives the side of a file that doesn't exist.
+const MISSING_FILE: &str = "/dev/null";
+
 /// Render a deterministic, valid unified diff.
 ///
-/// v1 intentionally emits one complete hunk. Configuration and managed
-/// workflow files are small, and a complete hunk avoids platform-specific
-/// dependencies while remaining consumable by standard patch tooling.
+/// v1 intentionally emits one complete hunk.
+/// Configuration and managed workflow files are small, and a complete hunk avoids platform-specific dependencies while remaining consumable by standard patch tooling.
 pub fn unified_diff(path: &str, current: &str, rendered: &str) -> String {
     if current == rendered {
         return String::new();
@@ -14,12 +16,12 @@ pub fn unified_diff(path: &str, current: &str, rendered: &str) -> String {
     let old_count = current.lines().count();
     let new_count = rendered.lines().count();
     let old_path = if current.is_empty() {
-        "/dev/null"
+        MISSING_FILE
     } else {
         &path
     };
     let new_path = if rendered.is_empty() {
-        "/dev/null"
+        MISSING_FILE
     } else {
         &path
     };

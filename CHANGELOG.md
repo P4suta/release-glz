@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- A registry `Retry-After` header can ask for at most one minute, so a response can no longer stall a run indefinitely.
 - The generated workflow no longer runs the compiler in a job that can write.
   `plan` compiles with read access and hands its plan to `release-pr`, which writes the Release PR without the compiler.
   `rehearse-release-pr` and `bind-release-pr` then rehearse the new Release PR head and bind its intent in the same push run.
@@ -41,6 +42,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 
 - The `update` command, which ran the same code as `release-pr`; use `release-glz release-pr`.
+- `HexRegistry::default` and `Planner::default`, which no command used and which read registry locations from `RELEASE_GLZ_HEX_*` variables.
+  Build a registry from the manifest configuration instead.
 
 ### Fixed
 

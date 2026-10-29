@@ -1,8 +1,6 @@
 //! Archive handling: building, validating, and comparing package bytes.
 //!
-//! Every archive read here is bounded before it is expanded, and every
-//! archive written is byte-reproducible, because the artifact digests in a
-//! Candidate are only meaningful if both hold.
+//! Every archive read here is bounded before it is expanded, and every archive written is byte-reproducible, because the artifact digests in a Candidate are only meaningful if both hold.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -19,14 +17,12 @@ use crate::units::MIB;
 
 /// Archive contents keyed by repository-relative path.
 ///
-/// The map is ordered, so two normalizations of the same bytes iterate
-/// identically and their digests agree.
+/// The map is ordered, so two normalizations of the same bytes iterate identically and their digests agree.
 pub type NormalizedArtifact = BTreeMap<String, Vec<u8>>;
 
 /// Bounds every archive has to stay within.
 ///
-/// Expansion is checked against these before anything is written, so a
-/// decompression bomb is refused rather than unpacked.
+/// Expansion is checked against these before anything is written, so a decompression bomb is refused rather than unpacked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ArchiveLimits {
     /// Maximum number of entries in one archive.
@@ -50,6 +46,12 @@ const DEFAULT_MAX_TOTAL_BYTES: u64 = 256 * MIB;
 
 /// Compressed size an archive itself may reach by default.
 const DEFAULT_MAX_ARCHIVE_BYTES: u64 = 128 * MIB;
+
+/// Bytes that a tar entry adds to its contents: a 512-byte header and up to 511 bytes of padding, rounded up.
+const TAR_OVERHEAD_PER_ENTRY: u64 = 1_024;
+
+/// Permissions of a file that a sealed archive records: read and write for its owner only.
+const ARCHIVED_FILE_MODE: u32 = 0o600;
 
 impl Default for ArchiveLimits {
     fn default() -> Self {
@@ -77,8 +79,7 @@ pub struct HexTarballValidation {
 
 /// Build a Hex package tarball with reproducible bytes.
 ///
-/// Entry order, timestamps, and permissions are fixed, so the same
-/// inputs produce the same archive on every platform.
+/// Entry order, timestamps, and permissions are fixed, so the same inputs produce the same archive on every platform.
 pub fn build_hex_tarball(
     metadata: &[u8],
     files: &BTreeMap<String, Vec<u8>>,
@@ -150,7 +151,7 @@ fn append_deterministic_file<W: std::io::Write>(
 ) -> Result<()> {
     let mut header = tar::Header::new_gnu();
     header.set_size(contents.len() as u64);
-    header.set_mode(0o600);
+    header.set_mode(ARCHIVED_FILE_MODE);
     header.set_uid(0);
     header.set_gid(0);
     header.set_mtime(0);
@@ -160,17 +161,15 @@ fn append_deterministic_file<W: std::io::Write>(
         .with_context(|| format!("failed to append `{path}` to tar archive"))
 }
 
-/// Check a Hex package tarball against the archive limits and its own
-/// declared structure.
+/// Check a Hex package tarball against the archive limits and its own declared structure.
 pub fn validate_hex_tarball(bytes: &[u8], limits: ArchiveLimits) -> Result<HexTarballValidation> {
     Ok(expand_hex_tarball(bytes, limits)?.0)
 }
 
 /// Validate a Hex package tarball and fingerprint it from the same expansion.
 ///
-/// Validating and then fingerprinting separately expands the outer tarball and
-/// its `contents.tar.gz` twice each. A Candidate needs both facts about the
-/// same bytes, so it takes them from one expansion instead.
+/// Validating and then fingerprinting separately expands the outer tarball and its `contents.tar.gz` twice each.
+/// A Candidate needs both facts about the same bytes, so it takes them from one expansion instead.
 pub fn validate_and_fingerprint_hex_tarball(
     bytes: &[u8],
     limits: ArchiveLimits,
@@ -254,8 +253,7 @@ pub fn validate_and_fingerprint_docs_tarball(
 
 /// Expand a tar archive into a directory, within the limits.
 ///
-/// Entry paths are validated first, so an entry cannot escape the
-/// destination through `..` or an absolute path.
+/// Entry paths are validated first, so an entry cannot escape the destination through `..` or an absolute path.
 pub fn unpack_tar_bytes(bytes: &[u8], destination: &Path, limits: ArchiveLimits) -> Result<()> {
     if bytes.len() as u64 > limits.max_archive_bytes {
         bail!("tar archive exceeds the byte limit");
@@ -285,8 +283,7 @@ pub fn fingerprint_hex_tarball(bytes: &[u8]) -> Result<String> {
 
 /// Digest an artifact that has already been normalized.
 ///
-/// A caller holding the normalized form does not have to expand the archive
-/// again to learn its fingerprint.
+/// A caller holding the normalized form does not have to expand the archive again to learn its fingerprint.
 pub fn fingerprint_normalized(normalized: &NormalizedArtifact) -> String {
     let mut digest = Sha256::new();
     for (path, contents) in normalized {
@@ -300,14 +297,13 @@ pub fn fingerprint_normalized(normalized: &NormalizedArtifact) -> String {
 
 /// Whether two Hex tarballs contain the same publication inputs.
 ///
-/// Compression and timestamps are ignored, and the manifest version is
-/// masked, so a rebuild of unchanged sources compares equal.
+/// Compression and timestamps are ignored, and the manifest version is masked, so a rebuild of unchanged sources compares equal.
 pub fn artifacts_equal(old: &[u8], new: &[u8]) -> Result<bool> {
     Ok(normalize_hex_tarball(old)? == normalize_hex_tarball(new)?)
 }
 
-/// Normalize the publish inputs in a package directory without invoking the
-/// compiler. This is used to recover a missing release tag from git history.
+/// Normalize the publish inputs in a package directory without invoking the compiler.
+/// This is used to recover a missing release tag from git history.
 pub fn normalize_package_dir(package_dir: &Path) -> Result<NormalizedArtifact> {
     let mut output = package_publish_inputs(package_dir)?;
     if let Some(contents) = output.get_mut("gleam.toml") {
@@ -378,8 +374,7 @@ pub(crate) fn hex_metadata(bytes: &[u8]) -> Result<Vec<u8>> {
 
 /// Normalize Hex contents: drop generated files and mask the version.
 ///
-/// The manifest version is the one field that legitimately differs
-/// between two releases of otherwise identical sources.
+/// The manifest version is the one field that legitimately differs between two releases of otherwise identical sources.
 pub fn normalize_contents_tar_gz(bytes: &[u8]) -> Result<NormalizedArtifact> {
     normalize_expanded_contents(read_tar_gz_files(bytes, ArchiveLimits::default())?)
 }
@@ -415,7 +410,7 @@ fn read_tar_gz_files(bytes: &[u8], limits: ArchiveLimits) -> Result<BTreeMap<Str
     }
     let decompressed_limit = limits
         .max_total_bytes
-        .saturating_add((limits.max_entries as u64).saturating_mul(1_024));
+        .saturating_add((limits.max_entries as u64).saturating_mul(TAR_OVERHEAD_PER_ENTRY));
     let decoder = LimitedReader::new(GzDecoder::new(Cursor::new(bytes)), decompressed_limit);
     read_tar_files(decoder, limits, true)
 }
