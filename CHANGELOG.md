@@ -21,6 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- On Windows, a hook runs in a job object from its first instruction, and a hook that times out ends together with every process it started.
+  Only the hook's own process used to end, so its children kept running and could hold its pipes open after release-glz moved on.
 - Archive validation refuses, on every host, a path that some supported OS can't store under the same name, and two entries that collide once letter case no longer counts.
   That covers a colon, a character or device name that Windows forbids, such as `aux.html`, and a component that ends in a dot or a space.
   A package, documentation archive, or source snapshot with such a path now fails instead of extracting into a different tree on macOS or Windows.
@@ -79,6 +81,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A Conventional Commit type counts in any letter case, so `Feat:` asks for a minor release and lands under Added, as Conventional Commits 1.0.0 requires.
+  `BREAKING CHANGE:` and `BREAKING-CHANGE:` still count only in uppercase.
 - A `--candidate` path that isn't a directory exits 2 as a usage error instead of 4 as a conflict.
   Offline `verify --candidate` and `status --candidate` no longer need a manifest in the working directory, and the exit code table describes partial releases and inspection commands.
 - Publication after a merged Release PR can succeed.
