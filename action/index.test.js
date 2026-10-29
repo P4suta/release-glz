@@ -19,6 +19,7 @@ const {
   normalizedVersion,
   parseCommandEnvelope,
   resultOutputs,
+  run,
   runProcess,
   setOutput,
   sha256,
@@ -546,6 +547,65 @@ test("writes multiline-safe GitHub outputs", () => {
   );
   const delimiters = contents.match(/release_glz_[a-f0-9]+/g);
   assert.equal(delimiters[0], delimiters[1]);
+});
+
+test("Action pauses workflow commands while release-glz output reaches the log", async (t) => {
+  if (process.platform === "win32") return t.skip("Unix executable fixture");
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "release-glz-commands-test-"));
+  const binary = path.join(directory, "release-glz");
+  const envelope = {
+    schema: "command/v2",
+    ok: false,
+    command: "plan",
+    result: null,
+    diagnostics: [
+      {
+        code: "blocked",
+        level: "error",
+        message: "first line\n::error::from a diagnostic",
+        detail: null,
+      },
+    ],
+    next_actions: [],
+  };
+  fs.writeFileSync(
+    binary,
+    `#!/bin/sh\nprintf '%s\\n' '::error::from stderr' >&2\nprintf '%s\\n' '${JSON.stringify(envelope)}'\nexit 4\n`,
+  );
+  fs.chmodSync(binary, 0o700);
+  const tokens = [];
+  for (const attempt of [1, 2]) {
+    let logged = "";
+    const code = await run(
+      {
+        ...process.env,
+        INPUT_COMMAND: "plan",
+        GITHUB_OUTPUT: path.join(directory, `output-${attempt}`),
+        "INPUT_TIMEOUT-SECONDS": "10",
+      },
+      {
+        stdout: { write: () => true },
+        stderr: {
+          write(chunk) {
+            logged += chunk;
+            return true;
+          },
+        },
+        acquire: async () => ({ binary, cleanup: () => {} }),
+      },
+    );
+    assert.equal(code, 4);
+    const lines = logged.trimEnd().split("\n");
+    const [, token] = lines[0].match(/^::stop-commands::([a-f0-9]{32})$/);
+    assert.equal(lines.at(-1), `::${token}::`);
+    assert.deepEqual(
+      lines.filter((line) => line.startsWith("::error::")),
+      ["::error::from stderr", "::error::from a diagnostic"],
+    );
+    assert.ok(lines.slice(1, -1).every((line) => !line.includes(token)));
+    tokens.push(token);
+  }
+  assert.notEqual(tokens[0], tokens[1]);
 });
 
 test("acquireBinary ignores RELEASE_GLZ_BINARY and keeps its own checks", async () => {
