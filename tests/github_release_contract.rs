@@ -879,10 +879,20 @@ async fn rolling_release_pr_ignores_pull_requests_that_only_copy_its_marker() {
         "1.2.3",
         "pending",
     );
+    let other_package = managed_body(
+        "gadget",
+        "release-glz/gadget",
+        &"e".repeat(40),
+        &digest,
+        "2.0.0",
+        "pending",
+    );
     let server = FakeServer::start(vec![
         response(
             200,
             &serde_json::json!([
+                pull_value(11, &other_package, "release-glz/gadget", &"e".repeat(40)),
+                pull_value(10, &managed, "release-glz/widget-copy", &"f".repeat(40)),
                 pull_value(9, &managed, "feature/notes", &"c".repeat(40)),
                 pull_value(8, &unprefixed, "notes/widget", &"d".repeat(40)),
                 pull_value(7, &managed, "release-glz/widget", &head),
