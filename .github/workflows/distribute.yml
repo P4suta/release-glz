@@ -284,9 +284,17 @@ jobs:
           diff -u \
             <(find ../dist -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort) \
             <(find . -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort)
-          sha256sum --check SHA256SUMS
+          shopt -s dotglob
+          for file in *; do
+            cmp -- "$file" "../dist/$file"
+          done
           for file in release-glz-*.tar.gz release-glz-*.zip; do
-            gh attestation verify "$file" --repo "$GITHUB_REPOSITORY"
+            gh attestation verify "$file" \
+              --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/distribute.yml" \
+              --source-ref "$GITHUB_REF" \
+              --source-digest "$GITHUB_SHA" \
+              --deny-self-hosted-runners
           done
       - name: Finalize verified Release
         env:
