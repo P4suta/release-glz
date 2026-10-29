@@ -28,17 +28,14 @@ const DOWNLOAD_LIMIT = 256 * MIB;
 const PROCESS_OUTPUT_LIMIT = 8 * MIB;
 const PROCESS_TIMEOUT_MS = 30 * MINUTE_MS;
 
-/// The hexadecimal form of a SHA-256 digest, lowercase as every manifest
-/// records it, and in either case where a third party wrote it.
+/// The hexadecimal form of a SHA-256 digest, lowercase as every manifest records it, and in either case where a third party wrote it.
 const SHA256_HEX = /^[a-f0-9]{64}$/;
 const SHA256_HEX_ANY_CASE = /^[a-fA-F0-9]{64}$/;
 
-/// A digest of nothing but zeroes, which is what the checksum manifest carries
-/// until a release fills it in.
+/// A digest of nothing but zeroes, which is what the checksum manifest carries until a release fills it in.
 const SHA256_HEX_ZEROED = /^0{64}$/;
 
-/// A git object id: the SHA-1 form git writes today, or the SHA-256 form a
-/// migrated repository writes.
+/// A git object id: the SHA-1 form git writes today, or the SHA-256 form a migrated repository writes.
 const GIT_OBJECT_HEX = /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/;
 
 /// Size the checksum manifest and a `SHA256SUMS` file may reach.
@@ -134,7 +131,9 @@ function verifyChecksum(file, expected) {
   const actualBytes = Buffer.from(actual, "hex");
   const expectedBytes = Buffer.from(expected, "hex");
   if (!crypto.timingSafeEqual(actualBytes, expectedBytes)) {
-    throw new Error(`Checksum mismatch for ${path.basename(file)}: expected ${expected}, got ${actual}`);
+    throw new Error(
+      `Checksum mismatch for ${path.basename(file)}: expected ${expected}, got ${actual}`,
+    );
   }
 }
 
@@ -143,25 +142,39 @@ function bundledChecksum(source, version, filename) {
     throw new Error("Bundled checksum manifest exceeds its size limit");
   }
   let manifest;
-  try { manifest = JSON.parse(source); } catch (error) {
+  try {
+    manifest = JSON.parse(source);
+  } catch (error) {
     throw new Error(`Bundled checksum manifest is invalid JSON: ${error.message}`);
   }
-  const keys = manifest && typeof manifest === "object" && !Array.isArray(manifest)
-    ? Object.keys(manifest).sort()
-    : [];
-  if (keys.join(",") !== "artifacts,schema,version" ||
-      manifest.schema !== "release-glz-action-checksums/v1") {
+  const keys =
+    manifest && typeof manifest === "object" && !Array.isArray(manifest)
+      ? Object.keys(manifest).sort()
+      : [];
+  if (
+    keys.join(",") !== "artifacts,schema,version" ||
+    manifest.schema !== "release-glz-action-checksums/v1"
+  ) {
     throw new Error("Bundled checksum manifest has an unsupported schema");
   }
   if (manifest.version !== version) {
-    throw new Error(`Bundled checksum manifest version ${manifest.version} does not match ${version}`);
+    throw new Error(
+      `Bundled checksum manifest version ${manifest.version} does not match ${version}`,
+    );
   }
-  if (!manifest.artifacts || typeof manifest.artifacts !== "object" || Array.isArray(manifest.artifacts)) {
+  if (
+    !manifest.artifacts ||
+    typeof manifest.artifacts !== "object" ||
+    Array.isArray(manifest.artifacts)
+  ) {
     throw new Error("Bundled checksum manifest artifacts are invalid");
   }
   const names = Object.keys(manifest.artifacts).sort();
   const expectedNames = [...SUPPORTED_ARCHIVES].sort();
-  if (names.length !== expectedNames.length || names.some((name, index) => name !== expectedNames[index])) {
+  if (
+    names.length !== expectedNames.length ||
+    names.some((name, index) => name !== expectedNames[index])
+  ) {
     throw new Error("Bundled checksum manifest must cover every supported platform exactly once");
   }
   for (const [name, digest] of Object.entries(manifest.artifacts)) {
@@ -181,18 +194,27 @@ function verifyProvenance(file, expectedDigest, filename, archiveDigest) {
     throw new Error("Provenance must be a regular file no larger than 1 MiB");
   }
   verifyChecksum(file, expectedDigest);
-  const lines = fs.readFileSync(file, "utf8").split(/\r?\n/).filter((line) => line.trim());
+  const lines = fs
+    .readFileSync(file, "utf8")
+    .split(/\r?\n/)
+    .filter((line) => line.trim());
   if (lines.length !== 1) throw new Error("Provenance must contain exactly one JSON statement");
   let statement;
-  try { statement = JSON.parse(lines[0]); } catch (error) {
+  try {
+    statement = JSON.parse(lines[0]);
+  } catch (error) {
     throw new Error(`Provenance is invalid JSON: ${error.message}`);
   }
-  if (statement._type !== "https://in-toto.io/Statement/v1" ||
-      statement.predicateType !== "https://slsa.dev/provenance/v1" ||
-      !statement.predicate || typeof statement.predicate !== "object" ||
-      !Array.isArray(statement.subject) || statement.subject.length !== 1 ||
-      statement.subject[0]?.name !== filename ||
-      statement.subject[0]?.digest?.sha256 !== archiveDigest) {
+  if (
+    statement._type !== "https://in-toto.io/Statement/v1" ||
+    statement.predicateType !== "https://slsa.dev/provenance/v1" ||
+    !statement.predicate ||
+    typeof statement.predicate !== "object" ||
+    !Array.isArray(statement.subject) ||
+    statement.subject.length !== 1 ||
+    statement.subject[0]?.name !== filename ||
+    statement.subject[0]?.digest?.sha256 !== archiveDigest
+  ) {
     throw new Error("Provenance subject does not bind the selected release archive");
   }
 }
@@ -210,12 +232,14 @@ function isAllowedDownloadRedirect(initial, target) {
   const initialUrl = initial instanceof URL ? initial : new URL(initial);
   const targetUrl = target instanceof URL ? target : new URL(target);
   if (targetUrl.origin === initialUrl.origin) return true;
-  return initialUrl.protocol === "https:" &&
+  return (
+    initialUrl.protocol === "https:" &&
     initialUrl.hostname === "github.com" &&
     initialUrl.port === "" &&
     targetUrl.protocol === "https:" &&
     targetUrl.port === "" &&
-    GITHUB_RELEASE_ASSET_HOSTS.has(targetUrl.hostname);
+    GITHUB_RELEASE_ASSET_HOSTS.has(targetUrl.hostname)
+  );
 }
 
 function download(url, destination, options = {}) {
@@ -230,7 +254,10 @@ function download(url, destination, options = {}) {
   if (parsed.username || parsed.password) {
     return Promise.reject(new Error("Download URLs must not contain credentials"));
   }
-  if (parsed.protocol !== "https:" && !(allowHttpLoopback && parsed.protocol === "http:" && isLoopback(parsed.hostname))) {
+  if (
+    parsed.protocol !== "https:" &&
+    !(allowHttpLoopback && parsed.protocol === "http:" && isLoopback(parsed.hostname))
+  ) {
     return Promise.reject(new Error(`Download URL must use HTTPS: ${url}`));
   }
   if (!isAllowedDownloadRedirect(initialUrl, parsed)) {
@@ -243,68 +270,77 @@ function download(url, destination, options = {}) {
     const fail = (error) => {
       if (settled) return;
       settled = true;
-      try { fs.unlinkSync(destination); } catch (unlinkError) {
-        if (unlinkError.code !== "ENOENT") error.message += `; cleanup failed: ${unlinkError.message}`;
+      try {
+        fs.unlinkSync(destination);
+      } catch (unlinkError) {
+        if (unlinkError.code !== "ENOENT")
+          error.message += `; cleanup failed: ${unlinkError.message}`;
       }
       reject(error);
     };
-    const request = transport.get(parsed, {
-      headers: { "user-agent": "release-glz-action" },
-      timeout: timeoutMs,
-    }, (response) => {
-      if (
-      response.statusCode >= HTTP_REDIRECT_MIN &&
-      response.statusCode < HTTP_REDIRECT_MAX &&
-      response.headers.location
-    ) {
-        response.resume();
-        const next = new URL(response.headers.location, parsed);
-        if (!isAllowedDownloadRedirect(initialUrl, next)) {
-          fail(new Error(`Refusing cross-origin redirect from ${parsed.origin} to ${next.origin}`));
+    const request = transport.get(
+      parsed,
+      {
+        headers: { "user-agent": "release-glz-action" },
+        timeout: timeoutMs,
+      },
+      (response) => {
+        if (
+          response.statusCode >= HTTP_REDIRECT_MIN &&
+          response.statusCode < HTTP_REDIRECT_MAX &&
+          response.headers.location
+        ) {
+          response.resume();
+          const next = new URL(response.headers.location, parsed);
+          if (!isAllowedDownloadRedirect(initialUrl, next)) {
+            fail(
+              new Error(`Refusing cross-origin redirect from ${parsed.origin} to ${next.origin}`),
+            );
+            return;
+          }
+          settled = true;
+          download(next.toString(), destination, {
+            maxBytes,
+            timeoutMs,
+            allowHttpLoopback,
+            redirects: redirects + 1,
+            initialUrl,
+          }).then(resolve, reject);
           return;
         }
-        settled = true;
-        download(next.toString(), destination, {
-          maxBytes,
-          timeoutMs,
-          allowHttpLoopback,
-          redirects: redirects + 1,
-          initialUrl,
-        }).then(resolve, reject);
-        return;
-      }
-      if (response.statusCode !== HTTP_OK) {
-        response.resume();
-        fail(new Error(`Download failed with HTTP ${response.statusCode}: ${url}`));
-        return;
-      }
-      const declared = Number(response.headers["content-length"] || 0);
-      if (declared > maxBytes) {
-        response.resume();
-        fail(new Error(`Download exceeds the ${maxBytes} byte limit: ${url}`));
-        return;
-      }
-      let received = 0;
-      const output = fs.createWriteStream(destination, { flags: "wx", mode: 0o600 });
-      output.on("error", fail);
-      response.on("data", (chunk) => {
-        received += chunk.length;
-        if (received > maxBytes) {
-          response.destroy(new Error(`Download exceeds the ${maxBytes} byte limit: ${url}`));
+        if (response.statusCode !== HTTP_OK) {
+          response.resume();
+          fail(new Error(`Download failed with HTTP ${response.statusCode}: ${url}`));
+          return;
         }
-      });
-      response.on("error", fail);
-      response.pipe(output);
-      output.on("finish", () => {
-        output.close((error) => {
-          if (error) return fail(error);
-          if (!settled) {
-            settled = true;
-            resolve();
+        const declared = Number(response.headers["content-length"] || 0);
+        if (declared > maxBytes) {
+          response.resume();
+          fail(new Error(`Download exceeds the ${maxBytes} byte limit: ${url}`));
+          return;
+        }
+        let received = 0;
+        const output = fs.createWriteStream(destination, { flags: "wx", mode: 0o600 });
+        output.on("error", fail);
+        response.on("data", (chunk) => {
+          received += chunk.length;
+          if (received > maxBytes) {
+            response.destroy(new Error(`Download exceeds the ${maxBytes} byte limit: ${url}`));
           }
         });
-      });
-    });
+        response.on("error", fail);
+        response.pipe(output);
+        output.on("finish", () => {
+          output.close((error) => {
+            if (error) return fail(error);
+            if (!settled) {
+              settled = true;
+              resolve();
+            }
+          });
+        });
+      },
+    );
     request.on("timeout", () => request.destroy(new Error(`Download timed out: ${url}`)));
     request.on("error", fail);
   });
@@ -322,7 +358,9 @@ function validateArchiveInventory(entries, limits = {}) {
     const name = String(entry.path || "").replace(/\\/g, "/");
     const segments = name.split("/");
     if (
-      !name || name.startsWith("/") || /^[A-Za-z]:\//.test(name) ||
+      !name ||
+      name.startsWith("/") ||
+      /^[A-Za-z]:\//.test(name) ||
       segments.some((segment) => segment === ".." || segment === "." || segment === "")
     ) {
       throw new Error(`Archive contains unsafe path ${JSON.stringify(name)}`);
@@ -333,7 +371,8 @@ function validateArchiveInventory(entries, limits = {}) {
     if (seen.has(name)) throw new Error(`Archive contains duplicate entry ${name}`);
     seen.add(name);
     const size = Number(entry.size);
-    if (!Number.isSafeInteger(size) || size < 0) throw new Error(`Archive has invalid size for ${name}`);
+    if (!Number.isSafeInteger(size) || size < 0)
+      throw new Error(`Archive has invalid size for ${name}`);
     total += size;
     if (total > maxBytes) throw new Error(`Archive expands beyond the ${maxBytes} byte limit`);
   }
@@ -344,7 +383,11 @@ function terminateProcess(child, force = false) {
   if (!child || child.exitCode !== null) return;
   const signal = force ? "SIGKILL" : "SIGTERM";
   if (process.platform !== "win32" && child.pid) {
-    try { process.kill(-child.pid, signal); } catch { child.kill(signal); }
+    try {
+      process.kill(-child.pid, signal);
+    } catch {
+      child.kill(signal);
+    }
   } else if (force && child.pid) {
     try {
       spawn("taskkill", ["/PID", String(child.pid), "/T", "/F"], {
@@ -390,13 +433,18 @@ function runProcess(executable, args, options = {}) {
       }
       return Buffer.concat([current, chunk]);
     };
-    child.stdout.on("data", (chunk) => { stdout = collect("stdout", stdout, chunk); });
+    child.stdout.on("data", (chunk) => {
+      stdout = collect("stdout", stdout, chunk);
+    });
     child.stderr.on("data", (chunk) => {
       stderr = collect("stderr", stderr, chunk);
       if (options.streamStderr !== false) process.stderr.write(chunk);
     });
     child.on("error", stop);
-    const timer = setTimeout(() => stop(new Error(`Subprocess timed out after ${timeoutMs}ms`)), timeoutMs);
+    const timer = setTimeout(
+      () => stop(new Error(`Subprocess timed out after ${timeoutMs}ms`)),
+      timeoutMs,
+    );
     const abort = () => stop(new Error("Subprocess cancelled"));
     if (options.signal) {
       if (options.signal.aborted) abort();
@@ -428,22 +476,25 @@ function tarString(field) {
 }
 
 function tarOctal(field, description) {
-  if (field[0] & TAR_BASE256_FLAG) throw new Error(`Tar ${description} uses unsupported base-256 encoding`);
+  if (field[0] & TAR_BASE256_FLAG)
+    throw new Error(`Tar ${description} uses unsupported base-256 encoding`);
   const value = field.toString("ascii").replace(/\0.*$/, "").trim();
   if (!value || !/^[0-7]+$/.test(value)) throw new Error(`Tar ${description} is not valid octal`);
   const parsed = Number.parseInt(value, OCTAL_RADIX);
-  if (!Number.isSafeInteger(parsed)) throw new Error(`Tar ${description} exceeds the safe integer range`);
+  if (!Number.isSafeInteger(parsed))
+    throw new Error(`Tar ${description} exceeds the safe integer range`);
   return parsed;
 }
 
 function parseTarHeader(header) {
-  const expectedChecksum = tarOctal(header.subarray(TAR_CHECKSUM_START, TAR_CHECKSUM_END), "checksum");
+  const expectedChecksum = tarOctal(
+    header.subarray(TAR_CHECKSUM_START, TAR_CHECKSUM_END),
+    "checksum",
+  );
   let actualChecksum = 0;
   for (let index = 0; index < header.length; index += 1) {
     actualChecksum +=
-      index >= TAR_CHECKSUM_START && index < TAR_CHECKSUM_END
-        ? TAR_CHECKSUM_BLANK
-        : header[index];
+      index >= TAR_CHECKSUM_START && index < TAR_CHECKSUM_END ? TAR_CHECKSUM_BLANK : header[index];
   }
   if (actualChecksum !== expectedChecksum) throw new Error("Tar header checksum mismatch");
   const name = tarString(header.subarray(0, TAR_NAME_END));
@@ -463,7 +514,7 @@ function parseTarHeader(header) {
 async function inventoryTarGz(archive, limits = {}) {
   const maxEntries = limits.maxEntries ?? ARCHIVE_ENTRY_LIMIT;
   const maxBytes = limits.maxBytes ?? DOWNLOAD_LIMIT;
-  const maxStreamBytes = maxBytes + (maxEntries * KIB) + KIB;
+  const maxStreamBytes = maxBytes + maxEntries * KIB + KIB;
   const input = fs.createReadStream(archive);
   const gunzip = zlib.createGunzip();
   input.pipe(gunzip);
@@ -477,11 +528,13 @@ async function inventoryTarGz(archive, limits = {}) {
   try {
     for await (const chunk of gunzip) {
       streamBytes += chunk.length;
-      if (streamBytes > maxStreamBytes) throw new Error("Tar stream exceeds its bounded expansion size");
+      if (streamBytes > maxStreamBytes)
+        throw new Error("Tar stream exceeds its bounded expansion size");
       buffer = buffer.length === 0 ? chunk : Buffer.concat([buffer, chunk]);
       while (buffer.length > 0) {
         if (ended) {
-          if (buffer.some((byte) => byte !== 0)) throw new Error("Tar contains data after its end marker");
+          if (buffer.some((byte) => byte !== 0))
+            throw new Error("Tar contains data after its end marker");
           buffer = Buffer.alloc(0);
           break;
         }
@@ -555,31 +608,49 @@ async function extract(archive, extension, destination) {
       RELEASE_GLZ_ARCHIVE: archive,
       RELEASE_GLZ_DESTINATION: destination,
     };
-    const inventory = await runProcess("powershell", [
-      "-NoProfile", "-NonInteractive", "-Command", windowsZipInventoryScript(),
-    ], { env: powershellEnvironment });
-    const entries = inventory.stdout.split(/\r?\n/).filter(Boolean).map((line) => {
-      const [entryPath, size, externalAttributes] = line.split("\t");
-      return {
-        path: entryPath.replace(/\/$/, ""),
-        kind: zipEntryKind(entryPath, externalAttributes),
-        size: Number(size),
-      };
-    });
+    const inventory = await runProcess(
+      "powershell",
+      ["-NoProfile", "-NonInteractive", "-Command", windowsZipInventoryScript()],
+      { env: powershellEnvironment },
+    );
+    const entries = inventory.stdout
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .map((line) => {
+        const [entryPath, size, externalAttributes] = line.split("\t");
+        return {
+          path: entryPath.replace(/\/$/, ""),
+          kind: zipEntryKind(entryPath, externalAttributes),
+          size: Number(size),
+        };
+      });
     validateArchiveInventory(entries);
-    await runProcess("powershell", [
-      "-NoProfile", "-NonInteractive", "-Command", windowsZipExtractScript(),
-    ], { env: powershellEnvironment });
+    await runProcess(
+      "powershell",
+      ["-NoProfile", "-NonInteractive", "-Command", windowsZipExtractScript()],
+      { env: powershellEnvironment },
+    );
   } else {
     await inventoryTarGz(archive);
-    await runProcess("tar", ["--extract", "--gzip", "--file", archive, "--directory", destination, "--no-same-owner", "--no-same-permissions"]);
+    await runProcess("tar", [
+      "--extract",
+      "--gzip",
+      "--file",
+      archive,
+      "--directory",
+      destination,
+      "--no-same-owner",
+      "--no-same-permissions",
+    ]);
   }
 }
 
 function setOutput(name, value, outputFile = process.env.GITHUB_OUTPUT) {
   if (!outputFile) return;
   const delimiter = `release_glz_${crypto.randomBytes(12).toString("hex")}`;
-  fs.appendFileSync(outputFile, `${name}<<${delimiter}\n${value ?? ""}\n${delimiter}\n`, { encoding: "utf8" });
+  fs.appendFileSync(outputFile, `${name}<<${delimiter}\n${value ?? ""}\n${delimiter}\n`, {
+    encoding: "utf8",
+  });
 }
 
 function booleanInput(environment, name) {
@@ -593,11 +664,15 @@ function booleanInput(environment, name) {
 
 function buildCommandArgs(command, environment = process.env) {
   if (!SUPPORTED_COMMANDS.has(command)) {
-    throw new Error(`command is required and must be one of: ${[...SUPPORTED_COMMANDS].join(", ")}`);
+    throw new Error(
+      `command is required and must be one of: ${[...SUPPORTED_COMMANDS].join(", ")}`,
+    );
   }
   const args = [
-    "--manifest-path", environment["INPUT_MANIFEST-PATH"] || "gleam.toml",
-    "--output", "json",
+    "--manifest-path",
+    environment["INPUT_MANIFEST-PATH"] || "gleam.toml",
+    "--output",
+    "json",
   ];
   args.push(command);
   const dryRun = booleanInput(environment, "DRY-RUN");
@@ -615,7 +690,10 @@ function buildCommandArgs(command, environment = process.env) {
   if (sourceRef && command !== "rehearse") {
     throw new Error(`source-ref is not supported by the ${command} command`);
   }
-  if (candidate && !new Set(["rehearse", "verify", "release", "release-pr", "status"]).has(command)) {
+  if (
+    candidate &&
+    !new Set(["rehearse", "verify", "release", "release-pr", "status"]).has(command)
+  ) {
     throw new Error(`candidate is not supported by the ${command} command`);
   }
   if (candidateBuild && command !== "doctor") {
@@ -647,19 +725,27 @@ function buildCommandArgs(command, environment = process.env) {
 
 function parseCommandEnvelope(stdout) {
   let value;
-  try { value = JSON.parse(stdout.trim()); } catch (error) {
+  try {
+    value = JSON.parse(stdout.trim());
+  } catch (error) {
     throw new Error(`release-glz returned invalid JSON: ${error.message}`);
   }
   if (
-    !value || value.schema !== "command/v2" || typeof value.ok !== "boolean" ||
-    typeof value.command !== "string" || !Array.isArray(value.diagnostics) ||
+    value?.schema !== "command/v2" ||
+    typeof value.ok !== "boolean" ||
+    typeof value.command !== "string" ||
+    !Array.isArray(value.diagnostics) ||
     !Array.isArray(value.next_actions)
   ) {
     throw new Error("release-glz output is not command/v2");
   }
   for (const action of value.next_actions) {
-    if (!action || typeof action.command !== "string" ||
-        !Array.isArray(action.argv) || action.argv.some((argument) => typeof argument !== "string")) {
+    if (
+      !action ||
+      typeof action.command !== "string" ||
+      !Array.isArray(action.argv) ||
+      action.argv.some((argument) => typeof argument !== "string")
+    ) {
       throw new Error("release-glz next action does not contain canonical argv");
     }
   }
@@ -706,7 +792,9 @@ async function acquireBinary(environment = process.env) {
   }
   const filename = `release-glz-${target}.${extension}`;
   const base = `https://github.com/${repository}/releases/download/${version}`;
-  const temporary = fs.mkdtempSync(path.join(environment.RUNNER_TEMP || os.tmpdir(), "release-glz-action-"));
+  const temporary = fs.mkdtempSync(
+    path.join(environment.RUNNER_TEMP || os.tmpdir(), "release-glz-action-"),
+  );
   const cleanup = () => fs.rmSync(temporary, { recursive: true, force: true });
   try {
     const archive = path.join(temporary, filename);
@@ -714,7 +802,9 @@ async function acquireBinary(environment = process.env) {
     if (inputVersion) {
       const provenanceExpected = environment.INPUT_PROVENANCE;
       if (!SHA256_HEX.test(expected) || !SHA256_HEX.test(provenanceExpected)) {
-        throw new Error("Explicit override checksum and provenance must be lowercase SHA-256 digests");
+        throw new Error(
+          "Explicit override checksum and provenance must be lowercase SHA-256 digests",
+        );
       }
       const provenance = path.join(temporary, `${filename}.intoto.jsonl`);
       await Promise.all([
@@ -758,16 +848,17 @@ async function main(environment = process.env, stdout = process.stdout) {
   process.once("SIGTERM", cancel);
   try {
     const childEnvironment = { ...environment };
-    if (environment["INPUT_GITHUB-TOKEN"]) childEnvironment.GITHUB_TOKEN = environment["INPUT_GITHUB-TOKEN"];
+    if (environment["INPUT_GITHUB-TOKEN"])
+      childEnvironment.GITHUB_TOKEN = environment["INPUT_GITHUB-TOKEN"];
     const timeoutSeconds = Number(environment["INPUT_TIMEOUT-SECONDS"] || DEFAULT_TIMEOUT_SECONDS);
     if (
-    !Number.isSafeInteger(timeoutSeconds) ||
-    timeoutSeconds < MIN_TIMEOUT_SECONDS ||
-    timeoutSeconds > MAX_TIMEOUT_SECONDS
-  ) {
+      !Number.isSafeInteger(timeoutSeconds) ||
+      timeoutSeconds < MIN_TIMEOUT_SECONDS ||
+      timeoutSeconds > MAX_TIMEOUT_SECONDS
+    ) {
       throw new Error(
-      `timeout-seconds must be between ${MIN_TIMEOUT_SECONDS} and ${MAX_TIMEOUT_SECONDS}`,
-    );
+        `timeout-seconds must be between ${MIN_TIMEOUT_SECONDS} and ${MAX_TIMEOUT_SECONDS}`,
+      );
     }
     let result;
     try {
@@ -785,10 +876,11 @@ async function main(environment = process.env, stdout = process.stdout) {
           .map((diagnostic) => `${diagnostic.code}: ${diagnostic.message}`)
           .join("; ");
         const next = envelope.next_actions[0]?.command;
-        const failure = new Error([
-          diagnostics || `release-glz ${command} failed`,
-          next ? `next: ${next}` : "",
-        ].filter(Boolean).join("; "));
+        const failure = new Error(
+          [diagnostics || `release-glz ${command} failed`, next ? `next: ${next}` : ""]
+            .filter(Boolean)
+            .join("; "),
+        );
         failure.exitCode = error.exitCode;
         failure.envelope = envelope;
         throw failure;
