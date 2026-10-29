@@ -488,22 +488,12 @@ impl Manifest {
                 "initializing a 0.x package requires the explicit --allow-version-zero policy opt-in"
             );
         }
+        // The rest of the rendered configuration is fixed text, so the settings it interpolates are all that can be invalid.
         validate_git_ref(
             &format!("refs/heads/{}", settings.default_branch),
             "detected default branch",
         )?;
-        validate_release_config(&ReleaseConfig {
-            schema: 2,
-            compiler: settings.compiler.clone(),
-            registry: settings.registry.clone(),
-            approval: ApprovalConfig {
-                manual_refs: vec![format!("refs/heads/{}", settings.default_branch)],
-                ..ApprovalConfig::default()
-            },
-            allow_version_zero: settings.allow_version_zero,
-            compatibility_warnings: Vec::new(),
-            ..ReleaseConfig::default()
-        })?;
+        validate_registry(&settings.registry)?;
         if self
             .document
             .get("tools")
@@ -1343,6 +1333,30 @@ prerelease = ""
         assert!(rendered.contains("[tools.other]\nprerelease = \"\""));
         let parsed = Manifest::parse(PathBuf::from("gleam.toml"), rendered).unwrap();
         assert_eq!(parsed.release.prerelease, None);
+    }
+
+    #[test]
+    fn initialization_refuses_a_registry_before_it_renders_one() {
+        let manifest = Manifest::parse(
+            PathBuf::from("gleam.toml"),
+            "name = \"x\"\nversion = \"1.0.0\"\n".into(),
+        )
+        .unwrap();
+        let error = manifest
+            .render_initialized(&InitializationSettings {
+                compiler: Version::new(1, 18, 1),
+                default_branch: "main".into(),
+                registry: RegistryConfig {
+                    api_url: "http://hex.example/api".into(),
+                    ..RegistryConfig::default()
+                },
+                allow_version_zero: false,
+            })
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "registry.api_url must use HTTPS (HTTP is test-only on loopback)"
+        );
     }
 
     #[test]
