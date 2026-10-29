@@ -17,8 +17,8 @@ use crate::artifact::{
 };
 use crate::canonical::{SHA256_HEX_LEN, canonical_json_bytes, canonical_sha256};
 use crate::config::{
-    ApprovalConfig, AuthKind, HookConfig, Manifest, OutputConfig, RegistryProvider,
-    url_is_http_loopback, valid_env_name, validate_git_ref, validate_hook_config,
+    ApprovalConfig, AuthKind, BUILT_IN_HOOK_ID, HookConfig, Manifest, OutputConfig,
+    RegistryProvider, url_is_http_loopback, valid_env_name, validate_git_ref, validate_hook_config,
     validate_package_name, validate_registry_repository, validate_relative_path,
 };
 use crate::git::OBJECT_HEX_LEN;
@@ -509,7 +509,7 @@ impl Candidate {
                 "components": []
             });
             evidence.push(SidecarArtifact {
-                hook_id: "release-glz".into(),
+                hook_id: BUILT_IN_HOOK_ID.into(),
                 name: format!("{}-{}.cdx.json", input.package, input.version),
                 media_type: "application/vnd.cyclonedx+json".into(),
                 bytes: canonical_json_bytes(&value)?,
@@ -556,7 +556,7 @@ impl Candidate {
                 }
             });
             evidence.push(SidecarArtifact {
-                hook_id: "release-glz".into(),
+                hook_id: BUILT_IN_HOOK_ID.into(),
                 name: format!("{}-{}.intoto.jsonl", input.package, input.version),
                 media_type: "application/vnd.in-toto+json".into(),
                 bytes: canonical_json_bytes(&value)?,
@@ -1391,7 +1391,7 @@ fn validate_evidenced_hooks(
         .map(|hook| hook.id.as_str())
         .collect::<std::collections::BTreeSet<_>>();
     if sidecars.iter().any(|artifact| {
-        artifact.hook_id != "release-glz" && !sidecar_ids.contains(artifact.hook_id.as_str())
+        artifact.hook_id != BUILT_IN_HOOK_ID && !sidecar_ids.contains(artifact.hook_id.as_str())
     }) {
         bail!("candidate sidecar artifact was produced by an undeclared hook");
     }
@@ -1470,7 +1470,7 @@ fn validate_standard_output_artifacts(
 ) -> Result<()> {
     let built_in = sidecars
         .iter()
-        .filter(|artifact| artifact.hook_id == "release-glz")
+        .filter(|artifact| artifact.hook_id == BUILT_IN_HOOK_ID)
         .collect::<Vec<_>>();
     let sbom_name = format!("{package}-{version}.cdx.json");
     let provenance_name = format!("{package}-{version}.intoto.jsonl");

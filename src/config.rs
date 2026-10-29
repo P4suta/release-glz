@@ -35,6 +35,9 @@ const STRUCTURED_SCHEMA: i64 = 2;
 /// The ASCII delete control character, which Git refuses in a ref.
 const ASCII_DELETE: u8 = 0x7f;
 
+/// The hook id of the SBOM and provenance that release-glz builds itself, which no configured hook may take.
+pub const BUILT_IN_HOOK_ID: &str = "release-glz";
+
 /// Seconds a hook may run for when the manifest names no timeout.
 const DEFAULT_HOOK_TIMEOUT_SECONDS: u64 = 300;
 
@@ -1028,6 +1031,11 @@ pub fn validate_hook_config(hook: &HookConfig) -> Result<()> {
         });
     if !valid_id {
         bail!("hook id `{}` is unsafe", hook.id);
+    }
+    if hook.id == BUILT_IN_HOOK_ID {
+        bail!(
+            "hook id `{BUILT_IN_HOOK_ID}` is reserved for the evidence that release-glz builds itself"
+        );
     }
     if hook.argv.is_empty()
         || hook
