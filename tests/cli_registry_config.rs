@@ -1,7 +1,7 @@
 #![cfg(unix)]
 
 use std::collections::VecDeque;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::net::{TcpListener, TcpStream};
 use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
@@ -10,7 +10,7 @@ use std::thread;
 
 use base64::Engine as _;
 use flate2::{Compression, write::GzEncoder};
-use release_glz_test_support::isolated_command;
+use release_glz_test_support::{isolated_command, read_some};
 use sha2::{Digest, Sha256};
 
 #[test]
@@ -1200,7 +1200,7 @@ fn read_http_request(stream: &mut std::net::TcpStream) -> String {
     let mut bytes = Vec::new();
     let mut buffer = [0_u8; 4096];
     let header_end = loop {
-        let count = stream.read(&mut buffer).unwrap();
+        let count = read_some(stream, &mut buffer);
         assert!(count > 0);
         bytes.extend_from_slice(&buffer[..count]);
         if let Some(index) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
@@ -1215,7 +1215,7 @@ fn read_http_request(stream: &mut std::net::TcpStream) -> String {
         .map(|(_, value)| value.trim().parse::<usize>().unwrap())
         .unwrap_or(0);
     while bytes.len() < header_end + length {
-        let count = stream.read(&mut buffer).unwrap();
+        let count = read_some(stream, &mut buffer);
         assert!(count > 0);
         bytes.extend_from_slice(&buffer[..count]);
     }

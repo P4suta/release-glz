@@ -1,5 +1,5 @@
 use std::collections::VecDeque;
-use std::io::{ErrorKind, Read, Write};
+use std::io::{ErrorKind, Write};
 use std::net::TcpListener;
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
@@ -16,6 +16,7 @@ use release_glz::config::{AuthKind, RegistryConfig, RegistryProvider};
 use release_glz::registry::{
     HexRegistry, PublishOutcome, Registry, RegistryCredentialAudit, VisibilityPoll,
 };
+use release_glz_test_support::read_some;
 use semver::Version;
 
 #[derive(Debug)]
@@ -806,7 +807,7 @@ fn read_request(stream: &mut std::net::TcpStream) -> Request {
     let mut buffer = [0_u8; 4096];
     let header_end;
     loop {
-        let read = stream.read(&mut buffer).unwrap();
+        let read = read_some(stream, &mut buffer);
         assert!(read > 0);
         bytes.extend_from_slice(&buffer[..read]);
         if let Some(index) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
@@ -832,7 +833,7 @@ fn read_request(stream: &mut std::net::TcpStream) -> Request {
         }
     }
     while bytes.len() < header_end + length {
-        let read = stream.read(&mut buffer).unwrap();
+        let read = read_some(stream, &mut buffer);
         assert!(read > 0, "the client closed before sending its whole body");
         bytes.extend_from_slice(&buffer[..read]);
     }
