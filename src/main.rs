@@ -1,19 +1,19 @@
 //! Command-line front end for `release-glz`.
 //!
-//! The binary parses argv, calls into the [`release_glz`] engine, and renders
-//! either human output or a `command/v2` envelope. Release decisions live in
-//! the library so another front end can make the same ones.
+//! The binary parses argv, calls into the [`release_glz`] engine, and renders either human output or a `command/v2` envelope.
+//! Release decisions live in the library so another front end can make the same ones.
 
 #![warn(missing_docs)]
 
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
+use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::{generate, shells};
 use release_glz::ReleasePlan;
 use release_glz::authorization::{
-    GithubOidcClaims, GithubOidcVerifier, OidcAudience, OidcExpectation, validate_github_claims,
+    GITHUB_OIDC_ISSUER, GithubOidcClaims, GithubOidcVerifier, OidcAudience, OidcExpectation,
+    validate_github_claims,
 };
 use release_glz::candidate::Candidate;
 use release_glz::config::{
@@ -43,8 +43,7 @@ use semver::Version;
 /// Seconds the isolated Candidate build may run before it is abandoned.
 const CANDIDATE_BUILD_TIMEOUT_SECONDS: u64 = 1_800;
 
-/// Seconds the locally constructed claims stay valid for, when `doctor`
-/// checks an authorization path with no runner to mint a token.
+/// Seconds the locally constructed claims stay valid for, when `doctor` checks an authorization path with no runner to mint a token.
 const LOCAL_CLAIM_LIFETIME_SECONDS: i64 = 60;
 
 #[derive(Debug, Parser)]
@@ -94,12 +93,6 @@ enum Command {
         online: bool,
     },
     /// Create or update the rolling GitHub Release PR.
-    Update {
-        /// Validate and describe changes without mutating the repository or GitHub.
-        #[arg(long)]
-        dry_run: bool,
-    },
-    /// Create or update the rolling GitHub Release PR.
     ReleasePr {
         /// Bind a sealed Candidate intent to the verified managed PR head.
         #[arg(long)]
@@ -134,39 +127,13 @@ enum Command {
     },
     /// Generate the recommended GitHub Actions workflow.
     Init {
-        /// Configure a previously unconfigured package for a supported target.
-        #[arg(long, value_enum)]
-        profile: Option<InitProfile>,
-        /// Hex.pm Organization name (required by `--profile organization`).
-        #[arg(long)]
-        organization: Option<String>,
-        /// Private Hex API base URL.
-        #[arg(long)]
-        api_url: Option<String>,
-        /// Private Hex repository base URL.
-        #[arg(long)]
-        repository_url: Option<String>,
-        /// Private Hex documentation base URL.
-        #[arg(long)]
-        docs_url: Option<String>,
-        /// Name of the protected registry credential environment variable.
-        #[arg(long)]
-        credential_env: Option<String>,
-        /// Private registry authentication scheme.
-        #[arg(long, value_enum)]
-        auth: Option<InitAuth>,
-        /// Explicitly opt a 0.x package into the release policy.
-        #[arg(long)]
-        allow_version_zero: bool,
+        #[command(flatten)]
+        profile: ProfileArgs,
         /// Offline override for the immutable release-glz Action commit.
         #[arg(long)]
         action_sha: Option<String>,
-        #[arg(long)]
-        check: bool,
-        #[arg(long)]
-        diff: bool,
-        #[arg(long)]
-        update: bool,
+        #[command(flatten)]
+        mode: ModeArgs,
     },
     /// Losslessly migrate legacy configuration to schema 2.
     Migrate {
@@ -208,7 +175,6 @@ impl Command {
             Self::Plan => "plan",
             Self::Rehearse { .. } => "rehearse",
             Self::Verify { .. } => "verify",
-            Self::Update { .. } => "update",
             Self::ReleasePr { .. } => "release-pr",
             Self::Release { .. } => "release",
             Self::Status { .. } => "status",
@@ -243,6 +209,66 @@ enum InitAuth {
     Bearer,
 }
 
+/// The registry and version policy that configure a previously unconfigured package.
+#[derive(Debug, Clone, Default, Args)]
+struct ProfileArgs {
+    /// Configure a previously unconfigured package for a supported target.
+    #[arg(long, value_enum)]
+    profile: Option<InitProfile>,
+    /// Hex.pm Organization name (required by `--profile organization`).
+    #[arg(long)]
+    organization: Option<String>,
+    /// Private Hex API base URL.
+    #[arg(long)]
+    api_url: Option<String>,
+    /// Private Hex repository base URL.
+    #[arg(long)]
+    repository_url: Option<String>,
+    /// Private Hex documentation base URL.
+    #[arg(long)]
+    docs_url: Option<String>,
+    /// Name of the protected registry credential environment variable.
+    #[arg(long)]
+    credential_env: Option<String>,
+    /// Private registry authentication scheme.
+    #[arg(long, value_enum)]
+    auth: Option<InitAuth>,
+    /// Explicitly opt a 0.x package into the release policy.
+    #[arg(long)]
+    allow_version_zero: bool,
+}
+
+impl ProfileArgs {
+    /// Whether any flag other than `--profile` configures the package.
+    fn configures_fields(&self) -> bool {
+        self.organization.is_some() || self.private_fields() || self.allow_version_zero
+    }
+
+    /// Whether any flag that only the private profile accepts is present.
+    fn private_fields(&self) -> bool {
+        [
+            &self.api_url,
+            &self.repository_url,
+            &self.docs_url,
+            &self.credential_env,
+        ]
+        .into_iter()
+        .any(Option::is_some)
+            || self.auth.is_some()
+    }
+}
+
+/// The one managed-file mode that `init` runs in.
+#[derive(Debug, Clone, Copy, Default, Args)]
+struct ModeArgs {
+    #[arg(long)]
+    check: bool,
+    #[arg(long)]
+    diff: bool,
+    #[arg(long)]
+    update: bool,
+}
+
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum Train {
     Alpha,
@@ -262,6 +288,13 @@ impl Train {
     }
 }
 
+/// Print clap's usage or help text, and exit with the internal failure status when it can't be written.
+fn print_usage(error: &clap::Error) {
+    if error.print().is_err() {
+        std::process::exit(FailureClass::Internal.exit_code());
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let arguments = std::env::args_os().collect::<Vec<_>>();
@@ -270,7 +303,7 @@ async fn main() {
         Err(error) => {
             let exit = error.exit_code();
             if exit == 0 {
-                let _ = error.print();
+                print_usage(&error);
                 return;
             }
             if requested_json_output(&arguments) {
@@ -290,7 +323,7 @@ async fn main() {
                     serde_json::to_string(&envelope).expect("usage envelope is serializable")
                 );
             } else {
-                let _ = error.print();
+                print_usage(&error);
             }
             std::process::exit(FailureClass::UsageOrConfig.exit_code());
         }
@@ -392,34 +425,16 @@ async fn run(cli: Cli) -> Result<i32> {
     }
     if let Command::Init {
         profile,
-        organization,
-        api_url,
-        repository_url,
-        docs_url,
-        credential_env,
-        auth,
-        allow_version_zero,
         action_sha,
-        check,
-        diff,
-        update,
+        mode,
     } = &cli.command
     {
         return run_init(
             &cli.manifest_path,
             cli.output,
-            *profile,
-            organization.as_deref(),
-            api_url.as_deref(),
-            repository_url.as_deref(),
-            docs_url.as_deref(),
-            credential_env.as_deref(),
-            *auth,
-            *allow_version_zero,
+            profile,
             action_sha.as_deref(),
-            *check,
-            *diff,
-            *update,
+            *mode,
         )
         .await;
     }
@@ -489,9 +504,6 @@ async fn run(cli: Cli) -> Result<i32> {
                 print_result("verify", &result, cli.output)?;
             }
             return Ok(0);
-        }
-        Command::Update { dry_run } => {
-            sync_rolling_release_pr(&planner, &base_options, &cli.manifest_path, dry_run).await?
         }
         Command::ReleasePr { candidate, dry_run } => {
             if let Some(candidate_directory) = candidate {
@@ -719,23 +731,18 @@ struct InitOutcome {
     workflow_diff: Option<String>,
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn run_init(
     manifest_path: &Path,
     output: Output,
-    profile: Option<InitProfile>,
-    organization: Option<&str>,
-    api_url: Option<&str>,
-    repository_url: Option<&str>,
-    docs_url: Option<&str>,
-    credential_env: Option<&str>,
-    auth: Option<InitAuth>,
-    allow_version_zero: bool,
+    profile_args: &ProfileArgs,
     explicit_action_sha: Option<&str>,
-    check: bool,
-    diff: bool,
-    update: bool,
+    mode: ModeArgs,
 ) -> Result<i32> {
+    let ModeArgs {
+        check,
+        diff,
+        update,
+    } = mode;
     require_one_mode(check, diff, update)?;
     let mut manifest = Manifest::load(manifest_path)
         .map_err(|error| classified(FailureClass::UsageOrConfig, error))?;
@@ -745,13 +752,6 @@ async fn run_init(
         .default_branch()
         .map_err(|error| classified(FailureClass::UsageOrConfig, error))?;
 
-    let profile_fields_present = organization.is_some()
-        || api_url.is_some()
-        || repository_url.is_some()
-        || docs_url.is_some()
-        || credential_env.is_some()
-        || auth.is_some()
-        || allow_version_zero;
     let initialized_source = if manifest.has_release_config() {
         if manifest.release.schema != 2 {
             return Err(classified(
@@ -759,7 +759,7 @@ async fn run_init(
                 "legacy release-glz configuration must use migrate before init",
             ));
         }
-        if profile.is_some() || profile_fields_present {
+        if profile_args.profile.is_some() || profile_args.configures_fields() {
             return Err(classified(
                 FailureClass::UsageOrConfig,
                 "--profile and profile configuration are forbidden for an existing schema 2 package",
@@ -767,21 +767,13 @@ async fn run_init(
         }
         None
     } else {
-        let profile = profile.ok_or_else(|| {
+        let profile = profile_args.profile.ok_or_else(|| {
             classified(
                 FailureClass::UsageOrConfig,
                 "an unconfigured package requires --profile public, organization, or private",
             )
         })?;
-        let registry = initialization_registry(
-            profile,
-            organization,
-            api_url,
-            repository_url,
-            docs_url,
-            credential_env,
-            auth,
-        )?;
+        let registry = initialization_registry(profile, profile_args)?;
         let compiler = Gleam::default()
             .installed_version()
             .map_err(|error| classified(FailureClass::UsageOrConfig, error))?;
@@ -790,7 +782,7 @@ async fn run_init(
                 compiler,
                 default_branch: default_branch.clone(),
                 registry,
-                allow_version_zero,
+                allow_version_zero: profile_args.allow_version_zero,
             })
             .map_err(|error| classified(FailureClass::UsageOrConfig, error))?;
         Some(rendered)
@@ -886,18 +878,9 @@ async fn run_init(
         if let Some(sha) = explicit_action_sha {
             argv.extend(["--action-sha".to_owned(), sha.to_owned()]);
         }
-        if let Some(profile) = profile {
+        if let Some(profile) = profile_args.profile {
             argv.extend(["--profile".to_owned(), profile_name(profile).to_owned()]);
-            append_profile_argv(
-                &mut argv,
-                organization,
-                api_url,
-                repository_url,
-                docs_url,
-                credential_env,
-                auth,
-                allow_version_zero,
-            );
+            append_profile_argv(&mut argv, profile_args);
         }
         NextAction::executable(
             argv,
@@ -917,7 +900,11 @@ async fn run_init(
         next_action,
         output,
     )?;
-    Ok(if stale { 3 } else { 0 })
+    Ok(if stale {
+        FailureClass::PolicyOrApproval.exit_code()
+    } else {
+        0
+    })
 }
 
 fn require_one_mode(check: bool, diff: bool, update: bool) -> Result<()> {
@@ -969,20 +956,12 @@ fn scope_manifest_actions(actions: &mut [NextAction], manifest_path: &Path) {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn initialization_registry(
     profile: InitProfile,
-    organization: Option<&str>,
-    api_url: Option<&str>,
-    repository_url: Option<&str>,
-    docs_url: Option<&str>,
-    credential_env: Option<&str>,
-    auth: Option<InitAuth>,
+    profile_args: &ProfileArgs,
 ) -> Result<RegistryConfig> {
-    let private_fields = [api_url, repository_url, docs_url, credential_env]
-        .into_iter()
-        .any(|value| value.is_some())
-        || auth.is_some();
+    let organization = profile_args.organization.as_deref();
+    let private_fields = profile_args.private_fields();
     match profile {
         InitProfile::Public => {
             if organization.is_some() || private_fields {
@@ -1010,13 +989,7 @@ fn initialization_registry(
                 })?;
             validate_registry_repository(RegistryProvider::HexPm, Some(organization))
                 .map_err(|error| classified(FailureClass::UsageOrConfig, error))?;
-            Ok(RegistryConfig {
-                repository: Some(organization.to_owned()),
-                api_url: "https://hex.pm/api".into(),
-                repository_url: format!("https://repo.hex.pm/repos/{organization}"),
-                docs_url: format!("https://repo.hex.pm/repos/{organization}/docs"),
-                ..RegistryConfig::default()
-            })
+            Ok(RegistryConfig::hexpm_organization(organization))
         }
         InitProfile::Private => {
             if organization.is_some() {
@@ -1025,8 +998,9 @@ fn initialization_registry(
                     "the private profile does not accept --organization",
                 ));
             }
-            let required = |value: Option<&str>, option: &str| {
+            let required = |value: &Option<String>, option: &str| {
                 value
+                    .as_deref()
                     .filter(|value| !value.is_empty())
                     .map(str::to_owned)
                     .ok_or_else(|| {
@@ -1039,11 +1013,11 @@ fn initialization_registry(
             Ok(RegistryConfig {
                 provider: RegistryProvider::HexCompatible,
                 repository: None,
-                api_url: required(api_url, "api-url")?,
-                repository_url: required(repository_url, "repository-url")?,
-                docs_url: required(docs_url, "docs-url")?,
-                credential_env: required(credential_env, "credential-env")?,
-                auth: match auth.ok_or_else(|| {
+                api_url: required(&profile_args.api_url, "api-url")?,
+                repository_url: required(&profile_args.repository_url, "repository-url")?,
+                docs_url: required(&profile_args.docs_url, "docs-url")?,
+                credential_env: required(&profile_args.credential_env, "credential-env")?,
+                auth: match profile_args.auth.ok_or_else(|| {
                     classified(
                         FailureClass::UsageOrConfig,
                         "the private profile requires --auth",
@@ -1097,29 +1071,19 @@ fn profile_name(profile: InitProfile) -> &'static str {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn append_profile_argv(
-    argv: &mut Vec<String>,
-    organization: Option<&str>,
-    api_url: Option<&str>,
-    repository_url: Option<&str>,
-    docs_url: Option<&str>,
-    credential_env: Option<&str>,
-    auth: Option<InitAuth>,
-    allow_version_zero: bool,
-) {
+fn append_profile_argv(argv: &mut Vec<String>, profile_args: &ProfileArgs) {
     for (option, value) in [
-        ("--organization", organization),
-        ("--api-url", api_url),
-        ("--repository-url", repository_url),
-        ("--docs-url", docs_url),
-        ("--credential-env", credential_env),
+        ("--organization", &profile_args.organization),
+        ("--api-url", &profile_args.api_url),
+        ("--repository-url", &profile_args.repository_url),
+        ("--docs-url", &profile_args.docs_url),
+        ("--credential-env", &profile_args.credential_env),
     ] {
         if let Some(value) = value {
-            argv.extend([option.to_owned(), value.to_owned()]);
+            argv.extend([option.to_owned(), value.clone()]);
         }
     }
-    if let Some(auth) = auth {
+    if let Some(auth) = profile_args.auth {
         argv.extend([
             "--auth".to_owned(),
             match auth {
@@ -1129,7 +1093,7 @@ fn append_profile_argv(
             .to_owned(),
         ]);
     }
-    if allow_version_zero {
+    if profile_args.allow_version_zero {
         argv.push("--allow-version-zero".to_owned());
     }
 }
@@ -1181,7 +1145,11 @@ fn run_migrate(
         }),
         output,
     )?;
-    Ok(if stale { 3 } else { 0 })
+    Ok(if stale {
+        FailureClass::PolicyOrApproval.exit_code()
+    } else {
+        0
+    })
 }
 
 async fn run_doctor(
@@ -1267,7 +1235,7 @@ async fn run_doctor(
     }
     print_doctor(&report, output)?;
     Ok(if report.state == ReleaseState::Blocked {
-        3
+        FailureClass::PolicyOrApproval.exit_code()
     } else {
         0
     })
@@ -1425,7 +1393,7 @@ fn approved_for_inspection(
     let workflow_path = ".github/workflows/release-glz.yml";
     let github_oidc = validate_github_claims(
         GithubOidcClaims {
-            issuer: "https://token.actions.githubusercontent.com".into(),
+            issuer: GITHUB_OIDC_ISSUER.into(),
             audience: OidcAudience::One("release-glz".into()),
             subject: format!(
                 "repo:{}:environment:{}",
@@ -1900,7 +1868,6 @@ mod tests {
                 },
                 "verify",
             ),
-            (Command::Update { dry_run: false }, "update"),
             (
                 Command::ReleasePr {
                     candidate: None,
@@ -1931,18 +1898,12 @@ mod tests {
             ),
             (
                 Command::Init {
-                    profile: None,
-                    organization: None,
-                    api_url: None,
-                    repository_url: None,
-                    docs_url: None,
-                    credential_env: None,
-                    auth: None,
-                    allow_version_zero: false,
+                    profile: ProfileArgs::default(),
                     action_sha: None,
-                    check: true,
-                    diff: false,
-                    update: false,
+                    mode: ModeArgs {
+                        check: true,
+                        ..ModeArgs::default()
+                    },
                 },
                 "init",
             ),

@@ -7,27 +7,47 @@ fn binary() -> Command {
 }
 
 #[test]
-fn v1_cli_exposes_every_public_command() {
+fn the_cli_exposes_exactly_the_public_commands() {
     let output = binary().arg("--help").output().unwrap();
     assert!(output.status.success());
     let help = String::from_utf8(output.stdout).unwrap();
-    for command in [
-        "plan",
-        "rehearse",
-        "verify",
-        "release",
-        "status",
-        "doctor",
-        "release-pr",
-        "update",
-        "prerelease",
-        "set-version",
-        "init",
-        "migrate",
-        "completion",
-    ] {
-        assert!(help.contains(command), "missing `{command}` in:\n{help}");
-    }
+    let commands: Vec<_> = help
+        .lines()
+        .skip_while(|line| *line != "Commands:")
+        .skip(1)
+        .take_while(|line| !line.trim().is_empty())
+        .filter_map(|line| line.split_whitespace().next())
+        .collect();
+    assert_eq!(
+        commands,
+        [
+            "plan",
+            "rehearse",
+            "verify",
+            "release-pr",
+            "release",
+            "status",
+            "doctor",
+            "init",
+            "migrate",
+            "set-version",
+            "prerelease",
+            "completion",
+            "help",
+        ],
+        "{help}"
+    );
+}
+
+#[test]
+fn the_rolling_release_pr_has_one_command_name() {
+    let output = binary().args(["update", "--help"]).output().unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains("unrecognized subcommand 'update'"),
+        "{stderr}"
+    );
 }
 
 #[test]

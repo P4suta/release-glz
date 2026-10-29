@@ -1,9 +1,6 @@
 //! Strictly typed `gleam.toml` configuration.
 //!
-//! Unknown keys, wrong types, paths outside the repository, unsafe ref
-//! prefixes, URLs carrying credentials, and non-HTTPS registry origins are
-//! rejected here rather than at the point of use, so an invalid manifest
-//! cannot reach a publication path at all.
+//! Unknown keys, wrong types, paths outside the repository, unsafe ref prefixes, URLs carrying credentials, and non-HTTPS registry origins are rejected here rather than at the point of use, so an invalid manifest cannot reach a publication path at all.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -25,6 +22,9 @@ const HEXPM_REPOSITORY_URL: &str = "https://repo.hex.pm";
 
 /// Base URL that receives hex.pm documentation tarballs.
 const HEXPM_DOCS_URL: &str = "https://repo.hex.pm/docs";
+
+/// Base URL of the hex.pm package pages.
+const HEXPM_PACKAGES_URL: &str = "https://hex.pm/packages";
 
 /// The `schema` of the flat `[tools.release-glz]` keys that predate structured tables.
 const FLAT_SCHEMA: i64 = 1;
@@ -119,15 +119,13 @@ pub struct RegistryConfig {
     pub docs_url: String,
     /// Name of the environment variable holding the credential.
     ///
-    /// This is a variable name, never a credential value, so a manifest can
-    /// be committed and only the protected publish job resolves it.
+    /// This is a variable name, never a credential value, so a manifest can be committed and only the protected publish job resolves it.
     pub credential_env: String,
     /// How to present the credential.
     pub auth: AuthKind,
     /// Permit plain `http` to a loopback origin.
     ///
-    /// Exists for the loopback fake registries the tests run against; every
-    /// other origin must be HTTPS.
+    /// Exists for the loopback fake registries the tests run against; every other origin must be HTTPS.
     #[serde(default)]
     pub allow_http_loopback: bool,
 }
@@ -144,6 +142,33 @@ impl Default for RegistryConfig {
             auth: AuthKind::HexToken,
             allow_http_loopback: false,
         }
+    }
+}
+
+impl RegistryConfig {
+    /// The hex.pm configuration for a Hex.pm Organization repository.
+    pub fn hexpm_organization(organization: &str) -> Self {
+        Self {
+            repository: Some(organization.to_owned()),
+            repository_url: format!("{HEXPM_REPOSITORY_URL}/repos/{organization}"),
+            docs_url: format!("{HEXPM_REPOSITORY_URL}/repos/{organization}/docs"),
+            ..Self::default()
+        }
+    }
+
+    /// The web page of a published package release.
+    ///
+    /// Only hex.pm serves package pages, so a Hex-compatible registry has none.
+    pub fn package_page(&self, package: &str, version: &Version) -> Option<String> {
+        if self.provider != RegistryProvider::HexPm {
+            return None;
+        }
+        Some(match &self.repository {
+            Some(organization) => {
+                format!("{HEXPM_PACKAGES_URL}/{organization}/{package}/{version}")
+            }
+            None => format!("{HEXPM_PACKAGES_URL}/{package}/{version}"),
+        })
     }
 }
 
@@ -183,8 +208,7 @@ pub struct ApprovalConfig {
     pub separation: SeparationMode,
     /// Refs a manual release may be dispatched from.
     pub manual_refs: Vec<String>,
-    /// Environment used when a private repository cannot run the normal
-    /// protected path.
+    /// Environment used when a private repository cannot run the normal protected path.
     #[serde(default)]
     pub private_repository_fallback: Option<String>,
 }
@@ -218,8 +242,7 @@ pub struct OutputConfig {
     pub signature: bool,
     /// Allow evidence to be uploaded from a private repository.
     ///
-    /// Off by default: evidence describes internal build inputs, and a
-    /// private package should not leak them without an explicit decision.
+    /// Off by default: evidence describes internal build inputs, and a private package should not leak them without an explicit decision.
     pub allow_private_evidence_upload: bool,
 }
 
@@ -242,8 +265,8 @@ impl Default for OutputConfig {
 pub struct HookConfig {
     /// Identifier reported in hook evidence.
     pub id: String,
-    /// Process arguments. A shell command string is never accepted, so
-    /// there is no quoting boundary for an input to cross.
+    /// Process arguments.
+    /// A shell command string is never accepted, so there is no quoting boundary for an input to cross.
     pub argv: Vec<String>,
     /// Wall-clock budget, between 1 and 3600 seconds.
     #[serde(default = "default_hook_timeout")]
@@ -253,8 +276,7 @@ pub struct HookConfig {
     pub required: bool,
     /// Environment variable names the hook may receive.
     ///
-    /// Credentials and the GitHub control files are refused even when they
-    /// are named here.
+    /// Credentials and the GitHub control files are refused even when they are named here.
     #[serde(default)]
     pub env: Vec<String>,
 }
@@ -318,7 +340,8 @@ pub struct ApiException {
 /// The `[tools.release-glz]` table, after validation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReleaseConfig {
-    /// Configuration schema version. Only `2` can produce a Candidate.
+    /// Configuration schema version.
+    /// Only `2` can produce a Candidate.
     pub schema: u32,
     /// Exact Gleam compiler a Candidate must be built with.
     pub compiler: Version,
@@ -346,8 +369,7 @@ pub struct ReleaseConfig {
     pub prerelease: Option<PrereleaseChannel>,
     /// Legacy schema 1 allowance for versions with no API baseline.
     pub allow_unknown_api_for: BTreeSet<Version>,
-    /// Explicit baseline commit per version, used when the artifact search
-    /// cannot identify one.
+    /// Explicit baseline commit per version, used when the artifact search cannot identify one.
     pub baseline_refs: BTreeMap<Version, String>,
 }
 
@@ -377,8 +399,7 @@ impl Default for ReleaseConfig {
 
 /// A parsed `gleam.toml`, kept alongside its original bytes.
 ///
-/// Edits go through `toml_edit`, so formatting and comments a
-/// maintainer wrote survive a version bump.
+/// Edits go through `toml_edit`, so formatting and comments a maintainer wrote survive a version bump.
 #[derive(Debug, Clone)]
 pub struct Manifest {
     path: PathBuf,
@@ -450,9 +471,8 @@ impl Manifest {
             .is_some()
     }
 
-    /// Render a complete schema 2 configuration for a package that has never
-    /// been configured for release-glz. Existing release configuration is
-    /// intentionally handled by migration or workflow refresh instead.
+    /// Render a complete schema 2 configuration for a package that has never been configured for release-glz.
+    /// Existing release configuration is intentionally handled by migration or workflow refresh instead.
     pub fn render_initialized(&self, settings: &InitializationSettings) -> Result<String> {
         if self.has_release_config() {
             bail!("init profiles are only valid for an unconfigured package");
@@ -995,8 +1015,7 @@ pub fn validate_registry_repository(
 
 /// Reject a hook that is unsafe to execute.
 ///
-/// Covers the id, the argv, the timeout bounds, and the environment
-/// allowlist, which may never name a credential.
+/// Covers the id, the argv, the timeout bounds, and the environment allowlist, which may never name a credential.
 pub fn validate_hook_config(hook: &HookConfig) -> Result<()> {
     let valid_id = !hook.id.is_empty()
         && hook.id.bytes().enumerate().all(|(index, byte)| match byte {
@@ -1223,6 +1242,33 @@ allow_unknown_api_for = ["1.2.3"]
         manifest.set_prerelease(None);
         assert_eq!(manifest.render(), source);
         assert!(!manifest.has_release_config());
+    }
+
+    #[test]
+    fn only_hexpm_serves_package_pages_and_organizations_have_their_own() {
+        let version = Version::new(1, 2, 3);
+        assert_eq!(
+            RegistryConfig::default()
+                .package_page("widget", &version)
+                .as_deref(),
+            Some("https://hex.pm/packages/widget/1.2.3")
+        );
+        let organization = RegistryConfig::hexpm_organization("acme");
+        assert_eq!(
+            organization.package_page("widget", &version).as_deref(),
+            Some("https://hex.pm/packages/acme/widget/1.2.3")
+        );
+        assert_eq!(
+            organization.repository_url,
+            "https://repo.hex.pm/repos/acme"
+        );
+        assert_eq!(organization.docs_url, "https://repo.hex.pm/repos/acme/docs");
+        assert_eq!(organization.api_url, "https://hex.pm/api");
+        let private = RegistryConfig {
+            provider: RegistryProvider::HexCompatible,
+            ..RegistryConfig::default()
+        };
+        assert_eq!(private.package_page("widget", &version), None);
     }
 
     #[test]

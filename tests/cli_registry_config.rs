@@ -337,7 +337,7 @@ fn plan_uses_the_strict_manifest_registry_adapter_and_private_read_credential() 
 }
 
 #[test]
-fn update_closes_a_stale_verified_managed_pr_when_no_release_is_required() {
+fn release_pr_closes_a_stale_verified_managed_pr_when_no_release_is_required() {
     let temp = tempfile::tempdir().unwrap();
     let (registry_listener, registry_url) = bound_listener();
     let manifest = manifest(&registry_url);
@@ -406,7 +406,7 @@ fn update_closes_a_stale_verified_managed_pr_when_no_release_is_required() {
 
     let output = isolated_command(env!("CARGO_BIN_EXE_release-glz"))
         .current_dir(temp.path())
-        .args(["--output", "json", "update"])
+        .args(["--output", "json", "release-pr"])
         .env("RELEASE_GLZ_GLEAM", &gleam)
         .env("TEST_HEX_TAR", &package_path)
         .env("TEST_INTERFACE", &interface_path)
