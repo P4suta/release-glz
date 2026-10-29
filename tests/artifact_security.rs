@@ -200,6 +200,82 @@ fn archive_paths_reject_every_ambiguous_or_traversing_form() {
 }
 
 #[test]
+fn archive_paths_reject_names_that_some_supported_os_cannot_represent() {
+    for path in [
+        "a:b.html",
+        "notes/stream.txt:hidden",
+        "aux",
+        "AUX.html",
+        "con/index.html",
+        "src/nul.gleam",
+        "PRN.tar.gz",
+        "COM0",
+        "COM1.txt",
+        "lpt9",
+        "COM\u{b9}.txt",
+        "LPT\u{b3}",
+        "CONIN$",
+        "conout$.log",
+        "trailing.",
+        "trailing ",
+        "dir./file",
+        "dir /file",
+        "less<than",
+        "greater>than",
+        "quote\"d",
+        "pipe|d",
+        "question?",
+        "star*",
+        "tab\tname",
+        "escape\u{1b}name",
+    ] {
+        let archive = tar_gz(&[(path, b"contents")]);
+        let error = format!(
+            "{:#}",
+            validate_docs_tarball(&archive, ArchiveLimits::default()).unwrap_err()
+        );
+        assert!(error.contains("unsafe path"), "accepted {path:?}: {error}");
+    }
+}
+
+#[test]
+fn archive_paths_reject_entries_that_collide_once_letter_case_no_longer_counts() {
+    for files in [
+        [("README.md", b"one".as_slice()), ("readme.md", b"two")],
+        [("a", b"file"), ("A/b", b"nested")],
+        [("A/b", b"nested"), ("a", b"file")],
+        [
+            ("\u{c4}\u{d6}.txt", b"upper"),
+            ("\u{e4}\u{f6}.txt", b"lower"),
+        ],
+    ] {
+        let archive = tar_gz(&files);
+        let error = format!(
+            "{:#}",
+            validate_docs_tarball(&archive, ArchiveLimits::default()).unwrap_err()
+        );
+        assert!(error.contains("collides"), "accepted {files:?}: {error}");
+    }
+}
+
+#[test]
+fn portable_names_that_resemble_refused_ones_still_pass() {
+    let archive = tar_gz(&[
+        ("src/aux_helpers.gleam", b"one".as_slice()),
+        ("src/conversion.gleam", b"two"),
+        ("console", b"three"),
+        ("com10.txt", b"four"),
+        ("lpt.txt", b"five"),
+        (".gitignore", b"six"),
+        ("priv/a.b.c", b"seven"),
+        ("Docs/a.html", b"eight"),
+        ("docs/b.html", b"nine"),
+        ("caf\u{e9}.txt", b"ten"),
+    ]);
+    validate_docs_tarball(&archive, ArchiveLimits::default()).unwrap();
+}
+
+#[test]
 fn archives_reject_links_devices_and_nonempty_directories() {
     for (kind, payload) in [
         (tar::EntryType::Symlink, b"".as_slice()),
