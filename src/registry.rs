@@ -1,14 +1,6 @@
-//! Package registry access: Hex.pm, a Hex.pm Organization, or a
-//! hex-compatible private registry.
+//! Package registry access: Hex.pm, a Hex.pm Organization, or a hex-compatible private registry.
 //!
-//! Reads are separated from publication so that planning and verification
-//! never need a credential.
-
-// `async_trait` rewrites the defaulted bodies in `Registry`, and the rewritten
-// items lose their documentation before `missing_docs` sees them, so the lint
-// fires on the macro itself and no attribute on the trait can reach it. Every
-// public item in this module is documented.
-#![allow(missing_docs)]
+//! Reads are separated from publication so that planning and verification never need a credential.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -21,9 +13,7 @@ use semver::Version;
 use serde::Deserialize;
 
 use crate::canonical::SHA256_HEX_LEN;
-use crate::config::{
-    AuthKind, RegistryConfig, RegistryProvider, url_is_http_loopback, validate_registry_repository,
-};
+use crate::config::{AuthKind, RegistryConfig, url_is_http_loopback, validate_registry_repository};
 use crate::units::MIB;
 
 /// Size a JSON response may reach before it is refused.
@@ -49,6 +39,15 @@ const DEFAULT_POLL_INTERVAL_MS: u64 = 3_000;
 
 /// Milliseconds to wait when a response asks to retry without saying when.
 const DEFAULT_RETRY_AFTER_MS: u64 = 250;
+
+/// Longest wait that a `Retry-After` header can ask for, so a registry response can't stall a run.
+const MAX_RETRY_AFTER: Duration = Duration::from_secs(60);
+
+/// Redirects one request may follow on the configured origin.
+const MAX_REDIRECTS: usize = 5;
+
+/// Milliseconds that each transport retry waits longer than the one before it.
+const TRANSPORT_RETRY_STEP_MS: u64 = 100;
 
 /// One release as the registry reports it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -136,8 +135,7 @@ impl PackageState {
 
 /// Read access to a package registry.
 ///
-/// Only observation lives behind this trait; publication is part of the
-/// reconciler, which needs the credential and the retry contract.
+/// Only observation lives behind this trait; publication is part of the reconciler, which needs the credential and the retry contract.
 #[async_trait]
 pub trait Registry: Send + Sync {
     /// Every release of a package, or `None` when it is unknown.
@@ -149,8 +147,7 @@ pub trait Registry: Send + Sync {
 
     /// One release together with its recorded checksum.
     ///
-    /// Derived from [`Registry::package`] by default; an implementation that
-    /// can read the checksum directly overrides it.
+    /// Derived from [`Registry::package`] by default; an implementation that can read the checksum directly overrides it.
     async fn release(&self, name: &str, version: &Version) -> Result<Option<RegistryRelease>> {
         Ok(self
             .package(name)
@@ -166,16 +163,14 @@ pub trait Registry: Send + Sync {
 
     /// Publish a package tarball.
     ///
-    /// Defaults to refusing: an adapter stays read-only until it deliberately
-    /// implements publication.
+    /// Defaults to refusing: an adapter stays read-only until it deliberately implements publication.
     async fn publish_package(&self, _tarball: &[u8]) -> Result<PublishOutcome> {
         bail!("registry adapter does not support publishing")
     }
 
     /// Publish a documentation tarball.
     ///
-    /// Defaults to refusing, for the same reason as
-    /// [`Registry::publish_package`].
+    /// Defaults to refusing, for the same reason as [`Registry::publish_package`].
     async fn publish_docs(
         &self,
         _name: &str,
@@ -198,8 +193,7 @@ impl fmt::Debug for Credential {
 /// A Hex API and repository client.
 ///
 /// Redirects are refused and every response is read under a size limit,
-/// so a hostile or misconfigured origin cannot redirect a credential or
-/// exhaust memory.
+/// so a hostile or misconfigured origin cannot redirect a credential or exhaust memory.
 #[derive(Debug, Clone)]
 pub struct HexRegistry {
     client: reqwest::Client,
@@ -210,34 +204,6 @@ pub struct HexRegistry {
     credential: Option<Credential>,
     auth: AuthKind,
     retries: usize,
-}
-
-impl Default for HexRegistry {
-    fn default() -> Self {
-        let api = std::env::var("RELEASE_GLZ_HEX_API_URL")
-            .unwrap_or_else(|_| "https://hex.pm/api".to_owned());
-        let repository = std::env::var("RELEASE_GLZ_HEX_REPOSITORY_URL")
-            .unwrap_or_else(|_| "https://repo.hex.pm".to_owned());
-        let docs = std::env::var("RELEASE_GLZ_HEX_DOCS_URL")
-            .unwrap_or_else(|_| format!("{}/docs", repository.trim_end_matches('/')));
-        let allow_http_loopback = allow_environment_http_loopback(
-            std::env::var("RELEASE_GLZ_ALLOW_HTTP_LOOPBACK")
-                .ok()
-                .as_deref(),
-        );
-        let config = RegistryConfig {
-            provider: RegistryProvider::HexPm,
-            repository: None,
-            api_url: api,
-            repository_url: repository,
-            docs_url: docs,
-            credential_env: "HEXPM_API_KEY".into(),
-            auth: AuthKind::HexToken,
-            allow_http_loopback,
-        };
-        Self::from_config(&config, std::env::var("HEXPM_API_KEY").ok().as_deref())
-            .expect("valid Hex registry environment URLs")
-    }
 }
 
 impl HexRegistry {
@@ -296,9 +262,8 @@ impl HexRegistry {
         Self::from_config(config, credential.as_deref())
     }
 
-    /// Non-destructively verifies the exact permissions needed by the release
-    /// reconciler. Hex's `/auth` endpoint performs the authorization check
-    /// without publishing or otherwise changing registry state.
+    /// Non-destructively verifies the exact permissions needed by the release reconciler.
+    /// Hex's `/auth` endpoint performs the authorization check without publishing or otherwise changing registry state.
     pub async fn audit_credential(&self) -> Result<RegistryCredentialAudit> {
         if self.credential.is_none() {
             return Ok(RegistryCredentialAudit::Missing);
@@ -368,7 +333,7 @@ impl HexRegistry {
 
     async fn audit_permission_once(&self, url: Url) -> Result<AuditRequest> {
         let mut current = url;
-        for _ in 0..=5 {
+        for _ in 0..=MAX_REDIRECTS {
             let request = self.authenticated(
                 self.client
                     .get(current.clone())
@@ -421,7 +386,7 @@ impl HexRegistry {
 
     async fn get_once(&self, url: Url, optional: bool, limit: u64) -> Result<GetResult> {
         let mut current = url;
-        for _ in 0..=5 {
+        for _ in 0..=MAX_REDIRECTS {
             let request = self.authenticated(self.client.get(current.clone()))?;
             let mut response = request.send().await?;
             if response.status().is_redirection() {
@@ -527,8 +492,7 @@ impl HexRegistry {
 
     /// Poll until a version, and optionally its docs, are visible.
     ///
-    /// A registry makes a release visible asynchronously, so publication is
-    /// only complete once it can be observed.
+    /// A registry makes a release visible asynchronously, so publication is only complete once it can be observed.
     pub async fn wait_for(
         &self,
         package: &str,
@@ -575,7 +539,7 @@ fn retry_available(attempt: usize, attempts: usize) -> bool {
 }
 
 fn transport_retry_delay(attempt: usize) -> Duration {
-    Duration::from_millis((attempt as u64 + 1) * 100)
+    Duration::from_millis((attempt as u64 + 1) * TRANSPORT_RETRY_STEP_MS)
 }
 
 fn classify_audit_status(status: StatusCode, delay: Duration) -> Result<AuditRequest> {
@@ -696,10 +660,6 @@ impl Registry for HexRegistry {
     }
 }
 
-fn allow_environment_http_loopback(value: Option<&str>) -> bool {
-    value == Some("1")
-}
-
 fn append_segments(base: &Url, segments: &[&str]) -> Result<Url> {
     let mut url = base.clone();
     {
@@ -743,7 +703,7 @@ fn retry_after(headers: &reqwest::header::HeaderMap) -> Duration {
         .get(reqwest::header::RETRY_AFTER)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.parse::<u64>().ok())
-        .map(Duration::from_secs)
+        .map(|seconds| Duration::from_secs(seconds).min(MAX_RETRY_AFTER))
         .unwrap_or_else(|| Duration::from_millis(DEFAULT_RETRY_AFTER_MS))
 }
 
@@ -757,6 +717,7 @@ fn validate_checksum(value: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::RegistryProvider;
 
     #[derive(Clone)]
     struct ReadOnlyRegistry {
@@ -891,21 +852,6 @@ mod tests {
     }
 
     #[test]
-    fn environment_registry_http_requires_an_exact_test_opt_in() {
-        for value in [
-            None,
-            Some(""),
-            Some("0"),
-            Some("true"),
-            Some("yes"),
-            Some("01"),
-        ] {
-            assert!(!allow_environment_http_loopback(value));
-        }
-        assert!(allow_environment_http_loopback(Some("1")));
-    }
-
-    #[test]
     fn environment_constructor_keeps_the_supplied_registry_identity() {
         let config = RegistryConfig {
             provider: RegistryProvider::HexPm,
@@ -1001,6 +947,16 @@ mod tests {
         assert_eq!(retry_after(&headers), Duration::from_secs(2));
         headers.insert(reqwest::header::RETRY_AFTER, "invalid".parse().unwrap());
         assert_eq!(retry_after(&headers), Duration::from_millis(250));
+        headers.insert(reqwest::header::RETRY_AFTER, "60".parse().unwrap());
+        assert_eq!(retry_after(&headers), Duration::from_secs(60));
+        for excessive in ["61", "99999999", "18446744073709551615"] {
+            headers.insert(reqwest::header::RETRY_AFTER, excessive.parse().unwrap());
+            assert_eq!(
+                retry_after(&headers),
+                Duration::from_secs(60),
+                "{excessive}"
+            );
+        }
 
         assert!(validate_checksum(&"a".repeat(64)).is_ok());
         assert!(validate_checksum(&"A".repeat(64)).is_ok());
