@@ -50,6 +50,9 @@ const MAX_GITHUB_JSON_BYTES: usize = 4 * 1024 * 1024;
 const MAX_GITHUB_ERROR_BYTES: usize = 64 * 1024;
 const GITHUB_GET_ATTEMPTS: usize = 3;
 const OPEN_PULL_REQUEST_PAGE_SIZE: usize = 100;
+/// The tag that starts every files digest, so no other SHA-256 input that release-glz hashes can match one.
+const FILES_DIGEST_DOMAIN: &[u8] = b"release-glz release-pr-files\0";
+
 /// The object ID that a ref update moves a branch to in order to delete it.
 const NULL_OBJECT_ID: &str = "0000000000000000000000000000000000000000";
 const MAX_OPEN_PULL_REQUEST_PAGES: usize = 100;
@@ -1846,12 +1849,17 @@ fn commit_change(commit: &Commit) -> ChangeEntry {
     }
 }
 
-fn files_digest(files: &BTreeMap<String, Vec<u8>>) -> String {
+/// The digest that a Release PR commit and its marker record for the files the commit writes.
+///
+/// A domain tag starts the input, and a length precedes every path and every content, so two different file sets never hash the same bytes.
+pub fn files_digest(files: &BTreeMap<String, Vec<u8>>) -> String {
     let mut digest = Sha256::new();
+    digest.update(FILES_DIGEST_DOMAIN);
     for (path, contents) in files {
-        digest.update(path.as_bytes());
-        digest.update([0]);
-        digest.update(contents);
+        for part in [path.as_bytes(), contents.as_slice()] {
+            digest.update((part.len() as u64).to_be_bytes());
+            digest.update(part);
+        }
     }
     crate::hex::lower(&digest.finalize())
 }

@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use base64::Engine as _;
 use release_glz::forge::{
     CandidateRun, DefaultBranch, GitHubClient, GitHubRelease, GitHubRepository, IntentBinding,
-    MAX_ATTRIBUTED_COMMITS,
+    MAX_ATTRIBUTED_COMMITS, files_digest,
 };
 use release_glz::git::Commit;
 use release_glz::model::{ApiDiff, Baseline, BaselineSource, Bump, ReleasePlan, ReleaseState};
@@ -2280,14 +2280,43 @@ fn release_files() -> BTreeMap<String, Vec<u8>> {
 }
 
 fn release_files_digest(files: &BTreeMap<String, Vec<u8>>) -> String {
-    let mut digest = sha2::Sha256::new();
-    for (path, contents) in files {
-        digest.update(path.as_bytes());
-        digest.update([0]);
-        digest.update(contents);
-    }
-    release_glz::hex::lower(&digest.finalize())
+    files_digest(files)
 }
+
+#[test]
+fn different_file_sets_never_share_a_files_digest() {
+    let separate = BTreeMap::from([
+        ("a".to_owned(), b"1".to_vec()),
+        ("b".to_owned(), b"2".to_vec()),
+    ]);
+    let joined = BTreeMap::from([("a".to_owned(), b"1b\x002".to_vec())]);
+    assert_ne!(files_digest(&separate), files_digest(&joined));
+
+    let moved = BTreeMap::from([
+        ("a".to_owned(), b"".to_vec()),
+        ("b".to_owned(), b"12".to_vec()),
+    ]);
+    let shifted = BTreeMap::from([
+        ("a".to_owned(), b"1".to_vec()),
+        ("b".to_owned(), b"2".to_vec()),
+    ]);
+    assert_ne!(files_digest(&moved), files_digest(&shifted));
+}
+
+#[test]
+fn the_files_digest_format_is_pinned() {
+    let files = BTreeMap::from([
+        ("CHANGELOG.md".to_owned(), b"## [1.2.3]\n".to_vec()),
+        ("gleam.toml".to_owned(), b"version = \"1.2.3\"\n".to_vec()),
+    ]);
+    assert_eq!(files_digest(&files), PINNED_FILES_DIGEST);
+}
+
+/// The files digest of the pinned file set, which changes only when the digest format does.
+///
+/// `shasum -a 256` over the tag, then each length as eight big-endian bytes before its path or content, gives the same value.
+const PINNED_FILES_DIGEST: &str =
+    "b5d2ee9e17f61225f18337cd112e36a110b2cacf19a0da50e37b182d080a71c0";
 
 fn managed_body(
     package: &str,

@@ -26,6 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   A package, documentation archive, or source snapshot with such a path now fails instead of extracting into a different tree on macOS or Windows.
 - No configured hook may take the id `release-glz`, which marks the SBOM and provenance that release-glz builds itself.
   Such a hook's output used to count as built-in evidence.
+- The files digest of a Release PR commit starts from a domain tag and puts a length before every path and content.
+  Two different file sets could hash the same input before, and an open Release PR gets one rebuilt commit under the new digest.
 - A registry `Retry-After` header can ask for at most one minute, so a response can no longer stall a run indefinitely.
 - Candidate verification checks each sealed file again through the handle it opened and reads at most one byte past the file's limit.
   A file swapped after the path check can no longer make verification read without bound.
