@@ -376,22 +376,50 @@ fn candidate_verification_rejects_unsealed_inventory_entries() {
 #[test]
 fn candidate_verification_rejects_every_manifest_identity_and_digest_tamper() {
     let temp = tempfile::tempdir().unwrap();
-    for case in [
-        "schema",
-        "package",
-        "tag",
-        "source-sha",
-        "source-path",
-        "credential-env",
-        "branch-prefix",
-        "release-notes",
-        "artifact-path",
-        "artifact-size",
-        "artifact-sha",
-        "package-semantic",
-        "interface-semantic",
-        "intent-digest",
-        "candidate-digest",
+    // Every tamper also breaks a digest that verification checks last, so each case names the refusal of its own field.
+    for (case, expected) in [
+        ("schema", "unsupported candidate schema `candidate/v2`"),
+        (
+            "package",
+            "package name must start with a lowercase letter and contain only a-z, 0-9, or _",
+        ),
+        (
+            "tag",
+            "candidate.tag must end with the Candidate version `v1.2.3`",
+        ),
+        (
+            "source-sha",
+            "candidate source commit must be a full lowercase SHA",
+        ),
+        (
+            "source-path",
+            "candidate source manifest_path must stay within the repository",
+        ),
+        (
+            "credential-env",
+            "candidate registry credential_env is not a safe environment variable name",
+        ),
+        ("branch-prefix", "candidate release branch prefix is unsafe"),
+        (
+            "release-notes",
+            "candidate release notes are invalid or exceed 1 MiB",
+        ),
+        (
+            "artifact-path",
+            "candidate artifact path `artifacts/other.tar` must be `artifacts/package.tar`",
+        ),
+        (
+            "artifact-size",
+            "candidate artifact `artifacts/package.tar` exceeds its size limit",
+        ),
+        (
+            "artifact-sha",
+            "artifact checksum is not a lowercase SHA-256 digest",
+        ),
+        ("package-semantic", "candidate semantic checksum mismatch"),
+        ("interface-semantic", "candidate semantic checksum mismatch"),
+        ("intent-digest", "candidate intent digest mismatch"),
+        ("candidate-digest", "candidate digest mismatch"),
     ] {
         let directory = temp.path().join(case);
         Candidate::seal(&directory, fresh_candidate_input()).unwrap();
@@ -421,7 +449,7 @@ fn candidate_verification_rejects_every_manifest_identity_and_digest_tamper() {
             _ => unreachable!(),
         });
         let error = Candidate::verify(&directory).unwrap_err().to_string();
-        assert!(!error.is_empty(), "tamper {case} was not rejected");
+        assert_eq!(error, expected, "tamper {case}");
     }
 }
 
