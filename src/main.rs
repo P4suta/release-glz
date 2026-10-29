@@ -1916,7 +1916,6 @@ mod tests {
             warnings: vec![],
             required_approvals: vec![],
             stages: vec![],
-            intent_digest: Some("b".repeat(64)),
             pr_url: Some("https://github.test/acme/widget/pull/1".into()),
             release_pr_head: None,
             hex_url: Some("https://hex.pm/packages/widget".into()),

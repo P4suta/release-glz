@@ -76,6 +76,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- The plan result's `intent_digest`, which no command ever set, and the plan format moves to `plan/v3`.
+  The intent digest appears in the Candidate and in the `release-pr --candidate` result.
 - The `update` command, which ran the same code as `release-pr`; use `release-glz release-pr`.
 - `ReleaseExecutionOptions` and the public `validate_github_claims`.
   A library caller previews with `CandidateReleaseRunner::inspect` and verifies a token with `verify_github_oidc_token`.

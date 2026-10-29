@@ -150,7 +150,7 @@ Real publication also requires approval evidence supplied by the protected workf
 
 | Command | Contract |
 |---|---|
-| `plan [--out <FILE>]` | Reads git, registry, API, and change history and returns a `plan/v2`; it changes neither external state nor tracked files. `--out` also writes the plan to a new file and refuses to replace an existing one. |
+| `plan [--out <FILE>]` | Reads git, registry, API, and change history and returns a `plan/v3`; it changes neither external state nor tracked files. `--out` also writes the plan to a new file and refuses to replace an existing one. |
 | `rehearse --ref <SHA> --out <DIR>` | Builds from the committed snapshot with the configured compiler, validates archives, runs verify/sidecar hooks, and seals a `candidate/v1`. |
 | `verify --candidate <DIR> [--online]` | Verifies checksums, semantic fingerprints, source, policy, inventory, and hook evidence; online mode also observes registry and GitHub. |
 | `release --candidate <DIR>` | Publishes the sealed bytes through the monotonic reconciler; `--dry-run` reports all remaining effects. |
@@ -173,7 +173,7 @@ Compiling a package runs its dependencies' build code, so the job that holds a t
 `release-pr --plan` treats the file as untrusted input.
 It refuses the file unless all of these hold:
 
-- The file is a `plan/v2` document of at most 4 MiB with no unknown field.
+- The file is a `plan/v3` document of at most 4 MiB with no unknown field.
 - The plan names no Release PR yet.
 - The plan's package and manifest version match the checked-out `gleam.toml`.
 - The plan's baseline, when it has one, is a full commit id in the history of `HEAD`.
@@ -296,7 +296,7 @@ The detailed table is in [recovery.md](recovery.md).
 JSON output uses the `command/v2` envelope with `ok`, `command`, `result`, `diagnostics`, and `next_actions`.
 Executable next actions contain canonical `argv`; non-portable human guidance uses an empty array.
 The `command` field is always display-only and must never be reparsed or sent to a shell.
-Domain schemas evolve independently: `plan/v2`, `candidate/v1`, `state/v1`, and `hook/v1`.
+Domain schemas evolve independently: `plan/v3`, `candidate/v1`, `state/v1`, and `hook/v1`.
 Published schemas are in [`docs/`](./).
 
 States are `up_to_date`, `planned`, `candidate_ready`, `awaiting_approval`, `partially_released`, `released`, `conflict`, and `blocked`.

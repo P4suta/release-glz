@@ -54,6 +54,6 @@ Candidate is approved.
 
 JSON schema v1 command output is end-of-life at the v1 boundary. Automation
 must consume the `command/v2` envelope and the independently versioned
-`plan/v2`, `candidate/v1`, `state/v1`, and `hook/v1` schemas. Field names and
+`plan/v3`, `candidate/v1`, `state/v1`, and `hook/v1` schemas. Field names and
 repository-relative `/` paths should be treated as data, not reconstructed from
 human output.

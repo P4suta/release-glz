@@ -1,6 +1,6 @@
 //! The stable v1 vocabulary: the plan, its reasons, and the lifecycle states.
 //!
-//! Types here are the wire format of `plan/v2` and of the `command/v2` envelope, so a rename is a compatibility break rather than a refactor.
+//! Types here are the wire format of `plan/v3` and of the `command/v2` envelope, so a rename is a compatibility break rather than a refactor.
 
 use semver::Version;
 use serde::{Deserialize, Serialize};
@@ -364,7 +364,7 @@ pub struct ChangeEntry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReleasePlan {
-    /// Always `plan/v2`.
+    /// Always `plan/v3`.
     pub schema: String,
     /// Where the package currently is in the release lifecycle.
     pub state: ReleaseState,
@@ -406,10 +406,6 @@ pub struct ReleasePlan {
     /// Publication stages this release needs, in order.
     #[serde(default)]
     pub stages: Vec<ReleaseStage>,
-    /// Digest of the decision itself.
-    ///
-    /// An approval binds to this value, so a plan that changes after approval can no longer be published under it.
-    pub intent_digest: Option<String>,
     /// Rolling Release PR, once one exists.
     pub pr_url: Option<String>,
     /// Commit at the head of the rolling Release PR that this command wrote or confirmed.
@@ -424,7 +420,7 @@ pub struct ReleasePlan {
 
 impl ReleasePlan {
     /// The schema identifier every plan carries.
-    pub const SCHEMA: &'static str = "plan/v2";
+    pub const SCHEMA: &'static str = "plan/v3";
 }
 
 #[cfg(test)]

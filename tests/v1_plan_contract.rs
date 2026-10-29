@@ -6,9 +6,9 @@ use semver::Version;
 use serde_json::json;
 
 #[test]
-fn release_plan_uses_the_independently_versioned_v2_contract() {
+fn release_plan_uses_its_independently_versioned_contract() {
     let plan = ReleasePlan {
-        schema: "plan/v2".into(),
+        schema: ReleasePlan::SCHEMA.into(),
         state: ReleaseState::Planned,
         package: "widget".into(),
         manifest_path: "packages/widget/gleam.toml".into(),
@@ -42,14 +42,15 @@ fn release_plan_uses_the_independently_versioned_v2_contract() {
             },
         ],
         stages: vec![ReleaseStage::VerifyHooks, ReleaseStage::PublishPackage],
-        intent_digest: Some("0".repeat(64)),
         pr_url: None,
         release_pr_head: None,
         hex_url: Some("https://hex.pm/packages/widget/0.5.0".into()),
         github_release_url: None,
     };
     let value = serde_json::to_value(plan).unwrap();
-    assert_eq!(value["schema"], "plan/v2");
+    assert_eq!(value["schema"], "plan/v3");
+    // Planning builds no Candidate, so it has no intent to digest.
+    assert!(value.get("intent_digest").is_none());
     assert_eq!(value["state"], "planned");
     assert_eq!(value["manifest_path"], "packages/widget/gleam.toml");
     assert_eq!(

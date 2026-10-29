@@ -118,7 +118,6 @@ fn plan(baseline: Option<&str>) -> ReleasePlan {
             environment: Some("release".into()),
         }],
         stages: vec![],
-        intent_digest: None,
         pr_url: None,
         release_pr_head: None,
         hex_url: None,

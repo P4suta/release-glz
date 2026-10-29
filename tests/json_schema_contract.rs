@@ -14,11 +14,11 @@ use release_glz::reconciler::ExternalReleaseState;
 use semver::Version;
 
 #[test]
-fn checked_in_plan_schema_exactly_covers_the_serialized_v2_surface() {
+fn checked_in_plan_schema_exactly_covers_the_serialized_surface() {
     assert_schema_surface(
         "docs/release-plan.schema.json",
-        "release-glz ReleasePlan v2",
-        "plan/v2",
+        "release-glz ReleasePlan v3",
+        "plan/v3",
         serde_json::to_value(plan()).unwrap(),
     );
 }
@@ -57,7 +57,7 @@ fn every_public_domain_schema_exactly_covers_its_serialized_surface() {
         "command/v2",
         serde_json::to_value(CommandEnvelope::success(
             "plan",
-            serde_json::json!({"schema": "plan/v2"}),
+            serde_json::json!({"schema": "plan/v3"}),
             vec![],
             vec![],
         ))
@@ -96,7 +96,7 @@ fn every_public_serializer_validates_against_its_complete_draft_2020_schema() {
             "docs/command-envelope.schema.json",
             serde_json::to_value(CommandEnvelope::success(
                 "plan",
-                serde_json::json!({"schema": "plan/v2"}),
+                serde_json::json!({"schema": "plan/v3"}),
                 vec![],
                 vec![],
             ))
@@ -249,7 +249,6 @@ fn plan() -> ReleasePlan {
         warnings: vec![],
         required_approvals: vec![],
         stages: vec![ReleaseStage::VerifyHooks],
-        intent_digest: None,
         pr_url: None,
         release_pr_head: None,
         hex_url: None,

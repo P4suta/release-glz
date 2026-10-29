@@ -65,7 +65,7 @@ Release coverage requires at least 90% lines and 85% branches, with no viable cr
 Workflow changes must pass zizmor against both repository workflows and the generated consumer workflow during shipping assurance.
 
 Public JSON is a compatibility contract.
-Commands use `command/v2`, while `plan/v2`, `candidate/v1`, `state/v1`, and `hook/v1` evolve independently.
+Commands use `command/v2`, while `plan/v3`, `candidate/v1`, `state/v1`, and `hook/v1` evolve independently.
 Update schemas, fixtures, documentation, human output, and Action outputs together.
 Public paths use repository-relative `/` strings.
 
