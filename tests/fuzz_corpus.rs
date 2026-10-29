@@ -107,6 +107,54 @@ fn archive_seeds_reach_both_validators_and_refusal() {
     assert!(refused(&verdicts));
 }
 
+/// Archive seeds that this suite builds, one for each path form that some supported OS can't represent.
+fn unportable_archive_seeds() -> [(&'static str, Vec<u8>); 5] {
+    [
+        ("docs-colon-path", docs_seed(&[("a:b.html", b"stream")])),
+        ("docs-device-name", docs_seed(&[("aux.html", b"device")])),
+        ("docs-trailing-dot", docs_seed(&[("index.", b"dot")])),
+        (
+            "docs-windows-character",
+            docs_seed(&[("what?.html", b"query")]),
+        ),
+        (
+            "docs-case-collision",
+            docs_seed(&[("README.md", b"upper"), ("readme.md", b"lower")]),
+        ),
+    ]
+}
+
+/// A gzip-compressed tar archive whose bytes depend only on `files`.
+fn docs_seed(files: &[(&str, &[u8])]) -> Vec<u8> {
+    let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    let mut archive = tar::Builder::new(encoder);
+    for (path, contents) in files {
+        let mut header = tar::Header::new_gnu();
+        header.set_size(contents.len() as u64);
+        header.set_mode(0o644);
+        header.set_mtime(0);
+        header.set_cksum();
+        archive.append_data(&mut header, path, *contents).unwrap();
+    }
+    archive.into_inner().unwrap().finish().unwrap()
+}
+
+#[test]
+fn the_archive_corpus_holds_a_built_seed_for_each_unportable_path_form() {
+    for (name, bytes) in unportable_archive_seeds() {
+        let path = fuzz_directory().join("corpus/archive").join(name);
+        if std::env::var_os("RELEASE_GLZ_WRITE_CORPUS").is_some() {
+            fs::write(&path, &bytes).unwrap();
+        }
+        assert_eq!(
+            fs::read(&path).unwrap_or_default(),
+            bytes,
+            "{name} differs from its builder; rebuild it with RELEASE_GLZ_WRITE_CORPUS=1"
+        );
+        assert!(archive::check(&bytes).is_empty(), "{name} is accepted");
+    }
+}
+
 #[test]
 fn marker_seeds_reach_managed_and_unmanaged_bodies() {
     let verdicts = replay("pr_marker", pr_marker::check);

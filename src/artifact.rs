@@ -421,6 +421,7 @@ fn read_tar_files<R: Read>(
     allow_directories: bool,
 ) -> Result<BTreeMap<String, Vec<u8>>> {
     let mut output = BTreeMap::new();
+    let mut folded = FoldedPaths::default();
     let mut total = 0_u64;
     let mut pending_path = None;
     let mut archive = Archive::new(reader);
@@ -477,6 +478,7 @@ fn read_tar_files<R: Read>(
         if output.contains_key(&path) {
             bail!("archive contains duplicate entry `{path}`");
         }
+        folded.claim(&path)?;
         let contents = read_entry_contents(&mut entry, size, &format!("archive entry `{path}`"))?;
         output.insert(path, contents);
     }
@@ -495,16 +497,85 @@ fn safe_archive_path_value(raw: &[u8]) -> Result<String> {
     let value = std::str::from_utf8(raw)
         .context("archive path is not UTF-8")?
         .trim_end_matches('/');
-    if value.contains('\\')
-        || value.contains('\0')
-        || value
-            .split('/')
-            .any(|part| part.is_empty() || part == "." || part == "..")
-        || value.as_bytes().get(1) == Some(&b':')
-    {
+    if !value.split('/').all(portable_component) {
         bail!("archive contains unsafe path `{value}`");
     }
     Ok(value.to_owned())
+}
+
+/// Whether every supported OS stores a path component under exactly this name.
+///
+/// Windows forbids some characters, reads a colon as a stream separator, drops a trailing dot or space, and reserves device names in every directory.
+/// Refusing those names on every host keeps a verdict from depending on where release-glz runs.
+fn portable_component(component: &str) -> bool {
+    !component.is_empty()
+        && !component.ends_with(['.', ' '])
+        && !component.chars().any(|character| {
+            character.is_control()
+                || matches!(character, '\\' | '<' | '>' | ':' | '"' | '|' | '?' | '*')
+        })
+        && !windows_device_name(component)
+}
+
+/// Whether a component names a Windows device, whatever its letter case and extension.
+fn windows_device_name(component: &str) -> bool {
+    let stem = component
+        .split('.')
+        .next()
+        .unwrap_or(component)
+        .trim_end_matches(' ')
+        .to_ascii_uppercase();
+    if matches!(
+        stem.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+    ) {
+        return true;
+    }
+    ["COM", "LPT"].iter().any(|port| {
+        stem.strip_prefix(port).is_some_and(|number| {
+            let mut characters = number.chars();
+            matches!(
+                (characters.next(), characters.next()),
+                (Some('0'..='9' | '\u{b9}' | '\u{b2}' | '\u{b3}'), None)
+            )
+        })
+    })
+}
+
+/// The paths of one archive as a file system that ignores letter case sees them, such as the default ones on macOS and Windows.
+#[derive(Default)]
+struct FoldedPaths {
+    files: BTreeMap<String, String>,
+    directories: BTreeMap<String, String>,
+}
+
+impl FoldedPaths {
+    /// Record a file path, refusing it when it names the same file or directory as an earlier entry once letter case no longer counts.
+    fn claim(&mut self, path: &str) -> Result<()> {
+        let folded = path.to_lowercase();
+        if let Some(other) = self
+            .files
+            .get(&folded)
+            .or_else(|| self.directories.get(&folded))
+        {
+            bail!(
+                "archive path `{path}` collides with `{other}` once letter case no longer counts"
+            );
+        }
+        for (end, _) in folded.match_indices('/') {
+            let directory = &folded[..end];
+            if let Some(other) = self.files.get(directory) {
+                bail!(
+                    "archive path `{path}` collides with `{other}` once letter case no longer counts"
+                );
+            }
+            self.directories
+                .entry(directory.to_owned())
+                .or_insert_with(|| path.to_owned());
+        }
+        self.files.insert(folded, path.to_owned());
+        Ok(())
+    }
 }
 
 fn read_entry_contents<R: Read>(
