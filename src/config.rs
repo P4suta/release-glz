@@ -1076,6 +1076,7 @@ pub fn protected_hook_environment(name: &str, registry_credential_env: &str) -> 
                 | "GITHUB_ENV"
                 | "GITHUB_OUTPUT"
                 | "GITHUB_PATH"
+                | "GITHUB_STATE"
                 | "GITHUB_STEP_SUMMARY"
         )
 }

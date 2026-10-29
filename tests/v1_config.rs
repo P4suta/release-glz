@@ -326,10 +326,15 @@ fn package_environment_hook_path_and_ref_lexers_cover_every_boundary() {
     for protected in [
         "HEXPM_API_KEY",
         "GITHUB_TOKEN",
+        "GH_TOKEN",
         "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+        "ACTIONS_ID_TOKEN_REQUEST_URL",
         "ACTIONS_RUNTIME_TOKEN",
         "GITHUB_ENV",
         "GITHUB_OUTPUT",
+        "GITHUB_PATH",
+        "GITHUB_STATE",
+        "GITHUB_STEP_SUMMARY",
     ] {
         assert!(
             validate_hook_config(&HookConfig {

@@ -34,6 +34,44 @@ const MAX_PACKAGE_INFORMATION_BYTES: u64 = MIB;
 #[cfg(any(windows, test))]
 const MAX_MANIFEST_BYTES: u64 = 4 * MIB;
 
+/// The only environment variables the compiler and the dependency builds it runs inherit.
+///
+/// They locate executables, home and cache directories, temporary space, the locale, proxies, and certificates.
+/// GitHub and Actions tokens, OIDC request values, Action inputs, runner command files, and registry credentials stay out, because building a dependency can run its code.
+const COMPILER_ENVIRONMENT: [&str; 31] = [
+    "PATH",
+    "PATHEXT",
+    "SYSTEMROOT",
+    "SYSTEMDRIVE",
+    "WINDIR",
+    "COMSPEC",
+    "HOME",
+    "USERPROFILE",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "XDG_CACHE_HOME",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "TMPDIR",
+    "TMP",
+    "TEMP",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "no_proxy",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "REBAR_CACHE_DIR",
+    "MIX_HOME",
+];
+
 /// The one compiler release whose Windows `export hex-tarball` is recovered from rather than trusted.
 #[cfg(any(windows, test))]
 const WINDOWS_HEX_TARBALL_REGRESSION: Version = Version::new(1, 18, 1);
@@ -243,7 +281,12 @@ impl Gleam {
             )
         })?;
         let mut command = Command::new(&self.executable);
-        command.current_dir(directory);
+        command.current_dir(directory).env_clear();
+        for name in COMPILER_ENVIRONMENT {
+            if let Some(value) = std::env::var_os(name) {
+                command.env(name, value);
+            }
+        }
         Ok(command)
     }
 }
