@@ -16,6 +16,12 @@ Tests run in parallel and write only inside their own temporary directories.
 Every parser has a fuzz target in `fuzz/fuzz_targets`, whose properties live in `fuzz/invariants` and whose seeds live in `fuzz/corpus`.
 `cargo test` replays every seed through the same properties, so a property violation fails the ordinary suite.
 Add a seed for each accepted and refused input class that a parser change introduces.
+Give a local fuzz run a scratch corpus before the committed one, so new inputs stay out of `fuzz/corpus` until you choose them:
+
+```console
+mkdir -p target/fuzz-corpus/config
+cargo +nightly fuzz run config target/fuzz-corpus/config fuzz/corpus/config
+```
 
 Run the fast checks before opening a pull request:
 
