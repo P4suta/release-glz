@@ -8,3 +8,7 @@ publish = false
 rust-version = "1.88"
 
 [dependencies]
+base64 = "0.23.1"
+ring = "0.17.14"
+serde = "1.0.228"
+serde_json = "1.0.154"

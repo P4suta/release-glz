@@ -8,7 +8,8 @@ use anyhow::{Result, bail};
 use async_trait::async_trait;
 use flate2::{Compression, write::GzEncoder};
 use release_glz::authorization::{
-    GithubOidcClaims, OidcAudience, OidcExpectation, validate_github_claims,
+    GithubOidcClaims, JwkSet, OidcAudience, OidcExpectation, RsaJwk, VerifiedGithubOidc,
+    verify_github_oidc_token,
 };
 use release_glz::candidate::{
     Candidate, CandidateInput, CandidateSource, HookEvidence, HookKind, RegistryIdentity,
@@ -21,9 +22,8 @@ use release_glz::reconciler::{
     ApprovalEvidence, ExternalReleaseState, NotifyObservation, ObservedArtifact,
     ObservedGithubRelease, ObservedTag, ReconcileEffect, ReleaseIntent,
 };
-use release_glz::release::{
-    CandidateReleaseRunner, ReleaseExecutionOptions, ReleasePayload, ReleaseTarget,
-};
+use release_glz::release::{CandidateReleaseRunner, ReleasePayload, ReleaseTarget};
+use release_glz_test_support::oidc;
 use semver::Version;
 use sha2::{Digest, Sha256};
 
@@ -34,22 +34,14 @@ async fn crash_after_docs_resumes_without_republishing_candidate_bytes() {
     target.fail_once(ReconcileEffect::FinalizeGithubRelease, false);
     let runner = CandidateReleaseRunner::new(target.clone());
     let error = runner
-        .run(
-            &fixture.directory,
-            &approved(&fixture.manifest),
-            ReleaseExecutionOptions::default(),
-        )
+        .run(&fixture.directory, &approved(&fixture.manifest))
         .await
         .unwrap_err();
     assert_eq!(error.state(), ReleaseState::PartiallyReleased);
     assert_eq!(error.failure_class(), FailureClass::PartialRelease);
 
     let report = runner
-        .run(
-            &fixture.directory,
-            &approved(&fixture.manifest),
-            ReleaseExecutionOptions::default(),
-        )
+        .run(&fixture.directory, &approved(&fixture.manifest))
         .await
         .unwrap();
     assert_eq!(report.state, ReleaseState::Released);
@@ -81,11 +73,7 @@ async fn unknown_publish_response_is_reobserved_before_any_retry() {
     let target = FakeTarget::default();
     target.fail_once(ReconcileEffect::PublishPackage, true);
     let report = CandidateReleaseRunner::new(target.clone())
-        .run(
-            &fixture.directory,
-            &approved(&fixture.manifest),
-            ReleaseExecutionOptions::default(),
-        )
+        .run(&fixture.directory, &approved(&fixture.manifest))
         .await
         .unwrap();
     assert_eq!(report.state, ReleaseState::Released);
@@ -100,19 +88,28 @@ async fn unknown_publish_response_is_reobserved_before_any_retry() {
 }
 
 #[tokio::test]
-async fn dry_run_reports_every_effect_without_applying_any() {
+async fn inspection_reports_every_effect_without_applying_any() {
     let fixture = candidate_fixture();
     let target = FakeTarget::default();
     let report = CandidateReleaseRunner::new(target.clone())
-        .run(
-            &fixture.directory,
-            &approved(&fixture.manifest),
-            ReleaseExecutionOptions { dry_run: true },
-        )
+        .inspect(&fixture.directory)
         .await
         .unwrap();
     assert_eq!(report.state, ReleaseState::CandidateReady);
     assert_eq!(report.remaining.len(), 7);
+    assert!(target.applied().is_empty());
+}
+
+#[tokio::test]
+async fn a_run_without_verified_approval_applies_nothing() {
+    let fixture = candidate_fixture();
+    let target = FakeTarget::default();
+    let report = CandidateReleaseRunner::new(target.clone())
+        .run(&fixture.directory, &ApprovalEvidence::default())
+        .await
+        .unwrap();
+    assert_eq!(report.state, ReleaseState::AwaitingApproval);
+    assert!(report.remaining.is_empty());
     assert!(target.applied().is_empty());
 }
 
@@ -131,11 +128,7 @@ async fn optional_notify_is_attempted_once_but_failure_does_not_make_release_par
     target.fail_once(effect.clone(), false);
 
     let report = CandidateReleaseRunner::new(target.clone())
-        .run(
-            &fixture.directory,
-            &approved(&fixture.manifest),
-            ReleaseExecutionOptions::default(),
-        )
+        .run(&fixture.directory, &approved(&fixture.manifest))
         .await
         .unwrap();
     assert_eq!(report.state, ReleaseState::Released);
@@ -155,11 +148,7 @@ async fn public_release_asset_bytes_are_bound_to_their_sidecar_hook_and_name() {
     let target = FakeTarget::default();
 
     let report = CandidateReleaseRunner::new(target.clone())
-        .run(
-            &fixture.directory,
-            &approved(&fixture.manifest),
-            ReleaseExecutionOptions::default(),
-        )
+        .run(&fixture.directory, &approved(&fixture.manifest))
         .await
         .unwrap();
 
@@ -175,11 +164,7 @@ async fn missing_approval_is_reported_without_applying_a_single_effect() {
     let fixture = candidate_fixture();
     let target = FakeTarget::default();
     let report = CandidateReleaseRunner::new(target.clone())
-        .run(
-            &fixture.directory,
-            &ApprovalEvidence::default(),
-            ReleaseExecutionOptions::default(),
-        )
+        .run(&fixture.directory, &ApprovalEvidence::default())
         .await
         .unwrap();
     assert_eq!(report.state, ReleaseState::AwaitingApproval);
@@ -193,11 +178,7 @@ async fn an_invalid_candidate_and_an_existing_checksum_conflict_keep_their_exact
     let fixture = candidate_fixture();
     std::fs::write(fixture.directory.join("artifacts/package.tar"), b"tampered").unwrap();
     let error = CandidateReleaseRunner::new(FakeTarget::default())
-        .run(
-            &fixture.directory,
-            &approved(&fixture.manifest),
-            ReleaseExecutionOptions::default(),
-        )
+        .run(&fixture.directory, &approved(&fixture.manifest))
         .await
         .unwrap_err();
     assert_eq!(error.state(), ReleaseState::Blocked);
@@ -211,11 +192,7 @@ async fn an_invalid_candidate_and_an_existing_checksum_conflict_keep_their_exact
         sha256: "0".repeat(64),
     });
     let error = CandidateReleaseRunner::new(target.clone())
-        .run(
-            &fixture.directory,
-            &approved(&fixture.manifest),
-            ReleaseExecutionOptions::default(),
-        )
+        .run(&fixture.directory, &approved(&fixture.manifest))
         .await
         .unwrap_err();
     assert_eq!(error.state(), ReleaseState::Conflict);
@@ -237,11 +214,7 @@ async fn a_required_notification_failure_is_partial_and_is_never_rolled_back() {
     };
     target.fail_once(effect.clone(), false);
     let error = CandidateReleaseRunner::new(target.clone())
-        .run(
-            &fixture.directory,
-            &approved(&fixture.manifest),
-            ReleaseExecutionOptions::default(),
-        )
+        .run(&fixture.directory, &approved(&fixture.manifest))
         .await
         .unwrap_err();
     assert_eq!(error.state(), ReleaseState::PartiallyReleased);
@@ -257,11 +230,7 @@ async fn an_observation_failure_after_an_ambiguous_effect_preserves_the_pre_effe
         observations: AtomicUsize::new(0),
     };
     let error = CandidateReleaseRunner::new(target)
-        .run(
-            &fixture.directory,
-            &approved(&fixture.manifest),
-            ReleaseExecutionOptions::default(),
-        )
+        .run(&fixture.directory, &approved(&fixture.manifest))
         .await
         .unwrap_err();
     assert_eq!(error.state(), ReleaseState::CandidateReady);
@@ -273,11 +242,7 @@ async fn an_observation_failure_after_an_ambiguous_effect_preserves_the_pre_effe
 async fn a_target_that_never_records_success_stops_after_the_effects_of_its_first_plan() {
     let fixture = candidate_fixture();
     let first_plan = CandidateReleaseRunner::new(FakeTarget::default())
-        .run(
-            &fixture.directory,
-            &approved(&fixture.manifest),
-            ReleaseExecutionOptions { dry_run: true },
-        )
+        .inspect(&fixture.directory)
         .await
         .unwrap()
         .remaining
@@ -288,11 +253,7 @@ async fn a_target_that_never_records_success_stops_after_the_effects_of_its_firs
         attempts: Arc::clone(&attempts),
     };
     let error = CandidateReleaseRunner::new(target)
-        .run(
-            &fixture.directory,
-            &approved(&fixture.manifest),
-            ReleaseExecutionOptions::default(),
-        )
+        .run(&fixture.directory, &approved(&fixture.manifest))
         .await
         .unwrap_err();
     assert_eq!(attempts.load(Ordering::SeqCst), first_plan);
@@ -305,11 +266,7 @@ async fn a_release_with_more_notify_hooks_than_any_fixed_round_limit_completes()
     let fixture = candidate_fixture_with_options(true, false, 200);
     let target = FakeTarget::default();
     let report = CandidateReleaseRunner::new(target.clone())
-        .run(
-            &fixture.directory,
-            &approved(&fixture.manifest),
-            ReleaseExecutionOptions::default(),
-        )
+        .run(&fixture.directory, &approved(&fixture.manifest))
         .await
         .unwrap();
     assert_eq!(report.state, ReleaseState::Released);
@@ -655,9 +612,31 @@ fn notify_hook_ids(count: usize) -> Vec<String> {
     }
 }
 
+/// The identity in `claims`, signed and then verified, since no other path yields a verified identity.
+fn signed_identity(
+    claims: GithubOidcClaims,
+    expected: &OidcExpectation,
+    now: i64,
+) -> anyhow::Result<VerifiedGithubOidc> {
+    let key = RsaJwk {
+        key_type: "RSA".into(),
+        key_id: Some(oidc::KEY_ID.into()),
+        algorithm: Some("RS256".into()),
+        usage: Some("sig".into()),
+        modulus: oidc::MODULUS.into(),
+        exponent: oidc::EXPONENT.into(),
+    };
+    verify_github_oidc_token(
+        &oidc::sign_rs256(&claims),
+        &JwkSet { keys: vec![key] },
+        expected,
+        now,
+    )
+}
+
 fn approved(manifest: &release_glz::candidate::CandidateManifest) -> ApprovalEvidence {
     let now = 1_800_000_000;
-    let github_oidc = validate_github_claims(
+    let github_oidc = signed_identity(
         GithubOidcClaims {
             issuer: "https://token.actions.githubusercontent.com".into(),
             audience: OidcAudience::One("release-glz".into()),

@@ -21,15 +21,17 @@ use crate::model::ReleaseState;
 use crate::reconciler::{
     ApprovalEvidence, ExternalReleaseState, NotifyObservation, ObservedArtifact,
     ObservedGithubRelease, ObservedTag, ReconcileEffect, ReconcilePlan, ReleaseIntent,
-    notification_key, reconcile,
+    notification_key, preview, reconcile,
 };
 use crate::registry::{HexRegistry, PublishOutcome, Registry};
 
-/// How a release run is allowed to touch the outside world.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct ReleaseExecutionOptions {
-    /// Report every remaining effect instead of applying any of them.
-    pub dry_run: bool,
+/// What a run of the release loop acts under.
+#[derive(Clone, Copy)]
+enum Authority<'a> {
+    /// Verified evidence, which may approve the effects it reconciles to.
+    Approval(&'a ApprovalEvidence),
+    /// No evidence, so the run reports the effects an approval would unlock and applies none.
+    Inspection,
 }
 
 /// What one release run did, and what is left.
@@ -557,14 +559,33 @@ where
         Self { target }
     }
 
-    /// Verify the Candidate, then apply what is still missing.
+    /// Verify the Candidate, then apply what is still missing under `approval`.
     ///
     /// The Candidate is re-verified on every run, so a resumed release publishes exactly the bytes the first run sealed.
     pub async fn run(
         &self,
         candidate_directory: &std::path::Path,
         approval: &ApprovalEvidence,
-        options: ReleaseExecutionOptions,
+    ) -> std::result::Result<ReleaseReport, ReleaseRunError> {
+        self.execute(candidate_directory, Authority::Approval(approval))
+            .await
+    }
+
+    /// Verify the Candidate, then report what an approved run would still do, without doing any of it.
+    ///
+    /// It holds no approval evidence, so nothing it reports came from an identity that verification didn't produce.
+    pub async fn inspect(
+        &self,
+        candidate_directory: &std::path::Path,
+    ) -> std::result::Result<ReleaseReport, ReleaseRunError> {
+        self.execute(candidate_directory, Authority::Inspection)
+            .await
+    }
+
+    async fn execute(
+        &self,
+        candidate_directory: &std::path::Path,
+        authority: Authority<'_>,
     ) -> std::result::Result<ReleaseReport, ReleaseRunError> {
         let manifest = Candidate::verify(candidate_directory).map_err(|source| {
             run_error(
@@ -635,9 +656,17 @@ where
                 .observe(&intent)
                 .await
                 .map_err(|source| run_error(ReleaseState::Blocked, source))?;
+            let approval = match authority {
+                Authority::Approval(approval) => approval,
+                Authority::Inspection => {
+                    let plan = preview(&intent, &observed)
+                        .map_err(|source| run_error(source.state(), source.into()))?;
+                    return Ok(report(&manifest, plan, applied));
+                }
+            };
             let plan = reconcile(&intent, &observed, approval)
                 .map_err(|source| run_error(source.state(), source.into()))?;
-            if options.dry_run || plan.state == ReleaseState::AwaitingApproval {
+            if plan.state == ReleaseState::AwaitingApproval {
                 return Ok(report(&manifest, plan, applied));
             }
             let Some(effect) = plan
