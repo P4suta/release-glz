@@ -4,7 +4,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::process::{ExitStatus, Stdio};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -13,6 +13,7 @@ use semver::Version;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
+use tokio::process::{ChildStderr, ChildStdin, ChildStdout};
 
 use crate::candidate::{HookEvidence, HookKind};
 use crate::canonical::canonical_json_bytes;
@@ -363,18 +364,13 @@ impl HookRunner {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        #[cfg(unix)]
-        command.process_group(NEW_PROCESS_GROUP);
         for name in &hook.env {
             if let Some(value) = std::env::var_os(name) {
                 command.env(name, value);
             }
         }
-        let mut child = spawn_hook(&mut command, &hook.id).await?;
-        let tree = ProcessTree::of(&child)?;
-        let mut stdin = child.stdin.take().context("hook stdin was not piped")?;
-        let stdout = child.stdout.take().context("hook stdout was not piped")?;
-        let stderr = child.stderr.take().context("hook stderr was not piped")?;
+        let mut child = spawn_hook(command, &hook.id).await?;
+        let (mut stdin, stdout, stderr) = child.take_pipes()?;
         let mut input_task = tokio::spawn(async move {
             stdin.write_all(&input).await?;
             stdin.shutdown().await
@@ -400,7 +396,7 @@ impl HookRunner {
                     "hook `{}` timed out after {} seconds",
                     hook.id, hook.timeout_seconds
                 );
-                return Err(match tree.terminate(&mut child).await {
+                return Err(match child.terminate().await {
                     Ok(()) => anyhow::anyhow!(timed_out),
                     Err(error) => error.context(timed_out),
                 });
@@ -440,14 +436,12 @@ impl HookRunner {
     }
 }
 
-async fn spawn_hook(
-    command: &mut tokio::process::Command,
-    hook_id: &str,
-) -> Result<tokio::process::Child> {
+async fn spawn_hook(command: tokio::process::Command, hook_id: &str) -> Result<HookProcess> {
+    let mut command = HookProcess::command(command);
     let mut attempt = 1;
     loop {
-        match command.spawn() {
-            Ok(child) => return Ok(child),
+        match HookProcess::spawn(&mut command) {
+            Ok(process) => return Ok(process),
             Err(error) if retryable_spawn_error(&error) && attempt < SPAWN_ATTEMPTS => {
                 tokio::time::sleep(spawn_retry_delay(attempt)).await;
                 attempt += 1;
@@ -470,54 +464,121 @@ fn input_delivered(
     }
 }
 
-/// The processes a hook started, which end together when the hook times out.
-///
-/// On Unix the hook leads its own process group, so terminating the group also ends descendants that would otherwise keep its pipes open.
-struct ProcessTree {
-    #[cfg(unix)]
-    group: rustix::process::Pid,
-}
+/// The command that starts a hook as the leader of a new process group.
+#[cfg(unix)]
+type HookCommand = tokio::process::Command;
 
-impl ProcessTree {
+/// The command that starts a hook inside a new job object.
+#[cfg(windows)]
+type HookCommand = process_wrap::tokio::CommandWrap;
+
+/// A started hook and every process it starts, which end together when the hook times out.
+///
+/// On Unix the hook leads its own process group, and on Windows it runs in a job object from its first instruction.
+/// Terminating the group or the job also ends descendants that would otherwise keep the hook's pipes open.
+struct HookProcess {
+    #[cfg(unix)]
+    child: tokio::process::Child,
     /// The group the hook leads, whose id is the hook's own process id because the spawn made it a new group.
     #[cfg(unix)]
-    fn of(child: &tokio::process::Child) -> Result<Self> {
+    group: rustix::process::Pid,
+    #[cfg(windows)]
+    child: Box<dyn process_wrap::tokio::ChildWrapper>,
+}
+
+impl HookProcess {
+    #[cfg(unix)]
+    fn command(mut command: tokio::process::Command) -> HookCommand {
+        command.process_group(NEW_PROCESS_GROUP);
+        command
+    }
+
+    #[cfg(windows)]
+    fn command(command: tokio::process::Command) -> HookCommand {
+        let mut command = process_wrap::tokio::CommandWrap::from(command);
+        command.wrap(process_wrap::tokio::JobObject);
+        command
+    }
+
+    #[cfg(unix)]
+    fn spawn(command: &mut HookCommand) -> std::io::Result<Self> {
+        let child = command.spawn()?;
         let group = child
             .id()
             .and_then(|id| i32::try_from(id).ok())
             .and_then(rustix::process::Pid::from_raw)
-            .context("started hook has no process id")?;
-        Ok(Self { group })
+            .ok_or_else(|| std::io::Error::other("started hook has no process id"))?;
+        Ok(Self { child, group })
     }
 
-    #[cfg(not(unix))]
-    fn of(_child: &tokio::process::Child) -> Result<Self> {
-        Ok(Self {})
+    #[cfg(windows)]
+    fn spawn(command: &mut HookCommand) -> std::io::Result<Self> {
+        Ok(Self {
+            child: command.spawn()?,
+        })
     }
 
-    async fn terminate(&self, child: &mut tokio::process::Child) -> Result<()> {
-        #[cfg(unix)]
-        match rustix::process::kill_process_group(self.group, rustix::process::Signal::KILL) {
-            Ok(()) | Err(rustix::io::Errno::SRCH) => {}
-            Err(error) => {
-                return Err(error).context("failed to terminate the hook process group");
-            }
-        }
-        #[cfg(not(unix))]
-        if child
-            .try_wait()
-            .context("failed to inspect the hook process")?
-            .is_none()
-        {
-            child
-                .start_kill()
-                .context("failed to terminate the hook process")?;
-        }
-        tokio::time::timeout(Duration::from_secs(REAP_GRACE_SECONDS), child.wait())
+    /// The hook's stdin, stdout, and stderr, which its command pipes.
+    fn take_pipes(&mut self) -> Result<(ChildStdin, ChildStdout, ChildStderr)> {
+        let (stdin, stdout, stderr) = self.pipes();
+        Ok((
+            stdin.context("hook stdin was not piped")?,
+            stdout.context("hook stdout was not piped")?,
+            stderr.context("hook stderr was not piped")?,
+        ))
+    }
+
+    #[cfg(unix)]
+    fn pipes(&mut self) -> (Option<ChildStdin>, Option<ChildStdout>, Option<ChildStderr>) {
+        (
+            self.child.stdin.take(),
+            self.child.stdout.take(),
+            self.child.stderr.take(),
+        )
+    }
+
+    #[cfg(windows)]
+    fn pipes(&mut self) -> (Option<ChildStdin>, Option<ChildStdout>, Option<ChildStderr>) {
+        (
+            self.child.stdin().take(),
+            self.child.stdout().take(),
+            self.child.stderr().take(),
+        )
+    }
+
+    #[cfg(unix)]
+    async fn wait(&mut self) -> std::io::Result<ExitStatus> {
+        self.child.wait().await
+    }
+
+    /// Wait for the hook's own process, as on Unix, rather than for every process in its job.
+    #[cfg(windows)]
+    async fn wait(&mut self) -> std::io::Result<ExitStatus> {
+        self.child.inner_mut().wait().await
+    }
+
+    async fn terminate(&mut self) -> Result<()> {
+        self.end_every_process()?;
+        tokio::time::timeout(Duration::from_secs(REAP_GRACE_SECONDS), self.wait())
             .await
             .context("terminated hook was not reaped in time")?
             .context("failed to reap the terminated hook")?;
         Ok(())
+    }
+
+    #[cfg(unix)]
+    fn end_every_process(&mut self) -> Result<()> {
+        match rustix::process::kill_process_group(self.group, rustix::process::Signal::KILL) {
+            Ok(()) | Err(rustix::io::Errno::SRCH) => Ok(()),
+            Err(error) => Err(error).context("failed to terminate the hook process group"),
+        }
+    }
+
+    #[cfg(windows)]
+    fn end_every_process(&mut self) -> Result<()> {
+        self.child
+            .start_kill()
+            .context("failed to terminate the hook job object")
     }
 }
 

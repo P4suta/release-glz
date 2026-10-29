@@ -168,13 +168,21 @@ printf '%s' '{{"schema":"hook/v1","success":true,"summary":"direct child exited"
     }
 }
 
+/// Whether a process still runs, checked without an external `kill` program.
 fn process_is_alive(pid: &str) -> bool {
-    std::process::Command::new("kill")
-        .args(["-0", pid])
-        .stderr(std::process::Stdio::null())
-        .status()
-        .unwrap()
-        .success()
+    let pid = rustix::process::Pid::from_raw(pid.parse().unwrap()).unwrap();
+    if rustix::process::test_kill_process(pid).is_err() {
+        return false;
+    }
+    // A killed process stays a zombie until its new parent reaps it, and a container's first process may never do that.
+    #[cfg(target_os = "linux")]
+    if let Ok(stat) = fs::read_to_string(format!("/proc/{}/stat", pid.as_raw_nonzero())) {
+        return stat
+            .rsplit_once(')')
+            .and_then(|(_, fields)| fields.split_whitespace().next())
+            != Some("Z");
+    }
+    true
 }
 
 #[tokio::test]
