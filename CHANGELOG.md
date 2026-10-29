@@ -36,6 +36,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Hooks can't receive `GITHUB_STATE`, like the other runner command files.
 - The Action always runs the release-glz binary that it downloaded and verified.
   It no longer runs a program that the undocumented `RELEASE_GLZ_BINARY` variable names, which an earlier step could set without either check.
+- The Action pauses workflow commands with an unpredictable token while it runs release-glz and writes its diagnostics.
+  A line of compiler, git, or registry output that starts with `::` can no longer run a workflow command in the step.
 - The bundled root store no longer trusts the distrusted emSign roots that RUSTSEC-2026-0381 reports.
 - Both lockfiles resolve `quinn-proto` 0.11.19, past RUSTSEC-2026-0338 through RUSTSEC-2026-0342, and the fuzz lockfile resolves `rustls-webpki` 0.103.16, past RUSTSEC-2026-0382.
   Shipping assurance audits the fuzz lockfile too.
