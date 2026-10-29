@@ -199,7 +199,7 @@ fn the_guide_states_the_plan_file_limit_the_reader_enforces() {
     let guide = fs::read_to_string("docs/README.md").unwrap();
     let statement = guide
         .lines()
-        .find(|line| line.contains("`plan/v2` document of at most"))
+        .find(|line| line.contains("`plan/v3` document of at most"))
         .expect("the guide states no plan file limit");
     let (number, rest) = statement
         .split_once("at most ")

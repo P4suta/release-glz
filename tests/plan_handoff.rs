@@ -118,7 +118,6 @@ fn plan(baseline: Option<&str>) -> ReleasePlan {
             environment: Some("release".into()),
         }],
         stages: vec![],
-        intent_digest: None,
         pr_url: None,
         release_pr_head: None,
         hex_url: None,
@@ -252,6 +251,48 @@ fn a_plan_for_another_checkout_is_refused_with_its_reason() {
             refusal(&error),
             &Refusal::BaselineOutsideHistory(baseline.clone()),
             "{baseline}"
+        );
+    }
+}
+
+#[test]
+fn each_refusal_names_what_the_plan_file_got_wrong() {
+    for (refusal, expected) in [
+        (
+            Refusal::TooLarge,
+            format!("larger than {MAX_PLAN_BYTES} bytes"),
+        ),
+        (
+            Refusal::NotAPlan("missing field `state`".into()),
+            format!(
+                "not a {} document: missing field `state`",
+                ReleasePlan::SCHEMA
+            ),
+        ),
+        (
+            Refusal::Schema("plan/v2".into()),
+            "has schema `plan/v2`".to_owned(),
+        ),
+        (
+            Refusal::ReleasePrNamed,
+            "already names a Release PR".to_owned(),
+        ),
+        (
+            Refusal::OtherManifest {
+                package: "widget".into(),
+                version: Version::new(1, 2, 3),
+            },
+            "describes widget 1.2.3".to_owned(),
+        ),
+        (
+            Refusal::BaselineOutsideHistory("abc".into()),
+            "baseline `abc` is not in the checked-out history".to_owned(),
+        ),
+    ] {
+        let message = refusal.to_string();
+        assert!(
+            message.contains(&expected),
+            "{message:?} lacks {expected:?}"
         );
     }
 }

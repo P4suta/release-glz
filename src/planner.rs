@@ -1,7 +1,7 @@
 //! Release planning: deciding whether to release, and as which version.
 //!
 //! The planner only reads.
-//! Its output is a `plan/v2`, which later stages seal and publish, so a decision can be reviewed before anything is built.
+//! Its output is a `plan/v3`, which later stages seal and publish, so a decision can be reviewed before anything is built.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -260,7 +260,6 @@ impl<R: Registry> Planner<R> {
             warnings: plan_warnings(manifest, &version),
             required_approvals: required_approvals(manifest),
             stages: planned_stages(manifest),
-            intent_digest: None,
             pr_url: None,
             release_pr_head: None,
             hex_url: None,
@@ -496,7 +495,6 @@ impl<R: Registry> Planner<R> {
             } else {
                 Vec::new()
             },
-            intent_digest: None,
             pr_url: None,
             release_pr_head: None,
             hex_url: if release_required {

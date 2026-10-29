@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/P4suta/release-glz/v1.0.0/docs/release-plan.schema.json",
-  "title": "release-glz ReleasePlan v2",
+  "title": "release-glz ReleasePlan v3",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -9,11 +9,10 @@
     "manifest_version", "version", "bump", "release_required",
     "artifacts_changed", "prerelease", "tag", "baseline", "reasons",
     "api", "changes", "warnings", "required_approvals", "stages",
-    "intent_digest", "pr_url", "release_pr_head", "hex_url",
-    "github_release_url"
+    "pr_url", "release_pr_head", "hex_url", "github_release_url"
   ],
   "properties": {
-    "schema": { "const": "plan/v2" },
+    "schema": { "const": "plan/v3" },
     "state": { "$ref": "#/$defs/state" },
     "package": { "type": "string", "minLength": 1 },
     "manifest_path": { "$ref": "#/$defs/path" },
@@ -36,7 +35,6 @@
       "items": { "$ref": "#/$defs/stage" },
       "uniqueItems": true
     },
-    "intent_digest": { "$ref": "#/$defs/nullableSha256" },
     "pr_url": { "$ref": "#/$defs/nullableString" },
     "release_pr_head": {
       "anyOf": [
