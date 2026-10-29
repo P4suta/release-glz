@@ -23,24 +23,7 @@ async fn hook_timeout_ends_every_process_the_hook_started() {
         system32("PING.EXE").display(),
         pid_file.display()
     );
-    let hook = HookConfig {
-        id: "lingering-child".into(),
-        argv: vec![
-            system32(r"WindowsPowerShell\v1.0\powershell.exe")
-                .to_string_lossy()
-                .into_owned(),
-            "-NoProfile".into(),
-            "-NonInteractive".into(),
-            "-Command".into(),
-            script,
-        ],
-        timeout_seconds: HOOK_TIMEOUT_SECONDS,
-        required: true,
-        // Windows reads environment names without regard to case, so the uppercase names that hook configuration requires still reach PowerShell.
-        env: ["SYSTEMROOT", "WINDIR", "TEMP", "TMP", "LOCALAPPDATA"]
-            .map(String::from)
-            .to_vec(),
-    };
+    let hook = powershell_hook("lingering-child", script);
 
     let started = Instant::now();
     let error = HookRunner::default()
@@ -60,6 +43,46 @@ async fn hook_timeout_ends_every_process_the_hook_started() {
             "grandchild {grandchild} outlived the timed-out hook"
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+#[tokio::test]
+async fn a_hook_that_exits_with_an_error_reports_failure() {
+    let temp = tempfile::tempdir().unwrap();
+    fs::write(temp.path().join("source.gleam"), "before").unwrap();
+
+    let error = HookRunner::default()
+        .run_verify(
+            &[powershell_hook("nonzero", "exit 17".into())],
+            temp.path(),
+            &context(),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+
+    assert!(error.contains("reported failure"), "{error}");
+}
+
+/// A required hook that runs `script` in Windows PowerShell.
+fn powershell_hook(id: &str, script: String) -> HookConfig {
+    HookConfig {
+        id: id.into(),
+        argv: vec![
+            system32(r"WindowsPowerShell\v1.0\powershell.exe")
+                .to_string_lossy()
+                .into_owned(),
+            "-NoProfile".into(),
+            "-NonInteractive".into(),
+            "-Command".into(),
+            script,
+        ],
+        timeout_seconds: HOOK_TIMEOUT_SECONDS,
+        required: true,
+        // Windows reads environment names without regard to case, so the uppercase names that hook configuration requires still reach PowerShell.
+        env: ["SYSTEMROOT", "WINDIR", "TEMP", "TMP", "LOCALAPPDATA"]
+            .map(String::from)
+            .to_vec(),
     }
 }
 
