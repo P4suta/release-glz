@@ -11,7 +11,9 @@ use release_glz::model::{
     ApiDiff, ApiStatus, Baseline, BaselineSource, Bump, ChangeEntry, PrereleaseChannel, ReasonKind,
     ReleasePlan, ReleaseState,
 };
-use release_glz::planner::{PlanOptions, Planner, prepare_release_files, update_local};
+use release_glz::planner::{
+    PlanOptions, Planner, prepare_release_files, release_commit_changes, update_local,
+};
 use release_glz::registry::{HexRelease, PackageState, Registry};
 use release_glz_test_support::require_gleam;
 use semver::Version;
@@ -782,6 +784,49 @@ fn release_file_generation_rejects_a_manifest_outside_the_discovered_repository(
         .unwrap_err()
         .to_string();
     assert!(error.contains("outside git repository"), "{error}");
+    Ok(())
+}
+
+#[test]
+fn a_release_commit_changes_only_the_files_that_differ_from_head() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let root = temp.path();
+    let package = root.join("packages/widget");
+    fs::create_dir_all(&package)?;
+    // The manifest already names the planned version, as `set-version` leaves it.
+    fs::write(
+        package.join("gleam.toml"),
+        "name = \"widget\"\nversion = \"1.2.0\"\n",
+    )?;
+    git(root, &["init", "--initial-branch=main"])?;
+    git(root, &["add", "."])?;
+    git(root, &["commit", "--quiet", "-m", "chore: set the version"])?;
+    let manifest = Manifest::load(package.join("gleam.toml"))?;
+    let repo = GitRepo::discover(&package)?;
+    let plan = release_file_plan();
+
+    let changes = release_commit_changes(&manifest, &repo, &plan, &[])?;
+    assert_eq!(
+        changes.keys().map(String::as_str).collect::<Vec<_>>(),
+        ["packages/widget/CHANGELOG.md"]
+    );
+
+    fs::write(
+        package.join("CHANGELOG.md"),
+        &changes["packages/widget/CHANGELOG.md"],
+    )?;
+    let uncommitted = release_commit_changes(&manifest, &repo, &plan, &[])?;
+    assert_eq!(
+        uncommitted, changes,
+        "a working tree file counts only once HEAD holds it"
+    );
+
+    git(root, &["add", "."])?;
+    git(
+        root,
+        &["commit", "--quiet", "-m", "docs: write the changelog"],
+    )?;
+    assert!(release_commit_changes(&manifest, &repo, &plan, &[])?.is_empty());
     Ok(())
 }
 

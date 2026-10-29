@@ -24,6 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A verified approval identity comes only from signature verification of the GitHub OIDC token.
   `release --dry-run`, `verify --online`, and `status --online` used to build one from invented claims, and only a dry-run flag in another argument kept that evidence from approving a publication.
   They now inspect through a runner entry point that holds no evidence and applies no effect.
+- On Windows, a hook runs in a job object from its first instruction, and a hook that times out ends together with every process it started.
+  Only the hook's own process used to end, so its children kept running and could hold its pipes open after release-glz moved on.
 - Archive validation refuses, on every host, a path that some supported OS can't store under the same name, and two entries that collide once letter case no longer counts.
   That covers a colon, a character or device name that Windows forbids, such as `aux.html`, and a component that ends in a dot or a space.
   A package, documentation archive, or source snapshot with such a path now fails instead of extracting into a different tree on macOS or Windows.
@@ -31,6 +33,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Such a hook's output used to count as built-in evidence.
 - The files digest of a Release PR commit starts from a domain tag and puts a length before every path and content.
   Two different file sets could hash the same input before, and an open Release PR gets one rebuilt commit under the new digest.
+- A Release PR commit counts as generated only when the files it added or modified match the files digest its message records.
+  A maintainer's verified amend that kept the message used to count, so release-glz could adopt it or reset the branch over it.
+  It now takes the path for human work, and a failure to read a file from GitHub fails the run instead of closing the Release PR.
+- The Release PR commit writes only the rendered files that differ from the default branch tip, so its diff lists exactly the files its digest covers.
+  When the tip already holds every rendered file, `release-pr` writes no commit and reports `release_files_current`.
 - A registry `Retry-After` header can ask for at most one minute, so a response can no longer stall a run indefinitely.
 - Candidate verification checks each sealed file again through the handle it opened and reads at most one byte past the file's limit.
   A file swapped after the path check can no longer make verification read without bound.

@@ -145,6 +145,39 @@ impl GitRepo {
         }
     }
 
+    /// The bytes of the blob at `path` in the `HEAD` tree, or `None` when `HEAD` holds no blob there.
+    pub fn head_blob(&self, path: &str) -> Result<Option<Vec<u8>>> {
+        // A `^{blob}` suffix would read as part of the path, so the object's type is checked separately.
+        let object = git_command(&self.root)
+            .args([
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                "--end-of-options",
+                &format!("HEAD:{path}"),
+            ])
+            .output()
+            .context("failed to invoke git")?;
+        if !object.status.success() {
+            return Ok(None);
+        }
+        let object = String::from_utf8(object.stdout)?.trim().to_owned();
+        if self.run(["cat-file", "-t", &object])?.trim() != "blob" {
+            return Ok(None);
+        }
+        let output = git_command(&self.root)
+            .args(["cat-file", "blob", &object])
+            .output()
+            .context("failed to invoke git")?;
+        if !output.status.success() {
+            bail!(
+                "git could not read `HEAD:{path}`: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        Ok(Some(output.stdout))
+    }
+
     /// Commit a local tag resolves to, if the tag exists.
     pub fn tag_sha(&self, tag: &str) -> Result<Option<String>> {
         self.resolve(&format!("refs/tags/{tag}"))
