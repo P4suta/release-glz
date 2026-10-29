@@ -68,8 +68,8 @@ fn the_required_check_is_the_ci_job_that_aggregates_every_selected_check() {
         .iter()
         .map(|check| check["context"].as_str().unwrap().to_owned())
         .collect::<Vec<_>>();
-    let ci: serde_yaml::Value =
-        serde_yaml::from_str(&fs::read_to_string(".github/workflows/ci.yml").unwrap()).unwrap();
+    let ci: serde_norway::Value =
+        serde_norway::from_str(&fs::read_to_string(".github/workflows/ci.yml").unwrap()).unwrap();
     let job_names = ci["jobs"]
         .as_mapping()
         .unwrap()

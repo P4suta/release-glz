@@ -593,7 +593,7 @@ mod tests {
     #[test]
     fn workflow_has_secretless_candidate_and_environment_scoped_publish_jobs() {
         let yaml = render("main", Path::new("gleam.toml"));
-        serde_yaml::from_str::<serde_yaml::Value>(&yaml).unwrap();
+        serde_norway::from_str::<serde_norway::Value>(&yaml).unwrap();
         assert!(yaml.contains("fetch-depth: 0"));
         assert!(yaml.contains("persist-credentials: false"));
         assert!(yaml.contains("  plan:"));
@@ -764,7 +764,7 @@ mod tests {
             &settings.action_sha,
         )
         .unwrap();
-        serde_yaml::from_str::<serde_yaml::Value>(&yaml).unwrap();
+        serde_norway::from_str::<serde_norway::Value>(&yaml).unwrap();
         assert!(yaml.contains("manifest-path: \"packages/widget package/gleam.toml\""));
 
         let temp = tempfile::tempdir().unwrap();
@@ -978,7 +978,7 @@ mod tests {
             include_str!("../.github/workflows/distribute.yml"),
             include_str!("../action.yml"),
         ] {
-            serde_yaml::from_str::<serde_yaml::Value>(source).unwrap();
+            serde_norway::from_str::<serde_norway::Value>(source).unwrap();
         }
         for source in [
             include_str!("../.github/workflows/ci.yml"),

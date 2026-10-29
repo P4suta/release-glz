@@ -17,7 +17,7 @@ fn pinned_tool(tool: &str) -> String {
 #[test]
 fn routine_ci_uses_one_selected_linux_gate_without_shipping_campaigns() {
     let yaml = fs::read_to_string(".github/workflows/ci.yml").unwrap();
-    let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
+    let parsed: serde_norway::Value = serde_norway::from_str(&yaml).unwrap();
     let triggers = parsed["on"].as_mapping().unwrap();
     assert!(triggers.contains_key("pull_request"));
     assert!(triggers.contains_key("merge_group"));
@@ -40,7 +40,7 @@ fn routine_ci_uses_one_selected_linux_gate_without_shipping_campaigns() {
 #[test]
 fn assurance_workflow_has_fixed_fail_closed_shipping_gates() {
     let yaml = fs::read_to_string(".github/workflows/assurance.yml").unwrap();
-    serde_yaml::from_str::<serde_yaml::Value>(&yaml).unwrap();
+    serde_norway::from_str::<serde_norway::Value>(&yaml).unwrap();
     for required in [
         "cargo-deny --version 0.20.2",
         "cargo-audit --version 0.22.2",
@@ -118,7 +118,7 @@ fn assurance_workflow_has_fixed_fail_closed_shipping_gates() {
 #[test]
 fn mutation_gate_uses_four_explicit_fail_closed_shards() {
     let yaml = fs::read_to_string(".github/workflows/assurance.yml").unwrap();
-    let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
+    let parsed: serde_norway::Value = serde_norway::from_str(&yaml).unwrap();
     let mutation = &parsed["jobs"]["mutation"];
     let shards = mutation["strategy"]["matrix"]["shard"]
         .as_sequence()
@@ -165,8 +165,8 @@ fn fuzz_targets() -> Vec<String> {
 
 #[test]
 fn routine_ci_refuses_an_unformatted_fuzz_workspace_or_a_stale_fuzz_lockfile() {
-    let parsed: serde_yaml::Value =
-        serde_yaml::from_str(&fs::read_to_string(".github/workflows/ci.yml").unwrap()).unwrap();
+    let parsed: serde_norway::Value =
+        serde_norway::from_str(&fs::read_to_string(".github/workflows/ci.yml").unwrap()).unwrap();
     let commands: Vec<_> = parsed["jobs"]["checks"]["steps"]
         .as_sequence()
         .unwrap()
@@ -205,7 +205,7 @@ fn every_required_parser_has_a_bounded_fuzz_target() {
 #[test]
 fn fuzz_smoke_uses_fixed_run_counts_and_seeds() {
     let yaml = fs::read_to_string(".github/workflows/assurance.yml").unwrap();
-    let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
+    let parsed: serde_norway::Value = serde_norway::from_str(&yaml).unwrap();
     let steps = parsed["jobs"]["fuzz"]["steps"].as_sequence().unwrap();
     for target in fuzz_targets() {
         let prefix = format!("cargo fuzz run {target} -- ");
@@ -240,9 +240,9 @@ fn dependency_policy_is_explicit_and_deny_by_default() {
 #[test]
 fn release_assurance_covers_native_platforms_and_gleam_versions() {
     let yaml = fs::read_to_string(".github/workflows/ci.yml").unwrap();
-    let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
+    let parsed: serde_norway::Value = serde_norway::from_str(&yaml).unwrap();
     let assurance = fs::read_to_string(".github/workflows/assurance.yml").unwrap();
-    let shipping: serde_yaml::Value = serde_yaml::from_str(&assurance).unwrap();
+    let shipping: serde_norway::Value = serde_norway::from_str(&assurance).unwrap();
     let current = parsed["jobs"]["checks"]["steps"]
         .as_sequence()
         .unwrap()
@@ -314,7 +314,7 @@ fn release_assurance_covers_native_platforms_and_gleam_versions() {
 #[test]
 fn every_job_that_runs_compiler_tests_installs_the_pinned_gleam() {
     let yaml = fs::read_to_string(".github/workflows/assurance.yml").unwrap();
-    let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
+    let parsed: serde_norway::Value = serde_norway::from_str(&yaml).unwrap();
     for job in ["coverage", "mutation"] {
         let steps = parsed["jobs"][job]["steps"].as_sequence().unwrap();
         let setup = steps
@@ -343,8 +343,8 @@ fn every_job_that_runs_compiler_tests_installs_the_pinned_gleam() {
 
 #[test]
 fn ci_selects_the_rust_job_for_every_file_a_test_reads() {
-    let filters: serde_yaml::Value =
-        serde_yaml::from_str(&fs::read_to_string(".github/filters/ci.yml").unwrap()).unwrap();
+    let filters: serde_norway::Value =
+        serde_norway::from_str(&fs::read_to_string(".github/filters/ci.yml").unwrap()).unwrap();
     let runtime = filters["runtime"]
         .as_sequence()
         .unwrap()
@@ -408,7 +408,7 @@ fn glob_matches(pattern: &str, path: &str) -> bool {
 fn local_tool_pins_match_the_versions_ci_installs() {
     let pin = pinned_tool;
     let ci = fs::read_to_string(".github/workflows/ci.yml").unwrap();
-    let parsed: serde_yaml::Value = serde_yaml::from_str(&ci).unwrap();
+    let parsed: serde_norway::Value = serde_norway::from_str(&ci).unwrap();
     let steps = |job: &str| parsed["jobs"][job]["steps"].as_sequence().unwrap().clone();
     let with = |job: &str, action: &str, input: &str| {
         steps(job)
@@ -478,7 +478,7 @@ fn every_repository_workflow_is_valid_yaml_and_includes_assurance() {
         let path = entry.path();
         if path.extension().is_some_and(|extension| extension == "yml") {
             let source = fs::read_to_string(&path).unwrap();
-            serde_yaml::from_str::<serde_yaml::Value>(&source)
+            serde_norway::from_str::<serde_norway::Value>(&source)
                 .unwrap_or_else(|error| panic!("invalid {}: {error}", path.display()));
             names.push(path.file_name().unwrap().to_string_lossy().into_owned());
         }
