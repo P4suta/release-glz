@@ -62,7 +62,10 @@ fn distribution_is_attested_and_uploaded_to_a_draft_exactly_once() {
         r#"--source-digest "$GITHUB_SHA""#,
         "--deny-self-hosted-runners",
     ] {
-        assert!(yaml.contains(pin), "attestation verification must pin {pin}");
+        assert!(
+            yaml.contains(pin),
+            "attestation verification must pin {pin}"
+        );
     }
     assert!(
         yaml.contains(r#"cmp -- "$file" "../dist/$file""#),
