@@ -1,7 +1,6 @@
 //! Changelog rendering and the structured notes that feed it.
 //!
-//! Rendering is idempotent, so the rolling Release PR can be regenerated on
-//! every push without producing a new diff each time.
+//! Rendering is idempotent, so the rolling Release PR can be regenerated on every push without producing a new diff each time.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -227,8 +226,7 @@ pub fn load_structured_notes(
 
 /// Merge note fragments into the collected entries.
 ///
-/// A fragment that names a pull request already present is dropped, so a
-/// change is described once rather than twice.
+/// A fragment that names a pull request already present is dropped, so a change is described once rather than twice.
 pub fn merge_supplemental_notes(
     mut entries: Vec<ChangeEntry>,
     notes: Vec<ChangeEntry>,
@@ -251,10 +249,7 @@ pub fn merge_supplemental_notes(
 
 /// Collect the note ids a changelog already records.
 ///
-/// Reading the changelog once and looking each note up costs
-/// `O(changelog + notes * log notes)`; searching the whole changelog for every
-/// note costs `O(changelog * notes)`, and a package may carry up to a thousand
-/// pending notes.
+/// Reading the changelog once and looking each note up costs `O(changelog + notes * log notes)`; searching the whole changelog for every note costs `O(changelog * notes)`, and a package may carry up to a thousand pending notes.
 fn released_note_ids(changelog: Option<&str>) -> BTreeSet<&str> {
     const PREFIX: &str = "<!-- release-glz-note:";
     const SUFFIX: &str = " -->";
@@ -301,8 +296,7 @@ fn validate_note(note: &StructuredNote, path: &Path) -> Result<()> {
 
 /// Render a changelog with one version's section inserted.
 ///
-/// Rendering is idempotent: repeating it on the result produces the same
-/// bytes, which is what lets the Release PR be updated in place.
+/// Rendering is idempotent: repeating it on the result produces the same bytes, which is what lets the Release PR be updated in place.
 pub fn render(existing: Option<&str>, version: &str, entries: &[ChangeEntry]) -> String {
     let mut changelog = existing.unwrap_or(PREAMBLE).to_owned();
     if !changelog.contains("## [Unreleased]") {
@@ -389,9 +383,8 @@ pub fn release_section(changelog: &str, version: &str) -> Option<String> {
     Some(changelog[range].trim().to_owned())
 }
 
-/// Remove only the section currently being regenerated. Structured-note
-/// markers in older releases still suppress duplicates, while markers in the
-/// target section must remain inputs so repeated updates are byte-idempotent.
+/// Remove only the section currently being regenerated.
+/// Structured-note markers in older releases still suppress duplicates, while markers in the target section must remain inputs so repeated updates are byte-idempotent.
 pub fn without_release_section(changelog: &str, version: &str) -> String {
     let Some(range) = release_section_range(changelog, version) else {
         return changelog.to_owned();
@@ -413,7 +406,11 @@ fn release_section_range(changelog: &str, version: &str) -> Option<Range<usize>>
 
 /// The section a Conventional Commit title belongs in by default.
 pub fn default_category(title: &str) -> String {
-    let kind = title.split(':').next().unwrap_or_default();
+    let kind = title
+        .split(':')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
     if kind.contains('!') {
         "Removed"
     } else if kind.starts_with("feat") {
@@ -776,8 +773,11 @@ mod tests {
             ("perf: fast", "Fixed"),
             ("docs: words", "Changed"),
             ("", "Changed"),
+            ("Feat: add", "Added"),
+            ("FIX: bug", "Fixed"),
+            ("Perf(core): fast", "Fixed"),
         ] {
-            assert_eq!(default_category(title), category);
+            assert_eq!(default_category(title), category, "{title}");
         }
     }
 }

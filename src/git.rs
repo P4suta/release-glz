@@ -351,6 +351,7 @@ fn required_part<'a>(parts: &mut impl Iterator<Item = &'a str>, name: &str) -> R
 /// The release step a Conventional Commit message declares.
 ///
 /// A `!` marker or a `BREAKING CHANGE:` trailer is major; `feat` is minor; `fix` and `perf` are patch; anything else requires nothing.
+/// The type matches in any letter case, and the trailer only in uppercase, as Conventional Commits 1.0.0 requires.
 pub fn conventional_bump(subject: &str, body: &str) -> Bump {
     let header = subject.split(':').next().unwrap_or(subject);
     let breaking = header.ends_with('!')
@@ -361,7 +362,7 @@ pub fn conventional_bump(subject: &str, body: &str) -> Bump {
         return Bump::Major;
     }
     let kind = header.split('(').next().unwrap_or(header);
-    match kind {
+    match kind.to_ascii_lowercase().as_str() {
         "feat" => Bump::Minor,
         "fix" | "perf" => Bump::Patch,
         _ => Bump::None,
@@ -405,5 +406,27 @@ mod tests {
         );
         assert_eq!(conventional_bump("feat", ""), Bump::Minor);
         assert_eq!(conventional_bump("perf", ""), Bump::Patch);
+    }
+
+    #[test]
+    fn commit_types_match_in_any_letter_case_but_breaking_change_only_in_uppercase() {
+        for (subject, body, bump) in [
+            ("Feat: add a gadget", "", Bump::Minor),
+            ("FIX: crash", "", Bump::Patch),
+            ("Perf(core): faster", "", Bump::Patch),
+            ("FEAT!: remove the old API", "", Bump::Major),
+            (
+                "docs: explain",
+                "breaking change: not a trailer",
+                Bump::None,
+            ),
+            (
+                "docs: explain",
+                "Breaking-Change: not a trailer",
+                Bump::None,
+            ),
+        ] {
+            assert_eq!(conventional_bump(subject, body), bump, "{subject} / {body}");
+        }
     }
 }
