@@ -110,7 +110,7 @@ impl ReleaseNotesConfig {
             return Ok(Self::default());
         }
         let source = fs::read_to_string(path)?;
-        Ok(serde_yaml::from_str::<ReleaseNotesFile>(&source)
+        Ok(serde_norway::from_str::<ReleaseNotesFile>(&source)
             .with_context(|| format!("invalid release notes config `{}`", path.display()))?
             .changelog)
     }
@@ -470,7 +470,7 @@ mod tests {
 
     #[test]
     fn github_release_yaml_excludes_and_categorizes() {
-        let config: ReleaseNotesFile = serde_yaml::from_str(
+        let config: ReleaseNotesFile = serde_norway::from_str(
             "changelog:\n  exclude:\n    labels: [skip]\n  categories:\n    - title: Security\n      labels: [security]\n",
         )
         .unwrap();

@@ -3,7 +3,7 @@ use std::fs;
 #[test]
 fn distribution_builds_and_smokes_every_supported_native_target() {
     let yaml = fs::read_to_string(".github/workflows/distribute.yml").unwrap();
-    serde_yaml::from_str::<serde_yaml::Value>(&yaml).unwrap();
+    serde_norway::from_str::<serde_norway::Value>(&yaml).unwrap();
     for target in [
         "x86_64-unknown-linux-musl",
         "aarch64-unknown-linux-musl",
@@ -116,7 +116,7 @@ fn distribution_is_attested_and_uploaded_to_a_draft_exactly_once() {
 #[test]
 fn distribution_requires_same_source_assurance_before_preparation_and_publication() {
     let source = fs::read_to_string(".github/workflows/distribute.yml").unwrap();
-    let workflow: serde_yaml::Value = serde_yaml::from_str(&source).unwrap();
+    let workflow: serde_norway::Value = serde_norway::from_str(&source).unwrap();
     let jobs = &workflow["jobs"];
     assert_eq!(jobs["assurance"]["needs"].as_str(), Some("validate"));
     assert_eq!(
