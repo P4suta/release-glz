@@ -35,7 +35,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A remote tag lookup accepts only the exact tag ref, so a tag whose name merely ends in the release tag can't answer for it.
 - Git children pass refs after `--end-of-options` and never wait for a credential prompt.
 - The Gleam compiler, and every dependency build it runs, receives only the variables that locate executables, home and cache directories, temporary space, the locale, proxies, and certificates.
-  GitHub and Actions tokens, OIDC request values, Action inputs, runner command files, and registry credentials no longer reach dependency code.
+  GitHub and Actions tokens, OIDC request values, Action inputs, runner command files, and registry credentials no longer appear in its environment.
+  Build code still runs as the runner's user, so the threat model counts on compiling jobs holding no write token instead.
 - Hooks can't receive `GITHUB_STATE`, like the other runner command files.
 - The Action always runs the release-glz binary that it downloaded and verified.
   It no longer runs a program that the undocumented `RELEASE_GLZ_BINARY` variable names, which an earlier step could set without either check.
