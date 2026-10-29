@@ -8,8 +8,14 @@ const MAX_REPORT_BYTES = 512 * 1024 * 1024;
 function metric(totals, name) {
   const value = totals?.[name];
   const label = name === "branches" ? "branch" : "line";
-  if (!value || !Number.isSafeInteger(value.count) || !Number.isSafeInteger(value.covered) ||
-      value.count <= 0 || value.covered < 0 || value.covered > value.count) {
+  if (
+    !value ||
+    !Number.isSafeInteger(value.count) ||
+    !Number.isSafeInteger(value.covered) ||
+    value.count <= 0 ||
+    value.covered < 0 ||
+    value.covered > value.count
+  ) {
     throw new Error(`${label} coverage data is missing or invalid`);
   }
   return (value.covered * 100) / value.count;
@@ -55,17 +61,25 @@ function argumentsFrom(argv) {
 function main(argv = process.argv.slice(2)) {
   const options = argumentsFrom(argv);
   const metadata = fs.lstatSync(options["--report"]);
-  if (!metadata.isFile() || metadata.isSymbolicLink() ||
-      metadata.size === 0 || metadata.size > MAX_REPORT_BYTES) {
+  if (
+    !metadata.isFile() ||
+    metadata.isSymbolicLink() ||
+    metadata.size === 0 ||
+    metadata.size > MAX_REPORT_BYTES
+  ) {
     throw new Error("coverage report must be a bounded regular file");
   }
   const report = JSON.parse(fs.readFileSync(options["--report"], "utf8"));
   const result = evaluateCoverage(report, options["--lines"], options["--branches"]);
-  process.stdout.write(`line coverage ${result.lines.toFixed(2)}%, branch coverage ${result.branches.toFixed(2)}%\n`);
+  process.stdout.write(
+    `line coverage ${result.lines.toFixed(2)}%, branch coverage ${result.branches.toFixed(2)}%\n`,
+  );
 }
 
 if (require.main === module) {
-  try { main(); } catch (error) {
+  try {
+    main();
+  } catch (error) {
     process.stderr.write(`coverage gate failed: ${error.message}\n`);
     process.exitCode = 1;
   }

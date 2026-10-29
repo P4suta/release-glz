@@ -39,7 +39,9 @@ function main(argv = process.argv.slice(2)) {
 }
 
 if (require.main === module) {
-  try { main(); } catch (error) {
+  try {
+    main();
+  } catch (error) {
     process.stderr.write(`de-shell verification failed: ${error.message}\n`);
     process.exitCode = 1;
   }

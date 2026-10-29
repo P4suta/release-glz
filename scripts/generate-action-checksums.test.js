@@ -41,9 +41,10 @@ test("generates and checks the complete action checksum manifest", () => {
 });
 
 function run(args) {
-  const result = spawnSync(process.execPath, [
-    path.join(__dirname, "generate-action-checksums.js"),
-    ...args,
-  ], { encoding: "utf8" });
+  const result = spawnSync(
+    process.execPath,
+    [path.join(__dirname, "generate-action-checksums.js"), ...args],
+    { encoding: "utf8" },
+  );
   return { status: result.status, stdout: result.stdout, stderr: result.stderr };
 }

@@ -24,13 +24,7 @@ const RUN_ID = /^[1-9]\d{0,19}$/;
 const MAX_ARCHIVE_BYTES = 256 * MIB;
 
 function argumentsFrom(argv) {
-  const allowed = new Set([
-    "--artifacts",
-    "--repository",
-    "--source",
-    "--version",
-    "--run-id",
-  ]);
+  const allowed = new Set(["--artifacts", "--repository", "--source", "--version", "--run-id"]);
   if (argv.length % 2 !== 0) throw new Error("every option requires one value");
   const values = {};
   for (let index = 0; index < argv.length; index += 2) {
@@ -66,8 +60,12 @@ function argumentsFrom(argv) {
 
 function digestRegularArchive(file) {
   const metadata = fs.lstatSync(file);
-  if (!metadata.isFile() || metadata.isSymbolicLink() ||
-      metadata.size === 0 || metadata.size > MAX_ARCHIVE_BYTES) {
+  if (
+    !metadata.isFile() ||
+    metadata.isSymbolicLink() ||
+    metadata.size === 0 ||
+    metadata.size > MAX_ARCHIVE_BYTES
+  ) {
     throw new Error(`${path.basename(file)} is not a bounded regular release archive`);
   }
   return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
@@ -88,10 +86,12 @@ function statementFor({ archive, digest, repository, source, version, runId }) {
           workflow,
         },
         internalParameters: {},
-        resolvedDependencies: [{
-          uri: `git+https://github.com/${repository}@refs/tags/${version}`,
-          digest: { gitCommit: source },
-        }],
+        resolvedDependencies: [
+          {
+            uri: `git+https://github.com/${repository}@refs/tags/${version}`,
+            digest: { gitCommit: source },
+          },
+        ],
       },
       runDetails: {
         builder: { id: workflow },

@@ -12,27 +12,41 @@ const { validateInventory } = require("./verify-release-assets.js");
 
 test("accepts only unique existing assets drawn from the expected inventory", () => {
   const expected = ["release-glz.tar.gz", "SHA256SUMS"];
-  assert.doesNotThrow(() => validateInventory(expected, {
-    assets: [{ name: "release-glz.tar.gz" }],
-  }));
+  assert.doesNotThrow(() =>
+    validateInventory(expected, {
+      assets: [{ name: "release-glz.tar.gz" }],
+    }),
+  );
   assert.throws(
     () => validateInventory(expected, { assets: [{ name: "stale.bin" }] }),
     /unsealed asset `stale\.bin`/,
   );
   assert.throws(
-    () => validateInventory(expected, {
-      assets: [{ name: "SHA256SUMS" }, { name: "SHA256SUMS" }],
-    }),
+    () =>
+      validateInventory(expected, {
+        assets: [{ name: "SHA256SUMS" }, { name: "SHA256SUMS" }],
+      }),
     /duplicate asset `SHA256SUMS`/,
   );
   assert.throws(() => validateInventory(expected, {}), /assets array/);
-  assert.doesNotThrow(() => validateInventory(expected, {
-    assets: [{ name: "release-glz.tar.gz" }, { name: "SHA256SUMS" }],
-  }, true));
+  assert.doesNotThrow(() =>
+    validateInventory(
+      expected,
+      {
+        assets: [{ name: "release-glz.tar.gz" }, { name: "SHA256SUMS" }],
+      },
+      true,
+    ),
+  );
   assert.throws(
-    () => validateInventory(expected, {
-      assets: [{ name: "release-glz.tar.gz" }],
-    }, true),
+    () =>
+      validateInventory(
+        expected,
+        {
+          assets: [{ name: "release-glz.tar.gz" }],
+        },
+        true,
+      ),
     /complete sealed inventory/,
   );
 });
@@ -42,11 +56,11 @@ test("CLI derives the expected flat regular-file inventory from dist", () => {
   fs.writeFileSync(path.join(root, "release-glz.tar.gz"), "archive");
   fs.writeFileSync(path.join(root, "SHA256SUMS"), "sum");
 
-  const run = (body) => childProcess.spawnSync(
-    process.execPath,
-    [script, "--artifacts", root],
-    { encoding: "utf8", input: JSON.stringify(body) },
-  );
+  const run = (body) =>
+    childProcess.spawnSync(process.execPath, [script, "--artifacts", root], {
+      encoding: "utf8",
+      input: JSON.stringify(body),
+    });
   assert.equal(run({ assets: [{ name: "SHA256SUMS" }] }).status, 0);
   const incomplete = childProcess.spawnSync(
     process.execPath,
