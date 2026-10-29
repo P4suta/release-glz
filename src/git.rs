@@ -118,6 +118,33 @@ impl GitRepo {
         }
     }
 
+    /// Whether `sha`, written exactly as git prints the full commit id, names `HEAD` or one of its ancestors.
+    ///
+    /// A symbolic or abbreviated revision is outside the history, and so is a commit that a shallow clone never fetched.
+    pub fn history_contains(&self, sha: &str) -> Result<bool> {
+        if self.resolve(sha)?.as_deref() != Some(sha) {
+            return Ok(false);
+        }
+        let output = git_command(&self.root)
+            .args([
+                "merge-base",
+                "--is-ancestor",
+                "--end-of-options",
+                sha,
+                "HEAD",
+            ])
+            .output()
+            .context("failed to invoke git")?;
+        match output.status.code() {
+            Some(0) => Ok(true),
+            Some(1) => Ok(false),
+            _ => bail!(
+                "git could not compare `{sha}` with HEAD: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            ),
+        }
+    }
+
     /// Commit a local tag resolves to, if the tag exists.
     pub fn tag_sha(&self, tag: &str) -> Result<Option<String>> {
         self.resolve(&format!("refs/tags/{tag}"))

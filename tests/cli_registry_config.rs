@@ -8,6 +8,7 @@ use std::process::Command;
 use std::sync::mpsc;
 use std::thread;
 
+use base64::Engine as _;
 use flate2::{Compression, write::GzEncoder};
 use release_glz_test_support::isolated_command;
 use sha2::{Digest, Sha256};
@@ -433,6 +434,275 @@ fn release_pr_closes_a_stale_verified_managed_pr_when_no_release_is_required() {
 }
 
 #[test]
+fn a_handed_off_plan_writes_the_release_pr_without_the_compiler() {
+    let temp = tempfile::tempdir().unwrap();
+    let (registry_listener, registry_url) = bound_listener();
+    let gleam = initialize_initial_package(temp.path(), &registry_url);
+    let source_sha = git_output(temp.path(), &["rev-parse", "HEAD"]);
+    let (_registry_requests, registry_server) =
+        serve_recording(registry_listener, vec![http_response(404, b"")]);
+    let plan_path = temp.path().join("plan.json");
+
+    let planned = candidate_command(temp.path(), &gleam)
+        .args(["--output", "json", "plan", "--out"])
+        .arg(&plan_path)
+        .output()
+        .unwrap();
+    registry_server.join().unwrap();
+    assert_success(&planned, "plan --out");
+    let plan_bytes = std::fs::read(&plan_path).unwrap();
+    let handed_off: serde_json::Value = serde_json::from_slice(&plan_bytes).unwrap();
+    assert_eq!(json(&planned)["result"], handed_off);
+    assert_eq!(handed_off["release_required"], true);
+    assert_eq!(handed_off["release_pr_head"], serde_json::Value::Null);
+    let schema: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/release-plan.schema.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert!(
+        jsonschema::validator_for(&schema)
+            .unwrap()
+            .is_valid(&handed_off)
+    );
+
+    // The registry has stopped listening, so only the compiler stand-in could still answer.
+    let (refusing, compiler_runs) = refusing_gleam(temp.path());
+    let replanned = candidate_command(temp.path(), &refusing)
+        .args(["--output", "json", "plan", "--out"])
+        .arg(&plan_path)
+        .output()
+        .unwrap();
+    assert_eq!(replanned.status.code(), Some(2), "{replanned:?}");
+    assert_eq!(std::fs::read(&plan_path).unwrap(), plan_bytes);
+
+    let (github_listener, github_url) = bound_listener();
+    let release_pr_head = "b".repeat(40);
+    let graph = format!(
+        r#"{{"data":{{"createCommitOnBranch":{{"commit":{{"oid":"{release_pr_head}"}}}}}},"errors":[]}}"#
+    );
+    let created = format!(
+        r#"{{"number":9,"title":"chore(release): widget 1.0.0","body":"managed","html_url":"https://github.test/acme/widget/pull/9","merge_commit_sha":null,"merged_at":null,"user":{{"login":"bot"}},"labels":[],"head":{{"ref":"release-glz/widget","sha":"{release_pr_head}"}}}}"#
+    );
+    let (github_requests, github_server) = serve_recording(
+        github_listener,
+        vec![
+            http_response(200, b"[]"),
+            http_response(200, b"[]"),
+            http_response(404, b"{}"),
+            http_response(404, b"{}"),
+            http_response(
+                200,
+                format!(r#"{{"object":{{"sha":"{source_sha}"}}}}"#).as_bytes(),
+            ),
+            http_response(201, b"{}"),
+            http_response(200, graph.as_bytes()),
+            http_response(201, created.as_bytes()),
+        ],
+    );
+
+    let written = release_pr_from_plan(temp.path(), &plan_path, &refusing, &github_url)
+        .output()
+        .unwrap();
+    github_server.join().unwrap();
+    assert_success(&written, "release-pr --plan");
+    assert!(
+        !compiler_runs.exists(),
+        "release-pr --plan ran the compiler: {}",
+        std::fs::read_to_string(&compiler_runs).unwrap()
+    );
+    let result = &json(&written)["result"];
+    assert_eq!(result["pr_url"], "https://github.test/acme/widget/pull/9");
+    assert_eq!(result["release_pr_head"], release_pr_head.as_str());
+    assert!(jsonschema::validator_for(&schema).unwrap().is_valid(result));
+
+    let github_requests: Vec<_> = github_requests.try_iter().collect();
+    assert_eq!(github_requests.len(), 8, "{github_requests:#?}");
+    assert!(github_requests[0].starts_with(&format!(
+        "GET /repos/acme/widget/commits/{source_sha}/pulls "
+    )));
+    assert!(github_requests[6].starts_with("POST /graphql "));
+    let commit = request_json(&github_requests[6]);
+    let input = &commit["variables"]["input"];
+    assert_eq!(input["expectedHeadOid"], source_sha.as_str());
+    let files: std::collections::BTreeMap<_, _> = input["fileChanges"]["additions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|addition| {
+            let contents = base64::engine::general_purpose::STANDARD
+                .decode(addition["contents"].as_str().unwrap())
+                .unwrap();
+            (
+                addition["path"].as_str().unwrap().to_owned(),
+                String::from_utf8(contents).unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        files.keys().collect::<Vec<_>>(),
+        ["CHANGELOG.md", "gleam.toml"]
+    );
+    assert!(files["gleam.toml"].contains("version = \"1.0.0\""));
+    assert!(files["CHANGELOG.md"].contains("initial package"));
+    assert!(github_requests[7].starts_with("POST /repos/acme/widget/pulls "));
+    assert!(
+        request_json(&github_requests[7])["body"]
+            .as_str()
+            .unwrap()
+            .contains(&format!("head={release_pr_head}"))
+    );
+}
+
+#[test]
+fn a_handed_off_plan_that_does_not_describe_the_checkout_is_refused_before_any_request() {
+    let temp = tempfile::tempdir().unwrap();
+    let (registry_listener, registry_url) = bound_listener();
+    let gleam = initialize_initial_package(temp.path(), &registry_url);
+    let first = git_output(temp.path(), &["rev-parse", "HEAD"]);
+    let (_registry_requests, registry_server) =
+        serve_recording(registry_listener, vec![http_response(404, b"")]);
+    let plan_path = temp.path().join("plan.json");
+    let planned = candidate_command(temp.path(), &gleam)
+        .args(["--output", "json", "plan", "--out"])
+        .arg(&plan_path)
+        .output()
+        .unwrap();
+    registry_server.join().unwrap();
+    assert_success(&planned, "plan --out");
+    let plan: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&plan_path).unwrap()).unwrap();
+    git(temp.path(), &["switch", "--quiet", "--create", "side"]);
+    git(
+        temp.path(),
+        &["commit", "--quiet", "--allow-empty", "-m", "chore: side"],
+    );
+    let side = git_output(temp.path(), &["rev-parse", "HEAD"]);
+    git(temp.path(), &["switch", "--quiet", "main"]);
+    git(
+        temp.path(),
+        &["commit", "--quiet", "--allow-empty", "-m", "fix: second"],
+    );
+    let second = git_output(temp.path(), &["rev-parse", "HEAD"]);
+    let (refusing, compiler_runs) = refusing_gleam(temp.path());
+
+    let mut accepted = plan.clone();
+    accepted["baseline"]["sha"] = first.clone().into();
+    let accepted_path = temp.path().join("accepted.json");
+    std::fs::write(&accepted_path, serde_json::to_vec(&accepted).unwrap()).unwrap();
+    let (github_listener, github_url) = bound_listener();
+    let (github_requests, github_server) =
+        serve_recording(github_listener, vec![http_response(200, b"[]")]);
+    let dry_run = release_pr_from_plan(temp.path(), &accepted_path, &refusing, &github_url)
+        .arg("--dry-run")
+        .output()
+        .unwrap();
+    github_server.join().unwrap();
+    assert_success(&dry_run, "release-pr --plan --dry-run");
+    let github_requests: Vec<_> = github_requests.try_iter().collect();
+    assert_eq!(github_requests.len(), 1, "{github_requests:#?}");
+    assert!(
+        github_requests[0].starts_with(&format!("GET /repos/acme/widget/commits/{second}/pulls "))
+    );
+    assert_eq!(
+        json(&dry_run)["result"]["changes"][0]["title"],
+        "fix: second"
+    );
+
+    let edit = |change: &dyn Fn(&mut serde_json::Value)| {
+        let mut edited = plan.clone();
+        change(&mut edited);
+        serde_json::to_vec(&edited).unwrap()
+    };
+    let mut oversized = serde_json::to_vec(&plan).unwrap();
+    oversized.resize(
+        usize::try_from(release_glz::handoff::MAX_PLAN_BYTES).unwrap() + 1,
+        b' ',
+    );
+    let cases: Vec<(&str, Vec<u8>)> = vec![
+        (
+            "another package",
+            edit(&|plan| plan["package"] = "gadget".into()),
+        ),
+        (
+            "another manifest version",
+            edit(&|plan| plan["manifest_version"] = "1.0.1".into()),
+        ),
+        (
+            "a baseline off the checked-out history",
+            edit(&|plan| plan["baseline"]["sha"] = side.clone().into()),
+        ),
+        (
+            "a symbolic baseline",
+            edit(&|plan| plan["baseline"]["sha"] = "HEAD".into()),
+        ),
+        (
+            "an abbreviated baseline",
+            edit(&|plan| plan["baseline"]["sha"] = first[..7].into()),
+        ),
+        (
+            "another schema",
+            edit(&|plan| plan["schema"] = "plan/v1".into()),
+        ),
+        (
+            "an unknown field",
+            edit(&|plan| plan["unknown"] = true.into()),
+        ),
+        (
+            "an unknown nested field",
+            edit(&|plan| plan["baseline"]["unknown"] = true.into()),
+        ),
+        (
+            "a Release PR already written",
+            edit(&|plan| plan["release_pr_head"] = "c".repeat(40).into()),
+        ),
+        (
+            "a Release PR page already named",
+            edit(&|plan| plan["pr_url"] = "https://github.test/acme/widget/pull/1".into()),
+        ),
+        ("bytes that are not JSON", b"plan".to_vec()),
+        ("a file above the size limit", oversized),
+    ];
+    let (silent_listener, silent_url) = bound_listener();
+    for (case, bytes) in cases {
+        let path = temp.path().join("refused.json");
+        std::fs::write(&path, bytes).unwrap();
+        let refused = release_pr_from_plan(temp.path(), &path, &refusing, &silent_url)
+            .output()
+            .unwrap();
+        assert_eq!(refused.status.code(), Some(2), "{case}: {refused:?}");
+        assert_eq!(
+            json(&refused)["diagnostics"][0]["code"],
+            "usage_or_config",
+            "{case}"
+        );
+        assert!(
+            matches!(silent_listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
+            "{case}: release-pr contacted GitHub"
+        );
+    }
+    assert!(
+        !compiler_runs.exists(),
+        "release-pr --plan ran the compiler"
+    );
+
+    let both = release_pr_from_plan(temp.path(), &plan_path, &refusing, &silent_url)
+        .arg("--candidate")
+        .arg(temp.path().join("candidate"))
+        .output()
+        .unwrap();
+    assert_eq!(both.status.code(), Some(2), "{both:?}");
+    assert!(
+        json(&both)["diagnostics"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("cannot be used with")
+    );
+}
+
+#[test]
 fn top_level_diagnostics_redact_the_configured_registry_credential() {
     let temp = tempfile::tempdir().unwrap();
     let secret = "custom-registry-value-that-must-never-escape";
@@ -717,6 +987,49 @@ fn candidate_command(directory: &std::path::Path, gleam: &std::path::Path) -> Co
         .env_remove("GITHUB_TOKEN")
         .env_remove("GH_TOKEN");
     command
+}
+
+/// `release-pr --plan` with a GitHub token, and with no registry credential because writing the Release PR never reads the registry.
+fn release_pr_from_plan(
+    directory: &std::path::Path,
+    plan: &std::path::Path,
+    gleam: &std::path::Path,
+    github_url: &str,
+) -> Command {
+    let mut command = isolated_command(env!("CARGO_BIN_EXE_release-glz"));
+    command
+        .current_dir(directory)
+        .args(["--output", "json", "release-pr", "--plan"])
+        .arg(plan)
+        .env("RELEASE_GLZ_GLEAM", gleam)
+        .env("GITHUB_TOKEN", "github-value")
+        .env("GITHUB_REPOSITORY", "acme/widget")
+        .env("GITHUB_API_URL", github_url)
+        .env("GITHUB_GRAPHQL_URL", format!("{github_url}/graphql"));
+    command
+}
+
+/// A compiler stand-in that records every run in the returned file and then fails.
+fn refusing_gleam(directory: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
+    let gleam = directory.join("refusing-gleam");
+    let runs = directory.join("refusing-gleam.log");
+    std::fs::write(
+        &gleam,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nexit 97\n",
+            runs.display()
+        ),
+    )
+    .unwrap();
+    let mut permissions = std::fs::metadata(&gleam).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&gleam, permissions).unwrap();
+    (gleam, runs)
+}
+
+fn request_json(request: &str) -> serde_json::Value {
+    let (_, body) = request.split_once("\r\n\r\n").unwrap();
+    serde_json::from_str(body).unwrap()
 }
 
 fn assert_success(output: &std::process::Output, action: &str) {

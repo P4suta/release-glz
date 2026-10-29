@@ -75,6 +75,18 @@ test("builds v1 candidate command arguments without a shell", () => {
     }).slice(-3),
     ["release-pr", "--candidate", "candidate"],
   );
+  assert.deepEqual(
+    buildCommandArgs("plan", { ...common, "INPUT_PLAN-FILE": "plan.json" }).slice(-3),
+    ["plan", "--out", "plan.json"],
+  );
+  assert.deepEqual(
+    buildCommandArgs("release-pr", {
+      ...common,
+      "INPUT_PLAN-FILE": "plan.json",
+      "INPUT_DRY-RUN": "true",
+    }).slice(-4),
+    ["release-pr", "--dry-run", "--plan", "plan.json"],
+  );
 });
 
 test("accepts only command envelope schema v2 and extracts domain outputs", () => {
@@ -118,6 +130,33 @@ test("accepts only command envelope schema v2 and extracts domain outputs", () =
     })["next-action-argv"],
     JSON.stringify(["release-glz", "release", "--candidate", "path with space"]),
   );
+  const written = resultOutputs({
+    ...envelope,
+    command: "release-pr",
+    result: {
+      state: "planned",
+      pr_url: "https://github.test/acme/widget/pull/9",
+      release_pr_head: "b".repeat(40),
+    },
+  });
+  assert.equal(written["pr-url"], "https://github.test/acme/widget/pull/9");
+  assert.equal(written["release-pr-head"], "b".repeat(40));
+  assert.equal(resultOutputs(envelope)["release-pr-head"], "");
+});
+
+test("the Action metadata declares exactly the inputs it reads and the outputs it writes", () => {
+  const metadata = fs.readFileSync(path.join(__dirname, "..", "action.yml"), "utf8");
+  const declared = (section) => {
+    const block = metadata.split(`\n${section}:\n`)[1].split(/\n(?=\S)/)[0];
+    return [...block.matchAll(/^ {2}([a-z-]+):$/gm)].map((match) => match[1]).sort();
+  };
+  const source = fs.readFileSync(path.join(__dirname, "index.js"), "utf8");
+  const read = [
+    ...source.matchAll(/INPUT_([A-Z-]+)|booleanInput\(environment, "([A-Z-]+)"\)/g),
+  ].map((match) => (match[1] || match[2]).toLowerCase());
+  assert.deepEqual([...new Set(read)].sort(), declared("inputs"));
+  const written = Object.keys(resultOutputs({ result: {}, next_actions: [] }));
+  assert.deepEqual(written.sort(), declared("outputs"));
 });
 
 test("rejects dry-run and online inputs for commands that cannot use them", () => {
@@ -152,6 +191,22 @@ test("rejects dry-run and online inputs for commands that cannot use them", () =
         INPUT_CANDIDATE: "candidate",
       }),
     /candidate/,
+  );
+  assert.throws(
+    () =>
+      buildCommandArgs("verify", {
+        INPUT_CANDIDATE: "candidate",
+        "INPUT_PLAN-FILE": "plan.json",
+      }),
+    /plan-file is not supported by the verify command/,
+  );
+  assert.throws(
+    () =>
+      buildCommandArgs("release-pr", {
+        INPUT_CANDIDATE: "candidate",
+        "INPUT_PLAN-FILE": "plan.json",
+      }),
+    /plan-file and candidate/,
   );
   assert.deepEqual(
     buildCommandArgs("doctor", {

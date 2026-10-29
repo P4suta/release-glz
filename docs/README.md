@@ -129,13 +129,13 @@ Real publication also requires approval evidence supplied by the protected workf
 
 | Command | Contract |
 |---|---|
-| `plan` | Reads git, registry, API, and change history and returns a `plan/v2`; it changes neither external state nor tracked files. |
+| `plan [--out <FILE>]` | Reads git, registry, API, and change history and returns a `plan/v2`; it changes neither external state nor tracked files. `--out` also writes the plan to a new file and refuses to replace an existing one. |
 | `rehearse --ref <SHA> --out <DIR>` | Builds from the committed snapshot with the configured compiler, validates archives, runs verify/sidecar hooks, and seals a `candidate/v1`. |
 | `verify --candidate <DIR> [--online]` | Verifies checksums, semantic fingerprints, source, policy, inventory, and hook evidence; online mode also observes registry and GitHub. |
 | `release --candidate <DIR>` | Publishes the sealed bytes through the monotonic reconciler; `--dry-run` reports all remaining effects. |
 | `status [--candidate <DIR>] [--online]` | Reports the current state and next safe command, including partial releases. |
 | `doctor [--online] [--candidate-build]` | Defaults to local schema/compiler/workflow checks; online mode audits registry credentials and GitHub protections; candidate-build mode uses isolated caches and no credentials. |
-| `release-pr` | Maintains the rolling managed PR; when no release is required it closes the verified PR and removes its unchanged managed branch. |
+| `release-pr [--plan <FILE>]` | Maintains the rolling managed PR; when no release is required it closes the verified PR and removes its unchanged managed branch. The result's `release_pr_head` names the head commit it wrote or confirmed. |
 | `prerelease` / `set-version` | Selects a channel or raises the automatically required version; neither can lower the safety requirement. |
 | `init` / `migrate` | Requires exactly one of `--check`, `--diff`, or `--update`; modified managed files are never overwritten without an explicit update. |
 | `completion` | Generates bash, zsh, fish, or PowerShell completion source. |
@@ -143,6 +143,22 @@ Real publication also requires approval evidence supplied by the protected workf
 Global options are `--manifest-path` and `--output human|json`.
 `--dry-run` exists only on commands that can mutate state (`release`, `release-pr`, `set-version`, and `prerelease`).
 Repository paths in public data are normalized to relative `/` paths.
+
+### Writing the Release PR without the compiler
+
+Compiling a package runs its dependencies' build code, so the job that holds a token able to write the repository shouldn't compile.
+`plan --out <FILE>` runs in a read-only job, and `release-pr --plan <FILE>` writes the Release PR in a separate job that never starts the compiler.
+`release-pr --plan` treats the file as untrusted input.
+It refuses the file unless all of these hold:
+
+- The file is a `plan/v2` document of at most 4 MiB with no unknown field.
+- The plan names no Release PR yet.
+- The plan's package and manifest version match the checked-out `gleam.toml`.
+- The plan's baseline, when it has one, is a full commit id in the history of `HEAD`.
+
+A shallow clone lacks the baseline commit, so the writing job needs the full history, such as `fetch-depth: 0` for `actions/checkout`.
+The writing job then fetches the change list with its own token and renders `gleam.toml` and the changelog from its own checkout.
+Every refusal exits with status 2 before any request to GitHub.
 
 ## Configuration
 
@@ -276,8 +292,9 @@ Exit code meanings are stable:
 | 6 | Hook failure |
 | 7 | Partial release requiring resume |
 
-The Action parses the same envelope even after a non-zero CLI exit, preserves its diagnostics, next action, and original exit code, and exposes `state`, `release-required`, `version`, `intent-digest`, `candidate-digest`, `pr-url`, `hex-url`, `github-release-url`, and `next-action`.
+The Action parses the same envelope even after a non-zero CLI exit, preserves its diagnostics, next action, and original exit code, and exposes `state`, `release-required`, `version`, `intent-digest`, `candidate-digest`, `pr-url`, `release-pr-head`, `hex-url`, `github-release-url`, and `next-action`.
 `next-action-argv` is the JSON-encoded canonical argv array.
+The Action's `plan-file` input becomes `plan --out` or `release-pr --plan`, and no other command accepts it.
 
 ## Supply chain
 

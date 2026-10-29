@@ -87,6 +87,22 @@ fn schema_two_is_fully_typed() {
 }
 
 #[test]
+fn a_manifest_named_without_a_directory_lives_in_the_current_directory() {
+    for (path, directory) in [
+        ("gleam.toml", "."),
+        ("./gleam.toml", "."),
+        ("packages/widget/gleam.toml", "packages/widget"),
+    ] {
+        let manifest = Manifest::parse(PathBuf::from(path), complete_config("")).unwrap();
+        assert_eq!(
+            manifest.package_dir(),
+            std::path::Path::new(directory),
+            "{path}"
+        );
+    }
+}
+
+#[test]
 fn schema_two_rejects_unknown_keys_and_wrong_types() {
     let unknown = complete_config("[tools.release-glz.typo]\nenabled = true");
     assert!(

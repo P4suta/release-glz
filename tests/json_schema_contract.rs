@@ -251,6 +251,7 @@ fn plan() -> ReleasePlan {
         stages: vec![ReleaseStage::VerifyHooks],
         intent_digest: None,
         pr_url: None,
+        release_pr_head: None,
         hex_url: None,
         github_release_url: None,
     }
