@@ -26,6 +26,11 @@ const WORKFLOW_STATE_PATH: &str = ".release-glz/workflow-state.json";
 
 /// Hex digits of the manifest path digest that tell one package's concurrency groups from another's.
 const CONCURRENCY_KEY_LENGTH: usize = 16;
+
+/// Start of the name of the Actions artifact that holds a Candidate, which the run ID completes.
+///
+/// Publication accepts a Candidate artifact only under this name, so the workflow and the verifier share it.
+pub const CANDIDATE_ARTIFACT_PREFIX: &str = "release-glz-candidate-";
 #[cfg(test)]
 const TEST_ACTION_SHA: &str = "abcdef0123456789abcdef0123456789abcdef01";
 
@@ -351,7 +356,7 @@ jobs:
         if: ${{{{ steps.rehearse.outcome == 'success' }}}}
         id: upload
         with:
-          name: release-glz-candidate-${{{{ github.run_id }}}}-${{{{ github.run_attempt }}}}
+          name: {CANDIDATE_ARTIFACT_PREFIX}${{{{ github.run_id }}}}
           path: .release-glz/candidate
           if-no-files-found: error
           include-hidden-files: true

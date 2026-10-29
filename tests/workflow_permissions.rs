@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use release_glz::workflow::render_configured;
+use release_glz::workflow::{CANDIDATE_ARTIFACT_PREFIX, render_configured};
 use serde_norway::Value;
 
 const ACTION: &str = "P4suta/release-glz@abcdef0123456789abcdef0123456789abcdef01";
@@ -206,6 +206,24 @@ fn the_push_run_binds_the_intent_of_the_release_pr_head_it_wrote() {
     assert!(bound["with"]["candidate"].as_str().is_some());
     assert!(bound["with"].get("dry-run").is_none());
     assert!(bound["with"].get("plan-file").is_none());
+}
+
+#[test]
+fn the_candidate_artifact_carries_the_name_that_publication_accepts() {
+    let workflow = workflow();
+    let upload = steps(job(&workflow, "prepare"))
+        .find(|step| uses(step, "actions/upload-artifact"))
+        .unwrap();
+    assert_eq!(
+        upload["with"]["name"].as_str(),
+        Some(format!("{CANDIDATE_ARTIFACT_PREFIX}${{{{ github.run_id }}}}").as_str())
+    );
+    let publish = job(&workflow, "publish");
+    let release = action_step(publish, "release");
+    assert_eq!(
+        release["env"]["RELEASE_GLZ_ACTIONS_RUN_ID"].as_str(),
+        Some("${{ inputs.candidate-run-id || github.run_id }}")
+    );
 }
 
 #[test]
