@@ -9,9 +9,13 @@ use serde_norway::Value;
 const ACTION: &str = "P4suta/release-glz@abcdef0123456789abcdef0123456789abcdef01";
 
 fn workflow() -> Value {
+    workflow_for(Path::new("packages/widget/gleam.toml"))
+}
+
+fn workflow_for(manifest: &Path) -> Value {
     let rendered = render_configured(
         "main",
-        Path::new("packages/widget/gleam.toml"),
+        manifest,
         "1.19.2",
         "release",
         "HEXPM_API_KEY",
@@ -38,12 +42,30 @@ fn action_commands() -> BTreeSet<String> {
         .collect()
 }
 
+/// Whether an input value always reaches the Action as a non-empty string.
+///
+/// The Action treats an empty input as unset, and an expression can expand to nothing, so only literal text outside every `${{ }}` counts.
+fn always_set(value: &str) -> bool {
+    let mut literal = String::new();
+    let mut rest = value;
+    while let Some(start) = rest.find("${{") {
+        literal.push_str(&rest[..start]);
+        let Some(end) = rest[start..].find("}}") else {
+            return false;
+        };
+        rest = &rest[start + end + 2..];
+    }
+    literal.push_str(rest);
+    !literal.trim().is_empty()
+}
+
 /// Whether one run of the Action with these inputs starts the compiler.
 fn action_compiles(with: &Value) -> bool {
     let input = |name: &str| with.get(name).and_then(Value::as_str);
+    let hands_off = |name: &str| input(name).is_some_and(always_set);
     match input("command").expect("an Action step names its command") {
         "plan" | "rehearse" => true,
-        "release-pr" => input("plan-file").is_none() && input("candidate").is_none(),
+        "release-pr" => !hands_off("plan-file") && !hands_off("candidate"),
         "doctor" => input("candidate-build") == Some("true"),
         "verify" | "release" | "status" => false,
         other => panic!("no compiler classification for the Action command `{other}`"),
@@ -146,6 +168,26 @@ fn the_check_finds_a_write_job_that_would_compile() {
     with.remove("plan-file");
     assert_eq!(compiling_write_jobs(&without_plan), ["release-pr"]);
 
+    for plan_file in [
+        "",
+        "  ",
+        "${{ steps.plan.outputs.path }}",
+        "${{ runner.temp",
+    ] {
+        let mut maybe_empty = workflow();
+        maybe_empty["jobs"]["release-pr"]["steps"]
+            .as_sequence_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|step| uses(step, "P4suta/release-glz"))
+            .unwrap()["with"]["plan-file"] = Value::String(plan_file.to_owned());
+        assert_eq!(
+            compiling_write_jobs(&maybe_empty),
+            ["release-pr"],
+            "plan-file `{plan_file}`"
+        );
+    }
+
     let mut with_compiler = workflow();
     let setup: Value =
         serde_norway::from_str("uses: erlef/setup-beam@0000000000000000000000000000000000000000")
@@ -226,16 +268,30 @@ fn the_candidate_artifact_carries_the_name_that_publication_accepts() {
     );
 }
 
+/// Whether `group` makes every run of one package wait for the others and no other package wait for it.
+///
+/// Every run must name the same group, so the only expression it may hold is the repository, and another package's group must differ.
+fn serializes_one_package(group: &str, other_package_group: &str) -> bool {
+    let expressions: Vec<_> = group.match_indices("${{").collect();
+    expressions.len() == 1
+        && group.contains("${{ github.repository }}")
+        && group != other_package_group
+}
+
 #[test]
 fn only_writing_jobs_serialize_and_only_per_package() {
     let workflow = workflow();
+    let other_package = workflow_for(Path::new("packages/gadget/gleam.toml"));
     assert!(workflow.get("concurrency").is_none());
     let mut groups = BTreeSet::new();
     for name in ["release-pr", "bind-release-pr", "publish"] {
         let concurrency = &job(&workflow, name)["concurrency"];
         let group = concurrency["group"].as_str().unwrap();
+        let other_group = job(&other_package, name)["concurrency"]["group"]
+            .as_str()
+            .unwrap();
         assert!(
-            group.contains("${{ github.repository }}"),
+            serializes_one_package(group, other_group),
             "{name}: {group}"
         );
         assert_eq!(
@@ -247,6 +303,26 @@ fn only_writing_jobs_serialize_and_only_per_package() {
     }
     for name in ["plan", "prepare", "rehearse-release-pr", "authorize"] {
         assert!(job(&workflow, name).get("concurrency").is_none(), "{name}");
+    }
+}
+
+#[test]
+fn the_concurrency_check_refuses_per_run_and_shared_groups() {
+    let group = "release-glz-publish-${{ github.repository }}-0123abcd";
+    assert!(serializes_one_package(
+        group,
+        "release-glz-publish-${{ github.repository }}-4567ef01"
+    ));
+    assert!(!serializes_one_package(group, group));
+    for per_run in [
+        "release-glz-publish-${{ github.repository }}-0123abcd-${{ github.run_id }}",
+        "release-glz-publish-${{ github.repository }}-${{ github.sha }}",
+        "release-glz-publish-0123abcd",
+    ] {
+        assert!(
+            !serializes_one_package(per_run, "release-glz-publish-other"),
+            "{per_run}"
+        );
     }
 }
 
