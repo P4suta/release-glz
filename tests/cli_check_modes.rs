@@ -1,10 +1,12 @@
 use std::process::Command;
 
+use release_glz_test_support::{init_repository, isolated_command};
+
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
 fn binary() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_release-glz"))
+    isolated_command(env!("CARGO_BIN_EXE_release-glz"))
 }
 
 const ACTION_SHA: &str = "abcdef0123456789abcdef0123456789abcdef01";
@@ -12,11 +14,7 @@ const ACTION_SHA: &str = "abcdef0123456789abcdef0123456789abcdef01";
 #[test]
 fn init_check_is_non_mutating_and_fails_when_the_managed_workflow_is_stale() {
     let temp = tempfile::tempdir().unwrap();
-    Command::new("git")
-        .args(["init", "--initial-branch=main"])
-        .current_dir(temp.path())
-        .output()
-        .unwrap();
+    init_repository(temp.path());
     std::fs::write(temp.path().join("gleam.toml"), schema_two_manifest()).unwrap();
 
     let output = binary()
@@ -80,11 +78,7 @@ fn migrate_check_is_non_mutating_and_fails_when_schema_two_is_required() {
 #[test]
 fn init_diff_update_and_check_form_a_non_destructive_managed_file_lifecycle() {
     let temp = tempfile::tempdir().unwrap();
-    Command::new("git")
-        .args(["init", "--initial-branch=main"])
-        .current_dir(temp.path())
-        .output()
-        .unwrap();
+    init_repository(temp.path());
     std::fs::write(temp.path().join("gleam.toml"), schema_two_manifest()).unwrap();
     let workflow = temp.path().join(".github/workflows/release-glz.yml");
 

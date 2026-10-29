@@ -7,18 +7,24 @@ Tests use loopback Hex and GitHub services, local bare Git repositories, committ
 Never publish a package or use a registry credential in tests.
 Keep secret-redaction assertions on new error paths.
 
+`mise.toml` pins the Rust, Gleam, Erlang/OTP, Node, and workflow tool versions that CI uses, and `mise install` installs them.
+Tests that build a real package fail when Gleam is missing instead of passing without running.
+`.cargo/config.toml` points every process Cargo runs at the isolated Git configuration in `tests/fixtures/git`, so global settings, signing, hooks, and credential prompts never reach a test.
+A test runs the CLI through `release_glz_test_support::isolated_command`, which passes only an explicit environment and never a developer's token.
+Tests run in parallel and write only inside their own temporary directories.
+
 Run the fast checks before opening a pull request:
 
 ```console
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-cargo test --workspace --all-targets --locked
-cargo doc --workspace --no-deps --locked
-npm test --prefix action
-node --test scripts/*.test.js
-node scripts/verify-workflows.js .github/workflows
-node scripts/de-shell.js .github/workflows
-actionlint
+mise x -- cargo fmt --all -- --check
+mise x -- cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+mise x -- cargo test --workspace --all-targets --locked
+mise x -- cargo doc --workspace --no-deps --locked
+mise x -- npm test --prefix action
+mise x -- node --test scripts/*.test.js
+mise x -- node scripts/verify-workflows.js .github/workflows
+mise x -- node scripts/de-shell.js .github/workflows
+mise x -- actionlint
 jq -L .github -n -e -f .github/check-required.jq
 ```
 

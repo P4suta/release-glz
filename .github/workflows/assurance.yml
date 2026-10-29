@@ -6,8 +6,9 @@ on:
 
 permissions: {}
 
-env:
-  RUST_TEST_THREADS: 1
+concurrency:
+  group: assurance-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   compatibility:
@@ -34,9 +35,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
-        with:
-          toolchain: 1.88.0
+      - name: Install the pinned Rust toolchain
+        shell: bash
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal --no-self-update
+          rustup default 1.88.0
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
         with:
           otp-version: "28.0"
@@ -54,9 +57,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
-        with:
-          toolchain: 1.88.0
+      - name: Install the pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal --no-self-update
+          rustup default 1.88.0
       - name: Install fixed assurance tools
         run: |
           cargo install --locked cargo-deny --version 0.20.2
@@ -79,9 +83,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
-        with:
-          toolchain: 1.88.0
+      - name: Install the pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal --no-self-update
+          rustup default 1.88.0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "24"
@@ -140,10 +145,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
-        with:
-          toolchain: nightly-2026-08-22
-          components: llvm-tools-preview
+      - name: Install the pinned nightly toolchain
+        run: |
+          rustup toolchain install nightly-2026-08-22 --profile minimal --component llvm-tools-preview --no-self-update
+          rustup default nightly-2026-08-22
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
         with:
           otp-version: "28.0"
@@ -175,9 +180,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+      - name: Install the pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal --no-self-update
+          rustup default 1.88.0
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
         with:
-          toolchain: 1.88.0
+          otp-version: "28.0"
+          gleam-version: "1.18.1"
       - name: Install fixed mutation tools
         env:
           NEXTEST_ARCHIVE: ${{ runner.temp }}/cargo-nextest.tar.gz
@@ -210,9 +220,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
-        with:
-          toolchain: nightly-2026-08-22
+      - name: Install the pinned nightly toolchain
+        run: |
+          rustup toolchain install nightly-2026-08-22 --profile minimal --no-self-update
+          rustup default nightly-2026-08-22
       - name: Install fixed fuzz driver
         run: cargo install --locked cargo-fuzz --version 0.13.2
       - name: Build every fuzz target

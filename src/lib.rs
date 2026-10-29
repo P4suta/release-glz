@@ -1,7 +1,6 @@
 //! Release engine for `release-glz`.
 //!
-//! The crate keeps release decisions separate from the CLI so the same stable
-//! [`ReleasePlan`] can eventually be consumed by other front ends.
+//! The crate keeps release decisions separate from the CLI so the same stable [`ReleasePlan`] can eventually be consumed by other front ends.
 
 #![warn(missing_docs)]
 
@@ -23,6 +22,7 @@ pub mod hooks;
 pub mod migrate;
 pub mod model;
 pub mod planner;
+mod process;
 pub mod reconciler;
 pub mod registry;
 pub mod rehearse;

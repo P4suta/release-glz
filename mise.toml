@@ -1,0 +1,8 @@
+[tools]
+rust = "1.88.0"
+gleam = "1.18.1"
+erlang = "28.0"
+node = "24"
+just = "1.59.0"
+actionlint = "1.7.12"
+"aqua:zizmorcore/zizmor" = "1.29.0"

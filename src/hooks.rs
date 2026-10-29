@@ -1,8 +1,6 @@
 //! Hook execution and the evidence it produces.
 //!
-//! Hooks are processes described by an argv array, never shell strings, and
-//! credentials and GitHub control files are withheld from them even when a
-//! manifest names those variables.
+//! Hooks are processes described by an argv array, never shell strings, and credentials and GitHub control files are withheld from them even when a manifest names those variables.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -19,6 +17,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use crate::candidate::{HookEvidence, HookKind};
 use crate::canonical::canonical_json_bytes;
 use crate::config::{HookConfig, validate_hook_config};
+use crate::process::{SPAWN_ATTEMPTS, retryable_spawn_error, spawn_retry_delay};
 use crate::sidecar::{
     MAX_ARTIFACT_BYTES as SIDECAR_ARTIFACT_LIMIT, MAX_COUNT as SIDECAR_COUNT_LIMIT,
     MAX_TOTAL_BYTES as SIDECAR_TOTAL_LIMIT, validate_media_type, validate_name,
@@ -31,16 +30,19 @@ const STDOUT_LIMIT: usize = MIB as usize;
 /// Bytes of hook stderr that are read before the stream is cut off.
 const STDERR_LIMIT: usize = 256 * KIB as usize;
 
-/// Attempts made to spawn a hook before the failure is reported.
-const HOOK_SPAWN_ATTEMPTS: usize = 3;
+/// Seconds a terminated hook may take to be reaped before that is reported.
+const REAP_GRACE_SECONDS: u64 = 1;
+
+/// The process-group argument that makes a hook lead a new group of its own.
+#[cfg(unix)]
+const NEW_PROCESS_GROUP: i32 = 0;
 
 /// Bytes read from a hook pipe in one call.
 const PIPE_READ_BYTES: usize = 8 * KIB as usize;
 
 /// What a hook is told about the release it is running for.
 ///
-/// Digests appear only once they exist, so a verify hook cannot depend
-/// on a Candidate digest that has not been computed yet.
+/// Digests appear only once they exist, so a verify hook cannot depend on a Candidate digest that has not been computed yet.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HookContext {
     /// Package name.
@@ -136,8 +138,7 @@ impl ExecutedHook {
 
 /// Runs configured hooks as plain processes.
 ///
-/// Hooks are spawned from an argv array, never through a shell, and
-/// their output is read under fixed limits.
+/// Hooks are spawned from an argv array, never through a shell, and their output is read under fixed limits.
 #[derive(Debug, Clone)]
 pub struct HookRunner {
     stdout_limit: usize,
@@ -156,8 +157,7 @@ impl Default for HookRunner {
 impl HookRunner {
     /// Run the verify hooks against a sealed snapshot.
     ///
-    /// The snapshot is digested before and after each hook, so a hook that
-    /// modifies the bytes under review is caught instead of trusted.
+    /// The snapshot is digested before and after each hook, so a hook that modifies the bytes under review is caught instead of trusted.
     pub async fn run_verify(
         &self,
         hooks: &[HookConfig],
@@ -165,9 +165,7 @@ impl HookRunner {
         context: &HookContext,
     ) -> Result<Vec<HookEvidence>> {
         let mut evidence = Vec::new();
-        // Nothing between two hooks can touch the snapshot, so the digest
-        // taken after one hook is the digest before the next: k hooks need
-        // k + 1 walks of the tree rather than 2k.
+        // Nothing between two hooks can touch the snapshot, so the digest taken after one hook is the digest before the next: k hooks need k + 1 walks of the tree rather than 2k.
         let mut unchanged = None;
         for hook in hooks {
             let before = match unchanged.take() {
@@ -211,8 +209,7 @@ impl HookRunner {
         let mut artifacts = Vec::new();
         let mut names = std::collections::BTreeSet::new();
         let mut total_size = 0_u64;
-        // The digest after one hook is the digest before the next, for the
-        // same reason as in `run_verify`.
+        // The digest after one hook is the digest before the next, for the same reason as in `run_verify`.
         let mut unchanged = None;
         for hook in hooks {
             let before = match unchanged.take() {
@@ -293,8 +290,7 @@ impl HookRunner {
 
     /// Ask a notify hook whether its delivery has already completed.
     ///
-    /// Observation comes first so that a retry does not send a second
-    /// notification for the same release.
+    /// Observation comes first so that a retry does not send a second notification for the same release.
     pub async fn observe_notify(
         &self,
         hook: &HookConfig,
@@ -367,12 +363,15 @@ impl HookRunner {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+        #[cfg(unix)]
+        command.process_group(NEW_PROCESS_GROUP);
         for name in &hook.env {
             if let Some(value) = std::env::var_os(name) {
                 command.env(name, value);
             }
         }
         let mut child = spawn_hook(&mut command, &hook.id).await?;
+        let tree = ProcessTree::of(&child)?;
         let mut stdin = child.stdin.take().context("hook stdin was not piped")?;
         let stdout = child.stdout.take().context("hook stdout was not piped")?;
         let stderr = child.stderr.take().context("hook stderr was not piped")?;
@@ -385,7 +384,7 @@ impl HookRunner {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(hook.timeout_seconds);
         let completed = tokio::time::timeout_at(deadline, async {
             let status = child.wait().await?;
-            let _ = (&mut input_task).await;
+            input_delivered((&mut input_task).await)?;
             let stdout = (&mut stdout_task).await??;
             let stderr = (&mut stderr_task).await??;
             Ok::<_, anyhow::Error>((status, stdout, stderr))
@@ -397,13 +396,14 @@ impl HookRunner {
                 input_task.abort();
                 stdout_task.abort();
                 stderr_task.abort();
-                let _ = child.kill().await;
-                let _ = tokio::time::timeout(Duration::from_secs(1), child.wait()).await;
-                bail!(
+                let timed_out = format!(
                     "hook `{}` timed out after {} seconds",
-                    hook.id,
-                    hook.timeout_seconds
+                    hook.id, hook.timeout_seconds
                 );
+                return Err(match tree.terminate(&mut child).await {
+                    Ok(()) => anyhow::anyhow!(timed_out),
+                    Err(error) => error.context(timed_out),
+                });
             }
         };
         if stdout_exceeded || stderr_exceeded {
@@ -444,27 +444,81 @@ async fn spawn_hook(
     command: &mut tokio::process::Command,
     hook_id: &str,
 ) -> Result<tokio::process::Child> {
-    for attempt in 0..HOOK_SPAWN_ATTEMPTS {
+    let mut attempt = 1;
+    loop {
         match command.spawn() {
             Ok(child) => return Ok(child),
-            Err(error) if retryable_spawn_error(&error) && attempt + 1 < HOOK_SPAWN_ATTEMPTS => {
-                tokio::time::sleep(Duration::from_millis(10 * (attempt as u64 + 1))).await;
+            Err(error) if retryable_spawn_error(&error) && attempt < SPAWN_ATTEMPTS => {
+                tokio::time::sleep(spawn_retry_delay(attempt)).await;
+                attempt += 1;
             }
             Err(error) => {
                 return Err(error).with_context(|| format!("failed to start hook `{hook_id}`"));
             }
         }
     }
-    unreachable!("the final hook spawn attempt always returns")
 }
 
-fn retryable_spawn_error(error: &std::io::Error) -> bool {
-    matches!(
-        error.kind(),
-        std::io::ErrorKind::Interrupted
-            | std::io::ErrorKind::WouldBlock
-            | std::io::ErrorKind::ExecutableFileBusy
-    )
+/// Accept the stdin writer's outcome, where a hook that exits without reading its request legitimately closes the pipe first.
+fn input_delivered(
+    outcome: std::result::Result<std::io::Result<()>, tokio::task::JoinError>,
+) -> Result<()> {
+    match outcome.context("hook input writer stopped")? {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+        Err(error) => Err(error).context("failed to deliver the hook request"),
+    }
+}
+
+/// The processes a hook started, which end together when the hook times out.
+///
+/// On Unix the hook leads its own process group, so terminating the group also ends descendants that would otherwise keep its pipes open.
+struct ProcessTree {
+    #[cfg(unix)]
+    group: rustix::process::Pid,
+}
+
+impl ProcessTree {
+    /// The group the hook leads, whose id is the hook's own process id because the spawn made it a new group.
+    #[cfg(unix)]
+    fn of(child: &tokio::process::Child) -> Result<Self> {
+        let group = child
+            .id()
+            .and_then(|id| i32::try_from(id).ok())
+            .and_then(rustix::process::Pid::from_raw)
+            .context("started hook has no process id")?;
+        Ok(Self { group })
+    }
+
+    #[cfg(not(unix))]
+    fn of(_child: &tokio::process::Child) -> Result<Self> {
+        Ok(Self {})
+    }
+
+    async fn terminate(&self, child: &mut tokio::process::Child) -> Result<()> {
+        #[cfg(unix)]
+        match rustix::process::kill_process_group(self.group, rustix::process::Signal::KILL) {
+            Ok(()) | Err(rustix::io::Errno::SRCH) => {}
+            Err(error) => {
+                return Err(error).context("failed to terminate the hook process group");
+            }
+        }
+        #[cfg(not(unix))]
+        if child
+            .try_wait()
+            .context("failed to inspect the hook process")?
+            .is_none()
+        {
+            child
+                .start_kill()
+                .context("failed to terminate the hook process")?;
+        }
+        tokio::time::timeout(Duration::from_secs(REAP_GRACE_SECONDS), child.wait())
+            .await
+            .context("terminated hook was not reaped in time")?
+            .context("failed to reap the terminated hook")?;
+        Ok(())
+    }
 }
 
 async fn drain_limited<R: AsyncRead + Unpin>(
@@ -528,24 +582,27 @@ fn collect_tree(root: &Path, directory: &Path, output: &mut Vec<(String, PathBuf
 
 #[cfg(test)]
 mod tests {
-    use super::retryable_spawn_error;
+    use super::input_delivered;
     use std::io::{Error, ErrorKind};
 
     #[test]
-    fn hook_spawn_retries_only_errors_that_cannot_have_started_a_process() {
-        for kind in [
-            ErrorKind::Interrupted,
-            ErrorKind::WouldBlock,
-            ErrorKind::ExecutableFileBusy,
-        ] {
-            assert!(retryable_spawn_error(&Error::from(kind)), "{kind:?}");
+    fn a_hook_may_close_its_request_pipe_but_other_delivery_failures_fail_closed() {
+        input_delivered(Ok(Ok(()))).unwrap();
+        input_delivered(Ok(Err(Error::from(ErrorKind::BrokenPipe)))).unwrap();
+        for kind in [ErrorKind::PermissionDenied, ErrorKind::Other] {
+            let error = input_delivered(Ok(Err(Error::from(kind)))).unwrap_err();
+            assert!(
+                error.to_string().contains("failed to deliver"),
+                "{kind:?}: {error}"
+            );
         }
-        for kind in [
-            ErrorKind::NotFound,
-            ErrorKind::PermissionDenied,
-            ErrorKind::Other,
-        ] {
-            assert!(!retryable_spawn_error(&Error::from(kind)), "{kind:?}");
-        }
+    }
+
+    #[tokio::test]
+    async fn a_stopped_request_writer_fails_closed() {
+        let stopped = tokio::spawn(async { std::future::pending::<std::io::Result<()>>().await });
+        stopped.abort();
+        let error = input_delivered(stopped.await).unwrap_err();
+        assert!(error.to_string().contains("stopped"), "{error}");
     }
 }

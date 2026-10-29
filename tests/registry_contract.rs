@@ -1,8 +1,16 @@
 use std::collections::VecDeque;
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::net::TcpListener;
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
+use std::time::{Duration, Instant};
+
+/// Seconds the fake registry waits for an expected request before it stops,
+/// which fails a test whose client sends fewer requests than it should.
+const SERVER_LIFETIME_SECONDS: u64 = 120;
+
+/// Milliseconds between checks for a pending connection.
+const ACCEPT_POLL_MILLISECONDS: u64 = 5;
 
 use release_glz::config::{AuthKind, RegistryConfig, RegistryProvider};
 use release_glz::registry::{HexRegistry, PublishOutcome, Registry, RegistryCredentialAudit};
@@ -74,8 +82,8 @@ async fn organization_registry_uses_repos_prefix_and_publishes_exact_bytes() {
     let mut config = custom_config(&base);
     config.provider = RegistryProvider::HexPm;
     config.repository = Some("acme".into());
-    // Hex's API root remains global. Repository-scoped API operations add
-    // `/repos/REPO`, while `/auth` remains directly under this root.
+    // Hex's API root remains global.
+    // Repository-scoped API operations add `/repos/REPO`, while `/auth` remains directly under this root.
     config.api_url = format!("{base}/api");
     config.repository_url = format!("{base}/repo/repos/acme");
     config.docs_url = format!("{base}/repo/repos/acme/docs");
@@ -655,14 +663,29 @@ fn response(status: u16, body: &[u8]) -> Response {
 
 fn server(responses: Vec<Response>) -> (String, mpsc::Receiver<Request>, thread::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
     let address = listener.local_addr().unwrap();
     let (sender, receiver) = mpsc::channel();
     let responses = Arc::new(Mutex::new(VecDeque::from(responses)));
+    let deadline = Instant::now() + Duration::from_secs(SERVER_LIFETIME_SECONDS);
     let handle = thread::spawn(move || {
         loop {
             let response = responses.lock().unwrap().pop_front();
             let Some(response) = response else { break };
-            let (mut stream, _) = listener.accept().unwrap();
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                        assert!(
+                            Instant::now() < deadline,
+                            "the client never sent an expected request"
+                        );
+                        thread::sleep(Duration::from_millis(ACCEPT_POLL_MILLISECONDS));
+                    }
+                    Err(error) => panic!("fake registry accept failed: {error}"),
+                }
+            };
+            stream.set_nonblocking(false).unwrap();
             let request = read_request(&mut stream);
             sender.send(request).unwrap();
             if response.disconnect {
@@ -696,8 +719,7 @@ fn server(responses: Vec<Response>) -> (String, mpsc::Receiver<Request>, thread:
                 write!(stream, "{name}: {value}\r\n").unwrap();
             }
             write!(stream, "\r\n").unwrap();
-            // A bounded client may intentionally close as soon as the
-            // Content-Length exceeds its limit.
+            // A bounded client may intentionally close as soon as the Content-Length exceeds its limit.
             let _ = stream.write_all(&response.body);
         }
     });
@@ -739,6 +761,7 @@ fn read_request(stream: &mut std::net::TcpStream) -> Request {
     }
     while bytes.len() < header_end + length {
         let read = stream.read(&mut buffer).unwrap();
+        assert!(read > 0, "the client closed before sending its whole body");
         bytes.extend_from_slice(&buffer[..read]);
     }
     Request {

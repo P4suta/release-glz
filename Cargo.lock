@@ -1290,8 +1290,10 @@ dependencies = [
  "clap_complete",
  "flate2",
  "jsonschema",
+ "release-glz-test-support",
  "reqwest",
  "ring",
+ "rustix",
  "ryu-js",
  "semver",
  "serde",
@@ -1303,6 +1305,10 @@ dependencies = [
  "tokio",
  "toml_edit",
 ]
+
+[[package]]
+name = "release-glz-test-support"
+version = "0.0.0"
 
 [[package]]
 name = "reqwest"

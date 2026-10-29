@@ -117,26 +117,32 @@ async fn verify_hook_cannot_mutate_the_snapshot() {
 async fn required_hook_timeout_is_bounded_and_fails_closed() {
     let temp = tempfile::tempdir().unwrap();
     fs::write(temp.path().join("source.gleam"), "before").unwrap();
-    let hook = script(temp.path(), "slow.sh", "sleep 5\n");
+    let hook = script(temp.path(), "slow.sh", "sleep 60\n");
     let started = Instant::now();
     let error = HookRunner::default()
         .run_verify(&[required("slow", &hook, 1)], temp.path(), &context())
         .await
         .unwrap_err();
-    assert!(started.elapsed() < Duration::from_secs(3));
+    assert!(started.elapsed() < Duration::from_secs(30));
     assert!(error.to_string().contains("timed out"));
 }
 
 #[tokio::test]
-async fn hook_timeout_also_bounds_pipe_drains_held_open_by_a_grandchild() {
+async fn hook_timeout_ends_the_whole_process_tree_that_holds_its_pipes() {
     let temp = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
     fs::write(temp.path().join("source.gleam"), "before").unwrap();
+    let pid_file = outside.path().join("grandchild.pid");
     let hook = script(
         temp.path(),
         "inherited-pipe.sh",
-        r#"sleep 5 >&1 2>&2 &
-printf '%s' '{"schema":"hook/v1","success":true,"summary":"direct child exited","evidence":{}}'
+        &format!(
+            r#"sleep 60 >&1 2>&2 &
+printf '%s' "$!" > '{}'
+printf '%s' '{{"schema":"hook/v1","success":true,"summary":"direct child exited","evidence":{{}}}}'
 "#,
+            pid_file.display()
+        ),
     );
     let started = Instant::now();
     let error = HookRunner::default()
@@ -148,8 +154,27 @@ printf '%s' '{"schema":"hook/v1","success":true,"summary":"direct child exited",
         .await
         .unwrap_err()
         .to_string();
-    assert!(started.elapsed() < Duration::from_secs(3));
+    assert!(started.elapsed() < Duration::from_secs(30));
     assert!(error.contains("timed out"), "{error}");
+
+    let grandchild = fs::read_to_string(&pid_file).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while process_is_alive(&grandchild) {
+        assert!(
+            Instant::now() < deadline,
+            "grandchild {grandchild} outlived the timed-out hook"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+fn process_is_alive(pid: &str) -> bool {
+    std::process::Command::new("kill")
+        .args(["-0", pid])
+        .stderr(std::process::Stdio::null())
+        .status()
+        .unwrap()
+        .success()
 }
 
 #[tokio::test]

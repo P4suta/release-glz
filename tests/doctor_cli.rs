@@ -3,13 +3,13 @@
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::os::unix::fs::PermissionsExt;
-use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use release_glz::workflow::{self, WorkflowMode, WorkflowSettings};
+use release_glz_test_support::{git, init_repository, isolated_command};
 
 /// Seconds the fake server keeps listening when a test never stops it.
 const SERVER_LIFETIME_SECONDS: u64 = 120;
@@ -32,11 +32,7 @@ fn doctor_cli_collects_local_and_github_checks_into_envelope_v2() {
         manifest(&registry.base_url()),
     )
     .unwrap();
-    Command::new("git")
-        .args(["init", "--initial-branch=main"])
-        .current_dir(temp.path())
-        .output()
-        .unwrap();
+    init_repository(temp.path());
     workflow::sync(
         temp.path(),
         &WorkflowSettings {
@@ -64,7 +60,7 @@ fn doctor_cli_collects_local_and_github_checks_into_envelope_v2() {
         r#"{"name":"main","protected":true}"#,
     ]);
 
-    let output = Command::new(env!("CARGO_BIN_EXE_release-glz"))
+    let output = isolated_command(env!("CARGO_BIN_EXE_release-glz"))
         .current_dir(temp.path())
         .args(["--output", "json", "doctor", "--online"])
         .env("RELEASE_GLZ_GLEAM", &gleam)
@@ -121,11 +117,7 @@ fn doctor_defaults_to_local_checks_without_contacting_registry_or_github() {
         manifest(&registry.base_url()),
     )
     .unwrap();
-    Command::new("git")
-        .args(["init", "--initial-branch=main"])
-        .current_dir(temp.path())
-        .output()
-        .unwrap();
+    init_repository(temp.path());
     workflow::sync(
         temp.path(),
         &WorkflowSettings {
@@ -147,7 +139,7 @@ fn doctor_defaults_to_local_checks_without_contacting_registry_or_github() {
     std::fs::set_permissions(&gleam, permissions).unwrap();
     let github = FakeGitHub::start(vec![]);
 
-    let output = Command::new(env!("CARGO_BIN_EXE_release-glz"))
+    let output = isolated_command(env!("CARGO_BIN_EXE_release-glz"))
         .current_dir(temp.path())
         .args(["--output", "json", "doctor"])
         .env("RELEASE_GLZ_GLEAM", &gleam)
@@ -190,23 +182,9 @@ fn candidate_build_reports_the_original_isolated_failure_without_claiming_creden
         "pub fn value() -> Int { 1 }\n",
     )
     .unwrap();
-    for args in [
-        vec!["init", "--initial-branch=main"],
-        vec!["config", "user.email", "release-glz@example.test"],
-        vec!["config", "user.name", "release-glz test"],
-        vec!["add", "."],
-        vec!["commit", "-m", "initial"],
-    ] {
-        assert!(
-            Command::new("git")
-                .args(args)
-                .current_dir(temp.path())
-                .output()
-                .unwrap()
-                .status
-                .success()
-        );
-    }
+    init_repository(temp.path());
+    git(temp.path(), &["add", "."]);
+    git(temp.path(), &["commit", "-m", "initial"]);
 
     let gleam = temp.path().join("failing-gleam");
     std::fs::write(
@@ -218,7 +196,7 @@ fn candidate_build_reports_the_original_isolated_failure_without_claiming_creden
     permissions.set_mode(0o755);
     std::fs::set_permissions(&gleam, permissions).unwrap();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_release-glz"))
+    let output = isolated_command(env!("CARGO_BIN_EXE_release-glz"))
         .current_dir(temp.path())
         .args(["--output", "json", "doctor", "--candidate-build"])
         .env("RELEASE_GLZ_GLEAM", &gleam)
@@ -261,11 +239,7 @@ fn doctor_cli_uses_policy_exit_and_unsuccessful_envelope_when_blocked() {
         manifest(&registry.base_url()),
     )
     .unwrap();
-    Command::new("git")
-        .args(["init", "--initial-branch=main"])
-        .current_dir(temp.path())
-        .output()
-        .unwrap();
+    init_repository(temp.path());
     workflow::sync(
         temp.path(),
         &WorkflowSettings {
@@ -292,7 +266,7 @@ fn doctor_cli_uses_policy_exit_and_unsuccessful_envelope_when_blocked() {
         r#"{"name":"main","protected":true}"#,
     ]);
 
-    let output = Command::new(env!("CARGO_BIN_EXE_release-glz"))
+    let output = isolated_command(env!("CARGO_BIN_EXE_release-glz"))
         .current_dir(temp.path())
         .args(["--output", "json", "doctor", "--online"])
         .env("RELEASE_GLZ_GLEAM", &gleam)
@@ -385,11 +359,8 @@ impl FakeGitHub {
         let thread_requests = Arc::clone(&requests);
         let thread = thread::spawn(move || {
             let mut responses = responses.into_iter();
-            // Both bounds only exist so a test that never calls `stop` cannot
-            // leave this thread running. They have to outlast the slowest gap
-            // a loaded runner puts between accepting a connection and the
-            // request arriving on it — otherwise the listener gives up first
-            // and the assertion blames the product for the machine.
+            // Both bounds only exist so a test that never calls `stop` cannot leave this thread running.
+            // They have to outlast the slowest gap a loaded runner puts between accepting a connection and the request arriving on it — otherwise the listener gives up first and the assertion blames the product for the machine.
             let deadline = Instant::now() + Duration::from_secs(SERVER_LIFETIME_SECONDS);
             while !thread_stop.load(Ordering::Relaxed) && Instant::now() < deadline {
                 match listener.accept() {
@@ -399,10 +370,8 @@ impl FakeGitHub {
                             .unwrap();
                         let mut request = Vec::new();
                         let mut buffer = [0_u8; READ_BUFFER_BYTES];
-                        // A read error — a timeout, most likely — used to read
-                        // as a clean end of request, which recorded an empty
-                        // one and answered it. The caller then saw a reply to
-                        // a request it had not finished sending.
+                        // A read error — a timeout, most likely — used to read as a clean end of request, which recorded an empty one and answered it.
+                        // The caller then saw a reply to a request it had not finished sending.
                         let mut complete = false;
                         while let Ok(count) = stream.read(&mut buffer) {
                             if count == 0 {
@@ -417,10 +386,8 @@ impl FakeGitHub {
                                 break;
                             }
                         }
-                        // Answering a request that never finished arriving
-                        // spends one of the queued responses on it, so every
-                        // later request receives the answer meant for the one
-                        // before it. Drop the connection instead.
+                        // Answering a request that never finished arriving spends one of the queued responses on it, so every later request receives the answer meant for the one before it.
+                        // Drop the connection instead.
                         if !complete {
                             continue;
                         }

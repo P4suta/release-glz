@@ -6,25 +6,11 @@ use anyhow::{Result, bail};
 use release_glz::artifact::normalize_hex_tarball;
 use release_glz::candidate::Candidate;
 use release_glz::rehearse::{Rehearsal, RehearseOptions};
-
-fn installed_gleam_version() -> Option<String> {
-    let output = Command::new("gleam").arg("--version").output().ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    String::from_utf8(output.stdout)
-        .ok()?
-        .split_whitespace()
-        .find(|word| word.chars().next().is_some_and(|c| c.is_ascii_digit()))
-        .map(str::to_owned)
-}
+use release_glz_test_support::require_gleam;
 
 #[tokio::test]
 async fn rehearsal_builds_only_the_requested_commit_and_seals_it() -> Result<()> {
-    let Some(gleam_version) = installed_gleam_version() else {
-        eprintln!("skipping Gleam smoke test because gleam is not installed");
-        return Ok(());
-    };
+    let gleam_version = require_gleam();
     let temp = tempfile::tempdir()?;
     let repository = temp.path().join("repo");
     fs::create_dir_all(repository.join("src"))?;
@@ -169,9 +155,8 @@ async fn rehearsal_rejects_missing_symbolic_legacy_and_wrong_compiler_sources_wi
     );
     assert!(!missing_output.exists());
 
-    // In a SHA-1 repository, 40 hexadecimal characters are parsed as an object
-    // ID before DWIM ref lookup. A 64-character branch exercises the symbolic
-    // ref guard while remaining a valid full SHA for SHA-256 repositories.
+    // In a SHA-1 repository, 40 hexadecimal characters are parsed as an object ID before DWIM ref lookup.
+    // A 64-character branch exercises the symbolic ref guard while remaining a valid full SHA for SHA-256 repositories.
     let symbolic_ref = "a".repeat(64);
     git(&repository, &["branch", &symbolic_ref])?;
     let symbolic_output = temp.path().join("symbolic-candidate");
@@ -200,11 +185,7 @@ async fn rehearsal_rejects_missing_symbolic_legacy_and_wrong_compiler_sources_wi
     assert!(legacy.contains("schema = 2"), "{legacy}");
     assert!(!legacy_output.exists());
 
-    if installed_gleam_version().is_none() {
-        eprintln!("skipping compiler mismatch subcase because Gleam is not installed");
-        return Ok(());
-    }
-
+    require_gleam();
     fs::write(
         &manifest_path,
         v2_manifest("rehearse_guard", "99.0.0", "hexpm", None, true),
@@ -235,18 +216,16 @@ async fn rehearsal_rejects_missing_symbolic_legacy_and_wrong_compiler_sources_wi
 
 #[tokio::test]
 async fn rehearsal_marks_both_organization_and_compatible_registries_private() -> Result<()> {
-    let Some(gleam_version) = installed_gleam_version() else {
-        eprintln!("skipping Gleam smoke test because gleam is not installed");
-        return Ok(());
-    };
+    let gleam_version = require_gleam();
     let current = std::env::current_dir()?;
     for (index, (provider, repository)) in [("hexpm", Some("acme")), ("hex-compatible", None)]
         .into_iter()
         .enumerate()
     {
+        // A manifest path relative to the working directory must resolve, so the fixture lives under Cargo's per-target test directory.
         let temp = tempfile::Builder::new()
             .prefix("rehearse-private-")
-            .tempdir_in(&current)?;
+            .tempdir_in(env!("CARGO_TARGET_TMPDIR"))?;
         let package = temp.path();
         let package_name = format!("private_fixture_{index}");
         fs::create_dir_all(package.join("src"))?;

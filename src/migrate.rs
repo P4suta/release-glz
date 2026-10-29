@@ -1,7 +1,6 @@
 //! Migration of a legacy manifest to `schema = 2`.
 //!
-//! Legacy configuration stays readable during v1.x but cannot produce a
-//! Candidate, so migration is the one path from one to the other.
+//! Legacy configuration stays readable but cannot produce a Candidate, so migration is the one path from one to the other.
 
 use std::fs;
 use std::io::Write;
@@ -14,12 +13,11 @@ use toml_edit::{Array, DocumentMut, Item, Table, value};
 
 use crate::config::{ApprovalMode, AuthKind, Manifest, RegistryProvider, SeparationMode};
 use crate::diff::unified_diff;
-use crate::gleam::Gleam;
+use crate::gleam::{Gleam, MINIMUM_SUPPORTED_COMPILER};
 
 const LEGACY_BACKUP: &str = ".release-glz/legacy-gleam.toml";
 
-/// Digits the generated ids for migrated changelog entries are padded to, so
-/// they sort in the order they were read.
+/// Digits the generated ids for migrated changelog entries are padded to, so they sort in the order they were read.
 const LEGACY_NOTE_INDEX_DIGITS: usize = 4;
 
 /// A prepared, not yet applied, migration to schema 2.
@@ -67,14 +65,15 @@ impl Migration {
         Self::prepare_loaded(path, manifest, Some(&compiler))
     }
 
-    /// Prepare a deterministic migration with a compiler version already
-    /// established by the caller. Production CLI callers use [`Self::prepare`]
-    /// so the version is observed from the installed compiler.
+    /// Prepare a deterministic migration with a compiler version already established by the caller.
+    /// Production CLI callers use [`Self::prepare`] so the version is observed from the installed compiler.
     pub fn prepare_with_compiler(path: impl AsRef<Path>, compiler: Version) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
         let manifest = Manifest::load(&path)?;
-        if manifest.release.schema != 2 && compiler < Version::new(1, 9, 0) {
-            bail!("release-glz requires Gleam 1.9 or newer; found {compiler}");
+        if manifest.release.schema != 2 && compiler < MINIMUM_SUPPORTED_COMPILER {
+            bail!(
+                "release-glz requires Gleam {MINIMUM_SUPPORTED_COMPILER} or newer; found {compiler}"
+            );
         }
         Self::prepare_loaded(path, manifest, Some(&compiler))
     }
@@ -194,8 +193,7 @@ impl Migration {
 
     /// Apply the migration, preserving the legacy manifest first.
     ///
-    /// The manifest is re-read and the write is refused when it changed
-    /// after preparation.
+    /// The manifest is re-read and the write is refused when it changed after preparation.
     pub fn apply(self) -> Result<MigrationOutcome> {
         if !self.changed() {
             return Ok(self.outcome(false));

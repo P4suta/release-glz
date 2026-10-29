@@ -1,0 +1,6 @@
+# Processes that Cargo runs, including tests and `cargo run`, read Git configuration only from this repository's isolated fixture.
+# A developer's global or system settings, signing, hooks, and credential prompts therefore never reach a test repository.
+[env]
+GIT_CONFIG_GLOBAL = { value = "tests/fixtures/git/isolated.gitconfig", relative = true, force = true }
+GIT_CONFIG_NOSYSTEM = { value = "1", force = true }
+GIT_TERMINAL_PROMPT = { value = "0", force = true }

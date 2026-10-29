@@ -9,6 +9,7 @@ use std::sync::mpsc;
 use std::thread;
 
 use flate2::{Compression, write::GzEncoder};
+use release_glz_test_support::isolated_command;
 use sha2::{Digest, Sha256};
 
 #[test]
@@ -305,7 +306,7 @@ fn plan_uses_the_strict_manifest_registry_adapter_and_private_read_credential() 
     permissions.set_mode(0o755);
     std::fs::set_permissions(&gleam, permissions).unwrap();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_release-glz"))
+    let output = isolated_command(env!("CARGO_BIN_EXE_release-glz"))
         .current_dir(temp.path())
         .args(["--output", "json", "plan"])
         .env("RELEASE_GLZ_GLEAM", &gleam)
@@ -403,7 +404,7 @@ fn update_closes_a_stale_verified_managed_pr_when_no_release_is_required() {
     ];
     let (github_requests, github_server) = serve_recording(github_listener, github_responses);
 
-    let output = Command::new(env!("CARGO_BIN_EXE_release-glz"))
+    let output = isolated_command(env!("CARGO_BIN_EXE_release-glz"))
         .current_dir(temp.path())
         .args(["--output", "json", "update"])
         .env("RELEASE_GLZ_GLEAM", &gleam)
@@ -460,7 +461,7 @@ fn top_level_diagnostics_redact_the_configured_registry_credential() {
     permissions.set_mode(0o700);
     std::fs::set_permissions(&gleam, permissions).unwrap();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_release-glz"))
+    let output = isolated_command(env!("CARGO_BIN_EXE_release-glz"))
         .current_dir(temp.path())
         .env("RELEASE_GLZ_GLEAM", &gleam)
         .env("CUSTOM_REGISTRY_CREDENTIAL", secret)
@@ -727,7 +728,7 @@ fn candidate_command(
     package: &std::path::Path,
     interface: &std::path::Path,
 ) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_release-glz"));
+    let mut command = isolated_command(env!("CARGO_BIN_EXE_release-glz"));
     command
         .current_dir(directory)
         .env("RELEASE_GLZ_GLEAM", gleam)
