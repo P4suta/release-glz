@@ -56,6 +56,22 @@ fn distribution_is_attested_and_uploaded_to_a_draft_exactly_once() {
     assert!(yaml.contains("release create") && yaml.contains("--draft"));
     assert_eq!(yaml.matches("gh release upload").count(), 1);
     assert!(yaml.contains("gh attestation verify"));
+    for pin in [
+        r#"--signer-workflow "$GITHUB_REPOSITORY/.github/workflows/distribute.yml""#,
+        r#"--source-ref "$GITHUB_REF""#,
+        r#"--source-digest "$GITHUB_SHA""#,
+        "--deny-self-hosted-runners",
+    ] {
+        assert!(
+            yaml.contains(pin),
+            "attestation verification must pin {pin}"
+        );
+    }
+    assert!(
+        yaml.contains(r#"cmp -- "$file" "../dist/$file""#),
+        "every re-downloaded asset must match this run's own build byte for byte"
+    );
+    assert!(!yaml.contains("sha256sum --check SHA256SUMS"));
     assert!(yaml.contains("generate-action-checksums.js"));
     assert!(yaml.contains("--check action/checksums.json"));
     assert!(yaml.contains("generate-provenance.js"));

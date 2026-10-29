@@ -37,6 +37,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Two different file sets could hash the same input before, and an open Release PR gets one rebuilt commit under the new digest.
 - Redaction finds every occurrence of every secret before it replaces any, and replaces each run of covered text once.
   A secret inside another, or two that overlapped in the text, used to leave part of one in error messages and logs.
+- Publishing release-glz's own GitHub Release compares the release with the run's own build.
+  Every asset's GitHub digest must equal the local file's SHA-256 before more uploads and before finalizing, and every re-downloaded asset must match byte for byte.
+  The run used to compare asset names only and verified the downloads with the `SHA256SUMS` that came with them.
+- Attestation checks in the distribution workflow and the install guide require `distribute.yml` at the release tag, so an attestation from another workflow or ref in the repository no longer passes.
 - A Release PR commit counts as generated only when the files it added or modified match the files digest its message records.
   A maintainer's verified amend that kept the message used to count, so release-glz could adopt it or reset the branch over it.
   It now takes the path for human work, and a failure to read a file from GitHub fails the run instead of closing the Release PR.

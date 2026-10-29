@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 "use strict";
 
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 
@@ -24,20 +25,21 @@ function safeAssetName(name) {
   );
 }
 
-function validateInventory(expectedNames, release, requireComplete = false) {
-  if (
-    !Array.isArray(expectedNames) ||
-    expectedNames.length === 0 ||
-    expectedNames.length > MAX_ASSET_COUNT
-  ) {
+// The form GitHub reports in a Release asset's `digest`.
+const SHA256_DIGEST = /^sha256:[0-9a-f]{64}$/;
+
+function sha256Digest(file) {
+  return `sha256:${crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex")}`;
+}
+
+function validateInventory(expected, release, requireComplete = false) {
+  if (!(expected instanceof Map) || expected.size === 0 || expected.size > MAX_ASSET_COUNT) {
     throw new Error("expected release inventory is empty or excessive");
   }
-  const expected = new Set();
-  for (const name of expectedNames) {
-    if (!safeAssetName(name) || expected.has(name)) {
-      throw new Error("expected release inventory has an unsafe or duplicate name");
+  for (const [name, digest] of expected) {
+    if (!safeAssetName(name) || !SHA256_DIGEST.test(digest)) {
+      throw new Error("expected release inventory has an unsafe name or digest");
     }
-    expected.add(name);
   }
   if (!release || !Array.isArray(release.assets) || release.assets.length > MAX_ASSET_COUNT) {
     throw new Error("GitHub Release response has no bounded assets array");
@@ -53,6 +55,11 @@ function validateInventory(expectedNames, release, requireComplete = false) {
     }
     if (!expected.has(name)) {
       throw new Error(`GitHub Release contains unsealed asset \`${name}\``);
+    }
+    if (asset.digest !== expected.get(name)) {
+      throw new Error(
+        `GitHub Release asset \`${name}\` has digest ${asset.digest ?? "none"}, not ${expected.get(name)}`,
+      );
     }
     existing.add(name);
   }
@@ -74,7 +81,12 @@ function expectedInventory(directory) {
   ) {
     throw new Error("artifact inventory must contain only bounded regular files");
   }
-  return entries.map((entry) => entry.name).sort();
+  return new Map(
+    entries
+      .map((entry) => entry.name)
+      .sort()
+      .map((name) => [name, sha256Digest(path.join(directory, name))]),
+  );
 }
 
 function readBoundedStdin(stream = process.stdin) {
