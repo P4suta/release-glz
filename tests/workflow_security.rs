@@ -26,10 +26,8 @@ fn distribution_builds_and_smokes_every_supported_native_target() {
 
 /// Whether a workflow uses an action and pins it to a full commit SHA.
 ///
-/// Asserting the SHA itself would make this test the second place that has to
-/// know it, so every routine bump of the action would fail here until someone
-/// copied the new value across. What matters is the property — the action is
-/// used, and it is pinned — which survives the bump.
+/// Asserting the SHA itself would make this test the second place that has to know it, so every routine bump of the action would fail here until someone copied the new value across.
+/// What matters is the property — the action is used, and it is pinned — which survives the bump.
 fn pinned_to_a_commit(yaml: &str, action: &str) -> bool {
     let marker = format!("{action}@");
     yaml.lines().any(|line| {
@@ -98,7 +96,8 @@ fn distribution_is_attested_and_uploaded_to_a_draft_exactly_once() {
             .trim_start_matches("- ")
             .starts_with("uses:")
     }) {
-        if line.trim() == "uses: ./.github/workflows/assurance.yml" {
+        let code = line.split_once(" #").map_or(line, |(code, _)| code);
+        if code.trim() == "uses: ./.github/workflows/assurance.yml" {
             continue;
         }
         let reference = line

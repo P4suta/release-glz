@@ -40,9 +40,16 @@ jobs:
     uses: ./.github/workflows/assurance.yml
 `;
   assert.doesNotThrow(() => verifyWorkflow("caller.yml", caller));
+  assert.doesNotThrow(() =>
+    verifyWorkflow(
+      "caller.yml",
+      caller.replace("assurance.yml\n", "assurance.yml # zizmor: ignore[self-repository]\n"),
+    ),
+  );
   for (const reference of [
     "./.github/workflows/../other.yml",
     "./.github/workflows/assurance.yml@main",
+    "./.github/workflows/assurance.yml#main",
     `owner/repo/.github/workflows/check.yml@${"a".repeat(40)}`,
   ]) {
     assert.throws(
