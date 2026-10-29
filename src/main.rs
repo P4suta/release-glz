@@ -38,6 +38,7 @@ use release_glz::registry::{HexRegistry, RegistryCredentialAudit};
 use release_glz::rehearse::{Rehearsal, RehearseOptions};
 use release_glz::release::{
     CandidateReleaseRunner, LiveReleaseTarget, ReleaseExecutionOptions, ReleaseReport,
+    SourceBoundCandidate,
 };
 use semver::Version;
 
@@ -511,13 +512,9 @@ async fn run(cli: Cli) -> Result<i32> {
             let sealed = Candidate::verify(&candidate)
                 .map_err(|error| classified(FailureClass::ImmutableStateConflict, error))?;
             if online {
-                let report = online_candidate_report(
-                    &candidate,
-                    &sealed,
-                    approved_for_inspection(&sealed)?,
-                    true,
-                )
-                .await?;
+                let bound = bind_to_source(sealed, &base_options.manifest_path)?;
+                let approval = approved_for_inspection(bound.manifest())?;
+                let report = online_candidate_report(&candidate, bound, approval, true).await?;
                 print_result("verify", &report, cli.output)?;
             } else {
                 let result = serde_json::json!({
@@ -628,20 +625,21 @@ async fn run(cli: Cli) -> Result<i32> {
         Command::Release { candidate, dry_run } => {
             let sealed = Candidate::verify(&candidate)
                 .map_err(|error| classified(FailureClass::ImmutableStateConflict, error))?;
+            let candidate_digest = sealed.candidate_digest.clone();
+            let bound = bind_to_source(sealed, &base_options.manifest_path)?;
             let approval = if dry_run {
-                approved_for_inspection(&sealed)?
+                approved_for_inspection(bound.manifest())?
             } else {
-                approval_from_environment(&sealed)
+                approval_from_environment(bound.manifest())
                     .await
                     .map_err(|error| default_failure_class(error, FailureClass::PolicyOrApproval))?
             };
-            let report = online_candidate_report(&candidate, &sealed, approval, dry_run).await?;
+            let report = online_candidate_report(&candidate, bound, approval, dry_run).await?;
             if report.state == ReleaseState::AwaitingApproval && !dry_run {
                 return Err(classified(
                     FailureClass::PolicyOrApproval,
                     format!(
-                        "release approval is not bound to Candidate {}; set the approved digest evidence",
-                        sealed.candidate_digest
+                        "release approval is not bound to Candidate {candidate_digest}; set the approved digest evidence"
                     ),
                 ));
             }
@@ -653,13 +651,9 @@ async fn run(cli: Cli) -> Result<i32> {
                 let sealed = Candidate::verify(&candidate)
                     .map_err(|error| classified(FailureClass::ImmutableStateConflict, error))?;
                 if online {
-                    let report = online_candidate_report(
-                        &candidate,
-                        &sealed,
-                        approved_for_inspection(&sealed)?,
-                        true,
-                    )
-                    .await?;
+                    let bound = bind_to_source(sealed, &base_options.manifest_path)?;
+                    let approval = approved_for_inspection(bound.manifest())?;
+                    let report = online_candidate_report(&candidate, bound, approval, true).await?;
                     print_result("status", &report, cli.output)?;
                 } else {
                     let next_action = manifest_executable_action(
@@ -1446,27 +1440,22 @@ async fn write_rolling_release_pr(
     Ok(plan)
 }
 
+/// Bind a verified Candidate to the checkout of its source commit, before any approval, GitHub, or registry client exists.
+fn bind_to_source(
+    sealed: release_glz::candidate::CandidateManifest,
+    manifest_path: &Path,
+) -> Result<SourceBoundCandidate> {
+    SourceBoundCandidate::bind(sealed, manifest_path)
+        .map_err(|error| default_failure_class(error, FailureClass::UsageOrConfig))
+}
+
 async fn online_candidate_report(
     candidate_directory: &Path,
-    manifest: &release_glz::candidate::CandidateManifest,
+    candidate: SourceBoundCandidate,
     approval: ApprovalEvidence,
     dry_run: bool,
 ) -> Result<ReleaseReport> {
-    let current = std::env::current_dir()
-        .map_err(|error| default_failure_class(error.into(), FailureClass::UsageOrConfig))?;
-    let repo = GitRepo::discover(&current)
-        .map_err(|error| default_failure_class(error, FailureClass::UsageOrConfig))?;
-    if repo
-        .head()
-        .map_err(|error| default_failure_class(error, FailureClass::UsageOrConfig))?
-        != manifest.source.commit_sha
-    {
-        return Err(classified(
-            FailureClass::ImmutableStateConflict,
-            "checked-out commit does not match the sealed Candidate source",
-        ));
-    }
-    let target = LiveReleaseTarget::from_candidate(manifest.clone(), repo)
+    let target = LiveReleaseTarget::from_candidate(candidate)
         .map_err(|error| default_failure_class(error, FailureClass::PolicyOrApproval))?;
     CandidateReleaseRunner::new(target)
         .run(

@@ -1,10 +1,9 @@
 //! Publication: the live adapter and the Candidate release runner.
 //!
-//! The runner verifies a sealed Candidate, asks the reconciler what is still
-//! missing, and applies only those effects, using bytes loaded from the
-//! Candidate itself.
+//! The runner verifies a sealed Candidate, asks the reconciler what is still missing, and applies only those effects, using bytes loaded from the Candidate itself.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
@@ -14,14 +13,14 @@ use crate::canonical::SHA256_HEX_LEN;
 
 /// Rounds of observe-and-apply one release run may take.
 ///
-/// Each round applies at most one effect, and the reconciler only ever returns
-/// effects that have not been observed yet, so a release that needs more than
-/// this is not making progress.
+/// Each round applies at most one effect, and the reconciler only ever returns effects that have not been observed yet, so a release that needs more than this is not making progress.
 const MAX_RECONCILE_ROUNDS: usize = 128;
-use crate::candidate::{Candidate, CandidateManifest};
-use crate::config::RegistryConfig;
+use crate::candidate::{Candidate, CandidateManifest, SealedPolicy};
+use crate::config::{Manifest, RegistryConfig};
+use crate::failure::{FailureClass, classified};
 use crate::forge::{GitHubClient, GitHubRepository};
 use crate::git::GitRepo;
+use crate::gleam::Gleam;
 use crate::hooks::{HookContext, HookRunner};
 use crate::model::ReleaseState;
 use crate::reconciler::{
@@ -55,8 +54,7 @@ pub struct ReleaseReport {
 
 /// The sealed bytes handed to an effect.
 ///
-/// Borrowed from the verified Candidate, never rebuilt, so an adapter
-/// has nothing else it could publish.
+/// Borrowed from the verified Candidate, never rebuilt, so an adapter has nothing else it could publish.
 #[derive(Debug, Clone, Copy)]
 pub struct ReleasePayload<'a> {
     /// Package tarball.
@@ -82,8 +80,7 @@ pub struct ReleaseAssetPayload<'a> {
 
 /// The external systems a release is applied to.
 ///
-/// Observation and application are separate so the reconciler can decide
-/// what remains before anything is changed.
+/// Observation and application are separate so the reconciler can decide what remains before anything is changed.
 #[async_trait]
 pub trait ReleaseTarget: Send + Sync {
     /// Observe everything that already exists for this release.
@@ -98,9 +95,8 @@ pub trait ReleaseTarget: Send + Sync {
     ) -> Result<()>;
 }
 
-/// Production adapter for the monotonic Candidate reconciler. It observes all
-/// remote state before every effect and publishes only bytes loaded from the
-/// sealed Candidate by `CandidateReleaseRunner`.
+/// Production adapter for the monotonic Candidate reconciler.
+/// It observes all remote state before every effect and publishes only bytes loaded from the sealed Candidate by `CandidateReleaseRunner`.
 pub struct LiveReleaseTarget {
     manifest: CandidateManifest,
     repo: GitRepo,
@@ -109,16 +105,63 @@ pub struct LiveReleaseTarget {
     hooks: HookRunner,
 }
 
-impl LiveReleaseTarget {
-    /// Build a live target from a verified Candidate and its repository.
-    pub fn from_candidate(manifest: CandidateManifest, repo: GitRepo) -> Result<Self> {
-        let head = repo.head()?;
-        if head != manifest.source.commit_sha {
-            bail!(
-                "checked out commit {head} does not match Candidate source {}",
-                manifest.source.commit_sha
-            );
+/// A verified Candidate in a checkout of its source commit, whose policy equals the policy that commit states.
+///
+/// Only [`SourceBoundCandidate::bind`] creates one, and a live target starts only from one.
+/// The registry, credential variable, hooks, and approval policy of a publication therefore come from the source commit, never from the Candidate alone.
+#[derive(Debug, Clone)]
+pub struct SourceBoundCandidate {
+    manifest: CandidateManifest,
+    repo: GitRepo,
+}
+
+impl SourceBoundCandidate {
+    /// Bind `manifest` to the checkout whose package manifest is at `manifest_path`.
+    ///
+    /// The checkout has to be at the Candidate's source commit.
+    /// Every field of [`SealedPolicy`] has to equal what the configuration committed at `manifest_path` states, so neither the working tree nor a path that the Candidate names can supply the policy.
+    pub fn bind(manifest: CandidateManifest, manifest_path: &Path) -> Result<Self> {
+        let (repo, relative_manifest) = crate::rehearse::locate_manifest(manifest_path)?;
+        if repo.head()? != manifest.source.commit_sha {
+            return Err(classified(
+                FailureClass::ImmutableStateConflict,
+                "checked-out commit does not match the sealed Candidate source",
+            ));
         }
+        let package_relative = relative_manifest.parent().unwrap_or_else(|| Path::new(""));
+        let snapshot = Gleam::default().snapshot_from_git(
+            &repo,
+            &manifest.source.commit_sha,
+            package_relative,
+        )?;
+        let source = SealedPolicy::from_source(
+            &Manifest::load(snapshot.package_dir().join("gleam.toml"))?,
+            snapshot.package_dir(),
+            &crate::rehearse::manifest_path_text(&relative_manifest),
+        )?;
+        let differences = SealedPolicy::of(&manifest).differences(&source);
+        if !differences.is_empty() {
+            return Err(classified(
+                FailureClass::ImmutableStateConflict,
+                format!(
+                    "the Candidate's policy differs from the configuration at its source commit in: {}",
+                    differences.join(", ")
+                ),
+            ));
+        }
+        Ok(Self { manifest, repo })
+    }
+
+    /// The bound Candidate.
+    pub fn manifest(&self) -> &CandidateManifest {
+        &self.manifest
+    }
+}
+
+impl LiveReleaseTarget {
+    /// Build a live target from a Candidate bound to its source commit.
+    pub fn from_candidate(candidate: SourceBoundCandidate) -> Result<Self> {
+        let SourceBoundCandidate { manifest, repo } = candidate;
         let repository = GitHubRepository::parse(&manifest.github_repository)?;
         let github = GitHubClient::from_environment(repository)?;
         let registry_config = RegistryConfig {
@@ -149,8 +192,7 @@ impl LiveReleaseTarget {
 
     /// Build a live target from explicit adapters, for loopback tests.
     ///
-    /// The adapters still have to match the sealed Candidate, so a test
-    /// cannot point a real Candidate at a different repository.
+    /// The adapters still have to match the sealed Candidate, so a test cannot point a real Candidate at a different repository.
     pub fn with_adapters(
         manifest: CandidateManifest,
         repo: GitRepo,
@@ -522,8 +564,7 @@ where
 
     /// Verify the Candidate, then apply what is still missing.
     ///
-    /// The Candidate is re-verified on every run, so a resumed release
-    /// publishes exactly the bytes the first run sealed.
+    /// The Candidate is re-verified on every run, so a resumed release publishes exactly the bytes the first run sealed.
     pub async fn run(
         &self,
         candidate_directory: &std::path::Path,
@@ -630,8 +671,8 @@ where
             match self.target.apply(&effect, &intent, payload).await {
                 Ok(()) => applied.push(effect),
                 Err(source) => {
-                    // A timed-out POST may already have committed. Re-observe
-                    // before returning and never blindly repeat it.
+                    // A timed-out POST may already have committed.
+                    // Re-observe before returning and never blindly repeat it.
                     let refreshed = self
                         .target
                         .observe(&intent)

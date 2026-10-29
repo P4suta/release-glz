@@ -6,6 +6,7 @@ use anyhow::{Result, bail};
 use release_glz::artifact::normalize_hex_tarball;
 use release_glz::candidate::Candidate;
 use release_glz::rehearse::{Rehearsal, RehearseOptions};
+use release_glz::release::SourceBoundCandidate;
 use release_glz_test_support::require_gleam;
 
 #[tokio::test]
@@ -49,6 +50,10 @@ manual_refs = ["refs/heads/main"]
     )?;
     fs::write(repository.join("README.md"), "# Rehearse fixture\n")?;
     fs::write(
+        repository.join("CHANGELOG.md"),
+        "# Changelog\n\n## [1.0.0]\n\n- The first committed release.\n",
+    )?;
+    fs::write(
         repository.join("src/rehearse_fixture.gleam"),
         "pub fn committed() -> Int { 1 }\n",
     )?;
@@ -82,6 +87,16 @@ manual_refs = ["refs/heads/main"]
     assert!(manifest.artifacts.docs.is_some());
 
     let verified = Candidate::verify(&output)?;
+    assert!(
+        verified
+            .release_notes
+            .contains("The first committed release."),
+        "{}",
+        verified.release_notes
+    );
+    // The working tree is dirty, but publication reads the policy from the commit that rehearsal sealed.
+    let bound = SourceBoundCandidate::bind(verified.clone(), &repository.join("gleam.toml"))?;
+    assert_eq!(bound.manifest(), &verified);
     let package = Candidate::package_bytes(&output, &verified)?;
     let files = normalize_hex_tarball(&package)?;
     assert_eq!(

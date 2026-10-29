@@ -42,6 +42,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   It no longer runs a program that the undocumented `RELEASE_GLZ_BINARY` variable names, which an earlier step could set without either check.
 - The Action pauses workflow commands with an unpredictable token while it runs release-glz and writes its diagnostics.
   A line of compiler, git, or registry output that starts with `::` can no longer run a workflow command in the step.
+- Publication takes its policy from the source commit instead of the Candidate.
+  `release`, `verify --online`, and `status --online` refuse a Candidate whose registry, credential variable, hooks, approval policy, release notes, or other policy field differs from the configuration committed at its source.
+  Build code in `prepare` could otherwise rewrite the Candidate so that the publish job sent the registry credential elsewhere or ran other notify commands.
+  A Candidate that an earlier build sealed needs a new `prepare` when the two builds read the configuration differently.
 - The bundled root store no longer trusts the distrusted emSign roots that RUSTSEC-2026-0381 reports.
 - Both lockfiles resolve `quinn-proto` 0.11.19, past RUSTSEC-2026-0338 through RUSTSEC-2026-0342, and the fuzz lockfile resolves `rustls-webpki` 0.103.16, past RUSTSEC-2026-0382.
   Shipping assurance audits the fuzz lockfile too.
