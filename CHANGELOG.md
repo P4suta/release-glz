@@ -22,6 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 
 - A registry `Retry-After` header can ask for at most one minute, so a response can no longer stall a run indefinitely.
+- Candidate verification checks each sealed file again through the handle it opened and reads at most one byte past the file's limit.
+  A file swapped after the path check can no longer make verification read without bound.
+- A sealed artifact can't declare a size over the largest archive that the tarball validators accept, and sealing refuses a package interface over that size.
 - The generated workflow no longer runs the compiler in a job that can write.
   `plan` compiles with read access and hands its plan to `release-pr`, which writes the Release PR without the compiler.
   `rehearse-release-pr` and `bind-release-pr` then rehearse the new Release PR head and bind its intent in the same push run.
