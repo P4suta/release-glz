@@ -419,6 +419,45 @@ fn candidate_manifest_is_bounded_strict_json_in_a_regular_file() {
 }
 
 #[test]
+fn candidate_verification_refuses_a_declared_artifact_size_over_the_archive_limit() {
+    let temp = tempfile::tempdir().unwrap();
+    let limit = ArchiveLimits::default().max_archive_bytes;
+    for artifact in ["package", "package_interface"] {
+        for (size, refused) in [(limit, false), (limit + 1, true)] {
+            let directory = temp.path().join(format!("{artifact}-{size}"));
+            Candidate::seal(&directory, fresh_candidate_input()).unwrap();
+            mutate_candidate_json(&directory, |manifest| {
+                manifest["artifacts"][artifact]["size"] = size.into();
+            });
+            let error = Candidate::verify(&directory).unwrap_err().to_string();
+            assert_eq!(
+                error.contains("exceeds its size limit"),
+                refused,
+                "{artifact} declared at {size} bytes: {error}"
+            );
+        }
+    }
+}
+
+#[test]
+fn sealing_refuses_a_package_interface_over_the_archive_limit() {
+    let temp = tempfile::tempdir().unwrap();
+    let limit = usize::try_from(ArchiveLimits::default().max_archive_bytes).unwrap();
+    for (size, refused) in [(limit, false), (limit + 1, true)] {
+        let mut input = fresh_candidate_input();
+        input.package_interface = vec![b' '; size];
+        let error = Candidate::seal(&temp.path().join(size.to_string()), input)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            error.contains("exceeds its size limit"),
+            refused,
+            "{size} bytes: {error}"
+        );
+    }
+}
+
+#[test]
 fn semantic_intent_ignores_tar_order_but_candidate_digest_does_not() {
     let temp = tempfile::tempdir().unwrap();
     let first_dir = temp.path().join("first");
