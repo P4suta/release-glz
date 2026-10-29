@@ -1,0 +1,21 @@
+[package]
+name = "release-glz-core"
+description = "Release decisions of release-glz that depend only on their inputs"
+version = "0.0.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+rust-version = "1.88"
+
+[features]
+serde = ["dep:serde"]
+# Replaces checked increments with wrapping ones, so the proof gate can show that it rejects a broken implementation.
+negative-control = []
+
+[dependencies]
+serde = { version = "1.0.228", default-features = false, features = [
+  "derive",
+], optional = true }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
