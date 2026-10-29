@@ -1,9 +1,7 @@
 //! The monotonic reconciler: the pure core of publication.
 //!
-//! Given what a Candidate intends, what the world already contains, and what
-//! has been approved, it returns the effects that are still missing. It never
-//! replaces an existing object, so a resumed release completes rather than
-//! republishes.
+//! Given what a Candidate intends, what the world already contains, and what has been approved, it returns the effects that are still missing.
+//! It never replaces an existing object, so a resumed release completes rather than republishes.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -17,8 +15,7 @@ use crate::model::ReleaseState;
 
 /// What one release is supposed to accomplish.
 ///
-/// Derived from the sealed Candidate, so the reconciler compares the
-/// world against approved bytes rather than against a checkout.
+/// Derived from the sealed Candidate, so the reconciler compares the world against approved bytes rather than against a checkout.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReleaseIntent {
     /// Package name.
@@ -81,8 +78,7 @@ pub struct ReleaseAsset {
 
 /// The authority a publication is running under.
 ///
-/// Each field is something that was actually observed; absent evidence
-/// blocks rather than defaults to permitted.
+/// Each field is something that was actually observed; absent evidence blocks rather than defaults to permitted.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ApprovalEvidence {
     /// Intent digest recorded on the merged Release PR.
@@ -141,8 +137,7 @@ pub struct NotifyObservation {
 
 /// Everything observed about a release in the outside world.
 ///
-/// This is an observation, never a cache: a resumed run re-observes
-/// before deciding what is still missing.
+/// This is an observation, never a cache: a resumed run re-observes before deciding what is still missing.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExternalReleaseState {
@@ -259,21 +254,13 @@ impl std::error::Error for ReconcileError {}
 
 /// Decide what is left to do, given intent, observation, and approval.
 ///
-/// The function is pure, and every effect it returns is one that has
-/// not been observed yet, which is what makes a resumed release
-/// monotonic rather than repeated.
+/// The function is pure, and every effect it returns is one that has not been observed yet, which is what makes a resumed release monotonic rather than repeated.
 pub fn reconcile(
     intent: &ReleaseIntent,
     observed: &ExternalReleaseState,
     approval: &ApprovalEvidence,
 ) -> Result<ReconcilePlan, ReconcileError> {
-    if observed.schema != "state/v1" {
-        return conflict(format!(
-            "unsupported external state schema `{}`",
-            observed.schema
-        ));
-    }
-    validate_existing(intent, observed)?;
+    validate_observed(intent, observed)?;
     if !approved(intent, approval) {
         return Ok(ReconcilePlan {
             schema: "reconcile/v1".into(),
@@ -281,7 +268,34 @@ pub fn reconcile(
             effects: Vec::new(),
         });
     }
+    Ok(plan(intent, observed))
+}
 
+/// The plan an approved release would follow, for an inspection that holds no approval.
+///
+/// It checks the observed state like [`reconcile`], but it authorizes nothing, so a caller has to report its effects instead of applying them.
+pub fn preview(
+    intent: &ReleaseIntent,
+    observed: &ExternalReleaseState,
+) -> Result<ReconcilePlan, ReconcileError> {
+    validate_observed(intent, observed)?;
+    Ok(plan(intent, observed))
+}
+
+fn validate_observed(
+    intent: &ReleaseIntent,
+    observed: &ExternalReleaseState,
+) -> Result<(), ReconcileError> {
+    if observed.schema != "state/v1" {
+        return conflict(format!(
+            "unsupported external state schema `{}`",
+            observed.schema
+        ));
+    }
+    validate_existing(intent, observed)
+}
+
+fn plan(intent: &ReleaseIntent, observed: &ExternalReleaseState) -> ReconcilePlan {
     let already_started = observed.package.is_some()
         || observed.docs.is_some()
         || observed.tag.is_some()
@@ -351,11 +365,11 @@ pub fn reconcile(
     } else {
         ReleaseState::CandidateReady
     };
-    Ok(ReconcilePlan {
+    ReconcilePlan {
         schema: "reconcile/v1".into(),
         state,
         effects,
-    })
+    }
 }
 
 fn approved(intent: &ReleaseIntent, approval: &ApprovalEvidence) -> bool {
