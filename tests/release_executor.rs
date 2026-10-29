@@ -151,7 +151,7 @@ async fn optional_notify_is_attempted_once_but_failure_does_not_make_release_par
 
 #[tokio::test]
 async fn public_release_asset_bytes_are_bound_to_their_sidecar_hook_and_name() {
-    let fixture = candidate_fixture_with_options(true, true);
+    let fixture = candidate_fixture_with_options(true, true, 1);
     let target = FakeTarget::default();
 
     let report = CandidateReleaseRunner::new(target.clone())
@@ -270,8 +270,19 @@ async fn an_observation_failure_after_an_ambiguous_effect_preserves_the_pre_effe
 }
 
 #[tokio::test]
-async fn a_target_that_never_records_success_hits_the_fixed_convergence_limit() {
+async fn a_target_that_never_records_success_stops_after_the_effects_of_its_first_plan() {
     let fixture = candidate_fixture();
+    let first_plan = CandidateReleaseRunner::new(FakeTarget::default())
+        .run(
+            &fixture.directory,
+            &approved(&fixture.manifest),
+            ReleaseExecutionOptions { dry_run: true },
+        )
+        .await
+        .unwrap()
+        .remaining
+        .len();
+    assert!(first_plan > 1);
     let attempts = Arc::new(AtomicUsize::new(0));
     let target = NonConvergingTarget {
         attempts: Arc::clone(&attempts),
@@ -284,9 +295,31 @@ async fn a_target_that_never_records_success_hits_the_fixed_convergence_limit() 
         )
         .await
         .unwrap_err();
-    assert_eq!(attempts.load(Ordering::SeqCst), 128);
+    assert_eq!(attempts.load(Ordering::SeqCst), first_plan);
     assert_eq!(error.state(), ReleaseState::Blocked);
     assert!(error.to_string().contains("did not converge"));
+}
+
+#[tokio::test]
+async fn a_release_with_more_notify_hooks_than_any_fixed_round_limit_completes() {
+    let fixture = candidate_fixture_with_options(true, false, 200);
+    let target = FakeTarget::default();
+    let report = CandidateReleaseRunner::new(target.clone())
+        .run(
+            &fixture.directory,
+            &approved(&fixture.manifest),
+            ReleaseExecutionOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(report.state, ReleaseState::Released);
+    assert!(report.remaining.is_empty());
+    let notifications = target
+        .applied()
+        .iter()
+        .filter(|effect| matches!(effect, ReconcileEffect::Notify { .. }))
+        .count();
+    assert_eq!(notifications, 200);
 }
 
 struct ObserveFailsAfterApply {
@@ -329,10 +362,18 @@ impl ReleaseTarget for NonConvergingTarget {
         _intent: &ReleaseIntent,
         _payload: ReleasePayload<'_>,
     ) -> Result<()> {
-        self.attempts.fetch_add(1, Ordering::SeqCst);
+        let attempts = self.attempts.fetch_add(1, Ordering::SeqCst) + 1;
+        // A runner without a budget would loop until it ran out of memory, so fail long before that.
+        assert!(
+            attempts <= NON_CONVERGING_ATTEMPT_LIMIT,
+            "the runner kept applying effects that never took hold"
+        );
         Ok(())
     }
 }
+
+/// Attempts a non-converging target accepts before it fails the test, far above any first plan in these fixtures.
+const NON_CONVERGING_ATTEMPT_LIMIT: usize = 10_000;
 
 #[derive(Clone, Default)]
 struct FakeTarget {
@@ -484,10 +525,14 @@ fn candidate_fixture() -> Fixture {
 }
 
 fn candidate_fixture_with_notify(notify_required: bool) -> Fixture {
-    candidate_fixture_with_options(notify_required, false)
+    candidate_fixture_with_options(notify_required, false, 1)
 }
 
-fn candidate_fixture_with_options(notify_required: bool, duplicate_private_asset: bool) -> Fixture {
+fn candidate_fixture_with_options(
+    notify_required: bool,
+    duplicate_private_asset: bool,
+    notify_hooks: usize,
+) -> Fixture {
     let temp = tempfile::tempdir().unwrap();
     let directory = temp.path().join("candidate");
     let package = hex_package();
@@ -578,14 +623,17 @@ fn candidate_fixture_with_options(notify_required: bool, duplicate_private_asset
             sidecar_hook_definitions,
             hook_evidence,
             sidecars,
-            notify_hooks: vec!["announce".into()],
-            notify_hook_definitions: vec![release_glz::config::HookConfig {
-                id: "announce".into(),
-                argv: vec!["/bin/true".into()],
-                timeout_seconds: 10,
-                required: notify_required,
-                env: vec![],
-            }],
+            notify_hooks: notify_hook_ids(notify_hooks),
+            notify_hook_definitions: notify_hook_ids(notify_hooks)
+                .into_iter()
+                .map(|id| release_glz::config::HookConfig {
+                    id,
+                    argv: vec!["/bin/true".into()],
+                    timeout_seconds: 10,
+                    required: notify_required,
+                    env: vec![],
+                })
+                .collect(),
         },
     )
     .unwrap();
@@ -594,6 +642,16 @@ fn candidate_fixture_with_options(notify_required: bool, duplicate_private_asset
         directory,
         manifest,
         package,
+    }
+}
+
+/// `announce` for a single hook, as the existing fixtures name it, and `announce-N` for each of more.
+fn notify_hook_ids(count: usize) -> Vec<String> {
+    match count {
+        1 => vec!["announce".into()],
+        _ => (0..count)
+            .map(|index| format!("announce-{index}"))
+            .collect(),
     }
 }
 

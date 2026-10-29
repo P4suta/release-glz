@@ -9,13 +9,8 @@ use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use sha2::{Digest, Sha256};
 
-use crate::canonical::SHA256_HEX_LEN;
-
-/// Rounds of observe-and-apply one release run may take.
-///
-/// Each round applies at most one effect, and the reconciler only ever returns effects that have not been observed yet, so a release that needs more than this is not making progress.
-const MAX_RECONCILE_ROUNDS: usize = 128;
 use crate::candidate::{Candidate, CandidateManifest, SealedPolicy};
+use crate::canonical::SHA256_HEX_LEN;
 use crate::config::{Manifest, RegistryConfig};
 use crate::failure::{FailureClass, classified};
 use crate::forge::{GitHubClient, GitHubRepository};
@@ -631,8 +626,10 @@ where
         };
         let mut applied = Vec::new();
         let mut attempted_optional_notifications = BTreeSet::new();
+        // Each round attempts one effect, and the reconciler only lists effects it hasn't observed yet, so a run that needs more attempts than its first plan listed effects isn't converging.
+        let mut attempts_left: Option<usize> = None;
 
-        for _ in 0..MAX_RECONCILE_ROUNDS {
+        loop {
             let observed = self
                 .target
                 .observe(&intent)
@@ -660,6 +657,17 @@ where
             else {
                 return Ok(report(&manifest, plan, applied));
             };
+            let attempts_left = attempts_left.get_or_insert(plan.effects.len());
+            if *attempts_left == 0 {
+                return Err(run_error(
+                    ReleaseState::Blocked,
+                    crate::failure::classified(
+                        crate::failure::FailureClass::Internal,
+                        "release reconciliation did not converge",
+                    ),
+                ));
+            }
+            *attempts_left -= 1;
             if let ReconcileEffect::Notify {
                 hook_id,
                 required: false,
@@ -696,13 +704,6 @@ where
                 }
             }
         }
-        Err(run_error(
-            ReleaseState::Blocked,
-            crate::failure::classified(
-                crate::failure::FailureClass::Internal,
-                "release reconciliation did not converge",
-            ),
-        ))
     }
 }
 
