@@ -4,6 +4,7 @@
 //! `release` publishes these bytes; it never rebuilds them from a checkout.
 
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -788,6 +789,9 @@ fn core_artifacts(input: &CandidateInput) -> Result<CandidateArtifacts> {
         .as_ref()
         .map(|docs| validate_and_fingerprint_docs_tarball(docs, ArchiveLimits::default()))
         .transpose()?;
+    if input.package_interface.len() as u64 > max_sealed_artifact_bytes() {
+        bail!("package interface exceeds its size limit");
+    }
     let interface: serde_json::Value = serde_json::from_slice(&input.package_interface)
         .context("package interface is not valid JSON")?;
     let package = artifact_descriptor(PACKAGE_FILE, &input.package_tarball, package_fingerprint);
@@ -842,6 +846,12 @@ fn sidecar_descriptor(artifact: &SidecarArtifact) -> Result<SealedSidecarArtifac
 }
 
 fn verify_file(directory: &Path, descriptor: &SealedArtifact) -> Result<Vec<u8>> {
+    if descriptor.size > max_sealed_artifact_bytes() {
+        bail!(
+            "candidate artifact `{}` exceeds its size limit",
+            descriptor.path
+        );
+    }
     let bytes = read_regular_limited(
         &directory.join(&descriptor.path),
         descriptor.size,
@@ -869,16 +879,50 @@ fn verify_sidecar_file(directory: &Path, descriptor: &SealedSidecarArtifact) -> 
     Ok(bytes)
 }
 
+/// The largest file that a Candidate seals, which is the largest archive that the tarball validators accept.
+fn max_sealed_artifact_bytes() -> u64 {
+    ArchiveLimits::default().max_archive_bytes
+}
+
+/// Read a regular file that must not be a symlink, taking at most `limit` bytes.
+///
+/// The type and size checks repeat on the opened file, and the read stops one byte past the limit.
+/// A file replaced after the path check therefore can't make the read unbounded in memory.
+/// Opening still follows a symlink swapped in after the check, which `read_opened_regular` then refuses unless it names a regular file.
 fn read_regular_limited(path: &Path, limit: u64, description: &str) -> Result<Vec<u8>> {
     let metadata = fs::symlink_metadata(path)
         .with_context(|| format!("missing {description} `{}`", path.display()))?;
     if !metadata.file_type().is_file() {
         bail!("{description} `{}` is not a regular file", path.display());
     }
-    if metadata.len() > limit {
-        bail!("{description} `{}` exceeds its size limit", path.display());
+    let file = fs::File::open(path)
+        .with_context(|| format!("failed to open {description} `{}`", path.display()))?;
+    read_opened_regular(file, limit, &format!("{description} `{}`", path.display()))
+}
+
+/// Read an opened file that must still be a regular file of at most `limit` bytes.
+fn read_opened_regular(file: fs::File, limit: u64, name: &str) -> Result<Vec<u8>> {
+    let metadata = file
+        .metadata()
+        .with_context(|| format!("failed to inspect {name}"))?;
+    if !metadata.is_file() {
+        bail!("{name} is not a regular file");
     }
-    fs::read(path).with_context(|| format!("failed to read {description} `{}`", path.display()))
+    if metadata.len() > limit {
+        bail!("{name} exceeds its size limit");
+    }
+    read_at_most(file, limit)
+        .with_context(|| format!("failed to read {name}"))?
+        .with_context(|| format!("{name} exceeds its size limit"))
+}
+
+/// All of `reader` when it holds at most `limit` bytes, reading no more than one byte past the limit.
+fn read_at_most(reader: impl Read, limit: u64) -> std::io::Result<Option<Vec<u8>>> {
+    let mut bytes = Vec::new();
+    reader
+        .take(limit.saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    Ok((u64::try_from(bytes.len()).unwrap_or(u64::MAX) <= limit).then_some(bytes))
 }
 
 fn validate_candidate_inventory(directory: &Path, manifest: &CandidateManifest) -> Result<()> {
@@ -1294,4 +1338,77 @@ fn validate_sha256(value: &str, field: &str) -> Result<()> {
         bail!("{field} is not a lowercase SHA-256 digest");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::{Seek, SeekFrom, Write};
+
+    use super::{read_at_most, read_opened_regular};
+
+    #[test]
+    fn an_opened_file_is_read_whole_up_to_its_limit() {
+        let read = |contents: &[u8], limit| {
+            let mut file = tempfile::tempfile().unwrap();
+            file.write_all(contents).unwrap();
+            file.seek(SeekFrom::Start(0)).unwrap();
+            read_opened_regular(file, limit, "file").map_err(|error| error.to_string())
+        };
+        assert_eq!(read(b"ab", 3).unwrap(), b"ab");
+        assert_eq!(read(b"abc", 3).unwrap(), b"abc");
+        let error = read(b"abcd", 3).unwrap_err();
+        assert!(error.contains("exceeds its size limit"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_opened_file_must_still_be_a_regular_file() {
+        let device = std::fs::File::open("/dev/null").unwrap();
+        let error = read_opened_regular(device, 16, "device")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("not a regular file"), "{error}");
+
+        let temp = tempfile::tempdir().unwrap();
+        let directory = std::fs::File::open(temp.path()).unwrap();
+        let error = read_opened_regular(directory, 16, "directory")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("not a regular file"), "{error}");
+    }
+
+    #[test]
+    fn a_bounded_read_takes_at_most_one_byte_past_its_limit() {
+        assert_eq!(
+            read_at_most(&b"abc"[..], 3).unwrap().as_deref(),
+            Some(&b"abc"[..])
+        );
+        assert_eq!(read_at_most(&b"abcd"[..], 3).unwrap(), None);
+        assert_eq!(
+            read_at_most(&b""[..], 0).unwrap().as_deref(),
+            Some(&b""[..])
+        );
+
+        let mut endless = std::io::repeat(7);
+        assert_eq!(read_at_most(&mut endless, 16).unwrap(), None);
+        let mut counted = CountingReader {
+            inner: std::io::repeat(7),
+            taken: 0,
+        };
+        assert_eq!(read_at_most(&mut counted, 16).unwrap(), None);
+        assert!(counted.taken <= 17, "read {} bytes", counted.taken);
+    }
+
+    struct CountingReader<R> {
+        inner: R,
+        taken: usize,
+    }
+
+    impl<R: std::io::Read> std::io::Read for CountingReader<R> {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            let count = self.inner.read(buffer)?;
+            self.taken += count;
+            Ok(count)
+        }
+    }
 }
