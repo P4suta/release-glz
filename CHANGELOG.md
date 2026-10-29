@@ -18,6 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A managed Release PR body must end in exactly one complete marker, and the reasons and API summaries it renders can no longer contain one.
 - A remote tag lookup accepts only the exact tag ref, so a tag whose name merely ends in the release tag can't answer for it.
 - Git children pass refs after `--end-of-options` and never wait for a credential prompt.
+- The Gleam compiler, and every dependency build it runs, receives only the variables that locate executables, home and cache directories, temporary space, the locale, proxies, and certificates.
+  GitHub and Actions tokens, OIDC request values, Action inputs, runner command files, and registry credentials no longer reach dependency code.
+- Hooks can't receive `GITHUB_STATE`, like the other runner command files.
 
 ### Removed
 

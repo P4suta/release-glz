@@ -56,7 +56,7 @@ fn sealed_candidate_cli_lifecycle_reuses_one_candidate_without_rebuilding() {
     )
     .unwrap();
 
-    let rehearse = candidate_command(temp.path(), &gleam, &package_path, &interface_path)
+    let rehearse = candidate_command(temp.path(), &gleam)
         .args([
             "--output",
             "json",
@@ -79,7 +79,7 @@ fn sealed_candidate_cli_lifecycle_reuses_one_candidate_without_rebuilding() {
         .to_owned();
     let sealed_package = std::fs::read(candidate.join("artifacts/package.tar")).unwrap();
 
-    let verify = candidate_command(temp.path(), &gleam, &package_path, &interface_path)
+    let verify = candidate_command(temp.path(), &gleam)
         .args([
             "--output",
             "json",
@@ -97,7 +97,7 @@ fn sealed_candidate_cli_lifecycle_reuses_one_candidate_without_rebuilding() {
         candidate_digest
     );
 
-    let status = candidate_command(temp.path(), &gleam, &package_path, &interface_path)
+    let status = candidate_command(temp.path(), &gleam)
         .args([
             "--output",
             "json",
@@ -118,7 +118,7 @@ fn sealed_candidate_cli_lifecycle_reuses_one_candidate_without_rebuilding() {
         github_listener,
         vec![http_response(404, b""), http_response(404, b"")],
     );
-    let release = candidate_command(temp.path(), &gleam, &package_path, &interface_path)
+    let release = candidate_command(temp.path(), &gleam)
         .args([
             "--output",
             "json",
@@ -187,7 +187,7 @@ fn a_version_below_the_automatic_minimum_is_a_policy_exit_not_an_internal_failur
     let gleam = fake_gleam(temp.path());
     let before = std::fs::read(temp.path().join("gleam.toml")).unwrap();
 
-    let output = candidate_command(temp.path(), &gleam, &package_path, &interface_path)
+    let output = candidate_command(temp.path(), &gleam)
         .args(["--output", "json", "set-version", "0.9.0"])
         .output()
         .unwrap();
@@ -214,14 +214,14 @@ fn a_version_below_the_automatic_minimum_is_a_policy_exit_not_an_internal_failur
 fn set_version_dry_run_and_apply_only_raise_the_manifest_version() {
     let temp = tempfile::tempdir().unwrap();
     let (listener, registry_url) = bound_listener();
-    let (package, interface, gleam) = initialize_initial_package(temp.path(), &registry_url);
+    let gleam = initialize_initial_package(temp.path(), &registry_url);
     let (_requests, server) = serve_recording(
         listener,
         vec![http_response(404, b""), http_response(404, b"")],
     );
     let before = std::fs::read_to_string(temp.path().join("gleam.toml")).unwrap();
 
-    let dry_run = candidate_command(temp.path(), &gleam, &package, &interface)
+    let dry_run = candidate_command(temp.path(), &gleam)
         .args(["--output", "json", "set-version", "2.0.0", "--dry-run"])
         .output()
         .unwrap();
@@ -234,7 +234,7 @@ fn set_version_dry_run_and_apply_only_raise_the_manifest_version() {
         before
     );
 
-    let apply = candidate_command(temp.path(), &gleam, &package, &interface)
+    let apply = candidate_command(temp.path(), &gleam)
         .args(["--output", "json", "set-version", "2.0.0"])
         .output()
         .unwrap();
@@ -252,10 +252,10 @@ fn set_version_dry_run_and_apply_only_raise_the_manifest_version() {
 fn prerelease_command_starts_the_alpha_train_and_persists_channel_and_version() {
     let temp = tempfile::tempdir().unwrap();
     let (listener, registry_url) = bound_listener();
-    let (package, interface, gleam) = initialize_initial_package(temp.path(), &registry_url);
+    let gleam = initialize_initial_package(temp.path(), &registry_url);
     let (_requests, server) = serve_recording(listener, vec![http_response(404, b"")]);
 
-    let output = candidate_command(temp.path(), &gleam, &package, &interface)
+    let output = candidate_command(temp.path(), &gleam)
         .args(["--output", "json", "prerelease", "alpha"])
         .output()
         .unwrap();
@@ -296,22 +296,12 @@ fn plan_uses_the_strict_manifest_registry_adapter_and_private_read_credential() 
     std::fs::write(&package, hex_package()).unwrap();
     let interface = temp.path().join("interface.json");
     std::fs::write(&interface, br#"{"modules":{}}"#).unwrap();
-    let gleam = temp.path().join("fake-gleam");
-    std::fs::write(
-        &gleam,
-        "#!/bin/sh\nset -eu\nif [ \"${1:-}\" = \"--version\" ]; then printf '%s\\n' 'gleam 1.12.3'; exit 0; fi\nif [ \"${1:-}\" = \"export\" ] && [ \"${2:-}\" = \"hex-tarball\" ]; then mkdir -p build; cp \"$TEST_HEX_TAR\" build/widget-1.0.0.tar; exit 0; fi\nif [ \"${1:-}\" = \"export\" ] && [ \"${2:-}\" = \"package-interface\" ]; then cp \"$TEST_INTERFACE\" \"$4\"; exit 0; fi\nexit 64\n",
-    )
-    .unwrap();
-    let mut permissions = std::fs::metadata(&gleam).unwrap().permissions();
-    permissions.set_mode(0o755);
-    std::fs::set_permissions(&gleam, permissions).unwrap();
+    let gleam = fake_gleam(temp.path());
 
     let output = isolated_command(env!("CARGO_BIN_EXE_release-glz"))
         .current_dir(temp.path())
         .args(["--output", "json", "plan"])
         .env("RELEASE_GLZ_GLEAM", &gleam)
-        .env("TEST_HEX_TAR", &package)
-        .env("TEST_INTERFACE", &interface)
         .env("TEST_REGISTRY_TOKEN", "private-read-value")
         .env("RELEASE_GLZ_HEX_API_URL", "http://127.0.0.1:9")
         .env("RELEASE_GLZ_HEX_REPOSITORY_URL", "http://127.0.0.1:9")
@@ -408,8 +398,6 @@ fn release_pr_closes_a_stale_verified_managed_pr_when_no_release_is_required() {
         .current_dir(temp.path())
         .args(["--output", "json", "release-pr"])
         .env("RELEASE_GLZ_GLEAM", &gleam)
-        .env("TEST_HEX_TAR", &package_path)
-        .env("TEST_INTERFACE", &interface_path)
         .env("TEST_REGISTRY_TOKEN", "private-read-value")
         .env("GITHUB_TOKEN", "github-value")
         .env_remove("GH_TOKEN")
@@ -692,10 +680,11 @@ fn git_output(directory: &std::path::Path, args: &[&str]) -> String {
     String::from_utf8(output.stdout).unwrap().trim().to_owned()
 }
 
+/// Commit an unpublished package and return the compiler stand-in that exports its fixtures.
 fn initialize_initial_package(
     directory: &std::path::Path,
     registry_url: &str,
-) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+) -> std::path::PathBuf {
     let manifest = manifest(registry_url).replace("docs = true", "docs = false");
     std::fs::create_dir(directory.join("src")).unwrap();
     std::fs::write(directory.join("gleam.toml"), manifest).unwrap();
@@ -714,26 +703,16 @@ fn initialize_initial_package(
     git(directory, &["add", "."]);
     git(directory, &["commit", "-m", "feat: initial package"]);
 
-    let package = directory.join("fixture.tar");
-    std::fs::write(&package, hex_package()).unwrap();
-    let interface = directory.join("interface.json");
-    std::fs::write(&interface, br#"{"modules":{}}"#).unwrap();
-    let gleam = fake_gleam(directory);
-    (package, interface, gleam)
+    std::fs::write(directory.join("fixture.tar"), hex_package()).unwrap();
+    std::fs::write(directory.join("interface.json"), br#"{"modules":{}}"#).unwrap();
+    fake_gleam(directory)
 }
 
-fn candidate_command(
-    directory: &std::path::Path,
-    gleam: &std::path::Path,
-    package: &std::path::Path,
-    interface: &std::path::Path,
-) -> Command {
+fn candidate_command(directory: &std::path::Path, gleam: &std::path::Path) -> Command {
     let mut command = isolated_command(env!("CARGO_BIN_EXE_release-glz"));
     command
         .current_dir(directory)
         .env("RELEASE_GLZ_GLEAM", gleam)
-        .env("TEST_HEX_TAR", package)
-        .env("TEST_INTERFACE", interface)
         .env("TEST_REGISTRY_TOKEN", "private-read-value")
         .env_remove("GITHUB_TOKEN")
         .env_remove("GH_TOKEN");
@@ -753,11 +732,20 @@ fn json(output: &std::process::Output) -> serde_json::Value {
     serde_json::from_slice(&output.stdout).unwrap()
 }
 
+/// A compiler stand-in that exports `fixture.tar` and `interface.json` from its own directory.
+///
+/// The paths are part of the script, because the compiler inherits no test variables.
 fn fake_gleam(directory: &std::path::Path) -> std::path::PathBuf {
     let gleam = directory.join("fake-gleam");
+    let package = directory.join("fixture.tar");
+    let interface = directory.join("interface.json");
     std::fs::write(
         &gleam,
-        "#!/bin/sh\nset -eu\nif [ \"${1:-}\" = \"--version\" ]; then printf '%s\\n' 'gleam 1.12.3'; exit 0; fi\nif [ \"${1:-}\" = \"export\" ] && [ \"${2:-}\" = \"hex-tarball\" ]; then mkdir -p build; cp \"$TEST_HEX_TAR\" build/widget-1.0.0.tar; exit 0; fi\nif [ \"${1:-}\" = \"export\" ] && [ \"${2:-}\" = \"package-interface\" ]; then cp \"$TEST_INTERFACE\" \"$4\"; exit 0; fi\nexit 64\n",
+        format!(
+            "#!/bin/sh\nset -eu\nif [ \"${{1:-}}\" = \"--version\" ]; then printf '%s\\n' 'gleam 1.12.3'; exit 0; fi\nif [ \"${{1:-}}\" = \"export\" ] && [ \"${{2:-}}\" = \"hex-tarball\" ]; then mkdir -p build; cp '{}' build/widget-1.0.0.tar; exit 0; fi\nif [ \"${{1:-}}\" = \"export\" ] && [ \"${{2:-}}\" = \"package-interface\" ]; then cp '{}' \"$4\"; exit 0; fi\nexit 64\n",
+            package.display(),
+            interface.display()
+        ),
     )
     .unwrap();
     let mut permissions = std::fs::metadata(&gleam).unwrap().permissions();
