@@ -34,8 +34,26 @@ const CONNECT_TIMEOUT_SECONDS: u64 = 10;
 /// Observations made while waiting for a release to become visible.
 const DEFAULT_POLL_ATTEMPTS: usize = 20;
 
-/// Milliseconds between those observations.
-const DEFAULT_POLL_INTERVAL_MS: u64 = 3_000;
+/// Time between those observations.
+const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(3);
+
+/// How often, and how many times, a client checks whether a release has become visible.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VisibilityPoll {
+    /// Observations made before the wait fails.
+    pub attempts: usize,
+    /// Time after each observation that didn't show the release.
+    pub interval: Duration,
+}
+
+impl Default for VisibilityPoll {
+    fn default() -> Self {
+        Self {
+            attempts: DEFAULT_POLL_ATTEMPTS,
+            interval: DEFAULT_POLL_INTERVAL,
+        }
+    }
+}
 
 /// Milliseconds to wait when a response asks to retry without saying when.
 const DEFAULT_RETRY_AFTER_MS: u64 = 250;
@@ -204,6 +222,7 @@ pub struct HexRegistry {
     credential: Option<Credential>,
     auth: AuthKind,
     retries: usize,
+    visibility_poll: VisibilityPoll,
 }
 
 impl HexRegistry {
@@ -253,7 +272,14 @@ impl HexRegistry {
                 .map(|value| Credential(value.to_owned())),
             auth: config.auth,
             retries: DEFAULT_RETRIES,
+            visibility_poll: VisibilityPoll::default(),
         })
+    }
+
+    /// Check for a release with `poll` instead of the default polling.
+    pub fn with_visibility_poll(mut self, poll: VisibilityPoll) -> Self {
+        self.visibility_poll = poll;
+        self
     }
 
     /// Build a client, reading the credential from `credential_env`.
@@ -499,20 +525,12 @@ impl HexRegistry {
         version: &Version,
         require_docs: bool,
     ) -> Result<PackageState> {
-        let attempts = std::env::var("RELEASE_GLZ_POLL_ATTEMPTS")
-            .ok()
-            .and_then(|value| value.parse().ok())
-            .unwrap_or(DEFAULT_POLL_ATTEMPTS);
-        let delay = std::env::var("RELEASE_GLZ_POLL_INTERVAL_MS")
-            .ok()
-            .and_then(|value| value.parse().ok())
-            .unwrap_or(DEFAULT_POLL_INTERVAL_MS);
-        for _ in 0..attempts {
+        for _ in 0..self.visibility_poll.attempts {
             let state = self.package(package).await?;
             if release_ready(state.as_ref(), version, require_docs) {
                 return state.context("ready registry state unexpectedly disappeared");
             }
-            tokio::time::sleep(Duration::from_millis(delay)).await;
+            tokio::time::sleep(self.visibility_poll.interval).await;
         }
         bail!("timed out waiting for {package} {version} to appear on the registry")
     }
