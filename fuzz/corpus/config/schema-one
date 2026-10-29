@@ -1,0 +1,13 @@
+name = "legacy"
+version = "2.1.0"
+
+[tools.release-glz]
+schema = 1
+changelog_path = "docs/CHANGELOG.md"
+release_branch_prefix = "release/"
+allow_version_zero = false
+prerelease = "beta"
+allow_unknown_api_for = ["2.0.0"]
+
+[tools.release-glz.baseline_refs]
+"2.0.0" = "refs/tags/v2.0.0"

@@ -1,0 +1,10 @@
+name = "other_tools"
+version = "1.0.0"
+
+[repository]
+type = "codeberg"
+user = "someone"
+repo = "other-tools"
+
+[tools.other]
+enabled = true

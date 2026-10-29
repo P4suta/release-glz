@@ -1,0 +1,19 @@
+{
+  "modules": {
+    "kangaroo": {
+      "functions": {
+        "run": {
+          "parameters": [],
+          "return": {"kind": "named", "package": "gleam", "module": "gleam", "name": "Int", "parameters": []}
+        },
+        "watch": {
+          "parameters": [],
+          "return": {"kind": "named", "package": "gleam", "module": "gleam", "name": "Nil", "parameters": []}
+        }
+      },
+      "constants": {},
+      "type-aliases": {},
+      "types": {}
+    }
+  }
+}

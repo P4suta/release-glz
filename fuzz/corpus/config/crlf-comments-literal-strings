@@ -1,0 +1,6 @@
+# Maintainer notes survive edits
+name = 'crlf'
+version = '1.2.3' # pinned by hand
+
+[tools.release-glz]
+prerelease = 'beta'

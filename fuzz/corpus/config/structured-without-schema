@@ -1,0 +1,5 @@
+name = "unversioned"
+version = "1.0.0"
+
+[tools.release-glz.registry]
+provider = "hexpm"

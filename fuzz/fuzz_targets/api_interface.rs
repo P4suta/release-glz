@@ -1,10 +1,10 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use release_glz::api::compare;
+
+#[path = "../invariants/api_interface.rs"]
+mod invariants;
 
 fuzz_target!(|data: &[u8]| {
-    let midpoint = data.len() / 2;
-    let _ = compare(&data[..midpoint], &data[midpoint..]);
-    let _ = compare(data, data);
+    invariants::check(data);
 });

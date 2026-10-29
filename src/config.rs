@@ -12,9 +12,28 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use semver::Version;
 use serde::{Deserialize, Serialize};
-use toml_edit::{DocumentMut, Item, Table, value};
+use toml_edit::{DocumentMut, Item, Table, TableLike, value};
 
+use crate::gleam::MINIMUM_SUPPORTED_COMPILER;
 use crate::model::PrereleaseChannel;
+
+/// Base URL of the hex.pm publish API.
+const HEXPM_API_URL: &str = "https://hex.pm/api";
+
+/// Base URL that serves hex.pm package tarballs.
+const HEXPM_REPOSITORY_URL: &str = "https://repo.hex.pm";
+
+/// Base URL that receives hex.pm documentation tarballs.
+const HEXPM_DOCS_URL: &str = "https://repo.hex.pm/docs";
+
+/// The `schema` of the flat `[tools.release-glz]` keys that predate structured tables.
+const FLAT_SCHEMA: i64 = 1;
+
+/// The `schema` of the structured `[tools.release-glz]` tables.
+const STRUCTURED_SCHEMA: i64 = 2;
+
+/// The ASCII delete control character, which Git refuses in a ref.
+const ASCII_DELETE: u8 = 0x7f;
 
 /// Seconds a hook may run for when the manifest names no timeout.
 const DEFAULT_HOOK_TIMEOUT_SECONDS: u64 = 300;
@@ -118,9 +137,9 @@ impl Default for RegistryConfig {
         Self {
             provider: RegistryProvider::HexPm,
             repository: None,
-            api_url: "https://hex.pm/api".into(),
-            repository_url: "https://repo.hex.pm".into(),
-            docs_url: "https://repo.hex.pm/docs".into(),
+            api_url: HEXPM_API_URL.into(),
+            repository_url: HEXPM_REPOSITORY_URL.into(),
+            docs_url: HEXPM_DOCS_URL.into(),
             credential_env: "HEXPM_API_KEY".into(),
             auth: AuthKind::HexToken,
             allow_http_loopback: false,
@@ -336,7 +355,7 @@ impl Default for ReleaseConfig {
     fn default() -> Self {
         Self {
             schema: 1,
-            compiler: Version::new(1, 9, 0),
+            compiler: MINIMUM_SUPPORTED_COMPILER,
             registry: RegistryConfig::default(),
             approval: ApprovalConfig::default(),
             outputs: OutputConfig::default(),
@@ -583,21 +602,20 @@ notes_dir = \".release-glz/notes\"\n\n\
     }
 
     /// Select or clear the prerelease channel in memory.
+    ///
+    /// Clearing a channel never creates a release table that the manifest lacks.
     pub fn set_prerelease(&mut self, channel: Option<PrereleaseChannel>) {
-        ensure_release_table(&mut self.document);
-        let release = self
-            .document
-            .get_mut("tools")
-            .and_then(Item::as_table_like_mut)
-            .and_then(|tools| tools.get_mut("release-glz"))
-            .and_then(Item::as_table_like_mut)
-            .expect("validated release-glz table");
         match channel {
             Some(channel) => {
-                release.insert("prerelease", value(channel.as_str()));
+                ensure_release_table(&mut self.document);
+                release_table_mut(&mut self.document)
+                    .expect("validated release-glz table")
+                    .insert("prerelease", value(channel.as_str()));
             }
             None => {
-                release.remove("prerelease");
+                if let Some(release) = release_table_mut(&mut self.document) {
+                    release.remove("prerelease");
+                }
             }
         }
         self.release.prerelease = channel;
@@ -679,8 +697,10 @@ fn parse_release_config(document: &DocumentMut) -> Result<ReleaseConfig> {
 
     if let Some(schema) = table.get("schema") {
         match schema.as_integer() {
-            Some(2) => return parse_v2_release_config(&document.to_string()),
-            Some(1) => {}
+            Some(STRUCTURED_SCHEMA) => {
+                return parse_structured_release_config(&document.to_string());
+            }
+            Some(FLAT_SCHEMA) => {}
             Some(value) => {
                 bail!("unsupported release-glz schema {value}; expected 1 or 2")
             }
@@ -745,19 +765,19 @@ fn parse_release_config(document: &DocumentMut) -> Result<ReleaseConfig> {
 }
 
 #[derive(Debug, Deserialize)]
-struct V2Root {
-    tools: V2Tools,
+struct StructuredRoot {
+    tools: StructuredTools,
 }
 
 #[derive(Debug, Deserialize)]
-struct V2Tools {
+struct StructuredTools {
     #[serde(rename = "release-glz")]
-    release_glz: V2ReleaseConfig,
+    release_glz: StructuredReleaseConfig,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct V2ReleaseConfig {
+struct StructuredReleaseConfig {
     schema: u32,
     compiler: Version,
     registry: RegistryConfig,
@@ -784,12 +804,12 @@ fn default_release_branch_prefix() -> String {
     "release-glz/".into()
 }
 
-fn parse_v2_release_config(source: &str) -> Result<ReleaseConfig> {
-    let root: V2Root = toml_edit::de::from_str(source).map_err(|error| {
+fn parse_structured_release_config(source: &str) -> Result<ReleaseConfig> {
+    let root: StructuredRoot = toml_edit::de::from_str(source).map_err(|error| {
         anyhow::anyhow!("invalid `[tools.release-glz]` schema 2 configuration: {error}")
     })?;
     let raw = root.tools.release_glz;
-    if raw.schema != 2 {
+    if i64::from(raw.schema) != STRUCTURED_SCHEMA {
         bail!("unsupported release-glz schema {}; expected 2", raw.schema);
     }
     let allow_unknown_api_for = raw
@@ -1104,7 +1124,7 @@ pub fn validate_git_ref(value: &str, field: &str) -> Result<()> {
         || value.contains("@{")
         || value.bytes().any(|byte| {
             byte <= b' '
-                || byte == 0x7f
+                || byte == ASCII_DELETE
                 || matches!(byte, b'\\' | b'~' | b'^' | b':' | b'?' | b'*' | b'[')
         })
         || value
@@ -1114,6 +1134,14 @@ pub fn validate_git_ref(value: &str, field: &str) -> Result<()> {
         bail!("{field} contains an unsafe git ref");
     }
     Ok(())
+}
+
+fn release_table_mut(document: &mut DocumentMut) -> Option<&mut dyn TableLike> {
+    document
+        .get_mut("tools")
+        .and_then(Item::as_table_like_mut)
+        .and_then(|tools| tools.get_mut("release-glz"))
+        .and_then(Item::as_table_like_mut)
 }
 
 fn ensure_release_table(document: &mut DocumentMut) {
@@ -1186,6 +1214,15 @@ allow_unknown_api_for = ["1.2.3"]
         assert!(rendered.contains("prerelease = \"rc\""));
         manifest.set_prerelease(None);
         assert!(!manifest.render().contains("prerelease ="));
+    }
+
+    #[test]
+    fn clearing_a_prerelease_never_creates_release_configuration() {
+        let source = "name = \"x\"\nversion = \"1.0.0\"\n";
+        let mut manifest = Manifest::parse(PathBuf::from("gleam.toml"), source.to_owned()).unwrap();
+        manifest.set_prerelease(None);
+        assert_eq!(manifest.render(), source);
+        assert!(!manifest.has_release_config());
     }
 
     #[test]

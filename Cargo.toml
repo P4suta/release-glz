@@ -27,7 +27,7 @@ ring = "0.17.14"
 ryu-js = "1.0"
 semver = { version = "1.0.28", features = ["serde"] }
 serde = { version = "1.0.228", features = ["derive"] }
-serde_json = { version = "1.0.149", features = ["float_roundtrip"] }
+serde_json = { version = "1.0.154", features = ["float_roundtrip"] }
 serde_yaml = "0.9.34"
 sha2 = "0.11.0"
 tar = "0.4.46"
@@ -39,7 +39,7 @@ tokio = { version = "1.54.1", features = [
   "rt-multi-thread",
   "time",
 ] }
-toml_edit = { version = "0.25.13", features = ["serde"] }
+toml_edit = { version = "0.25.17", features = ["serde"] }
 
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1.1.6", features = ["process"] }
