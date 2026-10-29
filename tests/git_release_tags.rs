@@ -27,8 +27,17 @@ fn release_tags_are_annotated_and_observable_after_push() {
 
     let repo = GitRepo::discover(&work).unwrap();
     let head = repo.head().unwrap();
-    repo.create_annotated_tag("v1.2.3", &head, "release widget 1.2.3")
-        .unwrap();
+    git(
+        &work,
+        &[
+            "tag",
+            "--annotate",
+            "--message",
+            "release widget 1.2.3",
+            "v1.2.3",
+            &head,
+        ],
+    );
     let local = repo.tag_state("v1.2.3").unwrap().unwrap();
     assert_eq!(local.target_sha, head);
     assert!(local.annotated);

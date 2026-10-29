@@ -1396,32 +1396,6 @@ impl GitHubClient {
         Ok(uploaded)
     }
 
-    /// Create a published Release directly, for outputs that need no assets.
-    pub async fn create_release(
-        &self,
-        tag: &str,
-        sha: &str,
-        body: &str,
-        prerelease: bool,
-    ) -> Result<String> {
-        self.require_token()?;
-        let release: ReleaseResponse = self
-            .post(
-                "releases",
-                &serde_json::json!({
-                    "tag_name": tag,
-                    "target_commitish": sha,
-                    "name": tag,
-                    "body": body,
-                    "draft": false,
-                    "prerelease": prerelease,
-                    "generate_release_notes": false
-                }),
-            )
-            .await?;
-        Ok(release.html_url)
-    }
-
     async fn create_ref(&self, branch: &str, sha: &str) -> Result<()> {
         self.post_empty(
             "git/refs",
