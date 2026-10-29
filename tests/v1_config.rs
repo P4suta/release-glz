@@ -191,6 +191,23 @@ fn paths_refs_and_hook_ids_are_safe() {
 }
 
 #[test]
+fn no_hook_may_take_the_id_of_release_glz_evidence() {
+    for phase in ["verify", "sidecar", "notify"] {
+        let source = complete_config(&format!(
+            "[[tools.release-glz.hooks.{phase}]]\nid = \"release-glz\"\nargv = [\"./scripts/hook\"]\ntimeout_seconds = 30\nrequired = true\n"
+        ));
+        let Err(error) = Manifest::parse(PathBuf::from("gleam.toml"), source) else {
+            panic!("a {phase} hook named release-glz was accepted");
+        };
+        let error = format!("{error:#}");
+        assert!(
+            error.contains("hook id `release-glz` is reserved"),
+            "{phase}: {error}"
+        );
+    }
+}
+
+#[test]
 fn registry_requires_https_except_explicit_loopback_tests() {
     let insecure = complete_config("").replace("https://hex.pm/api", "http://hex.pm/api");
     assert!(Manifest::parse(PathBuf::from("gleam.toml"), insecure).is_err());

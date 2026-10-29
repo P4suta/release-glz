@@ -24,6 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Archive validation refuses, on every host, a path that some supported OS can't store under the same name, and two entries that collide once letter case no longer counts.
   That covers a colon, a character or device name that Windows forbids, such as `aux.html`, and a component that ends in a dot or a space.
   A package, documentation archive, or source snapshot with such a path now fails instead of extracting into a different tree on macOS or Windows.
+- No configured hook may take the id `release-glz`, which marks the SBOM and provenance that release-glz builds itself.
+  Such a hook's output used to count as built-in evidence.
 - A registry `Retry-After` header can ask for at most one minute, so a response can no longer stall a run indefinitely.
 - Candidate verification checks each sealed file again through the handle it opened and reads at most one byte past the file's limit.
   A file swapped after the path check can no longer make verification read without bound.
