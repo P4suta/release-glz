@@ -742,7 +742,11 @@ impl GitHubClient {
             bail!("GitHub Actions Candidate artifact has expired");
         }
         if artifact.id != artifact_id
-            || artifact.name != format!("release-glz-candidate-{expected_run_id}")
+            || artifact.name
+                != format!(
+                    "{}{expected_run_id}",
+                    crate::workflow::CANDIDATE_ARTIFACT_PREFIX
+                )
             || artifact.size_in_bytes == 0
             || artifact.size_in_bytes > MAX_ACTIONS_ARTIFACT_BYTES
             || artifact.digest != format!("sha256:{expected_sha256}")
