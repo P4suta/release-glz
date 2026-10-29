@@ -17,9 +17,9 @@ use crate::artifact::{
 };
 use crate::canonical::{SHA256_HEX_LEN, canonical_json_bytes, canonical_sha256};
 use crate::config::{
-    ApprovalConfig, AuthKind, HookConfig, OutputConfig, RegistryProvider, url_is_http_loopback,
-    valid_env_name, validate_git_ref, validate_hook_config, validate_package_name,
-    validate_registry_repository, validate_relative_path,
+    ApprovalConfig, AuthKind, HookConfig, Manifest, OutputConfig, RegistryProvider,
+    url_is_http_loopback, valid_env_name, validate_git_ref, validate_hook_config,
+    validate_package_name, validate_registry_repository, validate_relative_path,
 };
 use crate::git::OBJECT_HEX_LEN;
 use crate::hooks::SidecarArtifact;
@@ -264,6 +264,210 @@ pub struct CandidateInput {
     pub notify_hooks: Vec<String>,
     /// Notify hooks as configured.
     pub notify_hook_definitions: Vec<HookConfig>,
+}
+
+/// The fields of a Candidate that decide where it's published, under which identity, and which commands run around it.
+///
+/// The configuration at the source commit states every one of them.
+/// Publication therefore compares a Candidate's policy with the policy of its source, because the job that seals a Candidate also runs dependency build code.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SealedPolicy {
+    /// Package name.
+    pub package: String,
+    /// Version being released.
+    pub version: Version,
+    /// Release tag for this version.
+    pub tag: String,
+    /// Repository-relative path of the package manifest.
+    pub manifest_path: String,
+    /// Compiler the bytes must come from.
+    pub compiler: Version,
+    /// Registry, endpoints, and credential variable of the publication.
+    pub registry: RegistryIdentity,
+    /// Whether the package publishes to a private registry.
+    pub private: bool,
+    /// The `owner/name` GitHub slug.
+    pub github_repository: String,
+    /// Branch prefix of the rolling Release PR.
+    pub release_branch_prefix: String,
+    /// Release notes for the GitHub Release.
+    pub release_notes: String,
+    /// Approvals that have to exist before publication.
+    pub approval: ApprovalConfig,
+    /// Which artifacts the release produces.
+    pub outputs: OutputConfig,
+    /// Verify hooks as configured.
+    pub verify_hook_definitions: Vec<HookConfig>,
+    /// Sidecar hooks as configured.
+    pub sidecar_hook_definitions: Vec<HookConfig>,
+    /// Identifiers of the notify hooks to run after publication.
+    pub notify_hooks: Vec<String>,
+    /// Notify hooks as configured.
+    pub notify_hook_definitions: Vec<HookConfig>,
+}
+
+impl SealedPolicy {
+    /// The policy that a sealed Candidate states.
+    pub fn of(manifest: &CandidateManifest) -> Self {
+        // No `..`: a new manifest field has to be classified here as policy, product, or digest.
+        let CandidateManifest {
+            schema: _,
+            package,
+            version,
+            tag,
+            source:
+                CandidateSource {
+                    commit_sha: _,
+                    manifest_path,
+                },
+            compiler,
+            registry,
+            private,
+            github_repository,
+            release_branch_prefix,
+            release_notes,
+            approval,
+            outputs,
+            artifacts: _,
+            verify_hook_definitions,
+            sidecar_hook_definitions,
+            hook_evidence: _,
+            sidecars: _,
+            notify_hooks,
+            notify_hook_definitions,
+            intent_digest: _,
+            candidate_digest: _,
+        } = manifest;
+        Self {
+            package: package.clone(),
+            version: version.clone(),
+            tag: tag.clone(),
+            manifest_path: manifest_path.clone(),
+            compiler: compiler.clone(),
+            registry: registry.clone(),
+            private: *private,
+            github_repository: github_repository.clone(),
+            release_branch_prefix: release_branch_prefix.clone(),
+            release_notes: release_notes.clone(),
+            approval: approval.clone(),
+            outputs: outputs.clone(),
+            verify_hook_definitions: verify_hook_definitions.clone(),
+            sidecar_hook_definitions: sidecar_hook_definitions.clone(),
+            notify_hooks: notify_hooks.clone(),
+            notify_hook_definitions: notify_hook_definitions.clone(),
+        }
+    }
+
+    /// The policy that `manifest`, read from `package_dir` at the repository-relative `manifest_path`, states.
+    pub fn from_source(
+        manifest: &Manifest,
+        package_dir: &Path,
+        manifest_path: &str,
+    ) -> Result<Self> {
+        let release = &manifest.release;
+        let registry = &release.registry;
+        let release_notes = fs::read_to_string(package_dir.join(&release.changelog.path))
+            .ok()
+            .and_then(|source| {
+                crate::changelog::release_section(&source, &manifest.version.to_string())
+            })
+            .unwrap_or_default();
+        Ok(Self {
+            package: manifest.package.clone(),
+            version: manifest.version.clone(),
+            tag: manifest.repository.tag_for(&manifest.version),
+            manifest_path: manifest_path.to_owned(),
+            compiler: release.compiler.clone(),
+            registry: RegistryIdentity {
+                provider: registry.provider,
+                repository: registry.repository.clone(),
+                api_url: registry.api_url.clone(),
+                repository_url: registry.repository_url.clone(),
+                docs_url: registry.docs_url.clone(),
+                credential_env: registry.credential_env.clone(),
+                auth: registry.auth,
+                allow_http_loopback: registry.allow_http_loopback,
+            },
+            private: registry.provider == RegistryProvider::HexCompatible
+                || registry.repository.is_some(),
+            github_repository: manifest
+                .repository
+                .github_name()
+                .context("Candidate releases require a GitHub `owner/repository`")?,
+            release_branch_prefix: release.release_branch_prefix.clone(),
+            release_notes,
+            approval: release.approval.clone(),
+            outputs: release.outputs.clone(),
+            verify_hook_definitions: release.hooks.verify.clone(),
+            sidecar_hook_definitions: release.hooks.sidecar.clone(),
+            notify_hooks: release
+                .hooks
+                .notify
+                .iter()
+                .map(|hook| hook.id.clone())
+                .collect(),
+            notify_hook_definitions: release.hooks.notify.clone(),
+        })
+    }
+
+    /// Names of the fields in which `self` and `other` differ.
+    pub fn differences(&self, other: &Self) -> Vec<&'static str> {
+        // No `..`: a new field has to be compared here too.
+        let Self {
+            package,
+            version,
+            tag,
+            manifest_path,
+            compiler,
+            registry,
+            private,
+            github_repository,
+            release_branch_prefix,
+            release_notes,
+            approval,
+            outputs,
+            verify_hook_definitions,
+            sidecar_hook_definitions,
+            notify_hooks,
+            notify_hook_definitions,
+        } = self;
+        [
+            ("package", *package == other.package),
+            ("version", *version == other.version),
+            ("tag", *tag == other.tag),
+            ("manifest_path", *manifest_path == other.manifest_path),
+            ("compiler", *compiler == other.compiler),
+            ("registry", *registry == other.registry),
+            ("private", *private == other.private),
+            (
+                "github_repository",
+                *github_repository == other.github_repository,
+            ),
+            (
+                "release_branch_prefix",
+                *release_branch_prefix == other.release_branch_prefix,
+            ),
+            ("release_notes", *release_notes == other.release_notes),
+            ("approval", *approval == other.approval),
+            ("outputs", *outputs == other.outputs),
+            (
+                "verify_hook_definitions",
+                *verify_hook_definitions == other.verify_hook_definitions,
+            ),
+            (
+                "sidecar_hook_definitions",
+                *sidecar_hook_definitions == other.sidecar_hook_definitions,
+            ),
+            ("notify_hooks", *notify_hooks == other.notify_hooks),
+            (
+                "notify_hook_definitions",
+                *notify_hook_definitions == other.notify_hook_definitions,
+            ),
+        ]
+        .into_iter()
+        .filter_map(|(field, same)| (!same).then_some(field))
+        .collect()
+    }
 }
 
 /// Sealing and verification of the publication unit.
@@ -1344,7 +1548,97 @@ fn validate_sha256(value: &str, field: &str) -> Result<()> {
 mod tests {
     use std::io::{Seek, SeekFrom, Write};
 
-    use super::{read_at_most, read_opened_regular};
+    use semver::Version;
+
+    use super::{SealedPolicy, read_at_most, read_opened_regular};
+    use crate::config::{ApprovalConfig, AuthKind, HookConfig, OutputConfig, RegistryProvider};
+
+    fn policy() -> SealedPolicy {
+        let hook = |id: &str| HookConfig {
+            id: id.into(),
+            argv: vec![format!("./scripts/{id}")],
+            timeout_seconds: 30,
+            required: true,
+            env: vec![],
+        };
+        SealedPolicy {
+            package: "widget".into(),
+            version: Version::new(1, 2, 3),
+            tag: "v1.2.3".into(),
+            manifest_path: "gleam.toml".into(),
+            compiler: Version::new(1, 18, 1),
+            registry: super::RegistryIdentity {
+                provider: RegistryProvider::HexPm,
+                repository: None,
+                api_url: "https://hex.pm/api".into(),
+                repository_url: "https://repo.hex.pm".into(),
+                docs_url: "https://repo.hex.pm/docs".into(),
+                credential_env: "HEXPM_API_KEY".into(),
+                auth: AuthKind::HexToken,
+                allow_http_loopback: false,
+            },
+            private: false,
+            github_repository: "acme/widget".into(),
+            release_branch_prefix: "release-glz/".into(),
+            release_notes: "Notes.".into(),
+            approval: ApprovalConfig::default(),
+            outputs: OutputConfig::default(),
+            verify_hook_definitions: vec![hook("verify")],
+            sidecar_hook_definitions: vec![hook("sidecar")],
+            notify_hooks: vec!["notify".into()],
+            notify_hook_definitions: vec![hook("notify")],
+        }
+    }
+
+    #[test]
+    fn a_policy_difference_names_exactly_the_fields_that_differ() {
+        assert!(policy().differences(&policy()).is_empty());
+        type Change = (&'static str, fn(&mut SealedPolicy));
+        let changes: [Change; 16] = [
+            ("package", |policy| policy.package = "gadget".into()),
+            ("version", |policy| policy.version = Version::new(1, 2, 4)),
+            ("tag", |policy| policy.tag = "v1.2.4".into()),
+            ("manifest_path", |policy| {
+                policy.manifest_path = "other/gleam.toml".into();
+            }),
+            ("compiler", |policy| {
+                policy.compiler = Version::new(1, 19, 0)
+            }),
+            ("registry", |policy| {
+                policy.registry.api_url = "https://attacker.example/api".into();
+            }),
+            ("private", |policy| policy.private = true),
+            ("github_repository", |policy| {
+                policy.github_repository = "attacker/widget".into();
+            }),
+            ("release_branch_prefix", |policy| {
+                policy.release_branch_prefix = "other/".into();
+            }),
+            ("release_notes", |policy| {
+                policy.release_notes = "Other.".into()
+            }),
+            ("approval", |policy| {
+                policy.approval.environment = "other".into();
+            }),
+            ("outputs", |policy| policy.outputs.docs = false),
+            ("verify_hook_definitions", |policy| {
+                policy.verify_hook_definitions[0].argv = vec!["sh".into()];
+            }),
+            ("sidecar_hook_definitions", |policy| {
+                policy.sidecar_hook_definitions[0].argv = vec!["sh".into()];
+            }),
+            ("notify_hooks", |policy| policy.notify_hooks.clear()),
+            ("notify_hook_definitions", |policy| {
+                policy.notify_hook_definitions[0].argv = vec!["sh".into()];
+            }),
+        ];
+        for (field, change) in changes {
+            let mut changed = policy();
+            change(&mut changed);
+            assert_eq!(policy().differences(&changed), [field]);
+            assert_eq!(changed.differences(&policy()), [field]);
+        }
+    }
 
     #[test]
     fn an_opened_file_is_read_whole_up_to_its_limit() {

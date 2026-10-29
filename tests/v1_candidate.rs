@@ -5,13 +5,58 @@ use flate2::{Compression, write::GzEncoder};
 use release_glz::artifact::{ArchiveLimits, validate_hex_tarball};
 use release_glz::candidate::{
     Candidate, CandidateInput, CandidateSource, HookEvidence, HookKind, RegistryIdentity,
+    SealedPolicy,
 };
 use release_glz::config::{
-    ApprovalConfig, ApprovalMode, AuthKind, HookConfig, OutputConfig, RegistryProvider,
+    ApprovalConfig, ApprovalMode, AuthKind, HookConfig, Manifest, OutputConfig, RegistryProvider,
 };
 use release_glz::hooks::SidecarArtifact;
+use release_glz::release::SourceBoundCandidate;
+use release_glz_test_support::{git, init_repository, isolated_command};
 use semver::Version;
 use sha2::{Digest, Sha256};
+
+/// A package whose committed configuration states one complete publication policy.
+const POLICY_SOURCE: &str = r#"name = "widget"
+version = "1.2.3"
+description = "A publication policy fixture"
+licences = ["MIT"]
+
+[repository]
+type = "github"
+user = "acme"
+repo = "widget"
+
+[tools.release-glz]
+schema = 2
+compiler = "1.18.1"
+
+[tools.release-glz.registry]
+provider = "hexpm"
+api_url = "https://hex.pm/api"
+repository_url = "https://repo.hex.pm"
+docs_url = "https://repo.hex.pm/docs"
+credential_env = "HEXPM_API_KEY"
+auth = "hex-token"
+
+[tools.release-glz.approval]
+normal = "release-pr-and-environment"
+manual = "environment"
+environment = "release"
+manual_refs = ["refs/heads/main"]
+
+[tools.release-glz.outputs]
+docs = false
+github_release = true
+sbom = false
+provenance = false
+
+[[tools.release-glz.hooks.notify]]
+id = "announce"
+argv = ["./scripts/announce"]
+timeout_seconds = 30
+required = false
+"#;
 
 #[test]
 fn candidate_seals_and_verifies_the_exact_publish_bytes() {
@@ -454,6 +499,194 @@ fn sealing_refuses_a_package_interface_over_the_archive_limit() {
             refused,
             "{size} bytes: {error}"
         );
+    }
+}
+
+#[test]
+fn publication_binds_a_candidate_whose_policy_matches_its_source_commit() {
+    let temp = tempfile::tempdir().unwrap();
+    let (repository, sha) = policy_repository(temp.path());
+    let sealed = Candidate::seal(
+        &temp.path().join("candidate"),
+        honest_policy_input(&repository, &sha),
+    )
+    .unwrap();
+    let bound = SourceBoundCandidate::bind(sealed.clone(), &repository.join("gleam.toml")).unwrap();
+    assert_eq!(bound.manifest(), &sealed);
+}
+
+#[test]
+fn publication_refuses_a_candidate_whose_policy_differs_from_its_source_commit() {
+    let temp = tempfile::tempdir().unwrap();
+    let (repository, sha) = policy_repository(temp.path());
+    type Forgery = (&'static str, fn(&mut CandidateInput));
+    let forgeries: [Forgery; 10] = [
+        ("registry", |input| {
+            input.registry.api_url = "https://attacker.example/api".into();
+        }),
+        ("registry", |input| {
+            input.registry.credential_env = "OTHER_REGISTRY_KEY".into();
+        }),
+        ("notify_hook_definitions", |input| {
+            input.notify_hook_definitions[0].argv = vec!["./scripts/exfiltrate".into()];
+        }),
+        ("approval", |input| {
+            input
+                .approval
+                .manual_refs
+                .push("refs/heads/attacker".into());
+        }),
+        ("manifest_path", |input| {
+            input.source.manifest_path = "fixtures/gleam.toml".into();
+        }),
+        ("release_notes", |input| {
+            input.release_notes = "Download it from https://attacker.example.".into();
+        }),
+        ("github_repository", |input| {
+            input.github_repository = "attacker/widget".into();
+        }),
+        ("compiler", |input| input.compiler = Version::new(1, 19, 0)),
+        ("outputs", |input| input.outputs.github_release = false),
+        ("release_branch_prefix", |input| {
+            input.release_branch_prefix = "attacker/".into();
+        }),
+    ];
+    for (index, (field, forge)) in forgeries.into_iter().enumerate() {
+        let mut input = honest_policy_input(&repository, &sha);
+        forge(&mut input);
+        let sealed = Candidate::seal(&temp.path().join(format!("forged-{index}")), input).unwrap();
+        let error = SourceBoundCandidate::bind(sealed, &repository.join("gleam.toml"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(field), "{field}: {error}");
+    }
+}
+
+#[test]
+fn publication_reads_the_source_policy_from_the_commit_instead_of_the_working_tree() {
+    let temp = tempfile::tempdir().unwrap();
+    let (repository, sha) = policy_repository(temp.path());
+    fs::write(
+        repository.join("gleam.toml"),
+        POLICY_SOURCE.replace("https://hex.pm/api", "https://attacker.example/api"),
+    )
+    .unwrap();
+    let sealed = Candidate::seal(
+        &temp.path().join("candidate"),
+        honest_policy_input(&repository, &sha),
+    )
+    .unwrap();
+    assert_eq!(sealed.registry.api_url, "https://attacker.example/api");
+    let error = SourceBoundCandidate::bind(sealed, &repository.join("gleam.toml"))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("registry"), "{error}");
+}
+
+#[test]
+fn publication_refuses_a_checkout_at_another_commit() {
+    let temp = tempfile::tempdir().unwrap();
+    let (repository, sha) = policy_repository(temp.path());
+    let sealed = Candidate::seal(
+        &temp.path().join("candidate"),
+        honest_policy_input(&repository, &sha),
+    )
+    .unwrap();
+    git(
+        &repository,
+        &["commit", "--allow-empty", "-m", "chore: later"],
+    );
+    let error = SourceBoundCandidate::bind(sealed, &repository.join("gleam.toml"))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("source"), "{error}");
+}
+
+#[test]
+fn release_refuses_a_forged_candidate_before_it_needs_any_token() {
+    let temp = tempfile::tempdir().unwrap();
+    let (repository, sha) = policy_repository(temp.path());
+    let mut input = honest_policy_input(&repository, &sha);
+    input.registry.api_url = "https://attacker.example/api".into();
+    let candidate = temp.path().join("forged");
+    Candidate::seal(&candidate, input).unwrap();
+    let output = isolated_command(env!("CARGO_BIN_EXE_release-glz"))
+        .current_dir(&repository)
+        .args(["--output", "json", "release", "--candidate"])
+        .arg(&candidate)
+        .output()
+        .unwrap();
+    let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let message = envelope["diagnostics"][0]["message"].as_str().unwrap();
+    assert_eq!(output.status.code(), Some(4), "{message}");
+    assert!(message.contains("registry"), "{message}");
+}
+
+/// A committed copy of [`POLICY_SOURCE`] and the SHA of its commit.
+fn policy_repository(temp: &std::path::Path) -> (std::path::PathBuf, String) {
+    let repository = temp.join("repo");
+    fs::create_dir_all(&repository).unwrap();
+    fs::write(repository.join("gleam.toml"), POLICY_SOURCE).unwrap();
+    init_repository(&repository);
+    for (name, value) in [
+        ("core.hooksPath", ".git/no-hooks"),
+        ("user.email", "fixture@example.test"),
+        ("user.name", "Fixture"),
+        ("commit.gpgsign", "false"),
+    ] {
+        git(&repository, &["config", name, value]);
+    }
+    git(&repository, &["add", "."]);
+    git(
+        &repository,
+        &["commit", "-m", "feat: publication policy source"],
+    );
+    let sha = git(&repository, &["rev-parse", "HEAD"]).trim().to_owned();
+    (repository, sha)
+}
+
+/// A Candidate input whose policy is what the working tree of `repository` states, sealed as the commit `sha`.
+fn honest_policy_input(repository: &std::path::Path, sha: &str) -> CandidateInput {
+    let manifest = Manifest::load(repository.join("gleam.toml")).unwrap();
+    let SealedPolicy {
+        package,
+        version,
+        tag,
+        manifest_path,
+        compiler,
+        registry,
+        private,
+        github_repository,
+        release_branch_prefix,
+        release_notes,
+        approval,
+        outputs,
+        verify_hook_definitions,
+        sidecar_hook_definitions,
+        notify_hooks,
+        notify_hook_definitions,
+    } = SealedPolicy::from_source(&manifest, repository, "gleam.toml").unwrap();
+    CandidateInput {
+        package,
+        version,
+        tag,
+        source: CandidateSource {
+            commit_sha: sha.to_owned(),
+            manifest_path,
+        },
+        compiler,
+        registry,
+        private,
+        github_repository,
+        release_branch_prefix,
+        release_notes,
+        approval,
+        outputs,
+        verify_hook_definitions,
+        sidecar_hook_definitions,
+        notify_hooks,
+        notify_hook_definitions,
+        ..fresh_candidate_input()
     }
 }
 

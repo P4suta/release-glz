@@ -1,18 +1,16 @@
 //! Rehearsal: build one committed snapshot and seal it as a `candidate/v1`.
 //!
-//! The snapshot comes from `git archive`, so uncommitted and ignored
-//! working-tree files cannot enter the Candidate.
+//! The snapshot comes from `git archive`, so uncommitted and ignored working-tree files cannot enter the Candidate.
 
-use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
 use crate::candidate::{
-    Candidate, CandidateInput, CandidateManifest, CandidateSource, RegistryIdentity,
+    Candidate, CandidateInput, CandidateManifest, CandidateSource, SealedPolicy,
 };
 use crate::canonical::SHA256_HEX_LEN;
-use crate::config::{Manifest, RegistryProvider};
+use crate::config::Manifest;
 use crate::git::{GitRepo, OBJECT_HEX_LEN};
 use crate::gleam::Gleam;
 use crate::hooks::{HookContext, HookRunner};
@@ -22,8 +20,7 @@ use crate::hooks::{HookContext, HookRunner};
 pub struct RehearseOptions {
     /// Path to the `gleam.toml` that selects the package.
     pub manifest_path: PathBuf,
-    /// The exact full commit SHA to seal; abbreviated and symbolic refs are
-    /// rejected.
+    /// The exact full commit SHA to seal; abbreviated and symbolic refs are rejected.
     pub source_ref: String,
     /// Directory that receives the sealed Candidate.
     pub output: PathBuf,
@@ -38,20 +35,10 @@ pub struct Rehearsal {
 impl Rehearsal {
     /// Build the requested commit, run the verify hooks, and seal the result.
     ///
-    /// The configured compiler must match the installed one exactly, so the
-    /// bytes a reviewer approved are the bytes that can later be published.
+    /// The configured compiler must match the installed one exactly, so the bytes a reviewer approved are the bytes that can later be published.
     pub async fn run(&self, options: &RehearseOptions) -> Result<CandidateManifest> {
         validate_full_sha(&options.source_ref)?;
-        let requested_manifest = absolute(&options.manifest_path)?;
-        let package_directory = requested_manifest
-            .parent()
-            .context("manifest path has no package directory")?;
-        let repo = GitRepo::discover(package_directory)?;
-        let root = repo.root().canonicalize()?;
-        let relative_manifest = requested_manifest
-            .strip_prefix(&root)
-            .context("manifest is outside the git repository")?
-            .to_path_buf();
+        let (repo, relative_manifest) = locate_manifest(&options.manifest_path)?;
         let package_relative = relative_manifest.parent().unwrap_or_else(|| Path::new(""));
         let resolved = repo
             .resolve(&options.source_ref)?
@@ -105,68 +92,57 @@ impl Rehearsal {
             .docs
             .then(|| self.gleam.export_docs_tarball(snapshot.package_dir()))
             .transpose()?;
-        let registry = &manifest.release.registry;
-        let tag = manifest.repository.tag_for(&manifest.version);
-        let github_repository = manifest
-            .repository
-            .github_name()
-            .context("Candidate releases require a GitHub `owner/repository`")?;
-        let release_notes = fs::read_to_string(
-            snapshot
-                .package_dir()
-                .join(&manifest.release.changelog.path),
-        )
-        .ok()
-        .and_then(|source| {
-            crate::changelog::release_section(&source, &manifest.version.to_string())
-        })
-        .unwrap_or_default();
-        let sidecar_hooks = manifest.release.hooks.sidecar.clone();
+        // Publication derives the same policy from the same commit and refuses a Candidate that differs, so both sides use one derivation.
+        let SealedPolicy {
+            package,
+            version,
+            tag,
+            manifest_path,
+            compiler: _,
+            registry,
+            private,
+            github_repository,
+            release_branch_prefix,
+            release_notes,
+            approval,
+            outputs,
+            verify_hook_definitions,
+            sidecar_hook_definitions,
+            notify_hooks,
+            notify_hook_definitions,
+        } = SealedPolicy::from_source(
+            &manifest,
+            snapshot.package_dir(),
+            &manifest_path_text(&relative_manifest),
+        )?;
+        let sidecar_hooks = sidecar_hook_definitions.clone();
         let mut input = CandidateInput {
-            package: manifest.package,
-            version: manifest.version,
+            package,
+            version,
             tag,
             source: CandidateSource {
                 commit_sha: resolved,
-                manifest_path: relative_manifest.to_string_lossy().replace('\\', "/"),
+                manifest_path,
             },
             compiler,
-            registry: RegistryIdentity {
-                provider: registry.provider,
-                repository: registry.repository.clone(),
-                api_url: registry.api_url.clone(),
-                repository_url: registry.repository_url.clone(),
-                docs_url: registry.docs_url.clone(),
-                credential_env: registry.credential_env.clone(),
-                auth: registry.auth,
-                allow_http_loopback: registry.allow_http_loopback,
-            },
-            private: registry.provider == RegistryProvider::HexCompatible
-                || registry.repository.is_some(),
+            registry,
+            private,
             github_repository,
-            release_branch_prefix: manifest.release.release_branch_prefix.clone(),
+            release_branch_prefix,
             release_notes,
-            approval: manifest.release.approval.clone(),
-            outputs: manifest.release.outputs.clone(),
+            approval,
+            outputs,
             package_tarball,
             docs_tarball,
             package_interface,
-            verify_hook_definitions: manifest.release.hooks.verify.clone(),
-            sidecar_hook_definitions: sidecar_hooks.clone(),
+            verify_hook_definitions,
+            sidecar_hook_definitions,
             hook_evidence,
             sidecars: vec![],
-            notify_hooks: manifest
-                .release
-                .hooks
-                .notify
-                .iter()
-                .map(|hook| hook.id.clone())
-                .collect(),
-            notify_hook_definitions: manifest.release.hooks.notify.clone(),
+            notify_hooks,
+            notify_hook_definitions,
         };
-        // Evidence, the intent digest, and the seal all describe the same
-        // archives, so they are validated and expanded once here rather than
-        // once per step.
+        // Evidence, the intent digest, and the seal all describe the same archives, so they are validated and expanded once here rather than once per step.
         let (built_in_evidence, artifacts) = Candidate::built_in_evidence_and_artifacts(&input)?;
         let intent_digest = Candidate::core_intent_digest_prepared(&input, Some(&artifacts))?;
         let sidecars = hook_runner
@@ -193,6 +169,28 @@ impl Rehearsal {
             crate::failure::classified(crate::failure::FailureClass::ImmutableStateConflict, error)
         })
     }
+}
+
+/// The repository that contains `manifest_path`, and the manifest's path relative to that repository's root.
+///
+/// Rehearsal records this path in the Candidate, and publication resolves its own manifest path the same way before it compares the two.
+pub(crate) fn locate_manifest(manifest_path: &Path) -> Result<(GitRepo, PathBuf)> {
+    let requested_manifest = absolute(manifest_path)?;
+    let package_directory = requested_manifest
+        .parent()
+        .context("manifest path has no package directory")?;
+    let repo = GitRepo::discover(package_directory)?;
+    let root = repo.root().canonicalize()?;
+    let relative_manifest = requested_manifest
+        .strip_prefix(&root)
+        .context("manifest is outside the git repository")?
+        .to_path_buf();
+    Ok((repo, relative_manifest))
+}
+
+/// A repository-relative manifest path as a Candidate records it, with `/` separators on every OS.
+pub(crate) fn manifest_path_text(relative_manifest: &Path) -> String {
+    relative_manifest.to_string_lossy().replace('\\', "/")
 }
 
 fn absolute(path: &Path) -> Result<PathBuf> {
