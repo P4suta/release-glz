@@ -465,13 +465,6 @@ async fn run(cli: Cli) -> Result<i32> {
         return run_doctor(&cli.manifest_path, cli.output, *online, *candidate_build).await;
     }
 
-    let planning_manifest = Manifest::load(&cli.manifest_path)
-        .map_err(|error| classified(FailureClass::UsageOrConfig, error))?;
-    let planner = Planner::new(
-        HexRegistry::from_environment(&planning_manifest.release.registry)
-            .map_err(|error| default_failure_class(error, FailureClass::UsageOrConfig))?,
-        Gleam::default(),
-    );
     let base_options = PlanOptions {
         manifest_path: cli.manifest_path.clone(),
         ..PlanOptions::default()
@@ -487,7 +480,7 @@ async fn run(cli: Cli) -> Result<i32> {
                     format!("refusing to replace the existing plan `{}`", out.display()),
                 ));
             }
-            let plan = planner
+            let plan = manifest_planner(&cli.manifest_path)?
                 .plan(&base_options)
                 .await
                 .map_err(|error| default_failure_class(error, FailureClass::UsageOrConfig))?;
@@ -511,8 +504,7 @@ async fn run(cli: Cli) -> Result<i32> {
             return Ok(0);
         }
         Command::Verify { candidate, online } => {
-            let sealed = Candidate::verify(&candidate)
-                .map_err(|error| classified(FailureClass::ImmutableStateConflict, error))?;
+            let sealed = verified_candidate(&candidate)?;
             if online {
                 let bound = bind_to_source(sealed, &base_options.manifest_path)?;
                 let approval = approved_for_inspection(bound.manifest())?;
@@ -534,8 +526,7 @@ async fn run(cli: Cli) -> Result<i32> {
             dry_run,
         } => {
             if let Some(candidate_directory) = candidate {
-                let sealed = Candidate::verify(&candidate_directory)
-                    .map_err(|error| classified(FailureClass::ImmutableStateConflict, error))?;
+                let sealed = verified_candidate(&candidate_directory)?;
                 let checkout_manifest = Manifest::load(&cli.manifest_path)
                     .map_err(|error| default_failure_class(error, FailureClass::UsageOrConfig))?;
                 if checkout_manifest.package != sealed.package
@@ -620,13 +611,17 @@ async fn run(cli: Cli) -> Result<i32> {
                 let plan = handed_off_plan(&plan_file, &cli.manifest_path)?;
                 write_rolling_release_pr(plan, &cli.manifest_path, dry_run).await?
             } else {
-                sync_rolling_release_pr(&planner, &base_options, &cli.manifest_path, dry_run)
-                    .await?
+                sync_rolling_release_pr(
+                    &manifest_planner(&cli.manifest_path)?,
+                    &base_options,
+                    &cli.manifest_path,
+                    dry_run,
+                )
+                .await?
             }
         }
         Command::Release { candidate, dry_run } => {
-            let sealed = Candidate::verify(&candidate)
-                .map_err(|error| classified(FailureClass::ImmutableStateConflict, error))?;
+            let sealed = verified_candidate(&candidate)?;
             let candidate_digest = sealed.candidate_digest.clone();
             let bound = bind_to_source(sealed, &base_options.manifest_path)?;
             let approval = if dry_run {
@@ -650,8 +645,7 @@ async fn run(cli: Cli) -> Result<i32> {
         }
         Command::Status { candidate, online } => {
             if let Some(candidate) = candidate {
-                let sealed = Candidate::verify(&candidate)
-                    .map_err(|error| classified(FailureClass::ImmutableStateConflict, error))?;
+                let sealed = verified_candidate(&candidate)?;
                 if online {
                     let bound = bind_to_source(sealed, &base_options.manifest_path)?;
                     let approval = approved_for_inspection(bound.manifest())?;
@@ -676,7 +670,7 @@ async fn run(cli: Cli) -> Result<i32> {
                 }
                 return Ok(0);
             }
-            planner
+            manifest_planner(&cli.manifest_path)?
                 .plan(&base_options)
                 .await
                 .map_err(|error| default_failure_class(error, FailureClass::UsageOrConfig))?
@@ -689,7 +683,7 @@ async fn run(cli: Cli) -> Result<i32> {
                 version_override: Some(version.clone()),
                 ..base_options
             };
-            let mut plan = planner
+            let mut plan = manifest_planner(&cli.manifest_path)?
                 .plan(&options)
                 .await
                 .map_err(|error| default_failure_class(error, FailureClass::UsageOrConfig))?;
@@ -725,7 +719,7 @@ async fn run(cli: Cli) -> Result<i32> {
                 ignore_manifest_version: true,
                 ..base_options
             };
-            let mut plan = planner
+            let mut plan = manifest_planner(&cli.manifest_path)?
                 .plan(&options)
                 .await
                 .map_err(|error| default_failure_class(error, FailureClass::UsageOrConfig))?;
@@ -1455,6 +1449,31 @@ async fn write_rolling_release_pr(
             .map_err(|error| default_failure_class(error, FailureClass::TemporaryExternal))?;
     }
     Ok(plan)
+}
+
+/// The planner for the manifest at `manifest_path`.
+///
+/// Only commands that plan a release build one, so commands that read a sealed Candidate run without a manifest in the working directory.
+fn manifest_planner(manifest_path: &Path) -> Result<Planner<HexRegistry>> {
+    let manifest = Manifest::load(manifest_path)
+        .map_err(|error| classified(FailureClass::UsageOrConfig, error))?;
+    let registry = HexRegistry::from_environment(&manifest.release.registry)
+        .map_err(|error| default_failure_class(error, FailureClass::UsageOrConfig))?;
+    Ok(Planner::new(registry, Gleam::default()))
+}
+
+/// The sealed Candidate at `directory`.
+///
+/// A path that isn't a directory is a mistyped argument, and only a Candidate that fails its own checks is a conflict.
+fn verified_candidate(directory: &Path) -> Result<release_glz::candidate::CandidateManifest> {
+    if !directory.is_dir() {
+        return Err(classified(
+            FailureClass::UsageOrConfig,
+            format!("`{}` is not a Candidate directory", directory.display()),
+        ));
+    }
+    Candidate::verify(directory)
+        .map_err(|error| classified(FailureClass::ImmutableStateConflict, error))
 }
 
 /// Bind a verified Candidate to the checkout of its source commit, before any approval, GitHub, or registry client exists.
