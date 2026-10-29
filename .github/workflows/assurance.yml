@@ -71,7 +71,9 @@ jobs:
       - name: Enforce dependency source, license, and advisory policy
         run: cargo deny check -D warnings
       - name: Reject RustSec advisories and warnings
-        run: cargo audit -D warnings
+        run: |
+          cargo audit -D warnings
+          cargo audit -D warnings --file fuzz/Cargo.lock
       - name: Reject unused direct dependencies
         run: cargo machete --with-metadata
 

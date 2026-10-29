@@ -52,6 +52,7 @@ fn assurance_workflow_has_fixed_fail_closed_shipping_gates() {
         "cargo-fuzz --version 0.13.2",
         "cargo deny check -D warnings",
         "cargo audit -D warnings",
+        "cargo audit -D warnings --file fuzz/Cargo.lock",
         "cargo machete",
         "cargo llvm-cov",
         "--branch --json",
