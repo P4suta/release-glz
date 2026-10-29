@@ -59,6 +59,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Publication after a merged Release PR can succeed.
+  The push run's publish job consumes the Candidate that its own `prepare` job uploaded.
+  The artifact check had required that run to have completed, which it can't have while it publishes.
+  A push now accepts only its own run, in progress, and a manual promotion still accepts only an earlier run that completed with success.
 - A version bump that would carry a component past `u64::MAX`, and a prerelease number past it, is an error instead of a wrapped smaller version or a panic.
   Kani proves the lifecycle and version arithmetic of the new dependency-free `release-glz-core` crate for every input, and shipping assurance runs those proofs.
 - Updating the Release PR considers only a pull request on a branch with the release prefix whose marker names that same branch.

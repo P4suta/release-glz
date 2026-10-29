@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use base64::Engine as _;
 use release_glz::forge::{
-    DefaultBranch, GitHubClient, GitHubRelease, GitHubRepository, IntentBinding,
+    CandidateRun, DefaultBranch, GitHubClient, GitHubRelease, GitHubRepository, IntentBinding,
 };
 use release_glz::git::Commit;
 use release_glz::model::{ApiDiff, Baseline, BaselineSource, Bump, ReleasePlan, ReleaseState};
@@ -1371,7 +1371,7 @@ async fn actions_artifact_is_bound_to_the_oidc_run_source_and_server_digest() {
     .unwrap();
 
     let evidence = client
-        .verify_actions_artifact(91, &digest, "42", &source)
+        .verify_actions_artifact(91, &digest, "42", &source, CandidateRun::Completed)
         .await
         .unwrap();
     assert_eq!(evidence.id(), 91);
@@ -1452,11 +1452,87 @@ async fn actions_artifact_run_requires_the_managed_successful_repository_source(
         .await;
         let client = test_client(&server, Some("token"));
         let error = client
-            .verify_actions_artifact(91, &digest, "42", &source)
+            .verify_actions_artifact(91, &digest, "42", &source, CandidateRun::Completed)
             .await
             .unwrap_err()
             .to_string();
         assert!(error.contains("Candidate run does not match"), "{error}");
+    }
+}
+
+#[tokio::test]
+async fn a_candidate_from_the_current_run_requires_that_run_to_be_in_progress() {
+    let source = "a".repeat(40);
+    let digest = "d".repeat(64);
+    let artifact =
+        actions_artifact_value(91, "release-glz-candidate-42", 4096, &digest, 42, &source);
+    let workflow = ".github/workflows/release-glz.yml";
+    let running = actions_run_value(42, "o/r", workflow, &source, "in_progress", None);
+    let server = FakeServer::start(vec![
+        response(200, &artifact.to_string()),
+        response(200, &running.to_string()),
+    ])
+    .await;
+    let evidence = test_client(&server, Some("token"))
+        .verify_actions_artifact(91, &digest, "42", &source, CandidateRun::Current)
+        .await
+        .unwrap();
+    assert_eq!(evidence.run_id(), "42");
+
+    let invalid_runs = [
+        actions_run_value(42, "o/r", workflow, &source, "completed", Some("success")),
+        actions_run_value(42, "o/r", workflow, &source, "queued", None),
+        actions_run_value(43, "o/r", workflow, &source, "in_progress", None),
+        actions_run_value(42, "other/r", workflow, &source, "in_progress", None),
+        actions_run_value(
+            42,
+            "o/r",
+            ".github/workflows/other.yml",
+            &source,
+            "in_progress",
+            None,
+        ),
+        actions_run_value(42, "o/r", workflow, &"b".repeat(40), "in_progress", None),
+    ];
+    for invalid in invalid_runs {
+        let server = FakeServer::start(vec![
+            response(200, &artifact.to_string()),
+            response(200, &invalid.to_string()),
+        ])
+        .await;
+        let error = test_client(&server, Some("token"))
+            .verify_actions_artifact(91, &digest, "42", &source, CandidateRun::Current)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("Candidate run does not match"), "{error}");
+    }
+}
+
+#[test]
+fn a_push_publishes_only_its_own_candidate_and_a_promotion_only_an_earlier_one() {
+    assert_eq!(
+        CandidateRun::for_event("push", "42", "42").unwrap(),
+        CandidateRun::Current
+    );
+    assert_eq!(
+        CandidateRun::for_event("workflow_dispatch", "43", "42").unwrap(),
+        CandidateRun::Completed
+    );
+    for (event, current, candidate, expected) in [
+        ("push", "43", "42", "its own run"),
+        (
+            "workflow_dispatch",
+            "42",
+            "42",
+            "completed prior prepare run",
+        ),
+        ("schedule", "42", "41", "push or a manual promotion"),
+    ] {
+        let error = CandidateRun::for_event(event, current, candidate)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(expected), "{event}: {error}");
     }
 }
 
@@ -1480,7 +1556,7 @@ async fn expired_or_mismatched_actions_artifact_is_not_approval_evidence() {
     .unwrap();
 
     let error = client
-        .verify_actions_artifact(91, &"d".repeat(64), "42", &source)
+        .verify_actions_artifact(91, &"d".repeat(64), "42", &source, CandidateRun::Completed)
         .await
         .unwrap_err();
     assert!(error.to_string().contains("expired"));
@@ -1493,7 +1569,7 @@ async fn actions_artifact_validation_checks_every_local_and_server_identity_fiel
     let empty_server = FakeServer::start(vec![]).await;
     let without_token = test_client(&empty_server, None);
     let error = without_token
-        .verify_actions_artifact(91, &digest, "42", &source)
+        .verify_actions_artifact(91, &digest, "42", &source, CandidateRun::Completed)
         .await
         .unwrap_err()
         .to_string();
@@ -1507,7 +1583,13 @@ async fn actions_artifact_validation_checks_every_local_and_server_identity_fiel
         (91, digest.as_str(), "042", "run ID is not canonical"),
     ] {
         let error = client
-            .verify_actions_artifact(id, expected_digest, run_id, &source)
+            .verify_actions_artifact(
+                id,
+                expected_digest,
+                run_id,
+                &source,
+                CandidateRun::Completed,
+            )
             .await
             .unwrap_err()
             .to_string();
@@ -1554,7 +1636,7 @@ async fn actions_artifact_validation_checks_every_local_and_server_identity_fiel
     let client = test_client(&server, Some("token"));
     for index in 0..mismatches.len() {
         let error = client
-            .verify_actions_artifact(91, &digest, "42", &source)
+            .verify_actions_artifact(91, &digest, "42", &source, CandidateRun::Completed)
             .await
             .unwrap_err()
             .to_string();
