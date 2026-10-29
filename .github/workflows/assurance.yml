@@ -22,9 +22,11 @@ jobs:
           - os: ubuntu-24.04
             gleam: "1.12.0"
           - os: ubuntu-24.04
-            gleam: "1.18.1"
+            gleam: "1.19.2"
           - os: macos-15
-            gleam: "1.18.1"
+            gleam: "1.19.2"
+          - os: windows-2025
+            gleam: "1.19.2"
           - os: windows-2025
             gleam: "1.18.1"
     runs-on: ${{ matrix.os }}
@@ -42,7 +44,7 @@ jobs:
           rustup default 1.88.0
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
         with:
-          otp-version: "28.0"
+          otp-version: "28.5"
           gleam-version: ${{ matrix.gleam }}
       - run: cargo test --workspace --all-targets --locked
       - run: cargo run --locked -- --help
@@ -87,7 +89,7 @@ jobs:
         run: |
           rustup toolchain install 1.88.0 --profile minimal --no-self-update
           rustup default 1.88.0
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "24"
           package-manager-cache: false
@@ -105,7 +107,7 @@ jobs:
           chmod 0755 "$TOOL_DIR/actionlint"
           printf '%s\n' "$TOOL_DIR" >> "$GITHUB_PATH"
           rustup toolchain install 1.97.0 --profile minimal
-          cargo +1.97.0 install --locked zizmor --version 1.29.0
+          cargo +1.97.0 install --locked zizmor --version 1.31.1
       - name: Render the exact managed workflow into an isolated repository
         env:
           ACTION_SHA: ${{ github.sha }}
@@ -151,9 +153,9 @@ jobs:
           rustup default nightly-2026-08-22
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
         with:
-          otp-version: "28.0"
-          gleam-version: "1.18.1"
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+          otp-version: "28.5"
+          gleam-version: "1.19.2"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "24"
           package-manager-cache: false
@@ -186,8 +188,8 @@ jobs:
           rustup default 1.88.0
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
         with:
-          otp-version: "28.0"
-          gleam-version: "1.18.1"
+          otp-version: "28.5"
+          gleam-version: "1.19.2"
       - name: Install fixed mutation tools
         env:
           NEXTEST_ARCHIVE: ${{ runner.temp }}/cargo-nextest.tar.gz

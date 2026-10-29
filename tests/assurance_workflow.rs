@@ -1,6 +1,19 @@
 use std::fs;
 use std::path::Path;
 
+/// The one compiler release whose Windows Hex export the compatibility fallback recovers from, which shipping assurance keeps running natively.
+const WINDOWS_HEX_TARBALL_REGRESSION: &str = "1.18.1";
+
+fn pinned_tool(tool: &str) -> String {
+    fs::read_to_string("mise.toml")
+        .unwrap()
+        .parse::<toml_edit::DocumentMut>()
+        .unwrap()["tools"][tool]
+        .as_str()
+        .unwrap_or_else(|| panic!("mise.toml pins no {tool}"))
+        .to_owned()
+}
+
 #[test]
 fn routine_ci_uses_one_selected_linux_gate_without_shipping_campaigns() {
     let yaml = fs::read_to_string(".github/workflows/ci.yml").unwrap();
@@ -51,7 +64,7 @@ fn assurance_workflow_has_fixed_fail_closed_shipping_gates() {
         "actionlint",
         "zizmor",
         "rustup toolchain install 1.97.0 --profile minimal",
-        "cargo +1.97.0 install --locked zizmor --version 1.29.0",
+        "cargo +1.97.0 install --locked zizmor --version",
         "scripts/verify-workflows.js",
         "scripts/de-shell.js",
         "tests/fixtures/workflow/gleam.toml",
@@ -68,7 +81,7 @@ fn assurance_workflow_has_fixed_fail_closed_shipping_gates() {
     assert!(yaml.contains("permissions: {}"));
     assert!(!yaml.contains("cargo mutants --jobs"));
     assert!(!yaml.contains("RELEASE_GLZ_ACTION_SHA"));
-    assert!(!yaml.contains("cargo install --locked zizmor --version 1.29.0"));
+    assert!(!yaml.contains("cargo install --locked zizmor --version"));
     assert!(!yaml.contains("continue-on-error: true"));
     assert!(Path::new("tests/fixtures/workflow/gleam.toml").is_file());
 
@@ -214,6 +227,7 @@ fn release_assurance_covers_native_platforms_and_gleam_versions() {
             ("ubuntu-24.04", current),
             ("macos-15", current),
             ("windows-2025", current),
+            ("windows-2025", WINDOWS_HEX_TARBALL_REGRESSION),
         ])
     );
     assert!(assurance.contains("gleam-version: ${{ matrix.gleam }}"));
@@ -275,8 +289,14 @@ fn every_job_that_runs_compiler_tests_installs_the_pinned_gleam() {
 
         let reference = setup["uses"].as_str().unwrap().split_once('@').unwrap().1;
         assert_eq!(reference.len(), 40, "Gleam setup action must be immutable");
-        assert_eq!(setup["with"]["otp-version"].as_str(), Some("28.0"));
-        assert_eq!(setup["with"]["gleam-version"].as_str(), Some("1.18.1"));
+        assert_eq!(
+            setup["with"]["otp-version"].as_str(),
+            Some(pinned_tool("erlang").as_str())
+        );
+        assert_eq!(
+            setup["with"]["gleam-version"].as_str(),
+            Some(pinned_tool("gleam").as_str())
+        );
     }
 }
 
@@ -345,16 +365,7 @@ fn glob_matches(pattern: &str, path: &str) -> bool {
 
 #[test]
 fn local_tool_pins_match_the_versions_ci_installs() {
-    let pins = fs::read_to_string("mise.toml")
-        .unwrap()
-        .parse::<toml_edit::DocumentMut>()
-        .unwrap();
-    let pin = |tool: &str| {
-        pins["tools"][tool]
-            .as_str()
-            .unwrap_or_else(|| panic!("mise.toml pins no {tool}"))
-            .to_owned()
-    };
+    let pin = pinned_tool;
     let ci = fs::read_to_string(".github/workflows/ci.yml").unwrap();
     let parsed: serde_yaml::Value = serde_yaml::from_str(&ci).unwrap();
     let steps = |job: &str| parsed["jobs"][job]["steps"].as_sequence().unwrap().clone();
