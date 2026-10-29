@@ -11,15 +11,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial Hex-native release planner, rolling Release PR manager, resumable publisher, GitHub Action, and cross-platform binary distribution workflows.
 - `release-glz plan --out <FILE>` writes the plan it prints to a new file, and `release-glz release-pr --plan <FILE>` writes the Release PR from that file without running the compiler.
-  The writing job refuses a plan file that isn't a `plan/v2` document, carries an unknown field, already names a Release PR, describes another package or manifest version, or names a baseline outside the checked-out history.
+  The writing job refuses a plan file that isn't a `plan/v2` document, carries an unknown field, or already names a Release PR.
+  It also refuses a plan for another package or manifest version, or with a baseline outside the checked-out history.
 - `plan/v2` gains `release_pr_head`, the Release PR head commit that `release-pr` wrote or confirmed.
 - The Action accepts a `plan-file` input for `plan` and `release-pr`, and it exposes a `release-pr-head` output.
 - The `release-pr --candidate` result reports `intent_binding`, and the Action exposes it as `intent-binding`.
   A Candidate whose head a newer Release PR head replaced reports `superseded`, writes nothing, and exits with status 0 instead of failing.
-  A Release PR at the Candidate head whose marker describes another release is refused.
+  The binding refuses a Release PR at the Candidate head whose marker describes another release.
 
 ### Security
 
+- The generated workflow no longer runs the compiler in a job that can write.
+  `plan` compiles with read access and hands its plan to `release-pr`, which writes the Release PR without the compiler.
+  `rehearse-release-pr` and `bind-release-pr` then rehearse the new Release PR head and bind its intent in the same push run.
+  The workflow drops its `pull_request` trigger, and only the Release PR, binding, and publish jobs serialize, each per package.
 - A merged or open Release PR counts only when its head branch lives in the repository itself and it targets the default branch, so a fork's pull request can't stand in for a managed Release PR.
 - A generated Release PR commit must have exactly one parent in addition to its server-verified signature and digest trailer.
 - A managed Release PR body must end in exactly one complete marker, and the reasons and API summaries it renders can no longer contain one.

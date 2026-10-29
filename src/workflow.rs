@@ -23,6 +23,9 @@ const SETUP_BEAM_SHA: &str = "54075bcc5e249e4758d363f27d099f55d843f124"; // v1.2
 const UPLOAD_ARTIFACT_SHA: &str = "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"; // v7.0.1
 const DOWNLOAD_ARTIFACT_SHA: &str = "3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"; // v8.0.1
 const WORKFLOW_STATE_PATH: &str = ".release-glz/workflow-state.json";
+
+/// Hex digits of the manifest path digest that tell one package's concurrency groups from another's.
+const CONCURRENCY_KEY_LENGTH: usize = 16;
 #[cfg(test)]
 const TEST_ACTION_SHA: &str = "abcdef0123456789abcdef0123456789abcdef01";
 
@@ -96,8 +99,7 @@ pub fn render(default_branch: &str, manifest_path: &Path) -> String {
 
 /// Render the managed workflow for one package.
 ///
-/// Every input is validated before it reaches the template, and external
-/// Actions as well as release-glz itself are pinned to full commit SHAs,
+/// Every input is validated before it reaches the template, and external Actions as well as release-glz itself are pinned to full commit SHAs,
 /// so the generated file has no floating reference to resolve later.
 pub fn render_configured(
     default_branch: &str,
@@ -118,7 +120,7 @@ pub fn render_configured(
     validate_scalar(default_branch, "default branch", true)?;
     validate_manifest_scalar(&manifest)?;
     let manifest_yaml = format!("\"{manifest}\"");
-    let manifest_key = &digest(manifest.as_bytes())[..16];
+    let manifest_key = &digest(manifest.as_bytes())[..CONCURRENCY_KEY_LENGTH];
     validate_scalar(environment, "approval environment", false)?;
     validate_environment_name(registry_credential_env, "registry credential environment")?;
     validate_scalar(release_branch_prefix, "release branch prefix", true)?;
@@ -133,9 +135,6 @@ name: release-glz
 on:
   push:
     branches: [{default_branch}]
-  pull_request:
-    branches: [{default_branch}]
-    types: [opened, synchronize, reopened]
   workflow_dispatch:
     inputs:
       operation:
@@ -170,14 +169,10 @@ on:
 
 permissions: {{}}
 
-concurrency:
-  group: release-glz-${{{{ github.repository }}}}-{manifest_key}
-  cancel-in-progress: false
-
 jobs:
   plan:
-    name: Observe release intent
-    if: ${{{{ github.event_name != 'pull_request' && !(github.event_name == 'workflow_dispatch' && inputs.operation == 'promote') }}}}
+    name: Plan the release without write access
+    if: ${{{{ !(github.event_name == 'workflow_dispatch' && inputs.operation == 'promote') }}}}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -186,6 +181,7 @@ jobs:
     outputs:
       release-required: ${{{{ steps.plan.outputs.release-required }}}}
       version: ${{{{ steps.plan.outputs.version }}}}
+      plan-artifact-id: ${{{{ steps.upload-plan.outputs.artifact-id }}}}
     steps:
       - name: Bind a prepare dispatch to its workflow run source
         if: ${{{{ github.event_name == 'workflow_dispatch' }}}}
@@ -211,29 +207,63 @@ jobs:
         with:
           command: plan
           manifest-path: {manifest_yaml}
+          plan-file: ${{{{ runner.temp }}}}/release-glz-plan.json
+      - uses: actions/upload-artifact@{UPLOAD_ARTIFACT_SHA} # v7.0.1
+        if: ${{{{ github.event_name == 'push' }}}}
+        id: upload-plan
+        with:
+          name: release-glz-plan-${{{{ github.run_id }}}}-${{{{ github.run_attempt }}}}
+          path: ${{{{ runner.temp }}}}/release-glz-plan.json
+          if-no-files-found: error
+          retention-days: 1
 
-  prepare:
-    name: Prepare secret-free sealed Candidate
+  release-pr:
+    name: Write the rolling Release PR without the compiler
     needs: plan
-    if: ${{{{ always() && (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && startsWith(github.head_ref, '{release_branch_prefix}'))) && (github.event_name == 'pull_request' || (needs.plan.result == 'success' && ((github.event_name == 'workflow_dispatch' && inputs.operation == 'prepare') || (github.event_name == 'push' && needs.plan.outputs.release-required == 'true')))) }}}}
+    if: ${{{{ github.event_name == 'push' && needs.plan.outputs.plan-artifact-id != '' }}}}
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 15
+    concurrency:
+      group: release-glz-release-pr-${{{{ github.repository }}}}-{manifest_key}
+      cancel-in-progress: false
     permissions:
-      contents: read
-      pull-requests: read
+      contents: write # writes the release commit on the Release PR branch
+      pull-requests: write # opens, updates, or closes the Release PR
     outputs:
-      release-required: ${{{{ needs.plan.outputs.release-required || 'true' }}}}
-      version: ${{{{ steps.rehearse.outputs.version }}}}
-      intent-digest: ${{{{ steps.rehearse.outputs.intent-digest }}}}
-      candidate-digest: ${{{{ steps.rehearse.outputs.candidate-digest }}}}
-      artifact-id: ${{{{ steps.upload.outputs.artifact-id }}}}
-      artifact-digest: ${{{{ steps.upload.outputs.artifact-digest }}}}
-      run-id: ${{{{ github.run_id }}}}
+      release-pr-head: ${{{{ steps.release-pr.outputs.release-pr-head }}}}
     steps:
       - uses: actions/checkout@{CHECKOUT_SHA} # v7.0.1
         with:
           fetch-depth: 0
-          ref: ${{{{ inputs.source-sha || github.event.pull_request.head.sha || github.sha }}}}
+          ref: ${{{{ github.sha }}}}
+          persist-credentials: false
+      - uses: actions/download-artifact@{DOWNLOAD_ARTIFACT_SHA} # v8.0.1
+        with:
+          artifact-ids: ${{{{ needs.plan.outputs.plan-artifact-id }}}}
+          path: ${{{{ runner.temp }}}}/release-glz-plan
+          merge-multiple: true
+      - uses: P4suta/release-glz@{action_sha}
+        id: release-pr
+        with:
+          command: release-pr
+          manifest-path: {manifest_yaml}
+          plan-file: ${{{{ runner.temp }}}}/release-glz-plan/release-glz-plan.json
+
+  rehearse-release-pr:
+    name: Rehearse the Release PR head without write access
+    needs: release-pr
+    if: ${{{{ needs.release-pr.outputs.release-pr-head != '' }}}}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      artifact-id: ${{{{ steps.upload.outputs.artifact-id }}}}
+    steps:
+      - uses: actions/checkout@{CHECKOUT_SHA} # v7.0.1
+        with:
+          fetch-depth: 0
+          ref: ${{{{ needs.release-pr.outputs.release-pr-head }}}}
           persist-credentials: false
       - uses: erlef/setup-beam@{SETUP_BEAM_SHA} # v1.24.1
         with:
@@ -244,13 +274,84 @@ jobs:
         with:
           command: rehearse
           manifest-path: {manifest_yaml}
-          source-ref: ${{{{ inputs.source-sha || github.event.pull_request.head.sha || github.sha }}}}
+          source-ref: ${{{{ needs.release-pr.outputs.release-pr-head }}}}
+          candidate: .release-glz/candidate
+      - uses: actions/upload-artifact@{UPLOAD_ARTIFACT_SHA} # v7.0.1
+        id: upload
+        with:
+          name: release-glz-release-pr-candidate-${{{{ github.run_id }}}}-${{{{ github.run_attempt }}}}
+          path: .release-glz/candidate
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 1
+
+  bind-release-pr:
+    name: Bind the Release PR intent without the compiler
+    needs: [release-pr, rehearse-release-pr]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    concurrency:
+      group: release-glz-bind-${{{{ github.repository }}}}-{manifest_key}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      pull-requests: write # records the rehearsed intent digest on the Release PR
+    steps:
+      - uses: actions/checkout@{CHECKOUT_SHA} # v7.0.1
+        with:
+          fetch-depth: 0
+          ref: ${{{{ needs.release-pr.outputs.release-pr-head }}}}
+          persist-credentials: false
+      - uses: actions/download-artifact@{DOWNLOAD_ARTIFACT_SHA} # v8.0.1
+        with:
+          artifact-ids: ${{{{ needs.rehearse-release-pr.outputs.artifact-id }}}}
+          path: .release-glz/candidate
+          merge-multiple: true
+      - uses: P4suta/release-glz@{action_sha}
+        with:
+          command: release-pr
+          manifest-path: {manifest_yaml}
+          candidate: .release-glz/candidate
+
+  prepare:
+    name: Prepare secret-free sealed Candidate
+    needs: plan
+    if: ${{{{ (github.event_name == 'workflow_dispatch' && inputs.operation == 'prepare') || (github.event_name == 'push' && needs.plan.outputs.release-required == 'true') }}}}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      release-required: ${{{{ needs.plan.outputs.release-required }}}}
+      version: ${{{{ steps.rehearse.outputs.version }}}}
+      intent-digest: ${{{{ steps.rehearse.outputs.intent-digest }}}}
+      candidate-digest: ${{{{ steps.rehearse.outputs.candidate-digest }}}}
+      artifact-id: ${{{{ steps.upload.outputs.artifact-id }}}}
+      artifact-digest: ${{{{ steps.upload.outputs.artifact-digest }}}}
+      run-id: ${{{{ github.run_id }}}}
+    steps:
+      - uses: actions/checkout@{CHECKOUT_SHA} # v7.0.1
+        with:
+          fetch-depth: 0
+          ref: ${{{{ inputs.source-sha || github.sha }}}}
+          persist-credentials: false
+      - uses: erlef/setup-beam@{SETUP_BEAM_SHA} # v1.24.1
+        with:
+          otp-version: "28.0"
+          gleam-version: "{compiler}"
+      - uses: P4suta/release-glz@{action_sha}
+        id: rehearse
+        with:
+          command: rehearse
+          manifest-path: {manifest_yaml}
+          source-ref: ${{{{ inputs.source-sha || github.sha }}}}
           candidate: .release-glz/candidate
       - uses: actions/upload-artifact@{UPLOAD_ARTIFACT_SHA} # v7.0.1
         if: ${{{{ steps.rehearse.outcome == 'success' }}}}
         id: upload
         with:
-          name: release-glz-candidate-${{{{ github.run_id }}}}
+          name: release-glz-candidate-${{{{ github.run_id }}}}-${{{{ github.run_attempt }}}}
           path: .release-glz/candidate
           if-no-files-found: error
           include-hidden-files: true
@@ -301,15 +402,14 @@ jobs:
           [[ "$ARTIFACT_DIGEST" =~ ^([0-9a-f]{{64}}|sha256:[0-9a-f]{{64}})$ ]]
 
   authorize:
-    name: Bind or verify Release PR intent
+    name: Verify the merged Release PR intent
     needs: prepare
-    if: ${{{{ always() && needs.prepare.result == 'success' && needs.prepare.outputs.candidate-digest != '' && (github.event_name == 'push' || github.event_name == 'pull_request') }}}}
+    if: ${{{{ github.event_name == 'push' && needs.prepare.outputs.candidate-digest != '' }}}}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
-      actions: read
       contents: read
-      pull-requests: write
+      pull-requests: read
     outputs:
       state: ${{{{ steps.authorize.outputs.state }}}}
       pr-url: ${{{{ steps.authorize.outputs.pr-url }}}}
@@ -317,7 +417,7 @@ jobs:
       - uses: actions/checkout@{CHECKOUT_SHA} # v7.0.1
         with:
           fetch-depth: 0
-          ref: ${{{{ github.event.pull_request.head.sha || github.sha }}}}
+          ref: ${{{{ github.sha }}}}
           persist-credentials: false
       - uses: actions/download-artifact@{DOWNLOAD_ARTIFACT_SHA} # v8.0.1
         with:
@@ -330,7 +430,7 @@ jobs:
           command: release-pr
           manifest-path: {manifest_yaml}
           candidate: .release-glz/candidate
-          dry-run: ${{{{ github.event_name == 'push' }}}}
+          dry-run: "true"
 
   publish:
     name: Publish approved Candidate
@@ -338,11 +438,14 @@ jobs:
     if: ${{{{ !cancelled() && always() && ((github.event_name == 'workflow_dispatch' && inputs.operation == 'promote' && needs.validate-promotion.result == 'success') || (github.event_name == 'push' && needs.prepare.result == 'success' && needs.prepare.outputs.candidate-digest != '' && needs.authorize.result == 'success' && needs.authorize.outputs.state == 'awaiting_approval')) }}}}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    concurrency:
+      group: release-glz-publish-${{{{ github.repository }}}}-{manifest_key}
+      cancel-in-progress: false
     environment: {environment}
     permissions:
       actions: read
-      contents: write
-      id-token: write
+      contents: write # creates the tag and the GitHub Release
+      id-token: write # proves this job's identity to the publication authorization
       pull-requests: read
     steps:
       - uses: actions/checkout@{CHECKOUT_SHA} # v7.0.1
@@ -379,28 +482,6 @@ jobs:
           RELEASE_GLZ_ENVIRONMENT: {environment}
           RELEASE_GLZ_MANUAL_SOURCE_SHA: ${{{{ inputs.source-sha }}}}
           RELEASE_GLZ_MANUAL_REASON: ${{{{ inputs.reason }}}}
-
-  release-pr:
-    name: Update rolling Release PR
-    runs-on: ubuntu-24.04
-    if: ${{{{ github.event_name == 'push' }}}}
-    timeout-minutes: 15
-    permissions:
-      contents: write
-      pull-requests: write
-    steps:
-      - uses: actions/checkout@{CHECKOUT_SHA} # v7.0.1
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: erlef/setup-beam@{SETUP_BEAM_SHA} # v1.24.1
-        with:
-          otp-version: "28.0"
-          gleam-version: "{compiler}"
-      - uses: P4suta/release-glz@{action_sha}
-        with:
-          command: release-pr
-          manifest-path: {manifest_yaml}
 "#
     ))
 }
@@ -418,8 +499,7 @@ pub fn validate_action_sha(action_sha: &str) -> Result<()> {
 }
 
 /// Read the immutable release-glz pin from an existing generated workflow.
-/// Every occurrence must agree, otherwise the file is not trusted as managed
-/// local configuration.
+/// Every occurrence must agree, otherwise the file is not trusted as managed local configuration.
 pub fn action_sha_from_workflow(repo_root: &Path) -> Result<String> {
     let source = fs::read_to_string(repo_root.join(WORKFLOW_PATH))
         .context("managed release workflow is missing")?;
@@ -501,9 +581,7 @@ pub fn init(
 
 /// Render the workflow and reconcile it with the file on disk.
 ///
-/// An update is refused unless the recorded managed-state digest still
-/// matches the current file, so a hand-edited workflow is never
-/// overwritten.
+/// An update is refused unless the recorded managed-state digest still matches the current file, so a hand-edited workflow is never overwritten.
 pub fn sync(
     repo_root: &Path,
     settings: &WorkflowSettings,
@@ -598,8 +676,10 @@ mod tests {
         assert!(yaml.contains("persist-credentials: false"));
         assert!(yaml.contains("  plan:"));
         assert!(yaml.contains("  prepare:"));
-        assert!(yaml.contains("startsWith(github.head_ref, 'release-glz/')"));
         assert!(yaml.contains("  publish:"));
+        let before_publish = yaml.split("  publish:").next().unwrap();
+        assert!(!before_publish.contains("secrets."));
+        assert!(!before_publish.contains("HEXPM_API_KEY"));
         let candidate = yaml
             .split("  prepare:")
             .nth(1)
@@ -607,17 +687,7 @@ mod tests {
             .split("  publish:")
             .next()
             .unwrap();
-        assert!(!candidate.contains("secrets."));
-        assert!(!candidate.contains("HEXPM_API_KEY"));
         assert!(!candidate.contains("command: plan"));
-        let plan = yaml
-            .split("  plan:")
-            .nth(1)
-            .unwrap()
-            .split("  prepare:")
-            .next()
-            .unwrap();
-        assert!(!plan.contains("secrets."));
         let publish = yaml.split("  publish:").nth(1).unwrap();
         assert!(publish.contains("environment: release"));
         assert!(publish.contains("id-token: write"));
@@ -629,10 +699,9 @@ mod tests {
         assert!(yaml.contains("artifact-digest"));
         assert!(yaml.contains("command: rehearse"));
         assert!(yaml.contains("command: release"));
-        let candidate_source =
-            "${{ inputs.source-sha || github.event.pull_request.head.sha || github.sha }}";
+        let candidate_source = "${{ inputs.source-sha || github.sha }}";
         assert_eq!(
-            yaml.matches(candidate_source).count(),
+            candidate.matches(candidate_source).count(),
             2,
             "candidate checkout and rehearsal must bind the same event SHA"
         );
@@ -662,9 +731,9 @@ mod tests {
     }
 
     #[test]
-    fn workflow_routes_pr_binding_merge_approval_and_manual_promotion_separately() {
+    fn workflow_routes_merge_approval_and_manual_promotion_separately() {
         let yaml = render("main", Path::new("gleam.toml"));
-        assert!(yaml.contains("  pull_request:"));
+        assert!(!yaml.contains("pull_request"));
         assert!(yaml.contains("  authorize:"));
         let authorize = yaml
             .split("  authorize:")
@@ -675,16 +744,10 @@ mod tests {
             .unwrap();
         assert!(authorize.contains("command: release-pr"));
         assert!(authorize.contains("candidate: .release-glz/candidate"));
-        assert!(authorize.contains("github.event_name == 'pull_request'"));
-        assert!(authorize.contains("dry-run: ${{ github.event_name == 'push' }}"));
+        assert!(authorize.contains("dry-run: \"true\""));
+        assert!(!authorize.contains(": write"));
 
-        let publish = yaml
-            .split("  publish:")
-            .nth(1)
-            .unwrap()
-            .split("  release-pr:")
-            .next()
-            .unwrap();
+        let publish = yaml.split("  publish:").nth(1).unwrap();
         assert!(publish.contains("needs: [prepare, validate-promotion, authorize]"));
         assert!(
             publish.contains("if: ${{ !cancelled() && always() &&"),
@@ -721,9 +784,15 @@ mod tests {
         assert!(!yaml.contains("runs-on: ubuntu-latest"));
         assert!(!publish.contains("online: \"true\""));
 
-        let rolling_pr = yaml.split("  release-pr:").nth(1).unwrap();
+        let rolling_pr = yaml
+            .split("  release-pr:")
+            .nth(1)
+            .unwrap()
+            .split("  rehearse-release-pr:")
+            .next()
+            .unwrap();
         assert!(rolling_pr.contains("github.event_name == 'push'"));
-        assert!(!rolling_pr.contains("needs: [prepare, publish]"));
+        assert!(rolling_pr.contains("needs: plan"));
     }
 
     #[test]
@@ -744,7 +813,6 @@ mod tests {
         assert!(yaml.contains("environment: hex-production"));
         assert!(yaml.contains("PRIVATE_HEX_TOKEN: ${{ secrets.PRIVATE_HEX_TOKEN }}"));
         assert!(!yaml.contains("HEXPM_API_KEY"));
-        assert!(yaml.contains("startsWith(github.head_ref, 'delivery/')"));
         assert!(yaml.contains(&format!("P4suta/release-glz@{action_sha}")));
     }
 
