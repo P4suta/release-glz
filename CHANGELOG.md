@@ -9,8 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Initial Hex-native release planner, rolling Release PR manager, resumable
-  publisher, GitHub Action, and cross-platform binary distribution workflows.
+- Initial Hex-native release planner, rolling Release PR manager, resumable publisher, GitHub Action, and cross-platform binary distribution workflows.
+
+### Security
+
+- A merged or open Release PR counts only when its head branch lives in the repository itself and it targets the default branch, so a fork's pull request can't stand in for a managed Release PR.
+- A generated Release PR commit must have exactly one parent in addition to its server-verified signature and digest trailer.
+- A managed Release PR body must end in exactly one complete marker, and the reasons and API summaries it renders can no longer contain one.
+- A remote tag lookup accepts only the exact tag ref, so a tag whose name merely ends in the release tag can't answer for it.
+- Git children pass refs after `--end-of-options` and never wait for a credential prompt.
 
 ### Removed
 
@@ -22,3 +29,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A plan's `hex_url` names a package page only once the planned version is on the registry.
   It points at the Organization page for a Hex.pm Organization package and stays empty for a Hex-compatible registry, which serves no package pages.
 - A failed write of the artifact baseline cache is reported instead of ignored.
+- Commit messages that contain ASCII record or unit separators no longer corrupt the change list.
