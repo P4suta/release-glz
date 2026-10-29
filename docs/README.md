@@ -135,13 +135,13 @@ Real publication also requires approval evidence supplied by the protected workf
 | `release --candidate <DIR>` | Publishes the sealed bytes through the monotonic reconciler; `--dry-run` reports all remaining effects. |
 | `status [--candidate <DIR>] [--online]` | Reports the current state and next safe command, including partial releases. |
 | `doctor [--online] [--candidate-build]` | Defaults to local schema/compiler/workflow checks; online mode audits registry credentials and GitHub protections; candidate-build mode uses isolated caches and no credentials. |
-| `release-pr` / `update` | Maintains the rolling managed PR; when no release is required it closes the verified PR and removes its unchanged managed branch. |
+| `release-pr` | Maintains the rolling managed PR; when no release is required it closes the verified PR and removes its unchanged managed branch. |
 | `prerelease` / `set-version` | Selects a channel or raises the automatically required version; neither can lower the safety requirement. |
 | `init` / `migrate` | Requires exactly one of `--check`, `--diff`, or `--update`; modified managed files are never overwritten without an explicit update. |
 | `completion` | Generates bash, zsh, fish, or PowerShell completion source. |
 
 Global options are `--manifest-path` and `--output human|json`.
-`--dry-run` exists only on commands that can mutate state (`release`, `release-pr`, `update`, `set-version`, and `prerelease`).
+`--dry-run` exists only on commands that can mutate state (`release`, `release-pr`, `set-version`, and `prerelease`).
 Repository paths in public data are normalized to relative `/` paths.
 
 ## Configuration

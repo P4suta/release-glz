@@ -97,6 +97,7 @@ async fn initial_plan_covers_empty_registry_version_floor_and_prerelease_train_e
         assert_eq!(plan.version, Version::new(1, 0, 0));
         assert_eq!(plan.baseline.source, BaselineSource::Initial);
         assert_eq!(plan.reasons[0].kind, ReasonKind::InitialRelease);
+        assert_eq!(plan.hex_url, None, "an unpublished release has no page");
     }
 
     let planner = uncached_planner(
@@ -182,6 +183,10 @@ async fn unchanged_existing_release_is_noop_but_explicit_train_and_retirement_ar
     assert!(!plan.artifacts_changed);
     assert!(plan.required_approvals.is_empty());
     assert!(plan.stages.is_empty());
+    assert_eq!(
+        plan.hex_url.as_deref(),
+        Some("https://hex.pm/packages/noop_fixture/1.0.0")
+    );
 
     let explicit = uncached_planner(registry(false), gleam.clone())
         .plan(&PlanOptions {

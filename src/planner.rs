@@ -1,7 +1,7 @@
 //! Release planning: deciding whether to release, and as which version.
 //!
-//! The planner only reads. Its output is a `plan/v2`, which later stages
-//! seal and publish, so a decision can be reviewed before anything is built.
+//! The planner only reads.
+//! Its output is a `plan/v2`, which later stages seal and publish, so a decision can be reviewed before anything is built.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -31,6 +31,12 @@ use crate::version::{bump_between, effective_bump, select_version};
 const DEFAULT_BASELINE_SEARCH_LIMIT: usize = 2_048;
 const MAX_BASELINE_CACHE_BYTES: u64 = 16 * 1024;
 
+/// Commits between two progress lines of the artifact baseline search.
+const BASELINE_PROGRESS_INTERVAL: usize = 100;
+
+/// Hex digits of a commit that a change entry shows, as `git log --oneline` does.
+const SHORT_SHA_LENGTH: usize = 7;
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct BaselineCacheEntry {
@@ -41,6 +47,7 @@ struct BaselineCacheEntry {
     sha: String,
 }
 
+#[derive(Clone, Copy)]
 struct BaselineSearch<'a> {
     manifest: &'a Manifest,
     repo: &'a GitRepo,
@@ -91,8 +98,7 @@ impl Default for PlanOptions {
 
 /// Produces a [`ReleasePlan`] from git, the registry, and the API.
 ///
-/// Planning is read-only: it changes neither external state nor tracked
-/// files, so it can run on every push.
+/// Planning is read-only: it changes neither external state nor tracked files, so it can run on every push.
 #[derive(Debug, Clone)]
 pub struct Planner<R = HexRegistry> {
     registry: R,
@@ -125,8 +131,7 @@ impl<R: Registry> Planner<R> {
 
     /// Bound how far back the artifact baseline search may walk.
     ///
-    /// The search is bounded rather than unlimited, so a missing baseline
-    /// fails closed instead of turning into a full history scan.
+    /// The search is bounded rather than unlimited, so a missing baseline fails closed instead of turning into a full history scan.
     pub fn with_baseline_search_limit(mut self, limit: usize) -> Self {
         assert!(limit > 0, "baseline search limit must be greater than zero");
         self.baseline_search_limit = limit;
@@ -229,8 +234,7 @@ impl<R: Registry> Planner<R> {
             version.pre = semver::Prerelease::EMPTY;
         }
         enforce_version_zero(&version, manifest)?;
-        // Exporting in a temporary snapshot validates exactly what the initial
-        // publication would contain while keeping `plan` read-only.
+        // Exporting in a temporary snapshot validates exactly what the initial publication would contain while keeping `plan` read-only.
         let snapshot = self.gleam.snapshot(manifest.package_dir())?;
         self.gleam.export_hex_tarball(snapshot.package_dir())?;
         self.gleam
@@ -269,7 +273,7 @@ impl<R: Registry> Planner<R> {
             stages: planned_stages(manifest),
             intent_digest: None,
             pr_url: None,
-            hex_url: Some(format!("https://hex.pm/packages/{}", manifest.package)),
+            hex_url: None,
             github_release_url: None,
         })
     }
@@ -291,14 +295,13 @@ impl<R: Registry> Planner<R> {
             return Err(classified(
                 FailureClass::PolicyOrApproval,
                 format!(
-                    "manifest version {} is behind the latest Hex release {}; run `release-glz update` or set a higher version",
+                    "manifest version {} is behind the latest Hex release {}; run `release-glz release-pr` or set a higher version",
                     candidate, latest.version
                 ),
             ));
         }
-        // Validate a structured escape hatch before any potentially long
-        // artifact-fingerprint history scan. An expired or unresolvable
-        // exception is never silently weakened to the legacy boolean form.
+        // Validate a structured escape hatch before any potentially long artifact-fingerprint history scan.
+        // An expired or unresolvable exception is never silently weakened to the legacy boolean form.
         let api_exception = validated_api_exception(manifest, repo, &latest.version)?;
         let source = self
             .registry
@@ -505,10 +508,14 @@ impl<R: Registry> Planner<R> {
             },
             intent_digest: None,
             pr_url: None,
-            hex_url: Some(format!(
-                "https://hex.pm/packages/{}/{}",
-                manifest.package, selected
-            )),
+            hex_url: if release_required {
+                None
+            } else {
+                manifest
+                    .release
+                    .registry
+                    .package_page(&manifest.package, &latest.version)
+            },
             github_release_url: None,
         })
     }
@@ -521,7 +528,7 @@ impl<R: Registry> Planner<R> {
             version,
             retired,
             published,
-            published_fingerprint,
+            ..
         } = search;
         let tag = manifest.repository.tag_for(version);
         if let Some(sha) = repo.tag_sha(&tag)? {
@@ -546,22 +553,8 @@ impl<R: Registry> Planner<R> {
                 retired,
             });
         }
-        let cache_path = self.baseline_cache_path(
-            manifest,
-            repo,
-            package_relative,
-            version,
-            published_fingerprint,
-        );
-        if let Some(sha) = self.validated_cached_baseline(
-            cache_path.as_deref(),
-            manifest,
-            repo,
-            package_relative,
-            version,
-            published_fingerprint,
-            published,
-        ) {
+        let cache_path = self.baseline_cache_path(&search);
+        if let Some(sha) = self.validated_cached_baseline(cache_path.as_deref(), &search) {
             eprintln!("release-glz: using validated artifact baseline cache");
             return Ok(Baseline {
                 version: Some(version.clone()),
@@ -576,7 +569,7 @@ impl<R: Registry> Planner<R> {
         let count = commits.len();
         for (index, sha) in commits.into_iter().enumerate() {
             let progress = index + 1;
-            if progress == 1 || progress == count || progress % 100 == 0 {
+            if progress == 1 || progress == count || progress % BASELINE_PROGRESS_INTERVAL == 0 {
                 eprintln!(
                     "release-glz: searching artifact baseline {progress}/{count} (bounded at {})",
                     self.baseline_search_limit
@@ -589,13 +582,10 @@ impl<R: Registry> Planner<R> {
                 continue;
             };
             if &candidate == published {
-                self.write_baseline_cache(
-                    cache_path.as_deref(),
-                    manifest,
-                    version,
-                    published_fingerprint,
-                    &sha,
-                );
+                if let Err(error) = self.write_baseline_cache(cache_path.as_deref(), &search, &sha)
+                {
+                    eprintln!("release-glz: could not cache the artifact baseline: {error:#}");
+                }
                 return Ok(Baseline {
                     version: Some(version.clone()),
                     git_ref: None,
@@ -624,26 +614,19 @@ impl<R: Registry> Planner<R> {
         ))
     }
 
-    fn baseline_cache_path(
-        &self,
-        manifest: &Manifest,
-        repo: &GitRepo,
-        package_relative: &std::path::Path,
-        version: &Version,
-        published_fingerprint: &str,
-    ) -> Option<PathBuf> {
+    fn baseline_cache_path(&self, search: &BaselineSearch<'_>) -> Option<PathBuf> {
         let root = self.baseline_cache_dir.as_ref()?;
         let mut digest = Sha256::new();
         digest.update(b"release-glz-baseline-cache-v1\0");
-        digest.update(repo.root().to_string_lossy().as_bytes());
+        digest.update(search.repo.root().to_string_lossy().as_bytes());
         digest.update(b"\0");
-        digest.update(package_relative.to_string_lossy().as_bytes());
+        digest.update(search.package_relative.to_string_lossy().as_bytes());
         digest.update(b"\0");
-        digest.update(manifest.package.as_bytes());
+        digest.update(search.manifest.package.as_bytes());
         digest.update(b"\0");
-        digest.update(version.to_string().as_bytes());
+        digest.update(search.version.to_string().as_bytes());
         digest.update(b"\0");
-        digest.update(published_fingerprint.as_bytes());
+        digest.update(search.published_fingerprint.as_bytes());
         Some(
             root.join("release-glz")
                 .join("baselines")
@@ -651,17 +634,20 @@ impl<R: Registry> Planner<R> {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn validated_cached_baseline(
         &self,
         path: Option<&std::path::Path>,
-        manifest: &Manifest,
-        repo: &GitRepo,
-        package_relative: &std::path::Path,
-        version: &Version,
-        published_fingerprint: &str,
-        published: &artifact::NormalizedArtifact,
+        search: &BaselineSearch<'_>,
     ) -> Option<String> {
+        let BaselineSearch {
+            manifest,
+            repo,
+            package_relative,
+            version,
+            published,
+            published_fingerprint,
+            ..
+        } = *search;
         let path = path?;
         let metadata = fs::symlink_metadata(path).ok()?;
         if !metadata.file_type().is_file() || metadata.len() > MAX_BASELINE_CACHE_BYTES {
@@ -687,36 +673,32 @@ impl<R: Registry> Planner<R> {
         (candidate == *published).then_some(cached.sha)
     }
 
+    /// Record a found baseline so the next plan skips the history search.
     fn write_baseline_cache(
         &self,
         path: Option<&std::path::Path>,
-        manifest: &Manifest,
-        version: &Version,
-        published_fingerprint: &str,
+        search: &BaselineSearch<'_>,
         sha: &str,
-    ) {
-        let Some(path) = path else { return };
-        let Some(parent) = path.parent() else { return };
-        if fs::create_dir_all(parent).is_err() {
-            return;
-        }
+    ) -> Result<()> {
+        let Some(path) = path else {
+            return Ok(());
+        };
+        let parent = path
+            .parent()
+            .context("the baseline cache path has no parent directory")?;
+        fs::create_dir_all(parent)?;
         let entry = BaselineCacheEntry {
             schema: "baseline-cache/v1".into(),
-            package: manifest.package.clone(),
-            version: version.clone(),
-            artifact_fingerprint: published_fingerprint.into(),
+            package: search.manifest.package.clone(),
+            version: search.version.clone(),
+            artifact_fingerprint: search.published_fingerprint.into(),
             sha: sha.into(),
         };
-        let Ok(bytes) = serde_json::to_vec(&entry) else {
-            return;
-        };
-        let Ok(mut temporary) = tempfile::NamedTempFile::new_in(parent) else {
-            return;
-        };
-        if temporary.write_all(&bytes).is_err() || temporary.as_file().sync_all().is_err() {
-            return;
-        }
-        let _ = temporary.persist(path);
+        let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+        temporary.write_all(&serde_json::to_vec(&entry)?)?;
+        temporary.as_file().sync_all()?;
+        temporary.persist(path).map_err(|error| error.error)?;
+        Ok(())
     }
 
     async fn baseline_interface(
@@ -777,8 +759,7 @@ fn validated_api_exception(
         )));
     }
 
-    // v1.x can still read the legacy flat configuration, but schema 2 never
-    // derives authority from the compatibility field alone.
+    // v1.x can still read the legacy flat configuration, but schema 2 never derives authority from the compatibility field alone.
     Ok(
         (manifest.release.schema != 2 && manifest.release.allow_unknown_api_for.contains(version))
             .then(|| "the legacy version-scoped override".into()),
@@ -930,7 +911,7 @@ fn enforce_version_zero(version: &Version, manifest: &Manifest) -> Result<()> {
 }
 
 fn short_sha(sha: &str) -> &str {
-    sha.get(..7).unwrap_or(sha)
+    sha.get(..SHORT_SHA_LENGTH).unwrap_or(sha)
 }
 
 fn commit_entries(commits: &[Commit]) -> Vec<ChangeEntry> {
