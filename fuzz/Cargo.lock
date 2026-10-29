@@ -943,6 +943,7 @@ dependencies = [
  "clap",
  "clap_complete",
  "flate2",
+ "release-glz-core",
  "reqwest",
  "ring",
  "rustix",
@@ -956,6 +957,13 @@ dependencies = [
  "tempfile",
  "tokio",
  "toml_edit",
+]
+
+[[package]]
+name = "release-glz-core"
+version = "0.0.0"
+dependencies = [
+ "serde",
 ]
 
 [[package]]
