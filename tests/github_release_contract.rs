@@ -1639,6 +1639,72 @@ async fn a_release_commit_stays_within_the_bounds_that_recognize_it_on_the_next_
     }
 }
 
+/// Bytes a file in a Release PR commit may hold.
+const MAX_RELEASE_FILE_BYTES: usize = 2 * 1024 * 1024;
+
+#[tokio::test]
+async fn a_release_commit_may_write_a_file_of_exactly_2_mib() {
+    let mut files = release_files();
+    files.insert("CHANGELOG.md".into(), vec![b'#'; MAX_RELEASE_FILE_BYTES]);
+    let head = "b".repeat(40);
+    let graph = format!(
+        r#"{{"data":{{"createCommitOnBranch":{{"commit":{{"oid":"{head}"}}}}}},"errors":[]}}"#
+    );
+    let server = FakeServer::start(vec![
+        response(200, "[]"),
+        response(404, "{}"),
+        response(201, "{}"),
+        response(200, &graph),
+        response(
+            201,
+            &pull_value(7, "managed", "release-glz/widget", &head).to_string(),
+        ),
+    ])
+    .await;
+
+    let update = test_client(&server, Some("token"))
+        .upsert_release_pr(
+            &release_plan(),
+            &default_branch(&"a".repeat(40)),
+            "release-glz/",
+            &files,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(update.head, head);
+    assert_eq!(server.requests().len(), 5);
+}
+
+#[tokio::test]
+async fn a_generated_file_counts_up_to_exactly_2_mib() {
+    let merged = "a".repeat(40);
+    let head = "c".repeat(40);
+    for (case, size, counts) in [
+        ("exactly 2 MiB", MAX_RELEASE_FILE_BYTES, true),
+        ("one byte over", MAX_RELEASE_FILE_BYTES + 1, false),
+    ] {
+        let files = BTreeMap::from([("CHANGELOG.md".to_owned(), vec![b'#'; size])]);
+        let mut pull = managed_pull(&head, Some(&merged), "pending");
+        pull["body"] = pull["body"]
+            .as_str()
+            .unwrap()
+            .replace(&files_digest(&release_files()), &files_digest(&files))
+            .into();
+        let mut responses = vec![response(200, &serde_json::json!([pull]).to_string())];
+        responses.extend(generated_commit_on(&files, &"0".repeat(40)));
+        let server = FakeServer::start(responses).await;
+
+        let found = test_client(&server, Some("token"))
+            .merged_release_pr_at(&merged, "widget", "1.2.3", "release-glz/")
+            .await
+            .unwrap();
+
+        assert_eq!(found.is_some(), counts, "{case}");
+        assert_eq!(server.requests().len(), 3, "{case}");
+    }
+}
+
 #[tokio::test]
 async fn a_release_commit_that_writes_one_file_is_recognized_on_the_next_run() {
     let mut files = release_files();
