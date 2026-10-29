@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Initial Hex-native release planner, rolling Release PR manager, resumable publisher, GitHub Action, and cross-platform binary distribution workflows.
+- `release-glz plan --out <FILE>` writes the plan it prints to a new file, and `release-glz release-pr --plan <FILE>` writes the Release PR from that file without running the compiler.
+  The writing job refuses a plan file that isn't a `plan/v2` document, carries an unknown field, already names a Release PR, describes another package or manifest version, or names a baseline outside the checked-out history.
+- `plan/v2` gains `release_pr_head`, the Release PR head commit that `release-pr` wrote or confirmed.
+- The Action accepts a `plan-file` input for `plan` and `release-pr`, and it exposes a `release-pr-head` output.
 
 ### Security
 
@@ -35,3 +39,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   It points at the Organization page for a Hex.pm Organization package and stays empty for a Hex-compatible registry, which serves no package pages.
 - A failed write of the artifact baseline cache is reported instead of ignored.
 - Commit messages that contain ASCII record or unit separators no longer corrupt the change list.
+- `release-pr` no longer fails with "No such file or directory" when the manifest path names no directory and the changelog doesn't exist yet.

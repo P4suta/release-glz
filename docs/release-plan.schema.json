@@ -9,7 +9,8 @@
     "manifest_version", "version", "bump", "release_required",
     "artifacts_changed", "prerelease", "tag", "baseline", "reasons",
     "api", "changes", "warnings", "required_approvals", "stages",
-    "intent_digest", "pr_url", "hex_url", "github_release_url"
+    "intent_digest", "pr_url", "release_pr_head", "hex_url",
+    "github_release_url"
   ],
   "properties": {
     "schema": { "const": "plan/v2" },
@@ -37,6 +38,12 @@
     },
     "intent_digest": { "$ref": "#/$defs/nullableSha256" },
     "pr_url": { "$ref": "#/$defs/nullableString" },
+    "release_pr_head": {
+      "anyOf": [
+        { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+        { "type": "null" }
+      ]
+    },
     "hex_url": { "$ref": "#/$defs/nullableString" },
     "github_release_url": { "$ref": "#/$defs/nullableString" }
   },

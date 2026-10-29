@@ -454,7 +454,10 @@ impl Manifest {
 
     /// Directory that contains the manifest.
     pub fn package_dir(&self) -> &Path {
-        self.path.parent().unwrap_or_else(|| Path::new("."))
+        match self.path.parent() {
+            Some(directory) if !directory.as_os_str().is_empty() => directory,
+            _ => Path::new("."),
+        }
     }
 
     /// The bytes as they were read, before any edit.

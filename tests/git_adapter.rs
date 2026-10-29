@@ -111,3 +111,35 @@ fn a_ref_that_looks_like_an_option_resolves_to_nothing() {
     assert_eq!(repo.resolve("--all").unwrap(), None);
     assert_eq!(repo.resolve("-h").unwrap(), None);
 }
+
+#[test]
+fn history_contains_only_full_ids_of_head_and_its_ancestors() {
+    let temp = tempfile::tempdir().unwrap();
+    init_repository(temp.path());
+    let first = commit(temp.path(), "first");
+    git(temp.path(), &["switch", "--quiet", "--create", "side"]);
+    let side = commit(temp.path(), "side");
+    git(temp.path(), &["switch", "--quiet", "-"]);
+    let head = commit(temp.path(), "second");
+    let repo = GitRepo::discover(temp.path()).unwrap();
+
+    assert!(repo.history_contains(&first).unwrap());
+    assert!(repo.history_contains(&head).unwrap());
+    for outside in [
+        side.clone(),
+        "f".repeat(40),
+        "f".repeat(64),
+        first.to_ascii_uppercase(),
+        first[..7].to_owned(),
+        "HEAD".to_owned(),
+        "HEAD~1".to_owned(),
+        "side".to_owned(),
+        "--all".to_owned(),
+        String::new(),
+    ] {
+        assert!(
+            !repo.history_contains(&outside).unwrap(),
+            "`{outside}` counted as history"
+        );
+    }
+}

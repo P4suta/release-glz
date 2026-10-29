@@ -195,6 +195,26 @@ fn threat_model_states_the_default_archive_limits_the_code_enforces() {
 }
 
 #[test]
+fn the_guide_states_the_plan_file_limit_the_reader_enforces() {
+    let guide = fs::read_to_string("docs/README.md").unwrap();
+    let statement = guide
+        .lines()
+        .find(|line| line.contains("`plan/v2` document of at most"))
+        .expect("the guide states no plan file limit");
+    let (number, rest) = statement
+        .split_once("at most ")
+        .unwrap()
+        .1
+        .split_once(' ')
+        .unwrap();
+    assert!(rest.starts_with("MiB "), "{statement}");
+    assert_eq!(
+        number.parse::<u64>().unwrap() * 1024 * 1024,
+        release_glz::handoff::MAX_PLAN_BYTES
+    );
+}
+
+#[test]
 fn threat_model_documents_the_narrow_gleam_windows_packaging_fallback() {
     let threat = fs::read_to_string("docs/threat-model.md").unwrap();
     for required in [

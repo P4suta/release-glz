@@ -273,6 +273,7 @@ impl<R: Registry> Planner<R> {
             stages: planned_stages(manifest),
             intent_digest: None,
             pr_url: None,
+            release_pr_head: None,
             hex_url: None,
             github_release_url: None,
         })
@@ -508,6 +509,7 @@ impl<R: Registry> Planner<R> {
             },
             intent_digest: None,
             pr_url: None,
+            release_pr_head: None,
             hex_url: if release_required {
                 None
             } else {

@@ -44,6 +44,7 @@ fn release_plan_uses_the_independently_versioned_v2_contract() {
         stages: vec![ReleaseStage::VerifyHooks, ReleaseStage::PublishPackage],
         intent_digest: Some("0".repeat(64)),
         pr_url: None,
+        release_pr_head: None,
         hex_url: Some("https://hex.pm/packages/widget/0.5.0".into()),
         github_release_url: None,
     };

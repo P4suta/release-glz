@@ -1,7 +1,6 @@
 //! The stable v1 vocabulary: the plan, its reasons, and the lifecycle states.
 //!
-//! Types here are the wire format of `plan/v2` and of the `command/v2`
-//! envelope, so a rename is a compatibility break rather than a refactor.
+//! Types here are the wire format of `plan/v2` and of the `command/v2` envelope, so a rename is a compatibility break rather than a refactor.
 
 use std::fmt;
 
@@ -10,8 +9,8 @@ use serde::{Deserialize, Serialize};
 
 /// The externally visible lifecycle of one package release.
 ///
-/// Normal states only move forward. `conflict` and `blocked` are terminal
-/// observations rather than rollback states.
+/// Normal states only move forward.
+/// `conflict` and `blocked` are terminal observations rather than rollback states.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReleaseState {
@@ -36,8 +35,7 @@ pub enum ReleaseState {
 impl ReleaseState {
     /// Whether `next` is a legal successor of this state.
     ///
-    /// A state may always repeat itself, which is what makes resuming a
-    /// partial release safe.
+    /// A state may always repeat itself, which is what makes resuming a partial release safe.
     pub fn can_advance_to(self, next: Self) -> bool {
         if self == next {
             return true;
@@ -49,16 +47,22 @@ impl ReleaseState {
     }
 }
 
-fn rank(state: ReleaseState) -> u8 {
-    match state {
-        ReleaseState::UpToDate => 0,
-        ReleaseState::Planned => 1,
-        ReleaseState::CandidateReady => 2,
-        ReleaseState::AwaitingApproval => 3,
-        ReleaseState::PartiallyReleased => 4,
-        ReleaseState::Released => 5,
-        ReleaseState::Conflict | ReleaseState::Blocked => u8::MAX,
-    }
+/// The normal states in the order a release moves through them.
+const LIFECYCLE: [ReleaseState; 6] = [
+    ReleaseState::UpToDate,
+    ReleaseState::Planned,
+    ReleaseState::CandidateReady,
+    ReleaseState::AwaitingApproval,
+    ReleaseState::PartiallyReleased,
+    ReleaseState::Released,
+];
+
+/// Position in [`LIFECYCLE`], with `conflict` and `blocked` above every normal state.
+fn rank(state: ReleaseState) -> usize {
+    LIFECYCLE
+        .iter()
+        .position(|normal| *normal == state)
+        .unwrap_or(usize::MAX)
 }
 
 /// Monotonic effects in the order in which v1 permits them.
@@ -95,8 +99,10 @@ pub enum DiagnosticLevel {
 
 /// One machine-readable message attached to a command result.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Diagnostic {
-    /// Stable identifier. Consumers branch on this, never on `message`.
+    /// Stable identifier.
+    /// Consumers branch on this, never on `message`.
     pub code: String,
     /// How much the message matters.
     pub level: DiagnosticLevel,
@@ -109,8 +115,8 @@ pub struct Diagnostic {
 /// The next safe step, offered to humans and machines separately.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NextAction {
-    /// Canonical process argv. Consumers must execute this array directly and
-    /// must never parse `command` as shell input.
+    /// Canonical process argv.
+    /// Consumers must execute this array directly and must never parse `command` as shell input.
     pub argv: Vec<String>,
     /// Human-readable rendering only.
     pub command: String,
@@ -135,8 +141,7 @@ impl NextAction {
 
     /// Build an action only a human can carry out.
     ///
-    /// `argv` stays empty, so a consumer cannot mistake the rendered text
-    /// for something it may run.
+    /// `argv` stays empty, so a consumer cannot mistake the rendered text for something it may run.
     pub fn guidance(command: impl Into<String>, description: impl Into<String>) -> Self {
         Self {
             argv: Vec::new(),
@@ -177,6 +182,7 @@ pub enum ApprovalKind {
 
 /// One approval that has to exist before publication.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ApprovalRequirement {
     /// Which approval is required.
     pub kind: ApprovalKind,
@@ -254,8 +260,7 @@ pub enum Bump {
 impl Bump {
     /// The stronger of two requirements.
     ///
-    /// Signals combine by maximum, so no single signal can lower what
-    /// another one already requires.
+    /// Signals combine by maximum, so no single signal can lower what another one already requires.
     pub fn max(self, other: Self) -> Self {
         std::cmp::max(self, other)
     }
@@ -334,6 +339,7 @@ pub enum ReasonKind {
 
 /// One signal that contributed to the selected version.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ReleaseReason {
     /// Which signal this is.
     pub kind: ReasonKind,
@@ -374,6 +380,7 @@ pub enum ApiChangeKind {
 
 /// One difference between the Candidate API and the baseline.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ApiChange {
     /// What kind of difference this is.
     pub kind: ApiChangeKind,
@@ -387,6 +394,7 @@ pub struct ApiChange {
 
 /// The complete result of the public API comparison.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ApiDiff {
     /// Whether a comparison happened, and what it concluded.
     pub status: ApiStatus,
@@ -412,6 +420,7 @@ pub enum BaselineSource {
 
 /// The published release the Candidate is compared against.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Baseline {
     /// Published version, absent before the first release.
     pub version: Option<Version>,
@@ -427,6 +436,7 @@ pub struct Baseline {
 
 /// One entry of the change list collected since the baseline.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ChangeEntry {
     /// Single-line title of the change.
     pub title: String,
@@ -445,6 +455,7 @@ pub struct ChangeEntry {
 
 /// Versioned and stable machine-readable output of every release operation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ReleasePlan {
     /// Always `plan/v2`.
     pub schema: String,
@@ -490,11 +501,14 @@ pub struct ReleasePlan {
     pub stages: Vec<ReleaseStage>,
     /// Digest of the decision itself.
     ///
-    /// An approval binds to this value, so a plan that changes after
-    /// approval can no longer be published under it.
+    /// An approval binds to this value, so a plan that changes after approval can no longer be published under it.
     pub intent_digest: Option<String>,
     /// Rolling Release PR, once one exists.
     pub pr_url: Option<String>,
+    /// Commit at the head of the rolling Release PR that this command wrote or confirmed.
+    ///
+    /// A later job rehearses exactly this commit before it binds the Release PR intent.
+    pub release_pr_head: Option<String>,
     /// Published package page, once publication reached the registry.
     pub hex_url: Option<String>,
     /// GitHub Release, once one exists.

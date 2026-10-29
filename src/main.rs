@@ -28,6 +28,7 @@ use release_glz::failure::{FailureClass, classified};
 use release_glz::forge::{GitHubClient, GitHubRepository};
 use release_glz::git::GitRepo;
 use release_glz::gleam::Gleam;
+use release_glz::handoff;
 use release_glz::model::{
     Diagnostic, DiagnosticLevel, NextAction, PrereleaseChannel, ReleaseState,
 };
@@ -74,7 +75,11 @@ enum Output {
 #[derive(Debug, Subcommand)]
 enum Command {
     /// Produce a complete, read-only release plan.
-    Plan,
+    Plan {
+        /// New file that receives the plan for a job that writes the Release PR.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     /// Build and seal a Candidate from one exact committed source snapshot.
     Rehearse {
         /// Full source commit SHA (abbreviations and symbolic refs are rejected).
@@ -97,6 +102,9 @@ enum Command {
         /// Bind a sealed Candidate intent to the verified managed PR head.
         #[arg(long)]
         candidate: Option<PathBuf>,
+        /// Write the Release PR from a plan that `plan --out` wrote, without running the compiler.
+        #[arg(long, conflicts_with = "candidate")]
+        plan: Option<PathBuf>,
         /// Validate and describe changes without mutating GitHub.
         #[arg(long)]
         dry_run: bool,
@@ -172,7 +180,7 @@ enum Command {
 impl Command {
     fn name(&self) -> &'static str {
         match self {
-            Self::Plan => "plan",
+            Self::Plan { .. } => "plan",
             Self::Rehearse { .. } => "rehearse",
             Self::Verify { .. } => "verify",
             Self::ReleasePr { .. } => "release-pr",
@@ -467,10 +475,26 @@ async fn run(cli: Cli) -> Result<i32> {
     };
 
     let plan = match cli.command {
-        Command::Plan => planner
-            .plan(&base_options)
-            .await
-            .map_err(|error| default_failure_class(error, FailureClass::UsageOrConfig))?,
+        Command::Plan { out } => {
+            if let Some(out) = &out
+                && out.exists()
+            {
+                return Err(classified(
+                    FailureClass::UsageOrConfig,
+                    format!("refusing to replace the existing plan `{}`", out.display()),
+                ));
+            }
+            let plan = planner
+                .plan(&base_options)
+                .await
+                .map_err(|error| default_failure_class(error, FailureClass::UsageOrConfig))?;
+            if let Some(out) = &out {
+                handoff::write_new(out, &plan).map_err(|error| {
+                    classified(FailureClass::UsageOrConfig, format!("{error:#}"))
+                })?;
+            }
+            plan
+        }
         Command::Rehearse { source_ref, out } => {
             let candidate = Rehearsal::default()
                 .run(&RehearseOptions {
@@ -505,7 +529,11 @@ async fn run(cli: Cli) -> Result<i32> {
             }
             return Ok(0);
         }
-        Command::ReleasePr { candidate, dry_run } => {
+        Command::ReleasePr {
+            candidate,
+            plan: plan_file,
+            dry_run,
+        } => {
             if let Some(candidate_directory) = candidate {
                 let sealed = Candidate::verify(&candidate_directory)
                     .map_err(|error| classified(FailureClass::ImmutableStateConflict, error))?;
@@ -586,7 +614,13 @@ async fn run(cli: Cli) -> Result<i32> {
                 )?;
                 return Ok(0);
             }
-            sync_rolling_release_pr(&planner, &base_options, &cli.manifest_path, dry_run).await?
+            if let Some(plan_file) = plan_file {
+                let plan = handed_off_plan(&plan_file, &cli.manifest_path)?;
+                write_rolling_release_pr(plan, &cli.manifest_path, dry_run).await?
+            } else {
+                sync_rolling_release_pr(&planner, &base_options, &cli.manifest_path, dry_run)
+                    .await?
+            }
         }
         Command::Release { candidate, dry_run } => {
             let sealed = Candidate::verify(&candidate)
@@ -1308,10 +1342,30 @@ async fn sync_rolling_release_pr(
     manifest_path: &Path,
     dry_run: bool,
 ) -> Result<ReleasePlan> {
-    let mut plan = planner
+    let plan = planner
         .plan(options)
         .await
         .map_err(|error| default_failure_class(error, FailureClass::UsageOrConfig))?;
+    write_rolling_release_pr(plan, manifest_path, dry_run).await
+}
+
+/// Read a plan that another job wrote, and refuse one that doesn't describe this checkout.
+fn handed_off_plan(path: &Path, manifest_path: &Path) -> Result<ReleasePlan> {
+    let usage =
+        |error: anyhow::Error| classified(FailureClass::UsageOrConfig, format!("{error:#}"));
+    let plan = handoff::read(path).map_err(usage)?;
+    let manifest = Manifest::load(manifest_path).map_err(usage)?;
+    let repo = GitRepo::discover(manifest.package_dir()).map_err(usage)?;
+    handoff::check_checkout(&plan, &manifest, &repo).map_err(usage)?;
+    Ok(plan)
+}
+
+/// Write the rolling Release PR that a finished plan describes, without running the compiler.
+async fn write_rolling_release_pr(
+    mut plan: ReleasePlan,
+    manifest_path: &Path,
+    dry_run: bool,
+) -> Result<ReleasePlan> {
     let manifest = Manifest::load(manifest_path)
         .map_err(|error| default_failure_class(error, FailureClass::UsageOrConfig))?;
     let repo = GitRepo::discover(manifest.package_dir())
@@ -1327,19 +1381,17 @@ async fn sync_rolling_release_pr(
         let files = prepare_release_files(&manifest, &repo, &plan, &plan.changes)?;
         if !dry_run {
             let base = repo.default_branch()?;
-            plan.pr_url = Some(
-                github
-                    .upsert_release_pr(
-                        &plan,
-                        &base,
-                        &manifest.release.release_branch_prefix,
-                        &files,
-                    )
-                    .await
-                    .map_err(|error| {
-                        default_failure_class(error, FailureClass::TemporaryExternal)
-                    })?,
-            );
+            let update = github
+                .upsert_release_pr(
+                    &plan,
+                    &base,
+                    &manifest.release.release_branch_prefix,
+                    &files,
+                )
+                .await
+                .map_err(|error| default_failure_class(error, FailureClass::TemporaryExternal))?;
+            plan.pr_url = Some(update.url);
+            plan.release_pr_head = Some(update.head);
         }
     } else if !dry_run {
         github
@@ -1832,6 +1884,7 @@ mod tests {
             stages: vec![],
             intent_digest: Some("b".repeat(64)),
             pr_url: Some("https://github.test/acme/widget/pull/1".into()),
+            release_pr_head: None,
             hex_url: Some("https://hex.pm/packages/widget".into()),
             github_release_url: Some("https://github.test/acme/widget/releases/v1.1.0".into()),
         }
@@ -1853,7 +1906,7 @@ mod tests {
     #[test]
     fn every_command_and_prerelease_channel_has_a_stable_internal_name() {
         let commands = [
-            (Command::Plan, "plan"),
+            (Command::Plan { out: None }, "plan"),
             (
                 Command::Rehearse {
                     source_ref: "a".repeat(40),
@@ -1871,6 +1924,7 @@ mod tests {
             (
                 Command::ReleasePr {
                     candidate: None,
+                    plan: None,
                     dry_run: false,
                 },
                 "release-pr",

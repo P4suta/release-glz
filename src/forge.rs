@@ -186,6 +186,15 @@ impl PullRequest {
     }
 }
 
+/// What one rolling Release PR update left behind.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReleasePrUpdate {
+    /// Page of the Release PR.
+    pub url: String,
+    /// Commit at the head of the Release PR, which the managed marker names.
+    pub head: String,
+}
+
 /// A GitHub account.
 #[derive(Debug, Clone, Deserialize)]
 pub struct User {
@@ -747,7 +756,7 @@ impl GitHubClient {
         base: &str,
         branch_prefix: &str,
         files: &BTreeMap<String, Vec<u8>>,
-    ) -> Result<String> {
+    ) -> Result<ReleasePrUpdate> {
         self.require_token()?;
         let digest = files_digest(files);
         let pulls = self.open_pull_requests().await?;
@@ -779,7 +788,7 @@ impl GitHubClient {
                         &ManagedMarker {
                             package: plan.package.clone(),
                             branch: marker.branch,
-                            head: actual,
+                            head: actual.clone(),
                             digest: digest.clone(),
                             version: plan.version.to_string(),
                             intent_digest: marker.intent_digest,
@@ -794,7 +803,10 @@ impl GitHubClient {
                             }),
                         )
                         .await?;
-                    return Ok(updated.html_url);
+                    return Ok(ReleasePrUpdate {
+                        url: updated.html_url,
+                        head: actual,
+                    });
                 } else if generated_digest.is_none() {
                     self.post_empty(
                         &format!("issues/{}/comments", pull.number),
@@ -809,7 +821,10 @@ impl GitHubClient {
                     managed = None;
                 }
             } else if marker.digest == digest && marker.version == plan.version.to_string() {
-                return Ok(pull.html_url.clone());
+                return Ok(ReleasePrUpdate {
+                    url: pull.html_url.clone(),
+                    head: marker.head,
+                });
             }
         }
 
@@ -840,7 +855,7 @@ impl GitHubClient {
             &ManagedMarker {
                 package: plan.package.clone(),
                 branch: branch.clone(),
-                head,
+                head: head.clone(),
                 digest,
                 version: plan.version.to_string(),
                 intent_digest: None,
@@ -848,14 +863,14 @@ impl GitHubClient {
         )?;
         let title = format!("chore(release): {} {}", plan.package, plan.version);
 
-        if let Some(pull) = managed {
+        let url = if let Some(pull) = managed {
             let updated: PullRequest = self
                 .patch(
                     &format!("pulls/{}", pull.number),
                     &serde_json::json!({"title": title, "body": body}),
                 )
                 .await?;
-            Ok(updated.html_url)
+            updated.html_url
         } else {
             let created: PullRequest = self
                 .post(
@@ -869,8 +884,9 @@ impl GitHubClient {
                     }),
                 )
                 .await?;
-            Ok(created.html_url)
-        }
+            created.html_url
+        };
+        Ok(ReleasePrUpdate { url, head })
     }
 
     /// Close the managed Release PR and remove its unchanged branch.
@@ -1822,6 +1838,7 @@ mod tests {
             stages: vec![],
             intent_digest: None,
             pr_url: None,
+            release_pr_head: None,
             hex_url: None,
             github_release_url: None,
         };

@@ -699,7 +699,18 @@ function buildCommandArgs(command, environment = process.env) {
   if (candidateBuild && command !== "doctor") {
     throw new Error(`candidate-build is not supported by the ${command} command`);
   }
-  if (command === "rehearse") {
+  const planFile = environment["INPUT_PLAN-FILE"];
+  if (planFile && !["plan", "release-pr"].includes(command)) {
+    throw new Error(`plan-file is not supported by the ${command} command`);
+  }
+  if (planFile && candidate) {
+    throw new Error("plan-file and candidate cannot both be set");
+  }
+  if (command === "plan" && planFile) {
+    args.push("--out", planFile);
+  } else if (command === "release-pr" && planFile) {
+    args.push("--plan", planFile);
+  } else if (command === "rehearse") {
     if (!GIT_OBJECT_HEX.test(sourceRef || "")) {
       throw new Error("rehearse requires source-ref to be a full lowercase commit SHA");
     }
@@ -762,6 +773,7 @@ function resultOutputs(envelope) {
     "intent-digest": result.intent_digest || candidate.intent_digest || "",
     "candidate-digest": result.candidate_digest || candidate.candidate_digest || "",
     "pr-url": result.pr_url || "",
+    "release-pr-head": result.release_pr_head || "",
     "hex-url": result.hex_url || "",
     "github-release-url": result.github_release_url || "",
     "next-action": envelope.next_actions[0]?.command || "",

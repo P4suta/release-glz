@@ -579,11 +579,12 @@ async fn rolling_release_pr_is_created_from_a_server_side_verified_commit() {
         b"name = \"widget\"\nversion = \"1.2.3\"\n".to_vec(),
     );
 
-    let url = client
+    let update = client
         .upsert_release_pr(&release_plan(), "main", "release-glz/", &files)
         .await
         .unwrap();
-    assert_eq!(url, "https://github.test/o/r/pull/7");
+    assert_eq!(update.url, "https://github.test/o/r/pull/7");
+    assert_eq!(update.head, head_sha);
 
     let requests = server.requests();
     assert_eq!(requests.len(), 7, "{requests:#?}");
@@ -654,11 +655,12 @@ async fn rolling_release_pr_is_a_no_op_when_the_verified_marker_is_current() {
     .await;
     let client = test_client(&server, Some("token"));
 
-    let url = client
+    let update = client
         .upsert_release_pr(&release_plan(), "main", "release-glz/", &files)
         .await
         .unwrap();
-    assert_eq!(url, "https://github.test/o/r/pull/7");
+    assert_eq!(update.url, "https://github.test/o/r/pull/7");
+    assert_eq!(update.head, head);
     let requests = server.requests();
     assert_eq!(requests.len(), 2, "{requests:#?}");
     assert!(requests.iter().all(|request| request.starts_with("GET ")));
@@ -706,11 +708,12 @@ async fn rolling_release_pr_repairs_a_marker_after_a_verified_commit_race() {
     .await;
     let client = test_client(&server, Some("token"));
 
-    let url = client
+    let update = client
         .upsert_release_pr(&release_plan(), "main", "release-glz/", &files)
         .await
         .unwrap();
-    assert_eq!(url, "https://github.test/o/r/pull/7");
+    assert_eq!(update.url, "https://github.test/o/r/pull/7");
+    assert_eq!(update.head, actual_head);
     let requests = server.requests();
     assert_eq!(requests.len(), 4, "{requests:#?}");
     assert!(requests[2].starts_with(&format!("GET /repos/o/r/git/commits/{actual_head} ")));
@@ -777,11 +780,12 @@ async fn human_modified_rolling_branch_is_closed_without_overwrite_and_recreated
     .await;
     let client = test_client(&server, Some("token"));
 
-    let url = client
+    let update = client
         .upsert_release_pr(&release_plan(), "main", "release-glz/", &files)
         .await
         .unwrap();
-    assert_eq!(url, "https://github.test/o/r/pull/8");
+    assert_eq!(update.url, "https://github.test/o/r/pull/8");
+    assert_eq!(update.head, generated_head);
     let requests = server.requests();
     assert_eq!(requests.len(), 11, "{requests:#?}");
     assert!(requests[3].starts_with("POST /repos/o/r/issues/7/comments "));
@@ -1751,6 +1755,7 @@ fn release_plan() -> ReleasePlan {
         stages: vec![],
         intent_digest: None,
         pr_url: None,
+        release_pr_head: None,
         hex_url: None,
         github_release_url: None,
     }
