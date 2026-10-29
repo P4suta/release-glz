@@ -2,68 +2,10 @@
 //!
 //! Types here are the wire format of `plan/v2` and of the `command/v2` envelope, so a rename is a compatibility break rather than a refactor.
 
-use std::fmt;
-
 use semver::Version;
 use serde::{Deserialize, Serialize};
 
-/// The externally visible lifecycle of one package release.
-///
-/// Normal states only move forward.
-/// `conflict` and `blocked` are terminal observations rather than rollback states.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ReleaseState {
-    /// The published release already matches the manifest.
-    UpToDate,
-    /// A release is required and a version has been selected.
-    Planned,
-    /// A Candidate has been sealed and passes offline verification.
-    CandidateReady,
-    /// The Candidate is waiting for the approvals the manifest requires.
-    AwaitingApproval,
-    /// Some publication stages succeeded and the rest can be resumed.
-    PartiallyReleased,
-    /// Every required stage completed; the release is immutable.
-    Released,
-    /// A published object differs from what this Candidate would write.
-    Conflict,
-    /// A policy, API, or configuration requirement prevents release.
-    Blocked,
-}
-
-impl ReleaseState {
-    /// Whether `next` is a legal successor of this state.
-    ///
-    /// A state may always repeat itself, which is what makes resuming a partial release safe.
-    pub fn can_advance_to(self, next: Self) -> bool {
-        if self == next {
-            return true;
-        }
-        if matches!(next, Self::Conflict | Self::Blocked) {
-            return !matches!(self, Self::Released | Self::Conflict | Self::Blocked);
-        }
-        rank(next) >= rank(self) && !matches!(self, Self::Released | Self::Conflict | Self::Blocked)
-    }
-}
-
-/// The normal states in the order a release moves through them.
-const LIFECYCLE: [ReleaseState; 6] = [
-    ReleaseState::UpToDate,
-    ReleaseState::Planned,
-    ReleaseState::CandidateReady,
-    ReleaseState::AwaitingApproval,
-    ReleaseState::PartiallyReleased,
-    ReleaseState::Released,
-];
-
-/// Position in [`LIFECYCLE`], with `conflict` and `blocked` above every normal state.
-fn rank(state: ReleaseState) -> usize {
-    LIFECYCLE
-        .iter()
-        .position(|normal| *normal == state)
-        .unwrap_or(usize::MAX)
-}
+pub use release_glz_core::{Bump, ReleaseState};
 
 /// Monotonic effects in the order in which v1 permits them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -239,41 +181,6 @@ impl<T> CommandEnvelope<T> {
             diagnostics,
             next_actions,
         }
-    }
-}
-
-/// The ordered SemVer release requirement lattice.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Bump {
-    /// No release is required.
-    #[default]
-    None,
-    /// A backwards-compatible fix.
-    Patch,
-    /// A backwards-compatible feature or an API addition.
-    Minor,
-    /// A breaking API change.
-    Major,
-}
-
-impl Bump {
-    /// The stronger of two requirements.
-    ///
-    /// Signals combine by maximum, so no single signal can lower what another one already requires.
-    pub fn max(self, other: Self) -> Self {
-        std::cmp::max(self, other)
-    }
-}
-
-impl fmt::Display for Bump {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Self::None => "none",
-            Self::Patch => "patch",
-            Self::Minor => "minor",
-            Self::Major => "major",
-        })
     }
 }
 

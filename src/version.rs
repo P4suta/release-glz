@@ -1,8 +1,9 @@
-//! Version arithmetic for the planner: core versions, release steps, and
-//! prerelease trains.
+//! Version arithmetic for the planner: core versions, release steps, and prerelease trains.
 
 use anyhow::{Result, bail};
 use semver::{Prerelease, Version};
+
+use release_glz_core::{VersionCore, increment};
 
 use crate::model::{Bump, PrereleaseChannel};
 
@@ -13,29 +14,22 @@ pub fn core(version: &Version) -> Version {
 
 /// Raise a version by one release step.
 ///
-/// The result is always a stable core version; a prerelease train is
-/// started separately by [`next_prerelease_with_core`].
-pub fn apply_bump(version: &Version, bump: Bump) -> Version {
-    let mut next = core(version);
-    match bump {
-        Bump::None => {}
-        Bump::Patch => next.patch += 1,
-        Bump::Minor => {
-            next.minor += 1;
-            next.patch = 0;
-        }
-        Bump::Major => {
-            next.major += 1;
-            next.minor = 0;
-            next.patch = 0;
-        }
-    }
-    next
+/// The result is always a stable core version; a prerelease train is started separately by [`next_prerelease_with_core`].
+/// A step that would carry a component past `u64::MAX` is refused rather than wrapped.
+pub fn apply_bump(version: &Version, bump: Bump) -> Result<Version> {
+    let current = VersionCore {
+        major: version.major,
+        minor: version.minor,
+        patch: version.patch,
+    };
+    let Some(next) = current.bumped(bump) else {
+        bail!("{version} has the largest {bump} number, so no {bump} release can follow it");
+    };
+    Ok(Version::new(next.major, next.minor, next.patch))
 }
 
 /// Apply Hex's pre-1.0 compatibility rule to a semantic release signal.
-/// Breaking and additive API changes are both minor releases while the
-/// current public major version is zero.
+/// Breaking and additive API changes are both minor releases while the current public major version is zero.
 pub fn effective_bump(current: &Version, required: Bump) -> Bump {
     if current.major == 0 && required == Bump::Major {
         Bump::Minor
@@ -45,8 +39,7 @@ pub fn effective_bump(current: &Version, required: Bump) -> Bump {
 }
 
 /// Advance a prerelease train while enforcing alpha -> beta -> rc -> stable.
-/// A backwards channel transition is permitted only when the caller has
-/// supplied an explicitly higher core version.
+/// A backwards channel transition is permitted only when the caller has supplied an explicitly higher core version.
 pub fn next_prerelease_with_core(
     published: &Version,
     target_core: &Version,
@@ -78,7 +71,14 @@ pub fn next_prerelease_with_core(
 
     let number = if target_core == published_core {
         match prerelease_parts(published) {
-            Some((current, number)) if current == channel.as_str() => number + 1,
+            Some((current, number)) if current == channel.as_str() => {
+                let Some(next) = increment(number) else {
+                    bail!(
+                        "{published} has the largest {current} number, so choose an explicitly higher core version"
+                    );
+                };
+                next
+            }
             _ => 1,
         }
     } else {
@@ -103,8 +103,7 @@ fn channel_rank(channel: &str) -> u8 {
     }
 }
 
-/// Select a release version from the latest published release, latest stable
-/// release, required bump, optional explicit manifest version, and train.
+/// Select a release version from the latest published release, latest stable release, required bump, optional explicit manifest version, and train.
 pub fn select_version(
     published: &Version,
     latest_stable: Option<&Version>,
@@ -113,7 +112,7 @@ pub fn select_version(
     channel: Option<PrereleaseChannel>,
 ) -> Result<Version> {
     let stable_base = latest_stable.map(core).unwrap_or_else(|| core(published));
-    let required_core = apply_bump(&stable_base, required);
+    let required_core = apply_bump(&stable_base, required)?;
     let explicit_override = explicit.filter(|version| *version > published);
     let explicit_higher_core =
         explicit_override.is_some_and(|version| core(version) > core(published));
@@ -160,8 +159,7 @@ fn prerelease_parts(version: &Version) -> Option<(&str, u64)> {
 
 /// Report the release step that separates two versions.
 ///
-/// `set-version` uses this to check that an explicitly requested version
-/// is at least as large as the automatically required one.
+/// `set-version` uses this to check that an explicitly requested version is at least as large as the automatically required one.
 pub fn bump_between(from: &Version, to: &Version) -> Bump {
     if to.major != from.major {
         Bump::Major
@@ -192,8 +190,30 @@ mod tests {
             ("0.4.2", Bump::Major, "1.0.0"),
         ];
         for (input, bump, expected) in cases {
-            assert_eq!(apply_bump(&v(input), bump), v(expected));
+            assert_eq!(apply_bump(&v(input), bump).unwrap(), v(expected));
         }
+    }
+
+    #[test]
+    fn a_step_past_the_largest_component_is_refused() {
+        let max = u64::MAX;
+        for (input, bump) in [
+            (format!("1.2.{max}"), Bump::Patch),
+            (format!("1.{max}.3"), Bump::Minor),
+            (format!("{max}.2.3"), Bump::Major),
+        ] {
+            assert!(apply_bump(&v(&input), bump).is_err(), "{input} {bump}");
+        }
+        assert_eq!(
+            apply_bump(&v(&format!("1.2.{max}")), Bump::Minor).unwrap(),
+            v("1.3.0")
+        );
+
+        let published = v(&format!("1.2.0-alpha.{max}"));
+        let error =
+            next_prerelease_with_core(&published, &v("1.2.0"), PrereleaseChannel::Alpha, false)
+                .unwrap_err();
+        assert!(error.to_string().contains("largest"), "{error:#}");
     }
 
     #[test]

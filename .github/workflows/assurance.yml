@@ -214,6 +214,41 @@ jobs:
           --file src/version.rs --file src/registry.rs
           --file src/artifact.rs --file src/reconciler.rs
 
+  proofs:
+    name: Kani proofs of the release core
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned Kani verifier
+        run: |
+          rustup toolchain install 1.99.0 --profile minimal --no-self-update
+          rustup default 1.99.0
+          cargo install --locked kani-verifier --version 0.68.0
+          cargo kani setup
+      - name: Prove every release core harness and satisfy every cover property
+        run: |
+          set -euo pipefail
+          cargo kani --package release-glz-core 2>&1 | tee kani.log
+          expected=$(grep -rho '#\[kani::proof\]' crates/release-glz-core/src | wc -l)
+          grep -F "Complete - ${expected} successfully verified harnesses, 0 failures, ${expected} total." kani.log
+          awk '/cover properties satisfied/ { if ($2 != $4) { print; unsatisfied = 1 } } END { exit unsatisfied }' kani.log
+      - name: Show that a wrapping increment fails its proof
+        run: |
+          set -euo pipefail
+          if cargo kani --package release-glz-core --features negative-control \
+            --harness a_bump_raises_the_core_or_reports_an_overflow > negative-control.log 2>&1; then
+            cat negative-control.log
+            echo "the negative control passed a proof that must fail" >&2
+            exit 1
+          fi
+          grep -F "Failed Checks: a bump must raise the version core" negative-control.log
+          grep -F "VERIFICATION:- FAILED" negative-control.log
+
   fuzz:
     name: Bounded parser fuzz smoke
     runs-on: ubuntu-24.04

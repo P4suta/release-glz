@@ -1290,6 +1290,7 @@ dependencies = [
  "clap_complete",
  "flate2",
  "jsonschema",
+ "release-glz-core",
  "release-glz-test-support",
  "reqwest",
  "ring",
@@ -1304,6 +1305,13 @@ dependencies = [
  "tempfile",
  "tokio",
  "toml_edit",
+]
+
+[[package]]
+name = "release-glz-core"
+version = "0.0.0"
+dependencies = [
+ "serde",
 ]
 
 [[package]]
