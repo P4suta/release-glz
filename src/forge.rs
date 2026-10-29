@@ -818,13 +818,17 @@ impl GitHubClient {
         self.require_token()?;
         let digest = files_digest(files);
         let pulls = self.open_pull_requests().await?;
+        // A pull request that only copies the marker names a branch other than its own, and closing it would close someone else's work.
         let mut managed = pulls.into_iter().find(|pull| {
             pull.is_internal_to(&self.repository)
+                && pull.head.branch.starts_with(branch_prefix)
                 && pull
                     .body
                     .as_deref()
                     .and_then(parse_marker)
-                    .is_some_and(|marker| marker.package == plan.package)
+                    .is_some_and(|marker| {
+                        marker.package == plan.package && marker.branch == pull.head.branch
+                    })
         });
 
         if let Some(pull) = managed.as_ref()

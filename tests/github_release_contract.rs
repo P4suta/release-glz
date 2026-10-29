@@ -858,6 +858,64 @@ async fn rolling_release_pr_is_a_no_op_when_it_already_shows_the_plan_on_the_tip
 }
 
 #[tokio::test]
+async fn rolling_release_pr_ignores_pull_requests_that_only_copy_its_marker() {
+    let files = release_files();
+    let digest = release_files_digest(&files);
+    let tip = "a".repeat(40);
+    let head = "b".repeat(40);
+    let managed = managed_body(
+        "widget",
+        "release-glz/widget",
+        &head,
+        &digest,
+        "1.2.3",
+        "pending",
+    );
+    let unprefixed = managed_body(
+        "widget",
+        "notes/widget",
+        &"d".repeat(40),
+        &digest,
+        "1.2.3",
+        "pending",
+    );
+    let server = FakeServer::start(vec![
+        response(
+            200,
+            &serde_json::json!([
+                pull_value(9, &managed, "feature/notes", &"c".repeat(40)),
+                pull_value(8, &unprefixed, "notes/widget", &"d".repeat(40)),
+                pull_value(7, &managed, "release-glz/widget", &head),
+            ])
+            .to_string(),
+        ),
+        response(200, &format!(r#"{{"object":{{"sha":"{head}"}}}}"#)),
+        response(200, &generated_commit_on(&digest, &tip)),
+    ])
+    .await;
+    let client = test_client(&server, Some("token"));
+
+    let update = client
+        .upsert_release_pr(
+            &release_plan(),
+            &default_branch(&tip),
+            "release-glz/",
+            &files,
+        )
+        .await
+        .unwrap();
+    assert_eq!(update.url, "https://github.test/o/r/pull/7");
+    let requests = server.requests();
+    assert_eq!(requests.len(), 3, "{requests:#?}");
+    assert!(requests.iter().all(|request| request.starts_with("GET ")));
+    assert!(
+        requests[1].starts_with("GET /repos/o/r/git/ref/heads/release-glz%2Fwidget "),
+        "{}",
+        requests[1]
+    );
+}
+
+#[tokio::test]
 async fn rolling_release_pr_is_rebuilt_on_the_tip_when_the_tip_or_the_plan_moved() {
     let files = release_files();
     let digest = release_files_digest(&files);
