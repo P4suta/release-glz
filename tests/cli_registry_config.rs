@@ -353,6 +353,8 @@ fn release_pr_closes_a_stale_verified_managed_pr_when_no_release_is_required() {
         r#"[{{"number":7,"title":"chore(release): widget 1.0.0","body":"<!-- release-glz:managed package=widget branch=release-glz/widget head={head} digest={digest} version=1.0.0 intent=pending -->","html_url":"https://github.test/acme/widget/pull/7","merge_commit_sha":null,"merged_at":null,"user":{{"login":"bot"}},"labels":[],"head":{{"ref":"release-glz/widget","sha":"{head}","repo":{{"full_name":"acme/widget","default_branch":"main"}}}},"base":{{"ref":"main","repo":{{"full_name":"acme/widget","default_branch":"main"}}}}}}]"#,
     );
     let github_responses = vec![
+        http_response(200, REPOSITORY.as_bytes()),
+        http_response(200, format!(r#"{{"object":{{"sha":"{head}"}}}}"#).as_bytes()),
         http_response(200, pull.as_bytes()),
         http_response(200, format!(r#"{{"object":{{"sha":"{head}"}}}}"#).as_bytes()),
         http_response(
@@ -391,14 +393,16 @@ fn release_pr_closes_a_stale_verified_managed_pr_when_no_release_is_required() {
     let registry_requests: Vec<_> = registry_requests.try_iter().collect();
     assert_eq!(registry_requests.len(), 3);
     let github_requests: Vec<_> = github_requests.try_iter().collect();
-    assert_eq!(github_requests.len(), 5, "{github_requests:#?}");
+    assert_eq!(github_requests.len(), 7, "{github_requests:#?}");
+    assert!(github_requests[0].starts_with("GET /repos/acme/widget "));
+    assert!(github_requests[1].starts_with("GET /repos/acme/widget/git/ref/heads/main "));
     assert!(
-        github_requests[0].starts_with("GET /repos/acme/widget/pulls?state=open&per_page=100 ")
+        github_requests[2].starts_with("GET /repos/acme/widget/pulls?state=open&per_page=100 ")
     );
-    assert!(github_requests[3].starts_with("PATCH /repos/acme/widget/pulls/7 "));
-    assert!(github_requests[3].contains("\"state\":\"closed\""));
+    assert!(github_requests[5].starts_with("PATCH /repos/acme/widget/pulls/7 "));
+    assert!(github_requests[5].contains("\"state\":\"closed\""));
     assert!(
-        github_requests[4]
+        github_requests[6]
             .starts_with("DELETE /repos/acme/widget/git/refs/heads/release-glz%2Fwidget ")
     );
     let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
@@ -465,14 +469,14 @@ fn a_handed_off_plan_writes_the_release_pr_without_the_compiler() {
     let (github_requests, github_server) = serve_recording(
         github_listener,
         vec![
-            http_response(200, b"[]"),
-            http_response(200, b"[]"),
-            http_response(404, b"{}"),
-            http_response(404, b"{}"),
+            http_response(200, REPOSITORY.as_bytes()),
             http_response(
                 200,
                 format!(r#"{{"object":{{"sha":"{source_sha}"}}}}"#).as_bytes(),
             ),
+            http_response(200, b"[]"),
+            http_response(200, b"[]"),
+            http_response(404, b"{}"),
             http_response(201, b"{}"),
             http_response(200, graph.as_bytes()),
             http_response(201, created.as_bytes()),
@@ -496,9 +500,13 @@ fn a_handed_off_plan_writes_the_release_pr_without_the_compiler() {
 
     let github_requests: Vec<_> = github_requests.try_iter().collect();
     assert_eq!(github_requests.len(), 8, "{github_requests:#?}");
-    assert!(github_requests[0].starts_with(&format!(
+    assert!(github_requests[0].starts_with("GET /repos/acme/widget "));
+    assert!(github_requests[1].starts_with("GET /repos/acme/widget/git/ref/heads/main "));
+    assert!(github_requests[2].starts_with(&format!(
         "GET /repos/acme/widget/commits/{source_sha}/pulls "
     )));
+    assert!(github_requests[5].starts_with("POST /repos/acme/widget/git/refs "));
+    assert!(github_requests[5].contains(&format!("\"sha\":\"{source_sha}\"")));
     assert!(github_requests[6].starts_with("POST /graphql "));
     let commit = request_json(&github_requests[6]);
     let input = &commit["variables"]["input"];
@@ -530,6 +538,33 @@ fn a_handed_off_plan_writes_the_release_pr_without_the_compiler() {
             .unwrap()
             .contains(&format!("head={release_pr_head}"))
     );
+
+    // Once the default branch moves past this checkout, the same plan writes and closes nothing.
+    let (github_listener, github_url) = bound_listener();
+    let newer_tip = "f".repeat(40);
+    let (github_requests, github_server) = serve_recording(
+        github_listener,
+        vec![
+            http_response(200, REPOSITORY.as_bytes()),
+            http_response(
+                200,
+                format!(r#"{{"object":{{"sha":"{newer_tip}"}}}}"#).as_bytes(),
+            ),
+        ],
+    );
+    let superseded = release_pr_from_plan(temp.path(), &plan_path, &refusing, &github_url)
+        .output()
+        .unwrap();
+    github_server.join().unwrap();
+    assert_success(&superseded, "release-pr --plan behind the tip");
+    let envelope = json(&superseded);
+    assert_eq!(
+        envelope["result"]["release_pr_head"],
+        serde_json::Value::Null
+    );
+    assert_eq!(envelope["result"]["pr_url"], serde_json::Value::Null);
+    assert_eq!(envelope["diagnostics"][0]["code"], "release_pr_superseded");
+    assert_eq!(github_requests.try_iter().count(), 2);
 }
 
 #[test]
@@ -858,6 +893,9 @@ struct HttpResponse {
     status: u16,
     body: Vec<u8>,
 }
+
+/// The GitHub repository of the fixture package, whose default branch is `main`.
+const REPOSITORY: &str = r#"{"node_id":"R_widget","default_branch":"main","private":false}"#;
 
 fn http_response(status: u16, body: &[u8]) -> HttpResponse {
     HttpResponse {
