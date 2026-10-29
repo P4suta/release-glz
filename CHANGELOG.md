@@ -83,6 +83,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A plan lists `verify_hooks` only when the configuration names a verify hook, and `prepare_github_draft` only when `outputs.github_release` is on.
+  It used to list both for every release, though neither ran without its configuration.
 - A Conventional Commit type counts in any letter case, so `Feat:` asks for a minor release and lands under Added, as Conventional Commits 1.0.0 requires.
   `BREAKING CHANGE:` and `BREAKING-CHANGE:` still count only in uppercase.
 - A `--candidate` path that isn't a directory exits 2 as a usage error instead of 4 as a conflict.
