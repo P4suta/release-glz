@@ -68,6 +68,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A Conventional Commit type counts in any letter case, so `Feat:` asks for a minor release and lands under Added, as Conventional Commits 1.0.0 requires.
+  `BREAKING CHANGE:` and `BREAKING-CHANGE:` still count only in uppercase.
 - A `--candidate` path that isn't a directory exits 2 as a usage error instead of 4 as a conflict.
   Offline `verify --candidate` and `status --candidate` no longer need a manifest in the working directory, and the exit code table describes partial releases and inspection commands.
 - Publication after a merged Release PR can succeed.
