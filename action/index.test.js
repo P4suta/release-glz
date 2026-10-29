@@ -8,6 +8,7 @@ const path = require("node:path");
 const test = require("node:test");
 const zlib = require("node:zlib");
 const {
+  acquireBinary,
   expectedChecksum,
   inventoryTarGz,
   isAllowedDownloadRedirect,
@@ -547,6 +548,16 @@ test("writes multiline-safe GitHub outputs", () => {
   assert.equal(delimiters[0], delimiters[1]);
 });
 
+test("acquireBinary ignores RELEASE_GLZ_BINARY and keeps its own checks", async () => {
+  await assert.rejects(
+    acquireBinary({
+      RELEASE_GLZ_BINARY: process.execPath,
+      GITHUB_ACTION_REPOSITORY: "not a repository",
+    }),
+    /GITHUB_ACTION_REPOSITORY is unsafe/,
+  );
+});
+
 test("Action preserves a nonzero command envelope, diagnostics, argv, and exit code", async (t) => {
   if (process.platform === "win32") return t.skip("Unix executable fixture");
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "release-glz-failure-test-"));
@@ -581,7 +592,6 @@ test("Action preserves a nonzero command envelope, diagnostics, argv, and exit c
       {
         ...process.env,
         INPUT_COMMAND: "plan",
-        RELEASE_GLZ_BINARY: binary,
         GITHUB_OUTPUT: output,
         "INPUT_TIMEOUT-SECONDS": "10",
       },
@@ -591,6 +601,7 @@ test("Action preserves a nonzero command envelope, diagnostics, argv, and exit c
           return true;
         },
       },
+      async () => ({ binary, cleanup: () => {} }),
     ),
     (error) => {
       assert.equal(error.exitCode, 4);

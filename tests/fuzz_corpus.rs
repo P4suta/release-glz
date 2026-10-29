@@ -67,8 +67,12 @@ fn every_fuzz_target_runs_shared_invariants_that_this_suite_replays() {
         let source =
             fs::read_to_string(fuzz_directory().join(format!("fuzz_targets/{target}.rs"))).unwrap();
         assert!(
-            source.contains(&format!("#[path = \"../invariants/{target}.rs\"]")),
-            "the {target} target doesn't run its shared invariants"
+            source.contains(&format!("invariants::{target}::check(data)")),
+            "the {target} target doesn't run its shared invariants through the fuzz library"
+        );
+        assert!(
+            !source.contains("#[path"),
+            "the {target} target includes a module by path"
         );
         assert!(
             fuzz_directory()
