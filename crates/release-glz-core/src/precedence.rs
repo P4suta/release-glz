@@ -402,7 +402,7 @@ pub(crate) mod symbolic {
 
     /// A prerelease that is stable, a train with any channel and number, or valid text of at most `N` bytes.
     ///
-    /// Comparing two such texts takes one step more than they have identifiers, and no other loop runs longer than `N` bytes, so a harness over it unwinds `N + 2` times.
+    /// For `N` of at least two, no loop over such text, and no comparison of two such texts, takes more than `N` steps, so a harness over it unwinds `N + 1` times.
     pub(crate) fn pre<const N: usize>(bytes: &[u8; N]) -> Pre<'_> {
         match kani::any::<u8>() {
             0 => Pre::Stable,
@@ -455,7 +455,7 @@ mod proofs {
     ///
     /// Every core and train number is symbolic, and prerelease text has at most two bytes.
     #[kani::proof]
-    #[kani::unwind(4)]
+    #[kani::unwind(3)]
     fn a_version_equals_itself_and_order_flips_with_its_operands() {
         let left_bytes: [u8; PAIRED_TEXT] = kani::any();
         let right_bytes: [u8; PAIRED_TEXT] = kani::any();
@@ -482,7 +482,7 @@ mod proofs {
     ///
     /// The core and train number are symbolic, and prerelease text has at most three bytes.
     #[kani::proof]
-    #[kani::unwind(5)]
+    #[kani::unwind(4)]
     fn a_stable_release_follows_every_prerelease_of_its_core() {
         let bytes: [u8; TEXT] = kani::any();
         let prerelease = symbolic::version(&bytes);
@@ -498,7 +498,7 @@ mod proofs {
     ///
     /// Every core and train number is symbolic, and prerelease text has at most two bytes.
     #[kani::proof]
-    #[kani::unwind(4)]
+    #[kani::unwind(3)]
     fn the_core_decides_before_the_prerelease() {
         let left_bytes: [u8; PAIRED_TEXT] = kani::any();
         let right_bytes: [u8; PAIRED_TEXT] = kani::any();
