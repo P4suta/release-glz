@@ -27,6 +27,8 @@ They also refuse a Kani harness, Lean theorem, Quint invariant or model test, or
 
 The release creates an object only when the world lacks it or holds it pending, and an object that exists outside the Candidate's description stops the release.
 Kani proves the decision for every object and for lists of up to three objects, and Lean proves the list properties for every length.
+The live observation looks for docs even when the Candidate has none, so docs that contradict the Candidate stop the release too.
+It records each notification under the key that the Candidate derives, so a notification with another key reaches the reconciler only from another `ReleaseTarget`.
 
 - Kani: `publication::proofs::an_effect_concerns_only_an_object_the_world_lacks`
 - Kani: `publication::proofs::an_object_that_differs_ends_in_a_conflict`
@@ -41,10 +43,13 @@ Kani proves the decision for every object and for lists of up to three objects, 
 - Test: `tests/release_executor.rs::crash_after_docs_resumes_without_republishing_candidate_bytes`
 - Test: `tests/release_executor.rs::an_invalid_candidate_and_an_existing_checksum_conflict_keep_their_exact_states`
 - Test: `tests/registry_contract.rs::ambiguous_publish_is_reported_without_reposting`
+- Test: `tests/live_release_contract.rs::docs_for_a_candidate_without_docs_stop_the_release_in_a_conflict`
 
 ### A release publishes nothing without verified approval
 
 An approval has to bind the Candidate digest, the intent digest, and a run identity that GitHub signed, and a push never rests on the inputs of a manual release.
+Kani proves the approval decision for every combination of its conjuncts and the publication decision for lists of up to three objects, and Lean proves it for every length.
+The Quint model covers three objects and two runs.
 
 - Kani: `publication::proofs::no_effect_leaves_without_approval`
 - Kani: `approval::proofs::an_approval_needs_every_conjunct_of_its_path`
@@ -62,6 +67,9 @@ An approval has to bind the Candidate digest, the intent digest, and a run ident
 
 The tag, the draft Release, the package, the documentation, the assets, the final Release, and the notifications follow publication order.
 A run applies an effect only when no earlier object still needs one, apart from optional effects it already attempted, so a Release becomes final only after its assets exist.
+The run harness covers releases of at most three objects over four observations, and the Quint model covers three objects and two runs.
+The step harness covers one step from any record of at most five objects, which carries the order to runs of any length by induction on their steps.
+A default release has seven objects, so its longer runs rest on that induction and on the tests.
 
 - Kani: `run::proofs::a_run_applies_only_owed_effects_in_publication_order`
 - Kani: `run::proofs::every_step_keeps_the_record_that_bounds_a_run`
@@ -73,6 +81,7 @@ A run applies an effect only when no earlier object still needs one, apart from 
 ### A release counts as released exactly when no blocking effect remains
 
 An optional notification that fails leaves the release released, and a required one leaves it in `partially_released`.
+Kani proves it for lists and runs of at most three objects, and Lean proves the plan's rule for every length.
 
 - Kani: `publication::proofs::the_release_is_released_once_no_blocking_effect_remains`
 - Kani: `run::proofs::a_run_stops_only_when_nothing_but_attempted_optional_effects_remains`
@@ -84,6 +93,8 @@ An optional notification that fails leaves the release released, and a required 
 ### Every run stops, and a run whose effects land ends released
 
 The first plan that lists an effect fixes how many attempts a run may make, and publishing an effect removes exactly that effect from the plan.
+The run harnesses cover releases of at most three objects over four observations, and the step harness carries the attempt bound to runs of any length.
+Lean proves the plan's rules for every length.
 
 - Kani: `publication::proofs::publishing_an_effect_removes_exactly_that_effect`
 - Kani: `run::proofs::a_run_attempts_each_optional_effect_once_within_its_first_plan`
@@ -99,6 +110,7 @@ The first plan that lists an effect fixes how many attempts a run may make, and 
 ### A failed call counts as published only once the world holds it
 
 A failed blocking effect that the world still lacks stops the run, and an observation that fails after it reports the state that the run can vouch for.
+The run harnesses cover releases of at most three objects over four observations, and the Quint model covers three objects and two runs.
 
 - Kani: `run::proofs::a_failed_effect_counts_only_once_the_world_holds_it`
 - Kani: `run::proofs::a_run_stops_when_the_number_of_objects_changes`
@@ -112,6 +124,10 @@ A failed blocking effect that the world still lacks stops the run, and an observ
 - Test: `tests/run_replay.rs::a_trace_that_decides_otherwise_fails_the_replay`
 
 ### Release states move forward, and a terminal state never changes
+
+Within one run, every state that the run reports may follow the state of its first plan in the release lifecycle, for worlds that never lose an object they showed.
+Kani proves the lifecycle's rules for every pair of states, and it proves the run's reports for releases of at most three objects over four observations.
+A new run starts from a fresh observation, so `blocked` ends a run but not a release, and a later run can still end `released`.
 
 - Kani: `lifecycle::proofs::every_state_may_repeat`
 - Kani: `lifecycle::proofs::a_terminal_state_never_changes`
