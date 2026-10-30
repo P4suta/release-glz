@@ -1172,21 +1172,7 @@ fn a_refused_approval_names_the_check_that_refused_it() {
     let temp = tempfile::tempdir().unwrap();
     let (_registry_listener, registry_url) = bound_listener();
     let gleam = initialize_initial_package(temp.path(), &registry_url);
-    let source_sha = git_output(temp.path(), &["rev-parse", "HEAD"]);
-    let candidate = temp.path().join("candidate");
-    let rehearse = candidate_command(temp.path(), &gleam)
-        .args([
-            "--output",
-            "json",
-            "rehearse",
-            "--ref",
-            &source_sha,
-            "--out",
-        ])
-        .arg(&candidate)
-        .output()
-        .unwrap();
-    assert_success(&rehearse, "rehearse");
+    let candidate = rehearsed_candidate(temp.path(), &gleam);
     let (github_listener, github_url) = bound_listener();
     drop(github_listener);
 
