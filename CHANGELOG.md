@@ -108,6 +108,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A failure's diagnostic lists every cause beneath its message, as an unclassified failure's already did.
+  A refused release approval used to say only that OIDC verification failed, without the check that refused it.
 - The `init` and `migrate` results and their diffs give the manifest path relative to the repository, as every other result does.
   They used to repeat the `--manifest-path` value, which names the file from the repository root only when the command runs there with a relative path.
   `migrate` also put `./` before the backup path, and outside any repository it now reports both paths relative to the package directory.

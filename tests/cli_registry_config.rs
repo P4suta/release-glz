@@ -1086,6 +1086,53 @@ fn a_release_outside_an_actions_job_stops_before_it_asks_github_for_approval() {
 }
 
 #[test]
+fn a_refused_approval_names_the_check_that_refused_it() {
+    let temp = tempfile::tempdir().unwrap();
+    let (_registry_listener, registry_url) = bound_listener();
+    let gleam = initialize_initial_package(temp.path(), &registry_url);
+    let source_sha = git_output(temp.path(), &["rev-parse", "HEAD"]);
+    let candidate = temp.path().join("candidate");
+    let rehearse = candidate_command(temp.path(), &gleam)
+        .args([
+            "--output",
+            "json",
+            "rehearse",
+            "--ref",
+            &source_sha,
+            "--out",
+        ])
+        .arg(&candidate)
+        .output()
+        .unwrap();
+    assert_success(&rehearse, "rehearse");
+    let (github_listener, github_url) = bound_listener();
+    drop(github_listener);
+
+    let release = candidate_command(temp.path(), &gleam)
+        .args(["--output", "json", "release", "--candidate"])
+        .arg(&candidate)
+        .env("ACTIONS_ID_TOKEN_REQUEST_URL", "http://127.0.0.1:9/token")
+        .env("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "runner-secret")
+        .env("GITHUB_RUN_ID", "42")
+        .env("RELEASE_GLZ_ACTIONS_ARTIFACT_ID", "7")
+        .env("RELEASE_GLZ_ACTIONS_ARTIFACT_DIGEST", "3".repeat(64))
+        .env("RELEASE_GLZ_ACTIONS_RUN_ID", "42")
+        .env("GITHUB_TOKEN", "github-value")
+        .env("GITHUB_API_URL", &github_url)
+        .env("GITHUB_GRAPHQL_URL", format!("{github_url}/graphql"))
+        .output()
+        .unwrap();
+
+    assert_eq!(release.status.code(), Some(3), "{release:?}");
+    let envelope = json(&release);
+    assert_published_envelope(&envelope);
+    assert_eq!(
+        envelope["diagnostics"][0]["message"],
+        "release approval OIDC verification failed: GitHub OIDC URLs must use HTTPS"
+    );
+}
+
+#[test]
 fn top_level_diagnostics_redact_the_configured_registry_credential() {
     let temp = tempfile::tempdir().unwrap();
     let secret = "custom-registry-value-that-must-never-escape";
