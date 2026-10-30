@@ -19,7 +19,7 @@ chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 clap = { version = "4.6.6", features = ["derive"] }
 clap_complete = "4.6.6"
 flate2 = "1.1.10"
-icu_normalizer = { version = "2.2.0", default-features = false, features = [
+icu_normalizer = { version = "2.4.0", default-features = false, features = [
   "compiled_data",
 ] }
 release-glz-core = { path = "crates/release-glz-core", version = "0.0.0", features = [
