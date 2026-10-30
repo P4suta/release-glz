@@ -46,7 +46,7 @@ const fn control(
 }
 
 /// Every harness of the proof packages, with its cover count.
-pub const HARNESSES: [Harness; 47] = [
+pub const HARNESSES: [Harness; 51] = [
     harness(
         "proofs::a_proof_run_is_admitted_only_when_every_expected_harness_verified",
         2,
@@ -88,6 +88,16 @@ pub const HARNESSES: [Harness; 47] = [
     harness(
         "lifecycle::proofs::an_unfinished_release_can_always_end_in_conflict_or_blocked",
         2,
+    ),
+    harness("marker::proofs::inert_text_replaces_each_less_than_sign", 1),
+    harness(
+        "marker::proofs::the_first_occurrence_is_the_earliest_match",
+        1,
+    ),
+    harness("marker::proofs::the_last_occurrence_is_the_latest_match", 1),
+    harness(
+        "marker::proofs::a_field_is_recorded_only_under_a_new_known_key",
+        1,
     ),
     harness(
         "precedence::proofs::a_version_equals_itself_and_order_flips_with_its_operands",
@@ -214,7 +224,7 @@ const CORE: &str = "release-glz-core";
 const ASSURANCE: &str = "assurance-core";
 
 /// Every negative control, each of which has to fail exactly its harness's assertion.
-pub const CONTROLS: [Control; 49] = [
+pub const CONTROLS: [Control; 53] = [
     control(
         ASSURANCE,
         "negative-control-incomplete-run",
@@ -304,6 +314,30 @@ pub const CONTROLS: [Control; 49] = [
         "negative-control-unstoppable",
         "lifecycle::proofs::an_unfinished_release_can_always_end_in_conflict_or_blocked",
         "an unfinished release must be able to stop",
+    ),
+    control(
+        CORE,
+        "negative-control-inert-less-than",
+        "marker::proofs::inert_text_replaces_each_less_than_sign",
+        "inert text must replace each less-than sign and keep every other byte",
+    ),
+    control(
+        CORE,
+        "negative-control-search-skips-start",
+        "marker::proofs::the_first_occurrence_is_the_earliest_match",
+        "the first occurrence must be the earliest match",
+    ),
+    control(
+        CORE,
+        "negative-control-search-stops-short",
+        "marker::proofs::the_last_occurrence_is_the_latest_match",
+        "the last occurrence must be the latest match",
+    ),
+    control(
+        CORE,
+        "negative-control-duplicate-keys",
+        "marker::proofs::a_field_is_recorded_only_under_a_new_known_key",
+        "a field must be recorded only under a new known key",
     ),
     control(
         CORE,

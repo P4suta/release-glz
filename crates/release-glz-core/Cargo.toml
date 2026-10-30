@@ -94,6 +94,14 @@ negative-control-unframed-notification = []
 negative-control-utf8-key-order = []
 # Comparing member names by their first UTF-16 code unit only.
 negative-control-first-unit-key-order = []
+# Writing `<` into inert text as itself.
+negative-control-inert-less-than = []
+# Starting the search for a first occurrence one byte late.
+negative-control-search-skips-start = []
+# Stopping the search for a last occurrence before the last offset.
+negative-control-search-stops-short = []
+# Letting a later marker field replace an earlier one with the same key.
+negative-control-duplicate-keys = []
 
 [dependencies]
 serde = { version = "1.0.228", default-features = false, features = [

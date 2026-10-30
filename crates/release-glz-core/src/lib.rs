@@ -12,6 +12,7 @@ mod commit;
 mod framing;
 mod key_order;
 mod lifecycle;
+mod marker;
 mod precedence;
 mod publication;
 mod redaction;
@@ -24,6 +25,10 @@ pub use commit::conventional_bump;
 pub use framing::{FILES_DOMAIN, NOTIFICATION_DOMAIN, frame_file, notification_frame};
 pub use key_order::utf16_cmp;
 pub use lifecycle::ReleaseState;
+pub use marker::{
+    MARKER_KEYS, MARKER_PREFIX, MARKER_SUFFIX, marker_start, marker_values, write_inert,
+    write_marker,
+};
 pub use precedence::{Channel, Pre, Version, compare};
 pub use publication::{Decision, Effects, Object, Outcome, Presence, reconcile};
 pub use redaction::{Segment, redaction_segments};
