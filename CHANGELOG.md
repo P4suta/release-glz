@@ -114,6 +114,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A release of a Candidate without docs stops in a conflict when the registry already holds docs for its version.
   The live observation used to skip docs for such a Candidate, so it published the tag and the GitHub Release over a world that contradicted the Candidate.
+- The OIDC run attempt admits only ASCII digits, as the run ID does, so `+3` no longer reads as attempt 3.
+  The registry wait also reports its timeout right after its last poll instead of sleeping once more first.
 - A release completes a GitHub Release asset that a broken upload left unfinished, and it refuses an asset name that GitHub would rename before anything publishes.
   Both used to stop every later run after Hex already held the package.
   An upload that failed with a 502 could leave the asset in GitHub's `starter` state, and every run then failed as temporary until someone deleted it by hand.
