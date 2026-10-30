@@ -191,30 +191,10 @@ impl<R: Registry> Planner<R> {
         repo: &GitRepo,
         options: &PlanOptions,
     ) -> Result<ReleasePlan> {
-        if let Some(explicit) = &options.version_override
-            && follows(&manifest.version, explicit)
-        {
-            return Err(classified(
-                FailureClass::PolicyOrApproval,
-                format!(
-                    "release policy forbids lowering the manifest version from {} to {explicit}",
-                    manifest.version
-                ),
-            ));
-        }
-        let requested = options
-            .version_override
-            .as_ref()
-            .unwrap_or(&manifest.version);
         let prerelease = options
             .prerelease_override
             .unwrap_or(manifest.release.prerelease);
-        let version = initial_version(
-            requested,
-            prerelease,
-            options.prerelease_override == Some(None),
-        )?;
-        enforce_version_zero(&version, manifest)?;
+        let version = first_version(manifest, options, prerelease)?;
         // Exporting in a temporary snapshot validates exactly what the initial publication would contain while keeping `plan` read-only.
         let snapshot = self.gleam.snapshot(manifest.package_dir())?;
         self.gleam.export_hex_tarball(snapshot.package_dir())?;
@@ -392,8 +372,7 @@ impl<R: Registry> Planner<R> {
             });
         }
 
-        let explicit = (!options.ignore_manifest_version && follows(candidate, &latest.version))
-            .then_some(candidate);
+        let explicit = explicit_request(candidate, &latest.version, options);
         let configured_prerelease = options
             .prerelease_override
             .unwrap_or(manifest.release.prerelease);
@@ -901,6 +880,45 @@ pub fn update_local(manifest: &mut Manifest, plan: &ReleasePlan) -> Result<Vec<P
     Ok(written)
 }
 
+/// The version of a package's first release, from the manifest, the plan's overrides, and the configured train.
+fn first_version(
+    manifest: &Manifest,
+    options: &PlanOptions,
+    prerelease: Option<crate::model::PrereleaseChannel>,
+) -> Result<Version> {
+    if let Some(explicit) = &options.version_override
+        && follows(&manifest.version, explicit)
+    {
+        return Err(classified(
+            FailureClass::PolicyOrApproval,
+            format!(
+                "release policy forbids lowering the manifest version from {} to {explicit}",
+                manifest.version
+            ),
+        ));
+    }
+    let requested = options
+        .version_override
+        .as_ref()
+        .unwrap_or(&manifest.version);
+    let version = initial_version(
+        requested,
+        prerelease,
+        options.prerelease_override == Some(None),
+    )?;
+    enforce_version_zero(&version, manifest)?;
+    Ok(version)
+}
+
+/// The requested version as an explicit choice, when the plan reads it and it follows the latest release.
+fn explicit_request<'a>(
+    candidate: &'a Version,
+    latest: &Version,
+    options: &PlanOptions,
+) -> Option<&'a Version> {
+    (!options.ignore_manifest_version && follows(candidate, latest)).then_some(candidate)
+}
+
 fn enforce_version_zero(version: &Version, manifest: &Manifest) -> Result<()> {
     if release_glz_core::version_zero_refused(version.major, manifest.release.allow_version_zero) {
         return Err(classified(
@@ -1018,6 +1036,66 @@ mod tests {
         manifest.release.allow_version_zero = true;
         enforce_version_zero(&Version::new(0, 1, 0), &manifest).unwrap();
         enforce_version_zero(&Version::new(1, 0, 0), &manifest).unwrap();
+    }
+
+    #[test]
+    fn a_first_release_keeps_its_prerelease_unless_the_plan_asks_for_a_stable_one() {
+        let mut manifest = manifest();
+        manifest.version = Version::parse("1.2.3-beta.3").unwrap();
+        let options = PlanOptions::default();
+        assert_eq!(
+            first_version(&manifest, &options, None).unwrap(),
+            manifest.version
+        );
+        assert_eq!(
+            first_version(
+                &manifest,
+                &options,
+                Some(crate::model::PrereleaseChannel::Beta)
+            )
+            .unwrap(),
+            manifest.version
+        );
+        let stable = PlanOptions {
+            prerelease_override: Some(None),
+            ..PlanOptions::default()
+        };
+        assert_eq!(
+            first_version(&manifest, &stable, None).unwrap(),
+            Version::new(1, 2, 3)
+        );
+        let lowered = PlanOptions {
+            version_override: Some(Version::new(1, 2, 2)),
+            ..PlanOptions::default()
+        };
+        let error = first_version(&manifest, &lowered, None)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            error,
+            "release policy forbids lowering the manifest version from 1.2.3-beta.3 to 1.2.2"
+        );
+        manifest.version = Version::new(0, 1, 0);
+        let error = first_version(&manifest, &options, None)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("allow_version_zero"), "{error}");
+    }
+
+    #[test]
+    fn the_requested_version_is_an_explicit_choice_only_when_read_and_ahead() {
+        let latest = Version::new(1, 2, 3);
+        let ahead = Version::new(1, 3, 0);
+        let rebuilt = Version::parse("1.2.3+build.5").unwrap();
+        let options = PlanOptions::default();
+        assert_eq!(explicit_request(&ahead, &latest, &options), Some(&ahead));
+        assert_eq!(explicit_request(&rebuilt, &latest, &options), None);
+        assert_eq!(explicit_request(&latest, &ahead, &options), None);
+        let ignored = PlanOptions {
+            ignore_manifest_version: true,
+            ..PlanOptions::default()
+        };
+        assert_eq!(explicit_request(&ahead, &latest, &ignored), None);
     }
 
     #[test]
