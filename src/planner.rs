@@ -26,7 +26,7 @@ use crate::model::{
     ReleaseState,
 };
 use crate::registry::{HexRegistry, PackageState, Registry};
-use crate::version::{bump_between, effective_bump, select_version};
+use crate::version::{bump_between, effective_bump, follows, initial_version, select_version};
 
 const DEFAULT_BASELINE_SEARCH_LIMIT: usize = 2_048;
 const MAX_BASELINE_CACHE_BYTES: u64 = 16 * 1024;
@@ -192,7 +192,7 @@ impl<R: Registry> Planner<R> {
         options: &PlanOptions,
     ) -> Result<ReleasePlan> {
         if let Some(explicit) = &options.version_override
-            && explicit < &manifest.version
+            && follows(&manifest.version, explicit)
         {
             return Err(classified(
                 FailureClass::PolicyOrApproval,
@@ -202,26 +202,18 @@ impl<R: Registry> Planner<R> {
                 ),
             ));
         }
-        let mut version = options
+        let requested = options
             .version_override
             .as_ref()
-            .unwrap_or(&manifest.version)
-            .clone();
+            .unwrap_or(&manifest.version);
         let prerelease = options
             .prerelease_override
             .unwrap_or(manifest.release.prerelease);
-        if let Some(channel) = prerelease {
-            if version.pre.is_empty() {
-                version.pre = semver::Prerelease::new(&format!("{}.1", channel.as_str()))?;
-            } else if version.pre.as_str().split('.').next() != Some(channel.as_str()) {
-                bail!(
-                    "initial version {version} does not belong to the configured {} prerelease train",
-                    channel.as_str()
-                );
-            }
-        } else if options.prerelease_override == Some(None) {
-            version.pre = semver::Prerelease::EMPTY;
-        }
+        let version = initial_version(
+            requested,
+            prerelease,
+            options.prerelease_override == Some(None),
+        )?;
         enforce_version_zero(&version, manifest)?;
         // Exporting in a temporary snapshot validates exactly what the initial publication would contain while keeping `plan` read-only.
         let snapshot = self.gleam.snapshot(manifest.package_dir())?;
@@ -280,7 +272,7 @@ impl<R: Registry> Planner<R> {
             .version_override
             .as_ref()
             .unwrap_or(&manifest.version);
-        if candidate < &latest.version {
+        if follows(&latest.version, candidate) {
             return Err(classified(
                 FailureClass::PolicyOrApproval,
                 format!(
@@ -400,8 +392,8 @@ impl<R: Registry> Planner<R> {
             });
         }
 
-        let explicit =
-            (!options.ignore_manifest_version && candidate > &latest.version).then_some(candidate);
+        let explicit = (!options.ignore_manifest_version && follows(candidate, &latest.version))
+            .then_some(candidate);
         let configured_prerelease = options
             .prerelease_override
             .unwrap_or(manifest.release.prerelease);
@@ -910,7 +902,7 @@ pub fn update_local(manifest: &mut Manifest, plan: &ReleasePlan) -> Result<Vec<P
 }
 
 fn enforce_version_zero(version: &Version, manifest: &Manifest) -> Result<()> {
-    if version.major == 0 && !manifest.release.allow_version_zero {
+    if release_glz_core::version_zero_refused(version.major, manifest.release.allow_version_zero) {
         return Err(classified(
             FailureClass::PolicyOrApproval,
             format!(
