@@ -11,7 +11,8 @@ use anyhow::{Context, Result, bail};
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::{generate, shells};
 use release_glz::ReleasePlan;
-use release_glz::authorization::{GithubOidcVerifier, OidcExpectation};
+use release_glz::approval::{ApprovalRequest, verify_approval};
+use release_glz::authorization::GithubOidcVerifier;
 use release_glz::candidate::Candidate;
 use release_glz::config::{
     AuthKind, InitializationSettings, Manifest, RegistryConfig, RegistryProvider,
@@ -22,9 +23,7 @@ use release_glz::doctor::{
     DoctorInput, DoctorReport, assess as assess_doctor, assess_local as assess_doctor_local,
 };
 use release_glz::failure::{FailureClass, classified};
-use release_glz::forge::{
-    CandidateRun, GitHubClient, GitHubRepository, IntentBinding, MAX_ATTRIBUTED_COMMITS,
-};
+use release_glz::forge::{GitHubClient, GitHubRepository, IntentBinding, MAX_ATTRIBUTED_COMMITS};
 use release_glz::git::GitRepo;
 use release_glz::gleam::Gleam;
 use release_glz::handoff;
@@ -548,17 +547,17 @@ async fn run(cli: Cli) -> Result<i32> {
                 )
                 .map_err(|error| classified(FailureClass::UsageOrConfig, error))?;
                 let merged = github
-                    .merged_release_pr_for_head(
+                    .merged_release_pr(
                         &sealed.source.commit_sha,
                         &sealed.package,
                         &sealed.version.to_string(),
                         &sealed.release_branch_prefix,
-                        &sealed.intent_digest,
                     )
                     .await
-                    .map_err(|error| {
-                        default_failure_class(error, FailureClass::TemporaryExternal)
-                    })?;
+                    .map_err(|error| default_failure_class(error, FailureClass::TemporaryExternal))?
+                    .filter(|pull| {
+                        pull.intent_digest.as_deref() == Some(sealed.intent_digest.as_str())
+                    });
                 let (state, binding, pr_url) = if let Some(pull) = merged {
                     (
                         ReleaseState::AwaitingApproval,
@@ -632,7 +631,7 @@ async fn run(cli: Cli) -> Result<i32> {
                 return Err(classified(
                     FailureClass::PolicyOrApproval,
                     format!(
-                        "release approval is not bound to Candidate {candidate_digest}; set the approved digest evidence"
+                        "release approval is not bound to Candidate {candidate_digest}; its intent, Candidate digest, or verified run identity names another release"
                     ),
                 ));
             }
@@ -1386,7 +1385,7 @@ async fn write_rolling_release_pr(
     if plan.release_required
         && let Some(base) = &base
         && let Some(merged) = github
-            .merged_release_pr_at(
+            .merged_release_pr(
                 &base.tip,
                 &plan.package,
                 &plan.version.to_string(),
@@ -1521,80 +1520,18 @@ fn default_failure_class(error: anyhow::Error, fallback: FailureClass) -> anyhow
 async fn approval_from_environment(
     manifest: &release_glz::candidate::CandidateManifest,
 ) -> Result<ApprovalEvidence> {
-    let request_url = std::env::var("ACTIONS_ID_TOKEN_REQUEST_URL")
-        .context("release approval requires GitHub Actions OIDC request URL")?;
-    let request_token = std::env::var("ACTIONS_ID_TOKEN_REQUEST_TOKEN")
-        .context("release approval requires GitHub Actions OIDC request token")?;
-    let run_id = std::env::var("GITHUB_RUN_ID")
-        .context("release approval requires the GitHub Actions run ID")?;
-    let expected = OidcExpectation {
-        repository: manifest.github_repository.clone(),
-        environment: manifest.approval.environment.clone(),
-        workflow_path: ".github/workflows/release-glz.yml".into(),
-        source_sha: manifest.source.commit_sha.clone(),
-        run_id: Some(run_id),
-    };
-    let github_oidc = GithubOidcVerifier::github()?
-        .verify_actions_token(
-            &request_url,
-            &request_token,
-            &expected,
-            chrono::Utc::now().timestamp(),
-        )
-        .await
-        .context("release approval OIDC verification failed")?;
-    let artifact_id = std::env::var("RELEASE_GLZ_ACTIONS_ARTIFACT_ID")
-        .context("release approval requires the immutable Actions artifact ID")?
-        .parse::<u64>()
-        .context("release approval Actions artifact ID is invalid")?;
-    let artifact_digest = std::env::var("RELEASE_GLZ_ACTIONS_ARTIFACT_DIGEST")
-        .context("release approval requires the Actions artifact digest")?;
-    let artifact_digest = artifact_digest
-        .strip_prefix("sha256:")
-        .unwrap_or(&artifact_digest);
-    let artifact_run_id = std::env::var("RELEASE_GLZ_ACTIONS_RUN_ID")
-        .context("release approval requires the Candidate-generating Actions run ID")?;
-    let candidate_run = CandidateRun::for_event(
-        github_oidc.event_name(),
-        github_oidc.run_id(),
-        &artifact_run_id,
-    )
-    .map_err(|error| classified(FailureClass::PolicyOrApproval, error))?;
+    let request = ApprovalRequest::from_environment()?;
     let repository = GitHubRepository::parse(&manifest.github_repository)?;
     let github = GitHubClient::from_environment(repository)
         .map_err(|error| classified(FailureClass::UsageOrConfig, error))?;
-    github
-        .verify_actions_artifact(
-            artifact_id,
-            artifact_digest,
-            &artifact_run_id,
-            &manifest.source.commit_sha,
-            candidate_run,
-        )
-        .await
-        .context("release approval Actions artifact verification failed")?;
-    if github_oidc.event_name() == "push" {
-        github
-            .merged_release_pr_for_head(
-                &manifest.source.commit_sha,
-                &manifest.package,
-                &manifest.version.to_string(),
-                &manifest.release_branch_prefix,
-                &manifest.intent_digest,
-            )
-            .await?
-            .context(
-                "release approval requires a server-verified merged managed Release PR for this Candidate",
-            )?;
-    }
-    Ok(ApprovalEvidence {
-        release_pr_intent_digest: std::env::var("RELEASE_GLZ_APPROVED_INTENT_DIGEST").ok(),
-        environment_candidate_digest: std::env::var("RELEASE_GLZ_APPROVED_CANDIDATE_DIGEST").ok(),
-        environment: std::env::var("RELEASE_GLZ_ENVIRONMENT").ok(),
-        source_sha: std::env::var("RELEASE_GLZ_MANUAL_SOURCE_SHA").ok(),
-        manual_reason: std::env::var("RELEASE_GLZ_MANUAL_REASON").ok(),
-        github_oidc: Some(github_oidc),
-    })
+    verify_approval(
+        manifest,
+        &request,
+        &GithubOidcVerifier::github()?,
+        &github,
+        chrono::Utc::now().timestamp(),
+    )
+    .await
 }
 
 fn print_result<T: serde::Serialize>(command: &str, result: &T, output: Output) -> Result<()> {

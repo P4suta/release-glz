@@ -184,6 +184,15 @@ pub struct PullRequest {
     pub base: Option<PullBase>,
 }
 
+/// A managed Release PR that merged, whose head GitHub verified as the commit that release-glz generated.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MergedReleasePr {
+    /// Page for humans.
+    pub html_url: String,
+    /// Intent digest that the marker recorded when the pull request merged, if its intent was bound by then.
+    pub intent_digest: Option<String>,
+}
+
 impl PullRequest {
     /// Whether the head branch lives in `repository` and the pull request targets its default branch.
     ///
@@ -1106,41 +1115,17 @@ impl GitHubClient {
         Ok(false)
     }
 
-    /// The merged Release PR that introduced a commit, if it was managed and carries `intent_digest`.
-    pub async fn merged_release_pr_for_head(
-        &self,
-        sha: &str,
-        package: &str,
-        version: &str,
-        branch_prefix: &str,
-        intent_digest: &str,
-    ) -> Result<Option<PullRequest>> {
-        self.merged_managed_release_pr(sha, package, version, branch_prefix, Some(intent_digest))
-            .await
-    }
-
-    /// The managed Release PR for `version` whose merge produced `sha`, whatever intent it carries.
+    /// The managed Release PR for `version` whose merge produced `sha`, and the intent its marker recorded.
     ///
-    /// The push of that merge commit waits for publication, so it must not open another Release PR for the same version.
-    pub async fn merged_release_pr_at(
+    /// The pull request counts only when it came from this repository and its head is the server-verified commit that release-glz generated.
+    /// The marker's intent digest is reported rather than compared, so the caller decides what the merge approved.
+    pub async fn merged_release_pr(
         &self,
         sha: &str,
         package: &str,
         version: &str,
         branch_prefix: &str,
-    ) -> Result<Option<PullRequest>> {
-        self.merged_managed_release_pr(sha, package, version, branch_prefix, None)
-            .await
-    }
-
-    async fn merged_managed_release_pr(
-        &self,
-        sha: &str,
-        package: &str,
-        version: &str,
-        branch_prefix: &str,
-        intent_digest: Option<&str>,
-    ) -> Result<Option<PullRequest>> {
+    ) -> Result<Option<MergedReleasePr>> {
         let pulls: Vec<PullRequest> = self.get(&format!("commits/{sha}/pulls")).await?;
         for pull in pulls {
             let Some(marker) = pull.body.as_deref().and_then(parse_marker) else {
@@ -1153,15 +1138,16 @@ impl GitHubClient {
                 && marker.version == version
                 && marker.branch == pull.head.branch
                 && marker.head == pull.head.sha
-                && pull.head.branch.starts_with(branch_prefix)
-                && intent_digest
-                    .is_none_or(|intent| marker.intent_digest.as_deref() == Some(intent));
+                && pull.head.branch.starts_with(branch_prefix);
             if !structurally_valid {
                 continue;
             }
             let verified_digest = self.generated_commit_digest(&pull.head.sha).await?;
             if verified_digest.as_deref() == Some(marker.digest.as_str()) {
-                return Ok(Some(pull));
+                return Ok(Some(MergedReleasePr {
+                    html_url: pull.html_url,
+                    intent_digest: marker.intent_digest,
+                }));
             }
         }
         Ok(None)

@@ -81,17 +81,17 @@ pub struct ReleaseAsset {
 /// Each field is something that was actually observed; absent evidence blocks rather than defaults to permitted.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ApprovalEvidence {
-    /// Intent digest recorded on the merged Release PR.
-    pub release_pr_intent_digest: Option<String>,
+    /// Intent digest that the approval covers.
+    ///
+    /// For a push it is the one the merged Release PR's marker recorded, and for a manual release the verified Candidate's own.
+    pub approved_intent_digest: Option<String>,
     /// Candidate digest the environment approved.
     pub environment_candidate_digest: Option<String>,
-    /// Environment that released the job.
-    pub environment: Option<String>,
     /// Commit the approval was granted for.
     pub source_sha: Option<String>,
     /// Reason recorded for a manually dispatched release.
     pub manual_reason: Option<String>,
-    /// Verified OIDC claims of the publishing run.
+    /// Verified OIDC claims of the publishing run, which also name the Environment that released the job.
     pub github_oidc: Option<VerifiedGithubOidc>,
 }
 
@@ -373,11 +373,10 @@ fn plan(intent: &ReleaseIntent, observed: &ExternalReleaseState) -> ReconcilePla
 }
 
 fn approved(intent: &ReleaseIntent, approval: &ApprovalEvidence) -> bool {
-    let environment = approval.environment.as_deref() == Some(intent.approval_environment.as_str());
     let candidate =
         approval.environment_candidate_digest.as_deref() == Some(intent.candidate_digest.as_str());
     let intent_approved =
-        approval.release_pr_intent_digest.as_deref() == Some(intent.intent_digest.as_str());
+        approval.approved_intent_digest.as_deref() == Some(intent.intent_digest.as_str());
     let manual = intent_approved
         && approval.source_sha.as_deref() == Some(intent.source_sha.as_str())
         && approval
@@ -402,7 +401,7 @@ fn approved(intent: &ReleaseIntent, approval: &ApprovalEvidence) -> bool {
         Some("workflow_dispatch") => manual,
         _ => false,
     };
-    environment && candidate && oidc.is_some() && path_approved
+    candidate && oidc.is_some() && path_approved
 }
 
 fn validate_existing(

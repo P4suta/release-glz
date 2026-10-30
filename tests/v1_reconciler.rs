@@ -105,9 +105,8 @@ fn release_assets_upload_to_the_draft_once_and_conflict_instead_of_replacing() {
 
 fn approved() -> ApprovalEvidence {
     ApprovalEvidence {
-        release_pr_intent_digest: Some("1".repeat(64)),
+        approved_intent_digest: Some("1".repeat(64)),
         environment_candidate_digest: Some("2".repeat(64)),
-        environment: Some("release".into()),
         source_sha: None,
         manual_reason: None,
         github_oidc: Some(oidc_identity("push")),
@@ -320,11 +319,11 @@ fn any_existing_object_with_different_identity_is_a_hard_conflict() {
 }
 
 #[test]
-fn authorization_is_bound_to_both_digests_and_environment() {
+fn authorization_is_bound_to_both_digests_and_the_signed_environment() {
     let target = intent();
     for evidence in [
         ApprovalEvidence {
-            release_pr_intent_digest: None,
+            approved_intent_digest: None,
             ..approved()
         },
         ApprovalEvidence {
@@ -332,11 +331,14 @@ fn authorization_is_bound_to_both_digests_and_environment() {
             ..approved()
         },
         ApprovalEvidence {
-            environment: None,
-            ..approved()
-        },
-        ApprovalEvidence {
-            environment: Some("staging".into()),
+            github_oidc: Some(oidc_identity_with(
+                "push",
+                "owner/widget",
+                "staging",
+                ".github/workflows/release-glz.yml",
+                &target.source_sha,
+                "refs/heads/main",
+            )),
             ..approved()
         },
         ApprovalEvidence {
@@ -519,7 +521,7 @@ fn optional_notifications_are_planned_but_do_not_make_a_published_core_partial()
 fn push_and_manual_workflow_approvals_cannot_be_substituted_for_each_other() {
     let target = intent();
     let missing_intent = ApprovalEvidence {
-        release_pr_intent_digest: None,
+        approved_intent_digest: None,
         source_sha: Some(target.source_sha.clone()),
         manual_reason: Some("Emergency release after incident review".into()),
         github_oidc: Some(oidc_identity("workflow_dispatch")),
@@ -533,7 +535,7 @@ fn push_and_manual_workflow_approvals_cannot_be_substituted_for_each_other() {
     );
 
     let wrong_intent = ApprovalEvidence {
-        release_pr_intent_digest: Some("0".repeat(64)),
+        approved_intent_digest: Some("0".repeat(64)),
         ..missing_intent.clone()
     };
     assert_eq!(
@@ -544,7 +546,7 @@ fn push_and_manual_workflow_approvals_cannot_be_substituted_for_each_other() {
     );
 
     let manual = ApprovalEvidence {
-        release_pr_intent_digest: Some(target.intent_digest.clone()),
+        approved_intent_digest: Some(target.intent_digest.clone()),
         ..missing_intent
     };
     assert_ne!(
@@ -586,7 +588,7 @@ fn push_and_manual_workflow_approvals_cannot_be_substituted_for_each_other() {
     );
 
     let push_with_manual_only = ApprovalEvidence {
-        release_pr_intent_digest: None,
+        approved_intent_digest: None,
         source_sha: Some(target.source_sha.clone()),
         manual_reason: Some("not valid on push".into()),
         ..approved()
