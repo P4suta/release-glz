@@ -762,18 +762,18 @@ where
                         }),
                     ));
                 }
-                Step::Diverged => {
+                Step::Diverged(state) => {
                     return Err(run_error(
-                        ReleaseState::Blocked,
+                        state,
                         crate::failure::classified(
                             crate::failure::FailureClass::Internal,
                             "release reconciliation did not converge",
                         ),
                     ));
                 }
-                Step::Reshaped => {
+                Step::Reshaped(state) => {
                     return Err(run_error(
-                        ReleaseState::Blocked,
+                        state,
                         crate::failure::classified(
                             crate::failure::FailureClass::Internal,
                             "the release's objects changed in number during the run",

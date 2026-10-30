@@ -50,6 +50,26 @@ negative-control-stall = []
 negative-control-forget-failure = []
 # Going on with an observation of another number of objects.
 negative-control-reshape = []
+# Reporting blocked when an observation fails after an effect whose call succeeded.
+negative-control-forget-success = []
+# Reporting the state of the newest plan even below what the run already published.
+negative-control-unfloored = []
+# Accepting uppercase hexadecimal digits in a digest or an object id.
+negative-control-hex-case = []
+# Accepting a digest or an object id when any one byte is a digit.
+negative-control-hex-any-byte = []
+# Accepting a digest or an object id that is longer than its length.
+negative-control-hex-length = []
+# Accepting a `..` path component.
+negative-control-path-traversal = []
+# Accepting a colon in a path component.
+negative-control-path-colon = []
+# Recognizing a Windows device name only in uppercase.
+negative-control-device-case = []
+# Ending the stem of a component at its last dot instead of its first.
+negative-control-device-stem = []
+# Letting a file and a directory of the same folded name both stand.
+negative-control-case-collision = []
 # Ordering two prereleases with the same identifiers as unequal.
 negative-control-equal-prereleases = []
 # Ordering a stable release before the prereleases of its core.
@@ -96,6 +116,14 @@ negative-control-unframed-notification = []
 negative-control-utf8-key-order = []
 # Comparing member names by their first UTF-16 code unit only.
 negative-control-first-unit-key-order = []
+# Writing `<` into inert text as itself.
+negative-control-inert-less-than = []
+# Starting the search for a first occurrence one byte late.
+negative-control-search-skips-start = []
+# Stopping the search for a last occurrence before the last offset.
+negative-control-search-stops-short = []
+# Letting a later marker field replace an earlier one with the same key.
+negative-control-duplicate-keys = []
 
 [dependencies]
 serde = { version = "1.0.228", default-features = false, features = [

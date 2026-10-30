@@ -131,6 +131,8 @@ impl Container {
         docker.args([
             "run",
             "--rm",
+            // An init process reaps the preprocessors that Kani orphans for every harness, which would otherwise fill the process limit.
+            "--init",
             "--platform",
             PLATFORM,
             "--memory",
