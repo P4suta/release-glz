@@ -1,3 +1,4 @@
+// @ts-check
 "use strict";
 
 const assert = require("node:assert/strict");
@@ -67,6 +68,10 @@ test("CLI refuses symlink, empty, oversized, and existing output paths", (contex
   assert.match(occupied.stderr, /already exists/);
 });
 
+/**
+ * @param {string[]} args
+ * @returns {{status: number | null, stdout: string, stderr: string}}
+ */
 function run(args) {
   const result = spawnSync(
     process.execPath,

@@ -1,3 +1,4 @@
+// @ts-check
 "use strict";
 
 const assert = require("node:assert/strict");
@@ -83,6 +84,10 @@ test("workflow verifier rejects mutable actions, implicit timeouts, and persiste
 });
 
 test("workflow verifier rejects a POSIX variable in an implicit shell on a varying runner", () => {
+  /**
+   * @param {string} step
+   * @returns {string}
+   */
   const matrixJob = (step) => `name: Distribute
 on: push
 permissions: {}

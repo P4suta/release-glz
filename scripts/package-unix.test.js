@@ -1,3 +1,4 @@
+// @ts-check
 "use strict";
 
 const assert = require("node:assert/strict");
@@ -17,16 +18,31 @@ const RECORD_BYTES = 20 * BLOCK_BYTES;
 // Larger than one stored deflate block holds, and not a whole number of tar blocks.
 const MULTI_BLOCK_BYTES = 3 * 65535 + 1234;
 
+/**
+ * @param {import("node:test").TestContext} context
+ * @param {string} prefix
+ * @returns {string}
+ */
 function temporaryRoot(context, prefix) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   context.after(() => fs.rmSync(root, { recursive: true, force: true }));
   return root;
 }
 
+/**
+ * @param {number} length
+ * @returns {Buffer}
+ */
 function fixture(length) {
   return Buffer.from(Array.from({ length }, (_, index) => (index * 31 + 7) % 251));
 }
 
+/**
+ * @param {Buffer} header
+ * @param {number} start
+ * @param {number} length
+ * @returns {string}
+ */
 function field(header, start, length) {
   return header.subarray(start, start + length).toString("latin1");
 }
@@ -178,6 +194,10 @@ test("CLI writes the archive it names", (context) => {
   assert.equal(tar.subarray(BLOCK_BYTES, BLOCK_BYTES + 6).toString("latin1"), "binary");
 });
 
+/**
+ * @param {string[]} args
+ * @returns {{status: number | null, stdout: string, stderr: string}}
+ */
 function run(args) {
   const result = spawnSync(process.execPath, [path.join(__dirname, "package-unix.js"), ...args], {
     encoding: "utf8",
