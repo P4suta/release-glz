@@ -135,7 +135,7 @@ fn last(state: &Value) -> Result<Option<Step>> {
             index: index(&value["index"])?.context("a failed object")?,
             state: self::state(&value["state"])?,
         },
-        "Diverged" => Step::Diverged,
+        "Diverged" => Step::Diverged(self::state(value)?),
         "Unobserved" => return Ok(None),
         other => bail!("unknown step {other}"),
     }))
@@ -249,9 +249,9 @@ fn replay(text: &str, coverage: &mut Coverage) -> Result<()> {
                         Step::Apply(_) => "apply".to_owned(),
                         Step::Finish(state) => format!("finish {state:?}"),
                         Step::Conflict(_) => "conflict".to_owned(),
-                        Step::Failed { .. } => "failed".to_owned(),
-                        Step::Diverged => "diverged".to_owned(),
-                        Step::Reshaped => "reshaped".to_owned(),
+                        Step::Failed { state, .. } => format!("failed {state:?}"),
+                        Step::Diverged(state) => format!("diverged {state:?}"),
+                        Step::Reshaped(state) => format!("reshaped {state:?}"),
                     });
                     if landed.is_some() {
                         coverage.note("landed");
@@ -272,10 +272,11 @@ fn replay(text: &str, coverage: &mut Coverage) -> Result<()> {
                         "state {position}: the model reported {expected:?} after a failed observation, and Run reported {:?}",
                         run.unobserved()
                     );
-                    coverage.note(if expected == ReleaseState::Blocked {
-                        "unobserved before a failure"
-                    } else {
-                        "unobserved after a failure"
+                    let failed_call = runner_field(before, "failed")?.is_some();
+                    coverage.note(match (expected, failed_call) {
+                        (ReleaseState::Blocked, _) => "unobserved before any effect",
+                        (_, true) => "unobserved after a failed call",
+                        (_, false) => "unobserved after a landed call",
                     });
                 }
                 Action::Show | Action::Race => {}
@@ -312,12 +313,14 @@ fn every_committed_trace_replays_through_the_run_machine() {
         "finish Released",
         "finish AwaitingApproval",
         "conflict",
-        "failed",
-        "diverged",
+        "failed CandidateReady",
+        "failed PartiallyReleased",
+        "diverged PartiallyReleased",
         "landed",
         "passed over",
-        "unobserved before a failure",
-        "unobserved after a failure",
+        "unobserved before any effect",
+        "unobserved after a failed call",
+        "unobserved after a landed call",
         "restart",
     ] {
         assert!(

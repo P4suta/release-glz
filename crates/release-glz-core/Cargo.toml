@@ -50,6 +50,10 @@ negative-control-stall = []
 negative-control-forget-failure = []
 # Going on with an observation of another number of objects.
 negative-control-reshape = []
+# Reporting blocked when an observation fails after an effect whose call succeeded.
+negative-control-forget-success = []
+# Reporting the state of the newest plan even below what the run already published.
+negative-control-unfloored = []
 # Ordering two prereleases with the same identifiers as unequal.
 negative-control-equal-prereleases = []
 # Ordering a stable release before the prereleases of its core.

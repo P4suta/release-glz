@@ -3,6 +3,8 @@
 module release_run_model {
   // Whether the runner is the broken one that the probe checks: it applies the last effect it may apply instead of the first.
   const BUGGY: bool
+  // Whether the runner is the broken one that the floor probe checks: it reports the newest plan's state below what its own effects already published.
+  const UNFLOORED: bool
 
   // The number of objects of a release, in publication order.
   pure val OBJECTS = 3
@@ -27,7 +29,7 @@ module release_run_model {
     | Finish(State)
     | Conflicted(int)
     | FailedAt({ index: int, state: State })
-    | Diverged
+    | Diverged(State)
     | Unobserved(State)
 
   // What the Candidate fixes for the whole release.
@@ -41,6 +43,7 @@ module release_run_model {
     applying: int,
     planned: State,
     landed: int,
+    started: bool,
     stopped: bool,
     last: Step,
   }
@@ -60,6 +63,10 @@ module release_run_model {
   var raced: bool
   // Whether an observation already failed, which happens at most once in a release.
   var blinded: bool
+  // Whether the current run knows that the release started: an observation showed an object of it, a call reported success, or the run counted a failed call as applied.
+  var knownStarted: bool
+  // Whether a run ever stopped in a state before partially released after it knew that the release started.
+  var understated: bool
 
   pure def decide(wanted: bool, presence: Presence): Decision =
     match presence {
@@ -83,18 +90,24 @@ module release_run_model {
     applying: -1,
     planned: Blocked,
     landed: -1,
+    started: false,
     stopped: false,
     last: Start,
   }
 
+  // `Run::vouched`: the state a run reports for a plan in `state`, which is never before partially released once one of its effects landed.
+  pure def vouched(r: Runner, state: State, unfloored: bool): State =
+    if (unfloored or state == Released or not(r.started)) state else PartiallyReleased
+
   // `Run::observed`: the runner's decision about one observation.
-  pure def observedBy(r: Runner, c: Candidate, view: int -> Presence, buggy: bool): Runner = {
+  pure def observedBy(r: Runner, c: Candidate, view: int -> Presence, buggy: bool, unfloored: bool): Runner = {
     val conflicts = INDICES.filter(index => decide(c.wanted.get(index), view.get(index)) == Conflict)
     val owed = INDICES.filter(index => decide(c.wanted.get(index), view.get(index)) == Create)
-    val state =
+    val planState =
       if (owed.forall(index => not(c.blocking.get(index)))) Released
       else if (INDICES.exists(index => view.get(index) != Absent)) PartiallyReleased
       else CandidateReady
+    val state = vouched(r, planState, unfloored)
     val cleared = r.with("failed", -1).with("landed", -1)
     if (conflicts.size() > 0)
       cleared.with("stopped", true).with("last", Conflicted(least(conflicts)))
@@ -105,14 +118,16 @@ module release_run_model {
     else {
       val landed = if (r.failed >= 0 and not(owed.contains(r.failed))) r.failed else -1
       val chosen = owed.filter(index => c.blocking.get(index) or not(r.attempted.get(index)))
-      val going = cleared.with("landed", landed)
+      val going = cleared
+        .with("landed", landed)
+        .with("started", r.started or landed >= 0 or planState == PartiallyReleased or planState == Released)
       if (chosen.size() == 0)
         going.with("stopped", true).with("last", Finish(state))
       else {
         val index = if (buggy) greatest(chosen) else least(chosen)
         val available = if (r.budget < 0) owed.size() else r.budget
         if (available == 0)
-          going.with("stopped", true).with("last", Diverged)
+          going.with("stopped", true).with("last", Diverged(state))
         else
           going
             .with("attempted", r.attempted.set(index, true))
@@ -126,11 +141,32 @@ module release_run_model {
 
   // `Run::applied`: the runner records how its call ended.
   pure def appliedBy(r: Runner, succeeded: bool): Runner =
-    r.with("failed", if (succeeded) r.failed else r.applying).with("applying", -1)
+    r
+      .with("failed", if (succeeded) r.failed else r.applying)
+      .with("started", r.started or (succeeded and r.applying >= 0))
+      .with("applying", -1)
 
-  // `Run::unobserved`: the state that a run reports when an observation fails.
-  pure def unobservedBy(r: Runner): State =
-    if (r.failed >= 0) r.planned else Blocked
+  // `Run::unobserved`: the state that a run reports when an observation fails, which the plan that chose its last effect vouches for.
+  pure def unobservedBy(r: Runner, unfloored: bool): State =
+    vouched(r, r.planned, unfloored)
+
+  // Whether a run that took `step` goes on with its plan, which an unapproved run or a conflict doesn't.
+  pure def proceeds(step: Step): bool =
+    match step {
+      | Conflicted(_) => false
+      | Finish(state) => state != AwaitingApproval
+      | _ => true
+    }
+
+  // Whether a run that stops with `step` reports a state before partially released.
+  pure def below(step: Step): bool =
+    match step {
+      | Finish(state) => state != PartiallyReleased and state != Released
+      | FailedAt(failure) => failure.state != PartiallyReleased and failure.state != Released
+      | Diverged(state) => state != PartiallyReleased and state != Released
+      | Unobserved(state) => state != PartiallyReleased and state != Released
+      | _ => false
+    }
 
   // Whether the object at `index` either needn't block the release or holds the Candidate's content.
   pure def settled(c: Candidate, world: int -> Presence, index: int): bool =
@@ -160,6 +196,8 @@ module release_run_model {
     unapproved' = false,
     raced' = false,
     blinded' = false,
+    knownStarted' = false,
+    understated' = false,
   }
 
   // Any release, from a world that already holds any of its wanted objects with the Candidate's content or pending, as a resumed release finds it.
@@ -176,18 +214,27 @@ module release_run_model {
   }
 
   // The runner observes the world and decides its next step.
-  action observe = all {
-    not(runner.stopped),
-    runner.applying < 0,
-    runner' = observedBy(runner, candidate, shown, BUGGY),
-    candidate' = candidate,
-    held' = held,
-    shown' = shown,
-    runs' = runs,
-    outOfOrder' = outOfOrder,
-    unapproved' = unapproved,
-    raced' = raced,
-    blinded' = blinded,
+  action observe = {
+    val decided = observedBy(runner, candidate, shown, BUGGY, UNFLOORED)
+    val known =
+      knownStarted
+        or decided.landed >= 0
+        or (proceeds(decided.last) and INDICES.exists(index => shown.get(index) != Absent))
+    all {
+      not(runner.stopped),
+      runner.applying < 0,
+      runner' = decided,
+      candidate' = candidate,
+      held' = held,
+      shown' = shown,
+      runs' = runs,
+      outOfOrder' = outOfOrder,
+      unapproved' = unapproved,
+      raced' = raced,
+      blinded' = blinded,
+      knownStarted' = known,
+      understated' = noted(understated, known and decided.stopped and below(decided.last)),
+    }
   }
 
   // The runner's call reaches the world, which creates or completes the object only if it lacks it or holds it pending, and the call may report failure either way.
@@ -202,6 +249,8 @@ module release_run_model {
     runs' = runs,
     raced' = raced,
     blinded' = blinded,
+    knownStarted' = noted(knownStarted, reports(commits(held, runner.applying, commit), report)),
+    understated' = understated,
   }
 
   action call = {
@@ -222,6 +271,8 @@ module release_run_model {
     unapproved' = unapproved,
     raced' = raced,
     blinded' = blinded,
+    knownStarted' = knownStarted,
+    understated' = understated,
   }
 
   action show = {
@@ -242,6 +293,8 @@ module release_run_model {
     unapproved' = unapproved,
     raced' = true,
     blinded' = blinded,
+    knownStarted' = knownStarted,
+    understated' = understated,
   }
 
   action race = {
@@ -250,19 +303,24 @@ module release_run_model {
   }
 
   // An observation fails, at most once in a release, and the run stops in the state it can vouch for.
-  action blind = all {
-    not(blinded),
-    not(runner.stopped),
-    runner.applying < 0,
-    runner' = runner.with("stopped", true).with("last", Unobserved(unobservedBy(runner))),
-    candidate' = candidate,
-    held' = held,
-    shown' = shown,
-    runs' = runs,
-    outOfOrder' = outOfOrder,
-    unapproved' = unapproved,
-    raced' = raced,
-    blinded' = true,
+  action blind = {
+    val last = Unobserved(unobservedBy(runner, UNFLOORED))
+    all {
+      not(blinded),
+      not(runner.stopped),
+      runner.applying < 0,
+      runner' = runner.with("stopped", true).with("last", last),
+      candidate' = candidate,
+      held' = held,
+      shown' = shown,
+      runs' = runs,
+      outOfOrder' = outOfOrder,
+      unapproved' = unapproved,
+      raced' = raced,
+      blinded' = true,
+      knownStarted' = knownStarted,
+      understated' = noted(understated, knownStarted and below(last)),
+    }
   }
 
   // The run ends, by stopping or by crashing between calls, and the release starts a new run.
@@ -278,6 +336,8 @@ module release_run_model {
     unapproved' = unapproved,
     raced' = raced,
     blinded' = blinded,
+    knownStarted' = false,
+    understated' = understated,
   }
 
   action step = any { observe, call, show, race, blind, restart }
@@ -289,8 +349,10 @@ module release_run_model {
     runner.last == Finish(Released) implies INDICES.forall(index => settled(candidate, held, index))
   // Nothing commits without approval.
   val approvalFirst = not(unapproved)
+  // A run never stops in a state before partially released once it knows that one of its effects landed, however late the world shows it.
+  val floored = not(understated)
 
-  val safe = ordered and releasedHoldsTheCandidate and approvalFirst
+  val safe = ordered and releasedHoldsTheCandidate and approvalFirst and floored
 
   // Three wanted, blocking objects, under approval.
   pure val everything: Candidate = {
@@ -310,7 +372,7 @@ module release_run_model {
 }
 
 module release_run {
-  import release_run_model(BUGGY = false).*
+  import release_run_model(BUGGY = false, UNFLOORED = false).*
 
   // A run publishes every object of a fresh release in order and reports it released.
   run publishesInOrderTest =
@@ -329,10 +391,18 @@ module release_run {
       .expect(runner.landed == 0 and runner.last == Apply(1) and safe)
 
   // A commit that the world doesn't show yet looks missing, the world refuses the repeat, and the run stops instead of going on.
+  // The plan shows nothing published, but the run's first call landed, so it reports partially released.
   run anUnshownCommitStopsTheRunTest =
     initFrom(everything, nothing)
       .then(observe).then(callAs(true, true))
       .then(observe).then(callAs(true, true))
+      .then(observe)
+      .expect(runner.last == FailedAt({ index: 0, state: PartiallyReleased }) and safe)
+
+  // A blocking call that fails without committing stops the run at the next observation, before anything is published.
+  run aFailedCallThatNeverLandedStopsTheRunTest =
+    initFrom(everything, nothing)
+      .then(observe).then(callAs(false, false))
       .then(observe)
       .expect(runner.last == FailedAt({ index: 0, state: CandidateReady }) and safe)
 
@@ -359,7 +429,7 @@ module release_run {
     initFrom(everything, allButFirst)
       .then(observe).then(callAs(true, true))
       .then(observe)
-      .expect(runner.last == Diverged and safe)
+      .expect(runner.last == Diverged(PartiallyReleased) and safe)
 
   // An observation that fails after a failed call reports the state of the plan that chose the call.
   run aFailedObservationAfterAFailedCallKeepsThePlanTest =
@@ -367,6 +437,13 @@ module release_run {
       .then(observe).then(callAs(false, false))
       .then(blind)
       .expect(runner.last == Unobserved(CandidateReady) and safe)
+
+  // An observation that fails after a call landed reports the release as partially released.
+  run aFailedObservationAfterALandedCallIsPartialTest =
+    initFrom(everything, nothing)
+      .then(observe).then(callAs(true, true))
+      .then(blind)
+      .expect(runner.last == Unobserved(PartiallyReleased) and safe)
 
   // An observation that fails before anything else reports the release as blocked.
   run aFailedFirstObservationBlocksTest =
@@ -394,11 +471,22 @@ module release_run {
 }
 
 module release_run_buggy {
-  import release_run_model(BUGGY = true).*
+  import release_run_model(BUGGY = true, UNFLOORED = false).*
 
   // The broken runner publishes the last object first.
   run skipsAheadTest =
     initFrom(everything, nothing)
       .then(observe).then(callAs(true, true))
       .expect(runner.last == Apply(2) and not(safe))
+}
+
+module release_run_unfloored {
+  import release_run_model(BUGGY = false, UNFLOORED = true).*
+
+  // The broken runner reports the newest plan's state after its own call landed, as runs did before the floor.
+  run forgetsWhatItPublishedTest =
+    initFrom(everything, nothing)
+      .then(observe).then(callAs(true, true))
+      .then(blind)
+      .expect(runner.last == Unobserved(CandidateReady) and not(safe))
 }

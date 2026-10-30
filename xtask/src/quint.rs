@@ -16,14 +16,17 @@ const MODEL: &str = "verification/quint/release_run.qnt";
 /// The module whose invariant the model checker proves.
 const MAIN: &str = "release_run";
 
-/// The module whose broken runner has to violate the invariant, so the check can fail.
-const PROBE: &str = "release_run_buggy";
+/// The modules whose broken runners have to violate the invariant, each with the history variable that its defect sets, so each part of the check can fail.
+const PROBES: [(&str, &str); 2] = [
+    ("release_run_buggy", "outOfOrder"),
+    ("release_run_unfloored", "understated"),
+];
 
 /// The invariant that both modules are checked for.
 const INVARIANT: &str = "safe";
 
 /// The distinct states that TLC finds in the model, which a change of the model has to update on purpose.
-const DISTINCT_STATES: u64 = 188_667;
+const DISTINCT_STATES: u64 = 194_408;
 
 /// The seed of the random traces.
 const SEED: &str = "0x33";
@@ -88,19 +91,21 @@ pub fn run(root: &Path) -> Result<(), Failure> {
             SCENARIO_TRACES,
         ],
     )?;
-    container.output(
-        root,
-        &evidence,
-        &[
-            "quint",
-            "test",
-            MODEL,
-            "--main",
-            PROBE,
-            "--backend",
-            "typescript",
-        ],
-    )?;
+    for (probe, _) in PROBES {
+        container.output(
+            root,
+            &evidence,
+            &[
+                "quint",
+                "test",
+                MODEL,
+                "--main",
+                probe,
+                "--backend",
+                "typescript",
+            ],
+        )?;
+    }
     container.output(
         root,
         &evidence,
@@ -138,17 +143,20 @@ pub fn run(root: &Path) -> Result<(), Failure> {
             evidence.display()
         )));
     }
-    let probed = tlc(&container, root, &evidence, PROBE)?;
-    let report = format!("{}{}", probed.stdout, probed.stderr);
-    if probed.code == Some(0) || !violates_order(&report) {
-        return Err(Failure::new(format!(
-            "TLC found no violation of {INVARIANT} in {PROBE}, so nothing shows that the check can fail; see {}",
-            evidence.display()
-        )));
+    for (probe, defect) in PROBES {
+        let probed = tlc(&container, root, &evidence, probe)?;
+        let report = format!("{}{}", probed.stdout, probed.stderr);
+        if probed.code == Some(0) || !violates(&report, defect) {
+            return Err(Failure::new(format!(
+                "TLC found no violation of {INVARIANT} in {probe} that sets {defect}, so nothing shows that this part of the check can fail; see {}",
+                evidence.display()
+            )));
+        }
     }
     let traces = compare_traces(&root.join(TRACES), &evidence.join("traces"))?;
     println!(
-        "Quint {QUINT_VERSION}: TLC proved {INVARIANT} in all {DISTINCT_STATES} states of {MAIN}, found the violation in {PROBE}, and Quint wrote the {traces} committed traces again; evidence in {}",
+        "Quint {QUINT_VERSION}: TLC proved {INVARIANT} in all {DISTINCT_STATES} states of {MAIN}, found the violation in each of {} probes, and Quint wrote the {traces} committed traces again; evidence in {}",
+        PROBES.len(),
         evidence.display()
     );
     Ok(())
@@ -192,12 +200,11 @@ fn tlc(container: &Container, root: &Path, evidence: &Path, module: &str) -> Res
     Ok(exit)
 }
 
-/// Whether TLC's report shows a counterexample that ends with the runner committing an object out of order, which is the probe's defect.
-fn violates_order(report: &str) -> bool {
+/// Whether TLC's report shows a counterexample that ends with the history variable `defect` set, which records the probe's defect.
+fn violates(report: &str, defect: &str) -> bool {
+    let set = format!("_{defect} = TRUE");
     report.contains("found a counterexample")
-        && report
-            .lines()
-            .any(|line| line.trim_start().ends_with("_outOfOrder = TRUE"))
+        && report.lines().any(|line| line.trim_start().ends_with(&set))
 }
 
 /// The number of distinct states in TLC's final report.
@@ -260,18 +267,29 @@ mod tests {
     use std::fs;
     use std::path::Path;
 
-    use super::{QUINT_VERSION, compare_traces, distinct_states, violates_order};
+    use super::{PROBES, QUINT_VERSION, compare_traces, distinct_states, violates};
 
     #[test]
-    fn only_a_counterexample_that_commits_out_of_order_shows_the_probe_failing() {
+    fn only_a_counterexample_that_sets_the_probes_defect_shows_the_probe_failing() {
         let violation = "/\\ release_run_buggy_release_run_model_outOfOrder = TRUE\n\n[violation] Found an issue (2124ms).\nerror: found a counterexample\n";
-        assert!(violates_order(violation));
-        assert!(!violates_order(
-            "error: found a counterexample\n/\\ x_outOfOrder = FALSE\n"
+        assert!(violates(violation, "outOfOrder"));
+        assert!(!violates(violation, "understated"));
+        assert!(!violates(
+            "error: found a counterexample\n/\\ x_outOfOrder = FALSE\n",
+            "outOfOrder"
         ));
-        assert!(!violates_order(
-            "/\\ x_outOfOrder = TRUE\nerror: TLC error\n"
+        assert!(!violates(
+            "/\\ x_outOfOrder = TRUE\nerror: TLC error\n",
+            "outOfOrder"
         ));
+        let model = fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../verification/quint/release_run.qnt"),
+        )
+        .unwrap();
+        for (probe, defect) in PROBES {
+            assert!(model.contains(&format!("module {probe} {{")), "{probe}");
+            assert!(model.contains(&format!("var {defect}: bool")), "{defect}");
+        }
     }
 
     #[test]

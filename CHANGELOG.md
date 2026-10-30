@@ -112,6 +112,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Once a run knows the release started, every failure it reports is `partially_released` and exits with code 7.
+  Before, a failed observation after a published package reported `blocked` with code 5, and a run that didn't converge reported `blocked` with code 1.
+  A required notification whose observation failed after finalization reported `blocked` with code 6.
 - A release finds its draft GitHub Release in the repository's release list, because GitHub's tag endpoint answers only with a published Release.
   Before, every run created another draft, ran out of attempts, and never published the package once GitHub Releases were on, which is the default.
   Two Releases with the tag now stop the release as a conflict, and the distribution workflow finds its draft by identifier.
