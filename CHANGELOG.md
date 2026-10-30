@@ -18,6 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The `release-pr --candidate` result reports `intent_binding`, and the Action exposes it as `intent-binding`.
   A Candidate whose head a newer Release PR head replaced reports `superseded`, writes nothing, and exits with status 0 instead of failing.
   The binding refuses a Release PR at the Candidate head whose marker describes another release.
+- Every command result format has a published JSON Schema under `docs/`, and `docs/README.md` lists the commands that print each format.
+  The `command/v2` schema also states that `ok` is false exactly when a diagnostic has the `error` level.
+  Tests check the real output of every command with these schemas and assert every `format`.
+- `completion --output json` names its result format as `completion/v1`, like every other command result.
 
 ### Security
 
@@ -99,6 +103,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The `init` and `migrate` results and their diffs give the manifest path relative to the repository, as every other result does.
+  They used to repeat the `--manifest-path` value, which names the file from the repository root only when the command runs there with a relative path.
+  `migrate` also put `./` before the backup path, and outside any repository it now reports both paths relative to the package directory.
 - A plan lists `verify_hooks` only when the configuration names a verify hook, and `prepare_github_draft` only when `outputs.github_release` is on.
   It used to list both for every release, though neither ran without its configuration.
 - A Conventional Commit type counts in any letter case, so `Feat:` asks for a minor release and lands under Added, as Conventional Commits 1.0.0 requires.
@@ -107,6 +114,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Offline `verify --candidate` and `status --candidate` no longer need a manifest in the working directory, and the exit code table describes partial releases and inspection commands.
 - The Action installs release-glz on Windows.
   Its archive scripts used `[IO.Compression.ZipFile]` without loading the assembly that Windows PowerShell 5.1 needs, and the extraction passed an argument that only .NET Core accepts.
+- A Unix release archive depends only on the binary inside it, as the Windows ZIP already did.
+  `scripts/package-unix.js` writes one ustar entry with a fixed mode, owner, group, and time.
+  It stores the binary uncompressed, so no compressor version or CPU feature changes the bytes.
+  The runner's `tar` used to record the runner account.
+  On macOS, bsdtar could also add an AppleDouble entry and an extended header that the Action's tar reader refuses.
 - Publication after a merged Release PR can succeed.
   The push run's publish job consumes the Candidate that its own `prepare` job uploaded.
   The artifact check had required that run to have completed, which it can't have while it publishes.

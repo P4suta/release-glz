@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/P4suta/release-glz/v1.0.0/docs/completion.schema.json",
+  "title": "release-glz Completion v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "shell", "source"],
+  "properties": {
+    "schema": { "const": "completion/v1" },
+    "shell": { "enum": ["bash", "zsh", "fish", "powershell"] },
+    "source": { "type": "string", "minLength": 1 }
+  }
+}

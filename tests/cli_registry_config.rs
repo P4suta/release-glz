@@ -10,6 +10,7 @@ use std::thread;
 
 use base64::Engine as _;
 use flate2::{Compression, write::GzEncoder};
+use release_glz_test_support::schema::{assert_matches, assert_published_envelope};
 use release_glz_test_support::{isolated_command, read_some};
 use sha2::{Digest, Sha256};
 
@@ -43,6 +44,7 @@ fn sealed_candidate_cli_lifecycle_reuses_one_candidate_without_rebuilding() {
         .unwrap();
     assert_success(&rehearse, "rehearse");
     let rehearsed = json(&rehearse);
+    assert_published_envelope(&rehearsed);
     assert_eq!(rehearsed["schema"], "command/v2");
     assert_eq!(rehearsed["result"]["schema"], "candidate/v1");
     assert_eq!(rehearsed["result"]["source"]["commit_sha"], source_sha);
@@ -64,6 +66,7 @@ fn sealed_candidate_cli_lifecycle_reuses_one_candidate_without_rebuilding() {
         .unwrap();
     assert_success(&verify, "verify");
     let verified = json(&verify);
+    assert_published_envelope(&verified);
     assert_eq!(verified["result"]["state"], "candidate_ready");
     assert_eq!(
         verified["result"]["candidate"]["candidate_digest"],
@@ -82,6 +85,7 @@ fn sealed_candidate_cli_lifecycle_reuses_one_candidate_without_rebuilding() {
         .unwrap();
     assert_success(&status, "status");
     let status = json(&status);
+    assert_published_envelope(&status);
     assert_eq!(status["result"]["state"], "candidate_ready");
     assert_eq!(status["result"]["candidate_digest"], candidate_digest);
 
@@ -108,6 +112,7 @@ fn sealed_candidate_cli_lifecycle_reuses_one_candidate_without_rebuilding() {
     github_server.join().unwrap();
     assert_success(&release, "release --dry-run");
     let release = json(&release);
+    assert_published_envelope(&release);
     assert_eq!(release["result"]["state"], "candidate_ready");
     assert_eq!(release["result"]["candidate_digest"], candidate_digest);
     assert_eq!(release["result"]["applied"], serde_json::json!([]));
@@ -174,6 +179,7 @@ fn a_version_below_the_automatic_minimum_is_a_policy_exit_not_an_internal_failur
         String::from_utf8_lossy(&output.stderr)
     );
     let envelope = json(&output);
+    assert_published_envelope(&envelope);
     assert_eq!(envelope["schema"], "command/v2");
     assert_eq!(envelope["ok"], false);
     assert_eq!(envelope["diagnostics"][0]["code"], "policy_or_approval");
@@ -200,6 +206,7 @@ fn set_version_dry_run_and_apply_only_raise_the_manifest_version() {
         .unwrap();
     assert_success(&dry_run, "set-version --dry-run");
     let dry_run = json(&dry_run);
+    assert_published_envelope(&dry_run);
     assert_eq!(dry_run["result"]["version"], "2.0.0");
     assert_eq!(dry_run["result"]["manifest_version"], "2.0.0");
     assert_eq!(
@@ -214,6 +221,7 @@ fn set_version_dry_run_and_apply_only_raise_the_manifest_version() {
     server.join().unwrap();
     assert_success(&apply, "set-version");
     let apply = json(&apply);
+    assert_published_envelope(&apply);
     assert_eq!(apply["result"]["version"], "2.0.0");
     let written = std::fs::read_to_string(temp.path().join("gleam.toml")).unwrap();
     assert!(written.contains("version = \"2.0.0\""));
@@ -235,6 +243,7 @@ fn prerelease_command_starts_the_alpha_train_and_persists_channel_and_version() 
     server.join().unwrap();
     assert_success(&output, "prerelease alpha");
     let output = json(&output);
+    assert_published_envelope(&output);
     assert_eq!(output["result"]["version"], "1.0.0-alpha.1");
     assert_eq!(output["result"]["prerelease"], "alpha");
     let written = std::fs::read_to_string(temp.path().join("gleam.toml")).unwrap();
@@ -295,6 +304,7 @@ fn plan_uses_the_strict_manifest_registry_adapter_and_private_read_credential() 
     assert!(observed.starts_with("get /api/packages/widget http/1.1"));
     assert!(observed.contains("authorization: bearer private-read-value"));
     let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_published_envelope(&envelope);
     assert_eq!(envelope["result"]["state"], "planned");
     assert_eq!(envelope["result"]["release_required"], true);
 }
@@ -410,6 +420,7 @@ fn release_pr_closes_a_stale_verified_managed_pr_when_no_release_is_required() {
     assert!(github_requests[7].starts_with("PATCH /repos/acme/widget/pulls/7 "));
     assert!(github_requests[7].contains("\"state\":\"closed\""));
     let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_published_envelope(&envelope);
     assert_eq!(envelope["result"]["state"], "up_to_date");
 }
 
@@ -432,21 +443,11 @@ fn a_handed_off_plan_writes_the_release_pr_without_the_compiler() {
     assert_success(&planned, "plan --out");
     let plan_bytes = std::fs::read(&plan_path).unwrap();
     let handed_off: serde_json::Value = serde_json::from_slice(&plan_bytes).unwrap();
+    assert_published_envelope(&json(&planned));
     assert_eq!(json(&planned)["result"], handed_off);
     assert_eq!(handed_off["release_required"], true);
     assert_eq!(handed_off["release_pr_head"], serde_json::Value::Null);
-    let schema: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/release-plan.schema.json"),
-        )
-        .unwrap(),
-    )
-    .unwrap();
-    assert!(
-        jsonschema::validator_for(&schema)
-            .unwrap()
-            .is_valid(&handed_off)
-    );
+    assert_matches("release-plan.schema.json", &handed_off);
 
     // The registry has stopped listening, so only the compiler stand-in could still answer.
     let (refusing, compiler_runs) = refusing_gleam(temp.path());
@@ -498,10 +499,10 @@ fn a_handed_off_plan_writes_the_release_pr_without_the_compiler() {
         "release-pr --plan ran the compiler: {}",
         std::fs::read_to_string(&compiler_runs).unwrap()
     );
+    assert_published_envelope(&json(&written));
     let result = &json(&written)["result"];
     assert_eq!(result["pr_url"], "https://github.test/acme/widget/pull/9");
     assert_eq!(result["release_pr_head"], release_pr_head.as_str());
-    assert!(jsonschema::validator_for(&schema).unwrap().is_valid(result));
 
     let github_requests: Vec<_> = github_requests.try_iter().collect();
     assert_eq!(github_requests.len(), 9, "{github_requests:#?}");
@@ -562,6 +563,7 @@ fn a_handed_off_plan_writes_the_release_pr_without_the_compiler() {
     github_server.join().unwrap();
     assert_success(&superseded, "release-pr --plan behind the tip");
     let envelope = json(&superseded);
+    assert_published_envelope(&envelope);
     assert_eq!(
         envelope["result"]["release_pr_head"],
         serde_json::Value::Null
@@ -617,6 +619,7 @@ fn release_pr_at_the_merge_of_its_release_pr_writes_nothing() {
 
     assert_success(&output, "release-pr --plan at the merge commit");
     let envelope = json(&output);
+    assert_published_envelope(&envelope);
     assert_eq!(envelope["diagnostics"][0]["code"], "release_pr_merged");
     assert_eq!(
         envelope["result"]["pr_url"],
@@ -737,6 +740,7 @@ fn a_tip_that_already_holds_the_release_files_gets_no_release_pr_commit() {
 
     assert_success(&output, "release-pr --plan on a tip with the release files");
     let envelope = json(&output);
+    assert_published_envelope(&envelope);
     assert_eq!(envelope["diagnostics"][0]["code"], "release_files_current");
     assert_eq!(envelope["result"]["pr_url"], serde_json::Value::Null);
     assert_eq!(
@@ -797,6 +801,7 @@ fn a_handed_off_plan_that_does_not_describe_the_checkout_is_refused_before_any_r
         .unwrap();
     github_server.join().unwrap();
     assert_success(&dry_run, "release-pr --plan --dry-run");
+    assert_published_envelope(&json(&dry_run));
     let github_requests: Vec<_> = github_requests.try_iter().collect();
     assert_eq!(github_requests.len(), 1, "{github_requests:#?}");
     assert!(
@@ -918,6 +923,7 @@ fn a_candidate_whose_head_the_release_pr_left_binds_nothing_and_succeeds() {
         .output()
         .unwrap();
     assert_success(&rehearse, "rehearse");
+    assert_published_envelope(&json(&rehearse));
 
     let (github_listener, github_url) = bound_listener();
     let moved_head = "e".repeat(40);
@@ -947,6 +953,7 @@ fn a_candidate_whose_head_the_release_pr_left_binds_nothing_and_succeeds() {
     github_server.join().unwrap();
 
     assert_success(&bound, "release-pr --candidate");
+    assert_published_envelope(&json(&bound));
     let result = &json(&bound)["result"];
     assert_eq!(result["schema"], "release-pr-intent/v1");
     assert_eq!(result["intent_binding"], "superseded");

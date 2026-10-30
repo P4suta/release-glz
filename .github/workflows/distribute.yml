@@ -113,20 +113,16 @@ jobs:
           TARGET: ${{ matrix.target }}
         run: |
           set -euo pipefail
-          mkdir staging
-          cp "target/$TARGET/release/release-glz" staging/release-glz
-          chmod 0755 staging/release-glz
-          ./staging/release-glz --version
+          binary="target/$TARGET/release/release-glz"
+          "$binary" --version
           if [[ "$RUNNER_OS" == "Linux" ]]; then
-            ldd_output=$(ldd staging/release-glz 2>&1 || true)
+            ldd_output=$(ldd "$binary" 2>&1 || true)
             if [[ "$ldd_output" != *"not a dynamic executable"* && "$ldd_output" != *"statically linked"* ]]; then
               printf '%s\n' "$ldd_output"
               exit 1
             fi
           fi
-          touch -t 197001010000 staging/release-glz
-          tar -C staging -cf "release-glz-$TARGET.tar" release-glz
-          gzip -n -9 "release-glz-$TARGET.tar"
+          node scripts/package-unix.js --binary "$binary" --out "release-glz-$TARGET.tar.gz"
       - name: Smoke and package Windows binary
         if: runner.os == 'Windows'
         shell: pwsh

@@ -4,6 +4,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use release_glz::config::{AuthKind, Manifest, RegistryProvider};
+use release_glz_test_support::schema::assert_published_envelope;
 use release_glz_test_support::{git, init_repository, isolated_command};
 
 const ACTION_SHA: &str = "abcdef0123456789abcdef0123456789abcdef01";
@@ -26,15 +27,18 @@ fn package(version: &str) -> (tempfile::TempDir, PathBuf) {
     (temp, gleam)
 }
 
+/// Run `init` with JSON output, and check that output against the published schemas.
 fn init(root: &Path, gleam: &Path, arguments: &[&str]) -> std::process::Output {
-    isolated_command(env!("CARGO_BIN_EXE_release-glz"))
+    let output = isolated_command(env!("CARGO_BIN_EXE_release-glz"))
         .current_dir(root)
         .env("RELEASE_GLZ_GLEAM", gleam)
         .args(["--output", "json", "init"])
         .args(arguments)
         .args(["--action-sha", ACTION_SHA])
         .output()
-        .unwrap()
+        .unwrap();
+    assert_published_envelope(&serde_json::from_slice(&output.stdout).unwrap());
+    output
 }
 
 #[test]
@@ -257,6 +261,7 @@ fn malformed_github_environment_urls_return_a_usage_envelope_instead_of_panickin
         assert_eq!(output.status.code(), Some(2), "{variable}");
         assert!(output.stderr.is_empty(), "{variable}");
         let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_published_envelope(&envelope);
         assert_eq!(envelope["ok"], false, "{variable}");
         assert_eq!(
             envelope["diagnostics"][0]["code"], "usage_or_config",
@@ -402,9 +407,65 @@ fn manifest_paths_with_spaces_remain_single_canonical_argv_elements() {
         .unwrap();
     assert_eq!(check.status.code(), Some(3));
     let envelope: serde_json::Value = serde_json::from_slice(&check.stdout).unwrap();
+    assert_published_envelope(&envelope);
+    assert_eq!(envelope["result"]["manifest_path"], relative);
     assert_eq!(
         envelope["next_actions"][0]["argv"][2],
         serde_json::Value::String(relative.into())
     );
     assert_eq!(envelope["next_actions"][0]["argv"][3], "init");
+}
+
+#[test]
+fn init_reports_the_manifest_path_relative_to_the_repository_from_any_directory() {
+    let temp = tempfile::tempdir().unwrap();
+    init_repository(temp.path());
+    let package = temp.path().join("packages/widget");
+    std::fs::create_dir_all(&package).unwrap();
+    std::fs::write(
+        package.join("gleam.toml"),
+        "name = \"widget\"\nversion = \"1.0.0\"\n",
+    )
+    .unwrap();
+    let gleam = temp.path().join("fake-gleam");
+    std::fs::write(&gleam, "#!/bin/sh\nprintf '%s\\n' 'gleam 1.18.1'\n").unwrap();
+    let mut permissions = std::fs::metadata(&gleam).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&gleam, permissions).unwrap();
+    let absolute = package.join("gleam.toml");
+    for (directory, manifest) in [
+        (temp.path().to_path_buf(), absolute.clone()),
+        (package.clone(), PathBuf::from("gleam.toml")),
+    ] {
+        let diff = isolated_command(env!("CARGO_BIN_EXE_release-glz"))
+            .current_dir(&directory)
+            .env("RELEASE_GLZ_GLEAM", &gleam)
+            .arg("--manifest-path")
+            .arg(&manifest)
+            .args(["--output", "json", "init", "--profile", "public", "--diff"])
+            .args(["--action-sha", ACTION_SHA])
+            .output()
+            .unwrap();
+        assert!(
+            diff.status.success(),
+            "{}",
+            String::from_utf8_lossy(&diff.stdout)
+        );
+        let envelope: serde_json::Value = serde_json::from_slice(&diff.stdout).unwrap();
+        assert_published_envelope(&envelope);
+        assert_eq!(
+            envelope["result"]["manifest_path"],
+            "packages/widget/gleam.toml",
+            "{}",
+            manifest.display()
+        );
+        assert!(
+            envelope["result"]["manifest_diff"]
+                .as_str()
+                .unwrap()
+                .contains("+++ packages/widget/gleam.toml"),
+            "{}",
+            manifest.display()
+        );
+    }
 }

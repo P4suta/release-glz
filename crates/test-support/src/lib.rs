@@ -7,6 +7,7 @@ use std::path::Path;
 use std::process::{Command, Output};
 
 pub mod oidc;
+pub mod schema;
 
 /// The only environment variables a spawned binary under test inherits.
 ///

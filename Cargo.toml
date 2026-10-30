@@ -54,7 +54,6 @@ process-wrap = { version = "10.0.1", default-features = false, features = [
 ] }
 
 [dev-dependencies]
-jsonschema = { version = "0.56.0", default-features = false }
 release-glz-test-support = { path = "crates/test-support", version = "0.0.0" }
 
 [workspace]

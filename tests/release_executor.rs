@@ -24,6 +24,7 @@ use release_glz::reconciler::{
 };
 use release_glz::release::{CandidateReleaseRunner, ReleasePayload, ReleaseTarget};
 use release_glz_test_support::oidc;
+use release_glz_test_support::schema::assert_published_result;
 use semver::Version;
 use sha2::{Digest, Sha256};
 
@@ -98,6 +99,7 @@ async fn inspection_reports_every_effect_without_applying_any() {
     assert_eq!(report.state, ReleaseState::CandidateReady);
     assert_eq!(report.remaining.len(), 7);
     assert!(target.applied().is_empty());
+    assert_published_result(&serde_json::to_value(&report).unwrap());
 }
 
 #[tokio::test]
@@ -140,6 +142,9 @@ async fn optional_notify_is_attempted_once_but_failure_does_not_make_release_par
             .count(),
         1
     );
+    assert_eq!(report.applied.len(), 6);
+    assert_eq!(report.remaining, [effect]);
+    assert_published_result(&serde_json::to_value(&report).unwrap());
 }
 
 #[tokio::test]

@@ -420,7 +420,11 @@ async fn run(cli: Cli) -> Result<i32> {
             Output::Human => print!("{source}"),
             Output::Json => print_result(
                 "completion",
-                &serde_json::json!({"shell": shell_name(*shell), "source": source}),
+                &serde_json::json!({
+                    "schema": "completion/v1",
+                    "shell": shell_name(*shell),
+                    "source": source,
+                }),
                 cli.output,
             )?,
         }
@@ -820,6 +824,7 @@ async fn run_init(
         .strip_prefix(repo.root().canonicalize()?)
         .context("manifest is outside the git repository")?
         .to_path_buf();
+    let public_manifest_path = relative_manifest.to_string_lossy().replace('\\', "/");
     let workflow_settings = release_glz::workflow::WorkflowSettings {
         default_branch,
         manifest_path: relative_manifest,
@@ -842,13 +847,9 @@ async fn run_init(
         .as_deref()
         .is_some_and(|source| source != manifest.original_source());
     let manifest_diff = if diff && manifest_changed {
-        initialized_source.as_deref().map(|source| {
-            unified_diff(
-                &manifest.path().to_string_lossy(),
-                manifest.original_source(),
-                source,
-            )
-        })
+        initialized_source
+            .as_deref()
+            .map(|source| unified_diff(&public_manifest_path, manifest.original_source(), source))
     } else {
         None
     };
@@ -877,7 +878,7 @@ async fn run_init(
     let changed = manifest_changed || workflow.changed;
     let outcome = InitOutcome {
         schema: "init/v1",
-        manifest_path: manifest.path().to_string_lossy().replace('\\', "/"),
+        manifest_path: public_manifest_path,
         workflow_path: release_glz::workflow::WORKFLOW_PATH,
         action_sha,
         manifest_changed,

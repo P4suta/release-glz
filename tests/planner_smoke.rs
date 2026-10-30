@@ -16,6 +16,7 @@ use release_glz::planner::{
 };
 use release_glz::registry::{HexRelease, PackageState, Registry};
 use release_glz_test_support::require_gleam;
+use release_glz_test_support::schema::assert_published_result;
 use semver::Version;
 
 /// A planner that writes no baseline cache unless a test names one, so no run touches the user's cache directory.
@@ -461,6 +462,8 @@ licences = ["MIT"]
     assert!(plan.artifacts_changed);
     assert_eq!(plan.api.impact, Bump::Minor);
     assert_eq!(plan.baseline.source, BaselineSource::Tag);
+    assert!(!plan.api.changes.is_empty() && !plan.changes.is_empty());
+    assert_published_result(&serde_json::to_value(&plan)?);
     assert!(!package.join("build").exists(), "plan dirtied the package");
 
     git(package, &["tag", "--delete", "v1.0.0"])?;
@@ -594,6 +597,7 @@ allow_version_zero = true
     assert_eq!(plan.api.impact, Bump::Major);
     assert_eq!(plan.bump, Bump::Minor);
     assert_eq!(plan.version, Version::new(0, 5, 0));
+    assert_published_result(&serde_json::to_value(&plan)?);
     Ok(())
 }
 
