@@ -64,7 +64,8 @@ impl Object {
         }
     }
 
-    fn blocks(self) -> bool {
+    /// Whether its effect has to finish before the release counts as released.
+    pub(crate) fn blocks(self) -> bool {
         #[cfg(feature = "negative-control-optional-blocks")]
         if let Some(blocks) = negative_control_optional_blocks() {
             return blocks;

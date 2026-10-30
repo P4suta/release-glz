@@ -261,7 +261,7 @@ pub fn reconcile(
     observed: &ExternalReleaseState,
     approval: &ApprovalEvidence,
 ) -> Result<ReconcilePlan, ReconcileError> {
-    plan(intent, observed, approved(intent, approval))
+    Observation::new(intent, observed)?.plan(approves(intent, approval))
 }
 
 /// The plan an approved release would follow, for an inspection that holds no approval.
@@ -271,35 +271,65 @@ pub fn preview(
     intent: &ReleaseIntent,
     observed: &ExternalReleaseState,
 ) -> Result<ReconcilePlan, ReconcileError> {
-    plan(intent, observed, true)
+    Observation::new(intent, observed)?.plan(true)
 }
 
-fn plan(
-    intent: &ReleaseIntent,
-    observed: &ExternalReleaseState,
-    approved: bool,
-) -> Result<ReconcilePlan, ReconcileError> {
-    validate_inputs(intent, observed)?;
-    let items = items(intent, observed);
-    let objects = items.iter().map(|(_, object)| *object).collect::<Vec<_>>();
-    let (state, effects) = match release_glz_core::reconcile(&objects, approved) {
-        Outcome::Conflict(index) => {
-            let (item, object) = &items[index];
-            return conflict(item.conflict(object.wanted));
+/// The objects of a release as one observation shows them, in publication order, with the effect and the conflict that each one names.
+pub struct Observation<'a> {
+    items: Vec<(Item<'a>, Object)>,
+    objects: Vec<Object>,
+}
+
+impl<'a> Observation<'a> {
+    /// Describe `observed` in the objects of `intent`.
+    ///
+    /// It refuses an observation in another format and a Candidate that describes its own assets inconsistently.
+    pub fn new(
+        intent: &'a ReleaseIntent,
+        observed: &'a ExternalReleaseState,
+    ) -> Result<Self, ReconcileError> {
+        validate_inputs(intent, observed)?;
+        let items = items(intent, observed);
+        let objects = items.iter().map(|(_, object)| *object).collect();
+        Ok(Self { items, objects })
+    }
+
+    /// The objects, in publication order.
+    pub fn objects(&self) -> &[Object] {
+        &self.objects
+    }
+
+    /// The effect that publishes or completes the object at `index`, which an unsealed asset doesn't have.
+    pub fn effect(&self, index: usize) -> Option<ReconcileEffect> {
+        self.items.get(index).and_then(|(item, _)| item.effect())
+    }
+
+    /// Why the object at `index` stops the release.
+    pub fn conflict(&self, index: usize) -> ReconcileError {
+        ReconcileError {
+            message: match self.items.get(index) {
+                Some((item, object)) => item.conflict(object.wanted),
+                None => format!("the release has no object {index}"),
+            },
         }
-        Outcome::AwaitingApproval => (ReleaseState::AwaitingApproval, Vec::new()),
-        Outcome::Proceed { state, effects } => (
+    }
+
+    /// The plan under `approved`: the state the release is in, and the effects it still owes.
+    pub fn plan(&self, approved: bool) -> Result<ReconcilePlan, ReconcileError> {
+        let (state, effects) = match release_glz_core::reconcile(&self.objects, approved) {
+            Outcome::Conflict(index) => return Err(self.conflict(index)),
+            Outcome::AwaitingApproval => (ReleaseState::AwaitingApproval, Vec::new()),
+            Outcome::Proceed { state, effects } => (
+                state,
+                effects.filter_map(|index| self.effect(index)).collect(),
+            ),
+        };
+        Ok(ReconcilePlan {
+            schema: "reconcile/v1".into(),
             state,
-            effects
-                .filter_map(|index| items[index].0.effect())
-                .collect(),
-        ),
-    };
-    Ok(ReconcilePlan {
-        schema: "reconcile/v1".into(),
-        state,
-        effects,
-    })
+            effects,
+        })
+    }
 }
 
 /// Refuse an observation in another format and a Candidate that describes its own assets inconsistently.
@@ -499,7 +529,7 @@ fn presence<T>(observed: Option<&T>, matches: impl FnOnce(&T) -> bool) -> Presen
 }
 
 /// Compare the approval evidence with the Candidate, and let the core decide whether it approves.
-fn approved(intent: &ReleaseIntent, approval: &ApprovalEvidence) -> bool {
+pub fn approves(intent: &ReleaseIntent, approval: &ApprovalEvidence) -> bool {
     let workflow_prefix = format!("{}/{}@", intent.github_repository, intent.workflow_path);
     Approval {
         candidate: approval.environment_candidate_digest.as_deref()

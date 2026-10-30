@@ -67,6 +67,8 @@ Every invocation observes before applying.
 If an existing package checksum, docs checksum, tag target, release Candidate digest, or asset checksum differs, reconciliation ends in `conflict`; it never replaces it.
 The decisions about each object and about approval live in `release-glz-core`, where Kani proves them, as [decide publication from object presence](adr/decide-publication-from-object-presence.md) records.
 The release gate admits those proofs only from audited reports, as [admit proofs only from audited reports](adr/admit-proofs-only-from-audited-reports.md) records.
+Each step of a run also lives there, as [decide each run step in the core](adr/decide-each-run-step-in-the-core.md) records.
+Kani proves which effect comes next, when a failed call counts as applied, and when the run stops.
 
 An unknown package POST result transitions into observation/polling.
 It cannot authorize a second POST until absence is established.
