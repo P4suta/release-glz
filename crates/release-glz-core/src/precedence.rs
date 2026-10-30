@@ -4,7 +4,6 @@
 //! Cores compare numerically, a stable version follows every prerelease of its core, and prereleases compare identifier by identifier.
 
 use core::cmp::Ordering;
-use core::slice::Split;
 
 use crate::VersionCore;
 
@@ -58,7 +57,7 @@ impl<'a> Pre<'a> {
     pub fn is_valid(self) -> bool {
         match self {
             Self::Stable | Self::Train(..) => true,
-            Self::Other(text) => !text.is_empty() && text.split(is_dot).all(valid_identifier),
+            Self::Other(text) => !text.is_empty() && segments(text).all(valid_identifier),
         }
     }
 
@@ -67,7 +66,7 @@ impl<'a> Pre<'a> {
         match self {
             Self::Stable => false,
             Self::Train(own, _) => own == channel,
-            Self::Other(text) => text.split(is_dot).next() == Some(channel.label().as_bytes()),
+            Self::Other(text) => segments(text).next() == Some(channel.label().as_bytes()),
         }
     }
 
@@ -77,10 +76,9 @@ impl<'a> Pre<'a> {
             Self::Stable => None,
             Self::Train(channel, number) => Some((Label::Channel(channel), number)),
             Self::Other(text) => {
-                let mut parts = text.splitn(2, is_dot);
-                let label = parts.next()?;
-                let number = parse_number(parts.next()?)?;
-                Some((Label::of(label), number))
+                let dot = text.iter().position(|byte| *byte == DOT)?;
+                let number = parse_number(text.get(dot + 1..)?)?;
+                Some((Label::of(text.get(..dot)?), number))
             }
         }
     }
@@ -89,8 +87,35 @@ impl<'a> Pre<'a> {
         match self {
             Self::Stable => Identifiers::End,
             Self::Train(channel, number) => Identifiers::Label(channel, number),
-            Self::Other(text) => Identifiers::Text(text.split(is_dot as fn(&u8) -> bool)),
+            Self::Other(text) => Identifiers::Text(segments(text)),
         }
+    }
+}
+
+/// The byte that separates prerelease identifiers.
+const DOT: u8 = b'.';
+
+/// The dot-separated identifiers of a prerelease's text, in order.
+struct Segments<'a> {
+    text: &'a [u8],
+    start: usize,
+}
+
+fn segments(text: &[u8]) -> Segments<'_> {
+    Segments { text, start: 0 }
+}
+
+impl<'a> Iterator for Segments<'a> {
+    type Item = &'a [u8];
+
+    fn next(&mut self) -> Option<&'a [u8]> {
+        let rest = self.text.get(self.start..)?;
+        let length = rest
+            .iter()
+            .position(|byte| *byte == DOT)
+            .unwrap_or(rest.len());
+        self.start += length + 1;
+        rest.get(..length)
     }
 }
 
@@ -271,7 +296,7 @@ enum Identifiers<'a> {
     /// A train whose number comes next.
     Number(u64),
     /// The identifiers of an arbitrary prerelease.
-    Text(Split<'a, u8, fn(&u8) -> bool>),
+    Text(Segments<'a>),
     /// No identifier is left.
     End,
 }
@@ -295,10 +320,6 @@ impl<'a> Iterator for Identifiers<'a> {
             Self::End => None,
         }
     }
-}
-
-fn is_dot(byte: &u8) -> bool {
-    *byte == b'.'
 }
 
 fn valid_identifier(identifier: &[u8]) -> bool {
@@ -366,7 +387,7 @@ mod proofs {
     use super::{Channel, Pre, Version, compare};
 
     #[kani::proof]
-    #[kani::unwind(6)]
+    #[kani::unwind(8)]
     fn a_version_equals_itself_and_order_flips_with_its_operands() {
         let left_bytes: [u8; TEXT] = kani::any();
         let right_bytes: [u8; TEXT] = kani::any();
@@ -386,7 +407,7 @@ mod proofs {
     }
 
     #[kani::proof]
-    #[kani::unwind(6)]
+    #[kani::unwind(8)]
     fn a_stable_release_follows_every_prerelease_of_its_core() {
         let bytes: [u8; TEXT] = kani::any();
         let prerelease = symbolic::version(&bytes);
@@ -399,7 +420,7 @@ mod proofs {
     }
 
     #[kani::proof]
-    #[kani::unwind(6)]
+    #[kani::unwind(8)]
     fn the_core_decides_before_the_prerelease() {
         let left_bytes: [u8; TEXT] = kani::any();
         let right_bytes: [u8; TEXT] = kani::any();
@@ -419,7 +440,7 @@ mod proofs {
 
     /// A train's next number follows it, a later channel follows an earlier one, and a stable release follows the whole train.
     #[kani::proof]
-    #[kani::unwind(6)]
+    #[kani::unwind(8)]
     fn a_train_counts_up_and_moves_through_its_channels_in_precedence() {
         let core = kani::any();
         let channel: Channel = kani::any();

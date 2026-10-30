@@ -384,7 +384,7 @@ mod proofs {
     ///
     /// Every core and train number is symbolic, and prerelease text has at most four bytes.
     #[kani::proof]
-    #[kani::unwind(6)]
+    #[kani::unwind(8)]
     fn a_selected_version_follows_the_published_one() {
         let published_bytes: [u8; TEXT] = kani::any();
         let explicit_bytes: [u8; TEXT] = kani::any();
@@ -415,7 +415,7 @@ mod proofs {
     ///
     /// Every core and train number is symbolic, and prerelease text has at most four bytes.
     #[kani::proof]
-    #[kani::unwind(6)]
+    #[kani::unwind(8)]
     fn a_selection_reaches_the_core_the_required_step_demands() {
         let published_bytes: [u8; TEXT] = kani::any();
         let explicit_bytes: [u8; TEXT] = kani::any();
@@ -443,7 +443,7 @@ mod proofs {
     ///
     /// Every core and train number is symbolic, and prerelease text has at most four bytes.
     #[kani::proof]
-    #[kani::unwind(6)]
+    #[kani::unwind(8)]
     fn a_train_moves_forward_or_counts_up_within_its_channel() {
         let published_bytes: [u8; TEXT] = kani::any();
         let explicit_bytes: [u8; TEXT] = kani::any();
@@ -504,7 +504,7 @@ mod proofs {
     ///
     /// Every core and train number is symbolic, and prerelease text has at most four bytes.
     #[kani::proof]
-    #[kani::unwind(6)]
+    #[kani::unwind(8)]
     fn an_explicit_version_below_the_required_one_is_refused() {
         let published_bytes: [u8; TEXT] = kani::any();
         let explicit_bytes: [u8; TEXT] = kani::any();
@@ -542,7 +542,7 @@ mod proofs {
     ///
     /// The core is symbolic, and prerelease text has at most four bytes.
     #[kani::proof]
-    #[kani::unwind(6)]
+    #[kani::unwind(8)]
     fn the_first_release_joins_the_configured_train() {
         let bytes: [u8; TEXT] = kani::any();
         let version = symbolic::version(&bytes);
@@ -597,7 +597,7 @@ mod proofs {
     ///
     /// Every core is symbolic, and prerelease text has at most four bytes.
     #[kani::proof]
-    #[kani::unwind(6)]
+    #[kani::unwind(8)]
     fn the_step_between_versions_names_the_highest_changed_component() {
         let from_bytes: [u8; TEXT] = kani::any();
         let to_bytes: [u8; TEXT] = kani::any();
