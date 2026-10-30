@@ -27,6 +27,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - When the observed world contradicts the Candidate in more than one object, the conflict names the first object in publication order, so a tag conflict outranks a package conflict.
 - A notification record for a hook that the Candidate doesn't have no longer makes a release count as `partially_released`.
+- The planner compares versions by semantic version precedence, which ignores build metadata.
+  A manifest version that differs from the published one only in its build metadata neither overrides nor lowers the version.
+- Version selection refuses to name a version that doesn't follow the published one, and says there is nothing new to release.
+  It used to return the published version itself when nothing raised it, which the planner never asked for.
 
 ### Security
 

@@ -46,7 +46,7 @@ const fn control(
 }
 
 /// Every harness of the proof packages, with its cover count.
-pub const HARNESSES: [Harness; 25] = [
+pub const HARNESSES: [Harness; 39] = [
     harness(
         "proofs::a_proof_run_is_admitted_only_when_every_expected_harness_verified",
         2,
@@ -63,6 +63,14 @@ pub const HARNESSES: [Harness; 25] = [
         "approval::proofs::a_push_approval_never_rests_on_manual_inputs",
         1,
     ),
+    harness(
+        "commit::proofs::a_breaking_marker_always_asks_for_a_major_release",
+        2,
+    ),
+    harness(
+        "commit::proofs::the_commit_type_decides_the_step_without_a_breaking_marker",
+        1,
+    ),
     harness("lifecycle::proofs::every_state_may_repeat", 1),
     harness("lifecycle::proofs::a_terminal_state_never_changes", 2),
     harness("lifecycle::proofs::normal_states_form_one_forward_chain", 2),
@@ -70,6 +78,22 @@ pub const HARNESSES: [Harness; 25] = [
     harness(
         "lifecycle::proofs::an_unfinished_release_can_always_end_in_conflict_or_blocked",
         2,
+    ),
+    harness(
+        "precedence::proofs::a_version_equals_itself_and_order_flips_with_its_operands",
+        2,
+    ),
+    harness(
+        "precedence::proofs::a_stable_release_follows_every_prerelease_of_its_core",
+        1,
+    ),
+    harness(
+        "precedence::proofs::the_core_decides_before_the_prerelease",
+        1,
+    ),
+    harness(
+        "precedence::proofs::a_train_counts_up_and_moves_through_its_channels_in_precedence",
+        1,
     ),
     harness(
         "publication::proofs::an_effect_concerns_only_an_object_the_world_lacks",
@@ -91,6 +115,38 @@ pub const HARNESSES: [Harness; 25] = [
     harness(
         "publication::proofs::the_release_is_released_once_no_blocking_effect_remains",
         3,
+    ),
+    harness(
+        "selection::proofs::a_selected_version_follows_the_published_one",
+        4,
+    ),
+    harness(
+        "selection::proofs::a_selection_reaches_the_core_the_required_step_demands",
+        1,
+    ),
+    harness(
+        "selection::proofs::a_train_moves_forward_or_counts_up_within_its_channel",
+        2,
+    ),
+    harness(
+        "selection::proofs::an_explicit_version_below_the_required_one_is_refused",
+        2,
+    ),
+    harness(
+        "selection::proofs::the_first_release_joins_the_configured_train",
+        1,
+    ),
+    harness(
+        "selection::proofs::a_breaking_change_below_one_is_a_minor_release",
+        1,
+    ),
+    harness(
+        "selection::proofs::the_step_between_versions_names_the_highest_changed_component",
+        1,
+    ),
+    harness(
+        "selection::proofs::a_zero_major_release_needs_its_acknowledgement",
+        1,
     ),
     harness(
         "version::proofs::the_join_of_two_bumps_is_the_larger_one",
@@ -135,7 +191,7 @@ const CORE: &str = "release-glz-core";
 const ASSURANCE: &str = "assurance-core";
 
 /// Every negative control, each of which has to fail exactly its harness's assertion.
-pub const CONTROLS: [Control; 27] = [
+pub const CONTROLS: [Control; 41] = [
     control(
         ASSURANCE,
         "negative-control-incomplete-run",
@@ -159,6 +215,18 @@ pub const CONTROLS: [Control; 27] = [
         "negative-control-substitution",
         "approval::proofs::a_push_approval_never_rests_on_manual_inputs",
         "a push approval must not rest on manual inputs",
+    ),
+    control(
+        CORE,
+        "negative-control-breaking-footer",
+        "commit::proofs::a_breaking_marker_always_asks_for_a_major_release",
+        "a breaking-change footer must ask for a major release",
+    ),
+    control(
+        CORE,
+        "negative-control-commit-type-case",
+        "commit::proofs::the_commit_type_decides_the_step_without_a_breaking_marker",
+        "a commit type must decide the step in any letter case",
     ),
     control(
         CORE,
@@ -189,6 +257,30 @@ pub const CONTROLS: [Control; 27] = [
         "negative-control-unstoppable",
         "lifecycle::proofs::an_unfinished_release_can_always_end_in_conflict_or_blocked",
         "an unfinished release must be able to stop",
+    ),
+    control(
+        CORE,
+        "negative-control-equal-prereleases",
+        "precedence::proofs::a_version_equals_itself_and_order_flips_with_its_operands",
+        "a version must equal itself",
+    ),
+    control(
+        CORE,
+        "negative-control-stable-before-prerelease",
+        "precedence::proofs::a_stable_release_follows_every_prerelease_of_its_core",
+        "a stable release must follow every prerelease of its core",
+    ),
+    control(
+        CORE,
+        "negative-control-prerelease-first",
+        "precedence::proofs::the_core_decides_before_the_prerelease",
+        "the core must decide before the prerelease",
+    ),
+    control(
+        CORE,
+        "negative-control-reverse-numbers",
+        "precedence::proofs::a_train_counts_up_and_moves_through_its_channels_in_precedence",
+        "a train's next number must follow it",
     ),
     control(
         CORE,
@@ -225,6 +317,54 @@ pub const CONTROLS: [Control; 27] = [
         "negative-control-optional-blocks",
         "publication::proofs::the_release_is_released_once_no_blocking_effect_remains",
         "a release must be released exactly when no blocking effect remains",
+    ),
+    control(
+        CORE,
+        "negative-control-reselect",
+        "selection::proofs::a_selected_version_follows_the_published_one",
+        "a selected version must follow the published one",
+    ),
+    control(
+        CORE,
+        "negative-control-understep",
+        "selection::proofs::a_selection_reaches_the_core_the_required_step_demands",
+        "a selection must reach the core of the required step",
+    ),
+    control(
+        CORE,
+        "negative-control-backward-train",
+        "selection::proofs::a_train_moves_forward_or_counts_up_within_its_channel",
+        "a train must not move back without an explicitly higher core",
+    ),
+    control(
+        CORE,
+        "negative-control-override-floor",
+        "selection::proofs::an_explicit_version_below_the_required_one_is_refused",
+        "an explicit version below the required one must be refused",
+    ),
+    control(
+        CORE,
+        "negative-control-initial-train",
+        "selection::proofs::the_first_release_joins_the_configured_train",
+        "a first release must join the configured train",
+    ),
+    control(
+        CORE,
+        "negative-control-zero-major",
+        "selection::proofs::a_breaking_change_below_one_is_a_minor_release",
+        "a breaking change below 1.0 must be a minor release",
+    ),
+    control(
+        CORE,
+        "negative-control-bump-between",
+        "selection::proofs::the_step_between_versions_names_the_highest_changed_component",
+        "a change of the prerelease alone must be a patch step",
+    ),
+    control(
+        CORE,
+        "negative-control-version-zero",
+        "selection::proofs::a_zero_major_release_needs_its_acknowledgement",
+        "a release below 1.0 must need its acknowledgement",
     ),
     control(
         CORE,
