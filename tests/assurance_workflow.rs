@@ -317,6 +317,31 @@ fn dependency_policy_is_explicit_and_deny_by_default() {
     assert!(policy.contains("confidence-threshold = 0.8"));
 }
 
+/// A dependency that breaks the license, ban, or source policy fails the pull request that adds it, with the cargo-deny release the release gate runs.
+#[test]
+fn the_fast_gate_enforces_the_dependency_policy_that_the_release_gate_enforces() {
+    let ci: serde_norway::Value =
+        serde_norway::from_str(&fs::read_to_string(".github/workflows/ci.yml").unwrap()).unwrap();
+    let runs = ci["jobs"]["checks"]["steps"]
+        .as_sequence()
+        .unwrap()
+        .iter()
+        .filter_map(|step| step["run"].as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let assurance = fs::read_to_string(".github/workflows/assurance.yml").unwrap();
+    let version = assurance
+        .split_once("cargo install --locked cargo-deny --version ")
+        .and_then(|(_, rest)| rest.split_whitespace().next())
+        .expect("the release gate installs a fixed cargo-deny");
+    assert!(runs.contains(&format!(
+        "cargo-deny/releases/download/{version}/cargo-deny-{version}-x86_64-unknown-linux-musl.tar.gz"
+    )));
+    assert!(runs.contains("sha256sum --check -"));
+    assert!(runs.contains("cargo deny --locked check -D warnings bans licenses sources"));
+    assert!(assurance.contains("cargo deny check -D warnings"));
+}
+
 #[test]
 fn release_assurance_covers_native_platforms_and_gleam_versions() {
     let yaml = fs::read_to_string(".github/workflows/ci.yml").unwrap();
