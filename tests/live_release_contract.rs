@@ -111,6 +111,31 @@ async fn live_reconciler_recovers_ambiguous_publish_and_second_run_is_a_no_op() 
     github.stop();
 }
 
+/// Two drafts with the tag leave the run unable to tell which one the Candidate owns, so it stops before any effect.
+#[tokio::test]
+async fn two_drafts_with_the_tag_stop_the_release_in_a_conflict() {
+    let registry = FakeRegistry::start().await;
+    let github = FakeGitHub::start().await;
+    let fixture = live_fixture(&registry.base_url());
+    github.duplicate_the_draft();
+
+    let error = live_runner(&fixture, &registry, &github)
+        .run(&fixture.candidate, &approved(&fixture.manifest))
+        .await
+        .unwrap_err();
+    assert_eq!(error.state(), ReleaseState::Conflict);
+    assert_eq!(
+        error.failure_class(),
+        release_glz::failure::FailureClass::ImmutableStateConflict
+    );
+    assert!(
+        error.to_string().contains("2 GitHub Releases have the tag"),
+        "{error}"
+    );
+    assert_eq!(github.mutation_count(), 0);
+    assert_eq!(registry.state().package_posts, 0);
+}
+
 /// Evidence that `verify_approval` gathered from GitHub publishes the whole release, as no hand-built evidence can show.
 #[tokio::test]
 async fn evidence_from_verification_publishes_the_whole_release() {
@@ -626,6 +651,8 @@ struct GitHubState {
     asset_media_type: Option<String>,
     approval: Option<ApprovalAnswers>,
     requests: Vec<HttpRequest>,
+    /// Whether the release list holds a second draft with the tag.
+    duplicate_draft: bool,
 }
 
 /// What GitHub answers to the checks that approve a push release.
@@ -683,6 +710,14 @@ impl FakeGitHub {
             .iter()
             .filter(|request| request.method != "GET")
             .count()
+    }
+
+    /// Hold a second draft with the release's tag, as an earlier run or another tool may have left one.
+    fn duplicate_the_draft(&self) {
+        let mut state = self.state.lock().unwrap();
+        state.release_target = Some("a".repeat(40));
+        state.draft = true;
+        state.duplicate_draft = true;
     }
 
     /// Answer the approval checks of the push run that prepared the Candidate of `manifest`, with a merged Release PR that recorded `intent`.
@@ -777,10 +812,24 @@ fn github_response(
                 }),
             )
         }
+        // GitHub answers the tag endpoint only with a published Release, and lists drafts only to a token that can write.
         ("GET", "/repos/owner/widget/releases/tags/v1.2.3") => match &state.release_target {
-            Some(_) => release_response(&state, base_url),
-            None => HttpResponse::bytes(404, vec![]),
+            Some(_) if !state.draft => release_response(&state, base_url),
+            _ => HttpResponse::bytes(404, vec![]),
         },
+        ("GET", "/repos/owner/widget/releases") => {
+            let mut releases = state
+                .release_target
+                .iter()
+                .map(|_| release_json(&state, base_url))
+                .collect::<Vec<_>>();
+            if state.duplicate_draft {
+                let mut second = release_json(&state, base_url);
+                second["id"] = serde_json::json!(43);
+                releases.push(second);
+            }
+            HttpResponse::json(200, serde_json::Value::Array(releases))
+        }
         ("POST", "/repos/owner/widget/releases") => {
             let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
             state.release_target = Some(body["target_commitish"].as_str().unwrap().to_owned());
@@ -905,6 +954,13 @@ fn approval_response(
 }
 
 fn release_response(state: &GitHubState, base_url: &str) -> HttpResponse {
+    HttpResponse::json(
+        if state.draft { 201 } else { 200 },
+        release_json(state, base_url),
+    )
+}
+
+fn release_json(state: &GitHubState, base_url: &str) -> serde_json::Value {
     let assets = match (&state.asset, &state.asset_name, &state.asset_media_type) {
         (Some(bytes), Some(name), Some(media_type)) => vec![serde_json::json!({
             "id": 77,
@@ -916,24 +972,21 @@ fn release_response(state: &GitHubState, base_url: &str) -> HttpResponse {
         })],
         _ => vec![],
     };
-    HttpResponse::json(
-        if state.draft { 201 } else { 200 },
-        serde_json::json!({
-            "id": 42,
-            "html_url": "https://github.test/owner/widget/releases/42",
-            "tag_name": "v1.2.3",
-            "target_commitish": state.release_target,
-            "body": format!(
-                "release-glz-candidate-digest: {}",
-                state.candidate_digest.as_deref().unwrap_or_default()
-            ),
-            "draft": state.draft,
-            "upload_url": format!(
-                "{base_url}/repos/owner/widget/releases/42/assets{{?name,label}}"
-            ),
-            "assets": assets
-        }),
-    )
+    serde_json::json!({
+        "id": 42,
+        "html_url": "https://github.test/owner/widget/releases/42",
+        "tag_name": "v1.2.3",
+        "target_commitish": state.release_target,
+        "body": format!(
+            "release-glz-candidate-digest: {}",
+            state.candidate_digest.as_deref().unwrap_or_default()
+        ),
+        "draft": state.draft,
+        "upload_url": format!(
+            "{base_url}/repos/owner/widget/releases/42/assets{{?name,label}}"
+        ),
+        "assets": assets
+    })
 }
 
 fn git(directory: &std::path::Path, args: &[&str]) {

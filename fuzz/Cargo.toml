@@ -12,6 +12,7 @@ cargo-fuzz = true
 anyhow = "1.0.104"
 libfuzzer-sys = "0.4.13"
 release-glz = { path = ".." }
+release-glz-core = { path = "../crates/release-glz-core" }
 semver = "1.0.28"
 serde_json = "1.0.154"
 sha2 = "0.11.0"
@@ -55,6 +56,13 @@ bench = false
 [[bin]]
 name = "identifiers"
 path = "fuzz_targets/identifiers.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "prerelease"
+path = "fuzz_targets/prerelease.rs"
 test = false
 doc = false
 bench = false

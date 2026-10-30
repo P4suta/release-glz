@@ -63,6 +63,12 @@ const MAX_GENERATED_FILE_BYTES: usize = 2 * 1024 * 1024;
 const NULL_OBJECT_ID: &str = "0000000000000000000000000000000000000000";
 const MAX_OPEN_PULL_REQUEST_PAGES: usize = 100;
 
+/// Releases on one page of the release list, which GitHub caps at 100.
+const RELEASE_PAGE_SIZE: usize = 100;
+
+/// Pages of the release list that one lookup reads, which bounds it at the newest 1000 Releases.
+const MAX_RELEASE_PAGES: usize = 10;
+
 /// Commits whose pull requests one Release PR update looks up, which bounds its API requests on a long history.
 ///
 /// A release normally holds far fewer, and a first release over a long history lists its commits by subject instead.
@@ -1320,12 +1326,40 @@ impl GitHubClient {
         .await
     }
 
-    /// The full GitHub Release for a tag, if one exists.
+    /// The full GitHub Release for a tag, if one exists, draft or published.
+    ///
+    /// GitHub's tag endpoint answers only with a published Release, so the lookup reads the release list, which shows drafts to a token that can write contents.
+    /// Two Releases with the tag make the Candidate's Release ambiguous, which is a conflict.
     pub async fn release_details_for_tag(&self, tag: &str) -> Result<Option<GitHubRelease>> {
-        Ok(self
-            .get_optional::<ReleaseResponse>(&format!("releases/tags/{}", encode_segment(tag)))
-            .await?
-            .map(Into::into))
+        let mut found = Vec::new();
+        for page in 1..=MAX_RELEASE_PAGES {
+            let releases: Vec<ReleaseResponse> = self
+                .get(&format!(
+                    "releases?per_page={RELEASE_PAGE_SIZE}&page={page}"
+                ))
+                .await?;
+            if releases.len() > RELEASE_PAGE_SIZE {
+                bail!("GitHub returned an oversized release page");
+            }
+            let complete = releases.len() < RELEASE_PAGE_SIZE;
+            found.extend(
+                releases
+                    .into_iter()
+                    .filter(|release| release.tag_name == tag),
+            );
+            if complete {
+                return match found.len() {
+                    0 | 1 => Ok(found.pop().map(Into::into)),
+                    count => Err(crate::failure::classified(
+                        crate::failure::FailureClass::ImmutableStateConflict,
+                        format!(
+                            "{count} GitHub Releases have the tag `{tag}`, so the Candidate's Release is ambiguous"
+                        ),
+                    )),
+                };
+            }
+        }
+        bail!("GitHub release search exceeded its bounded page limit")
     }
 
     /// Create the draft Release that later stages fill in.

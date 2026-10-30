@@ -297,3 +297,5 @@ jobs:
         run: cargo fuzz run api_interface -- -runs=10000 -seed=1 -timeout=10 -rss_limit_mb=2048
       - name: Fuzz repository slug and prerelease channel parsers
         run: cargo fuzz run identifiers -- -runs=10000 -seed=1 -timeout=10 -rss_limit_mb=2048
+      - name: Fuzz prerelease reading and precedence against semver
+        run: cargo fuzz run prerelease -- -runs=10000 -seed=1 -timeout=10 -rss_limit_mb=2048

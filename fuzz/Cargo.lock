@@ -1054,6 +1054,7 @@ dependencies = [
  "anyhow",
  "libfuzzer-sys",
  "release-glz",
+ "release-glz-core",
  "semver",
  "serde_json",
  "sha2",

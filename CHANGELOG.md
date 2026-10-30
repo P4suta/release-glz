@@ -27,6 +27,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - When the observed world contradicts the Candidate in more than one object, the conflict names the first object in publication order, so a tag conflict outranks a package conflict.
 - A notification record for a hook that the Candidate doesn't have no longer makes a release count as `partially_released`.
+- The planner compares versions by semantic version precedence, which ignores build metadata.
+  A manifest version that differs from the published one only in its build metadata neither overrides nor lowers the version.
+- Version selection refuses to name a version that doesn't follow the published one, and says there is nothing new to release.
+  It used to return the published version itself when nothing raised it, which the planner never asked for.
 
 ### Security
 
@@ -108,6 +112,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A release finds its draft GitHub Release in the repository's release list, because GitHub's tag endpoint answers only with a published Release.
+  Before, every run created another draft, ran out of attempts, and never published the package once GitHub Releases were on, which is the default.
+  Two Releases with the tag now stop the release as a conflict, and the distribution workflow finds its draft by identifier.
 - A failure's diagnostic lists every cause beneath its message, as an unclassified failure's already did.
   A refused release approval used to say only that OIDC verification failed, without the check that refused it.
 - The `init` and `migrate` results and their diffs give the manifest path relative to the repository, as every other result does.

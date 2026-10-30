@@ -48,6 +48,9 @@ fn distribution_is_attested_and_uploaded_to_a_draft_exactly_once() {
         .unwrap()
         .replace("\r\n", "\n");
     assert!(!yaml.contains("--clobber"));
+    // GitHub's tag endpoint answers only with a published Release, so it can't find the draft.
+    assert!(!yaml.contains("releases/tags/"));
+    assert!(yaml.contains("gh release view \"$TAG\" --json databaseId"));
     assert!(yaml.contains("permissions: {}"));
     assert!(yaml.contains("id-token: write"));
     assert!(yaml.contains("attestations: write"));
