@@ -26,16 +26,16 @@ cargo +nightly fuzz run config target/fuzz-corpus/config fuzz/corpus/config
 
 Release decisions that depend only on their inputs live in `crates/release-glz-core`, which has no dependency outside `core`.
 Kani proves its `#[kani::proof]` harnesses for every admitted input, and each harness carries cover properties that show its assumptions leave inputs to check.
-Kani 0.68.0 runs in the image that `verification/kani.Dockerfile` pins, inside the bounded container on an owner machine:
+`cargo xtask proofs` builds the image that `verification/kani.Dockerfile` pins to Kani 0.68.0, and it runs Kani from a frozen copy of the sources with the bounded runner's limits.
+It audits Kani's JSON report with the committed inventory in `xtask/src/inventory.rs`, which names every harness and its cover count.
+A run counts only when every listed harness verified and no other ran, and when every owned assertion succeeded.
+Each harness must also reach exactly its listed covers, and the tool versions and target must be the pinned ones.
+The audit also refuses a source that changed during the run, and `crates/assurance-core` decides admission from what the audit found, under its own Kani proofs.
 
-```console
-docker build --platform linux/amd64 --file verification/kani.Dockerfile --tag release-glz-kani:0.68.0 verification
-dotfiles bounded run --image release-glz-kani@sha256:<image digest> --project . -- \
-  env CARGO_TARGET_DIR=/tmp/kani-target cargo kani --package release-glz-core
-```
-
-Each `negative-control-*` feature of the core crate breaks one decision, such as the checked increment or the conflict for an object that differs.
-Shipping assurance builds each one and requires the harness for that decision to fail with its own message.
+Each `negative-control-*` feature breaks one decision, such as the checked increment or the conflict for an object that differs, inside a `negative_control_*` function that production code calls only under that feature.
+The task builds each negative control on its own and requires its harness to fail on exactly the expected assertion and on nothing else.
+Every harness has a negative control, and a test without the solver keeps the inventory equal to the harnesses, covers, and features in the sources.
+`.cargo/mutants.toml` keeps cargo-mutants out of the harnesses and negative controls, which no test build compiles.
 The harnesses over lists of objects cover releases of at most three objects, and the decisions for single objects and approvals cover every input.
 
 `verification/lean/Publication.lean` models the same decisions in Lean 4 and proves the list properties for releases of every length.

@@ -57,7 +57,7 @@ process-wrap = { version = "10.0.1", default-features = false, features = [
 release-glz-test-support = { path = "crates/test-support", version = "0.0.0" }
 
 [workspace]
-members = ["crates/release-glz-core", "crates/test-support", "xtask"]
+members = ["crates/assurance-core", "crates/release-glz-core", "crates/test-support", "xtask"]
 
 [profile.release]
 lto = "thin"

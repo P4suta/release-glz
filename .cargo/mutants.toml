@@ -1,0 +1,2 @@
+# Kani harnesses compile only under the verifier, and negative controls only under their own features, so a test build never runs a mutant of either.
+exclude_re = ["proofs::", "negative_control_"]

@@ -1,9 +1,14 @@
 //! Repository tasks that drive the pinned verification images.
 //!
+//! `cargo xtask proofs` proves every Kani harness and negative control and audits each run.
 //! `cargo xtask lean` proves the Lean model of publication and its refinement of the core crate.
 
 mod container;
+mod inventory;
 mod lean;
+mod proof_report;
+mod proofs;
+mod source_snapshot;
 
 use std::path::Path;
 use std::process::ExitCode;
@@ -15,9 +20,10 @@ fn main() -> ExitCode {
     };
     let arguments = std::env::args().skip(1).collect::<Vec<_>>();
     let outcome = match arguments.iter().map(String::as_str).collect::<Vec<_>>()[..] {
+        ["proofs"] => proofs::run(root),
         ["lean"] => lean::run(root),
         _ => {
-            eprintln!("usage: cargo xtask lean");
+            eprintln!("usage: cargo xtask proofs|lean");
             return ExitCode::from(2);
         }
     };

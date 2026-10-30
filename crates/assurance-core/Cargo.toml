@@ -1,0 +1,18 @@
+[package]
+name = "assurance-core"
+description = "Admission decisions that let the release gate rely on a recorded verification run"
+version = "0.0.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+rust-version = "1.88"
+
+[features]
+# Each negative control breaks one admission decision, so the proof gate can show that its harness rejects the broken decision.
+# Admitting a proof run that didn't complete.
+negative-control-incomplete-run = []
+# Admitting a negative control run in which another check failed too.
+negative-control-extra-failure = []
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
