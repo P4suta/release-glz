@@ -50,6 +50,34 @@ negative-control-stall = []
 negative-control-forget-failure = []
 # Going on with an observation of another number of objects.
 negative-control-reshape = []
+# Ordering two prereleases with the same identifiers as unequal.
+negative-control-equal-prereleases = []
+# Ordering a stable release before the prereleases of its core.
+negative-control-stable-before-prerelease = []
+# Comparing prereleases before cores.
+negative-control-prerelease-first = []
+# Ordering numeric prerelease identifiers backward.
+negative-control-reverse-numbers = []
+# Dropping the final check that a selection follows the published version.
+negative-control-reselect = []
+# Taking the published core for a stable selection without the required step.
+negative-control-understep = []
+# Letting a train move back to an earlier channel.
+negative-control-backward-train = []
+# Taking an explicit version below the required one.
+negative-control-override-floor = []
+# Keeping a first prerelease of another train.
+negative-control-initial-train = []
+# Never applying the rule for versions below 1.0.
+negative-control-zero-major = []
+# Treating a change of the prerelease alone as no step.
+negative-control-bump-between = []
+# Releasing a version below 1.0 without its acknowledgement.
+negative-control-version-zero = []
+# Missing the hyphenated breaking-change footer.
+negative-control-breaking-footer = []
+# Matching commit types in lowercase only.
+negative-control-commit-type-case = []
 # Leaving the last byte of each secret occurrence unredacted.
 negative-control-redaction-partial = []
 # Redacting the byte after each secret occurrence too.

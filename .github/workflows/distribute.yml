@@ -239,10 +239,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if ! release_json=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" 2>/dev/null); then
+          # GitHub's tag endpoint answers only with a published Release, so the draft is found by its identifier.
+          if ! release_id=$(gh release view "$TAG" --json databaseId --jq .databaseId 2>/dev/null); then
             gh release create "$TAG" --draft --verify-tag --generate-notes --title "$TAG"
-            release_json=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG")
+            release_id=$(gh release view "$TAG" --json databaseId --jq .databaseId)
           fi
+          release_json=$(gh api "repos/$GITHUB_REPOSITORY/releases/$release_id")
           if [[ $(jq -r '.draft' <<<"$release_json") != true ]]; then
             echo "Release $TAG already exists and is not a draft" >&2
             exit 1
@@ -265,7 +267,7 @@ jobs:
               exit 1
             fi
           done
-          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" |
+          gh api "repos/$GITHUB_REPOSITORY/releases/$release_id" |
             node scripts/verify-release-assets.js --artifacts dist --complete
       - name: Re-download and verify release evidence
         env:
@@ -299,6 +301,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" |
+          release_id=$(gh release view "$TAG" --json databaseId --jq .databaseId)
+          gh api "repos/$GITHUB_REPOSITORY/releases/$release_id" |
             node scripts/verify-release-assets.js --artifacts dist --complete
           gh release edit "$TAG" --draft=false

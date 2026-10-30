@@ -129,6 +129,61 @@ A failed blocking effect that the world still lacks stops the run, and an observ
 - Test: `tests/v1_domain.rs::zero_major_breaking_changes_require_a_minor_release`
 - Test: `tests/v1_domain.rs::prerelease_channels_only_move_forward_on_the_same_core`
 
+### A selected version always follows the published one
+
+The selection never names a version that Hex already holds or a lower one.
+A computed version reaches the core that the required step demands, and the selection refuses an explicit version below the required one.
+Kani proves it for every core and train number over versions that are stable or on a train, which is how the core reads every `<channel>.<number>` prerelease.
+
+- Kani: `selection::proofs::a_selected_version_follows_the_published_one`
+- Kani: `selection::proofs::a_selection_reaches_the_core_the_required_step_demands`
+- Kani: `selection::proofs::an_explicit_version_below_the_required_one_is_refused`
+- Test: `src/version.rs::version_selection_never_moves_below_or_onto_the_published_version`
+- Test: `src/version.rs::select_version_covers_stable_prerelease_and_explicit_boundaries`
+- Test: `src/version.rs::explicit_core_authority_has_exact_boundaries`
+- Test: `src/planner.rs::the_requested_version_is_an_explicit_choice_only_when_read_and_ahead`
+
+### A release train only moves forward
+
+A train counts up within its channel or moves on to a later channel, a move back needs an explicitly higher core, and a first release joins the configured train.
+
+- Kani: `selection::proofs::a_train_moves_forward_or_counts_up_within_its_channel`
+- Kani: `selection::proofs::the_first_release_joins_the_configured_train`
+- Kani: `precedence::proofs::a_train_counts_up_and_moves_through_its_channels_in_precedence`
+- Test: `src/version.rs::backward_channel_moves_require_an_explicitly_higher_core`
+- Test: `src/version.rs::a_first_release_joins_the_configured_train_and_keeps_its_build_metadata`
+- Test: `src/planner.rs::a_first_release_keeps_its_prerelease_unless_the_plan_asks_for_a_stable_one`
+
+### Versions compare by semantic version precedence
+
+The core decides before the prerelease, a stable release follows every prerelease of its core, and build metadata never changes precedence.
+Kani covers prerelease text of at most three bytes for one version and two bytes for each of a pair.
+The differential tests and the fuzz target compare the core with the `semver` crate on longer text.
+
+- Kani: `precedence::proofs::a_version_equals_itself_and_order_flips_with_its_operands`
+- Kani: `precedence::proofs::a_stable_release_follows_every_prerelease_of_its_core`
+- Kani: `precedence::proofs::the_core_decides_before_the_prerelease`
+- Fuzz: `prerelease`
+- Test: `tests/version_precedence.rs::core_precedence_agrees_with_semver_on_every_pair`
+- Test: `tests/version_precedence.rs::a_train_compares_like_the_prerelease_that_spells_it`
+- Test: `tests/version_precedence.rs::parse_reads_every_train_spelling_as_its_train`
+- Test: `tests/version_precedence.rs::build_metadata_never_changes_precedence`
+- Test: `tests/version_precedence.rs::the_prerelease_grammar_agrees_with_semver_on_every_short_text`
+- Test: `tests/fuzz_corpus.rs::prerelease_seeds_reach_trains_text_comparison_and_refusal`
+
+### The required step follows the commits and the rules for versions below 1.0
+
+A breaking marker asks for a major release, and otherwise the commit type decides the step in any letter case.
+Below 1.0 a breaking change is a minor release, a release needs its acknowledgement, and the step between two versions names the highest component that changed.
+
+- Kani: `commit::proofs::a_breaking_marker_always_asks_for_a_major_release`
+- Kani: `commit::proofs::the_commit_type_decides_the_step_without_a_breaking_marker`
+- Kani: `selection::proofs::a_breaking_change_below_one_is_a_minor_release`
+- Kani: `selection::proofs::a_zero_major_release_needs_its_acknowledgement`
+- Kani: `selection::proofs::the_step_between_versions_names_the_highest_changed_component`
+- Test: `src/git.rs::commit_types_match_in_any_letter_case_but_breaking_change_only_in_uppercase`
+- Test: `tests/v1_domain.rs::zero_major_breaking_changes_require_a_minor_release`
+
 ### A Candidate publishes exactly the bytes it sealed
 
 - Test: `tests/v1_candidate.rs::candidate_seals_and_verifies_the_exact_publish_bytes`
@@ -175,6 +230,7 @@ Kani proves it for names of at most one character, and longer names compare by t
 - Fuzz: `config`
 - Fuzz: `identifiers`
 - Fuzz: `pr_marker`
+- Fuzz: `prerelease`
 - Test: `tests/fuzz_corpus.rs::every_fuzz_target_runs_shared_invariants_that_this_suite_replays`
 
 ### Redaction removes every byte that a secret covers, and nothing else

@@ -222,6 +222,16 @@ impl std::str::FromStr for PrereleaseChannel {
     }
 }
 
+impl From<PrereleaseChannel> for release_glz_core::Channel {
+    fn from(channel: PrereleaseChannel) -> Self {
+        match channel {
+            PrereleaseChannel::Alpha => Self::Alpha,
+            PrereleaseChannel::Beta => Self::Beta,
+            PrereleaseChannel::Rc => Self::Rc,
+        }
+    }
+}
+
 /// Why the planner arrived at the version it selected.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

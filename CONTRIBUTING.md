@@ -38,7 +38,12 @@ Every harness has a negative control, and a test without the solver keeps the in
 `.cargo/mutants.toml` keeps cargo-mutants out of the harnesses and negative controls, which no test build compiles.
 The harnesses over lists of objects and over runs cover releases of at most three objects, and the decisions for single objects and approvals cover every input.
 A run harness lets the world answer each observation with any presence of each object, so its properties hold for every way the world changes between observations.
-The harnesses over text cover a few bytes or characters each, and each one states its bound in its documentation.
+The version harnesses take every core and train number symbolically.
+The selection harnesses take versions that are stable or on a train, which is how the core reads every `<channel>.<number>` prerelease.
+The precedence harnesses cover other prerelease text of at most three bytes for one version and two bytes for each of a pair.
+The commit harnesses cover three symbolic ASCII bytes around each marker.
+`tests/version_precedence.rs` checks that the core's precedence, trains, and prerelease grammar agree with the `semver` crate for longer text.
+The harnesses over redaction, digest framing, and member names cover a few bytes or characters each, and each one states its bound in its documentation.
 
 `verification/lean/Publication.lean` models the same decisions in Lean 4 and proves the list properties for releases of every length.
 `Redaction.lean` and `Framing.lean` model redaction and the digest framings, and they prove them for texts, secrets, and files of every length.
