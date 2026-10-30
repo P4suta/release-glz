@@ -259,12 +259,20 @@ Kani proves it for every core, channel, and train number over versions that are 
 ### Versions compare by semantic version precedence
 
 The core decides before the prerelease, a stable release follows every prerelease of its core, and build metadata never changes precedence.
+A train compares, parses, and names its channel exactly as the text `<label>.<number>` that spells it, and the prerelease grammar is the one semantic versioning states.
 Kani covers prerelease text of at most three bytes for one version and two bytes for each of a pair.
+It compares trains with one-digit numbers to any valid text of at most two bytes.
+It compares a train with any number to its own label and any valid one-byte identifier, which reaches the comparison of the number.
+It parses any text of at most eight bytes, and it checks the grammar of any text of at most four bytes.
 The differential tests and the fuzz target compare the core with the `semver` crate on longer text.
 
 - Kani: `precedence::proofs::a_version_equals_itself_and_order_flips_with_its_operands`
 - Kani: `precedence::proofs::a_stable_release_follows_every_prerelease_of_its_core`
 - Kani: `precedence::proofs::the_core_decides_before_the_prerelease`
+- Kani: `precedence::proofs::a_train_compares_like_the_text_that_spells_it`
+- Kani: `precedence::proofs::a_train_meets_its_own_label_by_its_number`
+- Kani: `precedence::proofs::text_parses_as_a_train_exactly_when_it_spells_one`
+- Kani: `precedence::proofs::the_prerelease_grammar_is_the_one_semantic_versioning_states`
 - Fuzz: `prerelease`
 - Test: `tests/version_precedence.rs::core_precedence_agrees_with_semver_on_every_pair`
 - Test: `tests/version_precedence.rs::a_train_compares_like_the_prerelease_that_spells_it`

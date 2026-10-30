@@ -80,6 +80,12 @@ negative-control-stable-before-prerelease = []
 negative-control-prerelease-first = []
 # Ordering numeric prerelease identifiers backward.
 negative-control-reverse-numbers = []
+# Spelling every train with the first channel's label when it meets prerelease text.
+negative-control-one-label = []
+# Reading `<label>.<number>` text as a train without checking its grammar.
+negative-control-unchecked-train = []
+# Admitting a numeric identifier with a leading zero.
+negative-control-leading-zero = []
 # Dropping the final check that a selection follows the published version.
 negative-control-reselect = []
 # Taking the published core for a stable selection without the required step.
