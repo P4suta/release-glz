@@ -46,7 +46,7 @@ const fn control(
 }
 
 /// Every harness of the proof packages, with its cover count.
-pub const HARNESSES: [Harness; 83] = [
+pub const HARNESSES: [Harness; 84] = [
     harness(
         "proofs::a_proof_run_is_admitted_only_when_every_expected_harness_verified",
         2,
@@ -303,6 +303,10 @@ pub const HARNESSES: [Harness; 83] = [
         1,
     ),
     harness(
+        "archive_path::proofs::claiming_records_each_entry_and_names_the_earlier_one",
+        1,
+    ),
+    harness(
         "oidc::proofs::a_token_is_valid_exactly_while_its_window_holds_now",
         2,
     ),
@@ -337,7 +341,7 @@ const CORE: &str = "release-glz-core";
 const ASSURANCE: &str = "assurance-core";
 
 /// Every negative control, each of which has to fail exactly its harness's assertion.
-pub const CONTROLS: [Control; 89] = [
+pub const CONTROLS: [Control; 91] = [
     control(
         ASSURANCE,
         "negative-control-incomplete-run",
@@ -805,6 +809,18 @@ pub const CONTROLS: [Control; 89] = [
         "negative-control-directory-at-every-byte",
         "archive_path::proofs::the_directories_above_a_path_are_its_prefixes_before_each_slash",
         "the directories above a path must be its prefixes before each slash",
+    ),
+    control(
+        CORE,
+        "negative-control-forget-files",
+        "archive_path::proofs::claiming_records_each_entry_and_names_the_earlier_one",
+        "claiming must record each entry and name the earlier one",
+    ),
+    control(
+        CORE,
+        "negative-control-overwrite-directory",
+        "archive_path::proofs::claiming_records_each_entry_and_names_the_earlier_one",
+        "claiming must record each entry and name the earlier one",
     ),
     control(
         CORE,

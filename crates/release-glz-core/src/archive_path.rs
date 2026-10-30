@@ -158,10 +158,88 @@ fn same_name(stem: &[u8], name: &[u8]) -> bool {
     stem.eq_ignore_ascii_case(name)
 }
 
-/// The folded paths of the directories that hold `folded`: its prefixes before each `/`.
+/// The folded paths that the entries of one archive claimed so far, which the shell keeps.
 ///
-/// The shell records an entry's path under each of them, and under `folded` itself, once [`collision`] finds no earlier entry.
-pub fn directories_above(folded: &[u8]) -> impl Iterator<Item = &[u8]> {
+/// The shell folds each path, and the fold has to keep every `/` where it is, so the prefixes of a folded path name its directories.
+pub trait ClaimedPaths {
+    /// What the shell keeps for an entry, such as its path.
+    type Entry: Clone;
+
+    /// The entry that claimed `folded` as a file.
+    fn file(&self, folded: &[u8]) -> Option<&Self::Entry>;
+
+    /// The entry that claimed `folded` as a directory.
+    fn directory(&self, folded: &[u8]) -> Option<&Self::Entry>;
+
+    /// Keep `entry` as the claim of the file `folded`.
+    fn record_file(&mut self, folded: &[u8], entry: Self::Entry);
+
+    /// Keep `entry` as the claim of the directory `folded`.
+    fn record_directory(&mut self, folded: &[u8], entry: Self::Entry);
+}
+
+/// An earlier entry that names the same file or directory as a new one once both paths are folded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Collision<E> {
+    earlier: E,
+}
+
+impl<E> Collision<E> {
+    /// The earlier entry.
+    pub fn earlier(&self) -> &E {
+        &self.earlier
+    }
+}
+
+/// Record `entry` under the folded path `folded`, or refuse it with the earlier entry whose folded path names the same file or directory.
+///
+/// A directory keeps the first entry that claimed it.
+pub fn claim_path<P: ClaimedPaths>(
+    paths: &mut P,
+    folded: &[u8],
+    entry: P::Entry,
+) -> Result<(), Collision<P::Entry>> {
+    if let Some(earlier) =
+        collision(folded, |key| paths.file(key), |key| paths.directory(key)).cloned()
+    {
+        return Err(Collision { earlier });
+    }
+    #[cfg(feature = "negative-control-forget-files")]
+    if let Some(claimed) = negative_control_forget_files() {
+        return claimed;
+    }
+    for directory in directories_above(folded) {
+        if unclaimed(paths, directory) {
+            paths.record_directory(directory, entry.clone());
+        }
+    }
+    paths.record_file(folded, entry);
+    Ok(())
+}
+
+/// Accepts an entry without recording it, so a later entry of the same path passes.
+#[cfg(feature = "negative-control-forget-files")]
+fn negative_control_forget_files<E>() -> Option<Result<(), Collision<E>>> {
+    Some(Ok(()))
+}
+
+/// Whether no earlier entry claimed the directory `folded`, so a claim records it.
+fn unclaimed<P: ClaimedPaths>(paths: &P, folded: &[u8]) -> bool {
+    #[cfg(feature = "negative-control-overwrite-directory")]
+    if let Some(unclaimed) = negative_control_overwrite_directory() {
+        return unclaimed;
+    }
+    paths.directory(folded).is_none()
+}
+
+/// Records a later entry for a directory that an earlier entry claimed.
+#[cfg(feature = "negative-control-overwrite-directory")]
+fn negative_control_overwrite_directory() -> Option<bool> {
+    Some(true)
+}
+
+/// The folded paths of the directories that hold `folded`: its prefixes before each `/`.
+fn directories_above(folded: &[u8]) -> impl Iterator<Item = &[u8]> {
     (0..folded.len())
         .filter(move |&end| ends_directory(folded, end))
         .map(move |end| &folded[..end])
@@ -185,8 +263,7 @@ fn negative_control_directory_at_every_byte() -> Option<bool> {
 /// The earlier entry that a folded path collides with: a file or a directory of the same folded path, or a file that the path lies inside.
 ///
 /// `file` and `directory` find the entry that recorded a folded file, or a directory as one of its prefixes before a `/`.
-/// The shell folds each path, and the fold has to keep every `/` where it is.
-pub fn collision<'a, T: ?Sized>(
+fn collision<'a, T: ?Sized>(
     folded: &[u8],
     file: impl Fn(&[u8]) -> Option<&'a T>,
     directory: impl Fn(&[u8]) -> Option<&'a T>,
@@ -246,8 +323,9 @@ fn negative_control_case_collision<'a, T: ?Sized>(
 #[cfg(kani)]
 mod proofs {
     use super::{
-        archive_path, c1_control, collision, device_stem, directories_above, forbidden_byte,
-        portable_component, portable_path, stem, without_trailing_slashes,
+        ClaimedPaths, archive_path, c1_control, claim_path, collision, device_stem,
+        directories_above, forbidden_byte, portable_component, portable_path, stem,
+        without_trailing_slashes,
     };
 
     /// Every stem that Windows reserves for a device, in uppercase, written out rather than parsed.
@@ -562,6 +640,144 @@ mod proofs {
         kani::cover!(directories == 2);
     }
 
+    /// A first claim records its folded path among the files and each of its prefixes before a `/` among the directories, and nothing else.
+    /// A second claim is refused with the first entry exactly when the two folded paths collide, and then records nothing.
+    /// A directory keeps the first entry that claimed it.
+    ///
+    /// Every pair of folded paths of one to three arbitrary bytes with no empty component, and fixed paths for the directory that two entries claim.
+    #[kani::proof]
+    #[kani::unwind(4)]
+    fn claiming_records_each_entry_and_names_the_earlier_one() {
+        let first_bytes: [u8; 3] = kani::any();
+        let first = short_entry(&first_bytes);
+        let second_bytes: [u8; 3] = kani::any();
+        let second = short_entry(&second_bytes);
+        let mut paths = FewClaims::default();
+        let mut held = claim_path(&mut paths, first, 1).is_ok()
+            && paths.files.count() == 1
+            && paths.files.get(first) == Some(&1);
+        let mut directories = 0;
+        for end in 0..first.len() {
+            if first[end] == b'/' {
+                held &= paths.directories.get(&first[..end]) == Some(&1);
+                directories += 1;
+            }
+        }
+        held &= paths.directories.count() == directories;
+        let collides = same(first, second) || inside(first, second) || inside(second, first);
+        let refused = claim_path(&mut paths, second, 2).map_err(|collision| *collision.earlier());
+        held &= match refused {
+            Err(earlier) => {
+                collides
+                    && earlier == 1
+                    && paths.files.count() == 1
+                    && paths.directories.count() == directories
+            }
+            Ok(()) => !collides,
+        };
+        let mut shared = FewClaims::default();
+        held &= claim_path(&mut shared, b"a/b", 1).is_ok()
+            && claim_path(&mut shared, b"a/c", 2).is_ok()
+            && claim_path(&mut shared, b"a", 3).is_err_and(|collision| *collision.earlier() == 1)
+            && claim_path(&mut shared, b"a/c", 4).is_err_and(|collision| *collision.earlier() == 2);
+        kani::assert(
+            held,
+            "claiming must record each entry and name the earlier one",
+        );
+        kani::cover!(refused.is_err() && directories == 1);
+    }
+
+    /// A folded path of one to three of `bytes`, as `archive_path` accepts it: no component is empty.
+    fn short_entry(bytes: &[u8; 3]) -> &[u8] {
+        let length: usize = kani::any_where(|length| (1..=3).contains(length));
+        for index in 0..length {
+            if bytes[index] == b'/' {
+                kani::assume(index > 0 && index + 1 < length && bytes[index - 1] != b'/');
+            }
+        }
+        &bytes[..length]
+    }
+
+    /// The claims of two folded paths of up to three bytes with no empty component, in arrays, because maps exhaust the solver.
+    #[derive(Default)]
+    struct FewClaims {
+        files: Records<2>,
+        directories: Records<2>,
+    }
+
+    impl ClaimedPaths for FewClaims {
+        type Entry = u8;
+
+        fn file(&self, folded: &[u8]) -> Option<&u8> {
+            self.files.get(folded)
+        }
+
+        fn directory(&self, folded: &[u8]) -> Option<&u8> {
+            self.directories.get(folded)
+        }
+
+        fn record_file(&mut self, folded: &[u8], entry: u8) {
+            self.files.record(folded, entry);
+        }
+
+        fn record_directory(&mut self, folded: &[u8], entry: u8) {
+            self.directories.record(folded, entry);
+        }
+    }
+
+    /// Up to `N` keys of up to three bytes, each with an entry, which a later entry of the same key replaces, as in a map.
+    struct Records<const N: usize> {
+        slots: [Option<(u32, u8)>; N],
+    }
+
+    impl<const N: usize> Default for Records<N> {
+        fn default() -> Self {
+            Records { slots: [None; N] }
+        }
+    }
+
+    impl<const N: usize> Records<N> {
+        /// The entry kept under `key`.
+        fn get(&self, key: &[u8]) -> Option<&u8> {
+            let key = code(key);
+            self.slots.iter().find_map(|slot| match slot {
+                Some((code, entry)) if *code == key => Some(entry),
+                _ => None,
+            })
+        }
+
+        /// Keep `entry` under `key`, in place of an earlier entry of the same key.
+        fn record(&mut self, key: &[u8], entry: u8) {
+            let key = code(key);
+            let kept = match self
+                .slots
+                .iter()
+                .position(|slot| matches!(slot, Some((code, _)) if *code == key))
+            {
+                Some(index) => Some(index),
+                None => self.slots.iter().position(Option::is_none),
+            };
+            kani::assert(kept.is_some(), "the records of a claim must fit");
+            if let Some(index) = kept {
+                self.slots[index] = Some((key, entry));
+            }
+        }
+
+        /// How many keys the records keep.
+        fn count(&self) -> usize {
+            self.slots.iter().filter(|slot| slot.is_some()).count()
+        }
+    }
+
+    /// A key of up to three bytes as one number: its length, then its bytes, a byte apiece.
+    fn code(key: &[u8]) -> u32 {
+        let mut code = key.len() as u32;
+        for byte in key {
+            code = code << 8 | u32::from(*byte);
+        }
+        code
+    }
+
     /// What claiming a second folded path after a first one found.
     #[derive(Clone, Copy)]
     struct Claim {
@@ -572,7 +788,8 @@ mod proofs {
     /// A second entry is refused exactly when its folded path collides with the first one's.
     ///
     /// Every pair of folded paths of one to four arbitrary bytes with no empty component, which nests a path one directory deep.
-    /// The maps of `FoldedPaths` are taken to hold what `claim` records for the first entry: its folded path among the files, and each of its prefixes before a `/` among the directories.
+    /// The claimed paths are taken to hold what `claim_path` records for the first entry: its folded path among the files, and each of its prefixes before a `/` among the directories.
+    /// The claim harness above proves that record for every folded path of up to three bytes.
     #[kani::proof]
     #[kani::unwind(17)]
     fn two_accepted_entries_never_collide_once_case_no_longer_counts() {

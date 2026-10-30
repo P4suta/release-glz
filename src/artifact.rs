@@ -10,7 +10,7 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 use flate2::{Compression, GzBuilder, read::GzDecoder};
 use icu_normalizer::DecomposingNormalizerBorrowed;
-use release_glz_core::{archive_path, collision, directories_above};
+use release_glz_core::{ClaimedPaths, archive_path, claim_path};
 use sha2::{Digest, Sha256};
 use tar::Archive;
 use toml_edit::{DocumentMut, value};
@@ -514,32 +514,32 @@ struct FoldedPaths {
     directories: BTreeMap<Vec<u8>, String>,
 }
 
-impl FoldedPaths {
-    /// Record a file path under its folded form, or give back the earlier entry whose folded path names the same file or directory.
-    fn claim(&mut self, folded: &str, path: &str) -> std::result::Result<(), String> {
-        let folded = folded.as_bytes();
-        if let Some(earlier) = collision(
-            folded,
-            |key| self.files.get(key),
-            |key| self.directories.get(key),
-        ) {
-            return Err(earlier.clone());
-        }
-        for directory in directories_above(folded) {
-            self.directories
-                .entry(directory.to_vec())
-                .or_insert_with(|| path.to_owned());
-        }
-        self.files.insert(folded.to_vec(), path.to_owned());
-        Ok(())
+impl ClaimedPaths for FoldedPaths {
+    type Entry = String;
+
+    fn file(&self, folded: &[u8]) -> Option<&String> {
+        self.files.get(folded)
+    }
+
+    fn directory(&self, folded: &[u8]) -> Option<&String> {
+        self.directories.get(folded)
+    }
+
+    fn record_file(&mut self, folded: &[u8], entry: String) {
+        self.files.insert(folded.to_vec(), entry);
+    }
+
+    fn record_directory(&mut self, folded: &[u8], entry: String) {
+        self.directories.insert(folded.to_vec(), entry);
     }
 }
 
 /// Record a file path of an archive, refusing it when it names the same file or directory as an earlier entry once letter case and Unicode normalization no longer count.
 fn claim_folded(folded: &mut FoldedPaths, path: &str) -> Result<()> {
-    folded.claim(&fold(path), path).map_err(|earlier| {
+    claim_path(folded, fold(path).as_bytes(), path.to_owned()).map_err(|collision| {
         anyhow::anyhow!(
-            "archive path `{path}` collides with `{earlier}` once letter case and Unicode normalization no longer count"
+            "archive path `{path}` collides with `{}` once letter case and Unicode normalization no longer count",
+            collision.earlier()
         )
     })
 }

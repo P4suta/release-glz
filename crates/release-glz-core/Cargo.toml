@@ -78,6 +78,10 @@ negative-control-first-component = []
 negative-control-keep-trailing-slashes = []
 # Taking the prefix before every byte of a path for a directory.
 negative-control-directory-at-every-byte = []
+# Accepting an archive entry without recording it.
+negative-control-forget-files = []
+# Recording a later entry for a directory that an earlier entry claimed.
+negative-control-overwrite-directory = []
 # Ordering two prereleases with the same identifiers as unequal.
 negative-control-equal-prereleases = []
 # Ordering a stable release before the prereleases of its core.
