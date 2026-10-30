@@ -1,3 +1,11 @@
 {
-  "equivalent": []
+  "equivalent": [
+    {
+      "file": "crates/release-glz-core/src/lifecycle.rs",
+      "function": "forward",
+      "original": ">",
+      "replacement": ">=",
+      "reason": "ReleaseState::can_advance_to returns before it calls forward when the two states are equal, and position gives distinct states distinct indices, so forward never compares two equal indices."
+    }
+  ]
 }

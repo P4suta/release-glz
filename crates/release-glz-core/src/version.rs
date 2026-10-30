@@ -1,7 +1,5 @@
 //! The release requirement lattice and the version arithmetic it drives.
 
-use core::fmt;
-
 /// The ordered SemVer release requirement lattice.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(
@@ -39,17 +37,6 @@ impl Bump {
 #[cfg(feature = "negative-control-join")]
 fn negative_control_join(bump: Bump, other: Bump) -> Option<Bump> {
     Some(core::cmp::min(bump, other))
-}
-
-impl fmt::Display for Bump {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(match self {
-            Self::None => "none",
-            Self::Patch => "patch",
-            Self::Minor => "minor",
-            Self::Major => "major",
-        })
-    }
 }
 
 /// The numeric part of a semantic version.

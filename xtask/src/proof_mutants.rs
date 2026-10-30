@@ -4,6 +4,7 @@
 
 use std::collections::BTreeSet;
 use std::fs;
+use std::ops::RangeInclusive;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -29,8 +30,8 @@ const EQUIVALENT: &str = "verification/equivalent-mutants.json";
 /// The committed receipt of the newest campaign.
 const RECEIPT: &str = "verification/proof-mutants.json";
 
-/// The line that opens the proofs of a module, which comes last and which the campaign never mutates.
-const PROOFS: &str = "mod proofs {";
+/// The attribute line that puts a module out of every build but Kani's.
+const KANI_ONLY: &str = "#[cfg(kani)]";
 
 /// The prefix of the functions that hold the negative controls, which only their own features compile.
 const NEGATIVE_CONTROL: &str = "negative_control_";
@@ -162,18 +163,71 @@ fn apply(text: &str, span: Span, replacement: &str) -> Result<(String, String), 
     ))
 }
 
-/// Whether the campaign mutates `listed` in `text`: never a harness and never a negative control.
+/// A top-level inline module that only Kani compiles, such as the harnesses or their symbolic inputs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct KaniModule<'a> {
+    name: &'a str,
+    /// The lines from its attribute to its closing brace, counting from one.
+    lines: RangeInclusive<usize>,
+}
+
+/// The modules of `text` that only Kani compiles, and the number of Kani-only attributes in it.
+///
+/// rustfmt closes a top-level inline module with a `}` alone at the start of a line, which is where each module ends.
+/// An attribute that the scan can't place on such a module counts as well, so a caller can refuse it.
+fn kani_modules(text: &str) -> (Vec<KaniModule<'_>>, usize) {
+    let lines = text.lines().collect::<Vec<_>>();
+    let attributes = lines.iter().filter(|line| **line == KANI_ONLY).count();
+    let mut modules = Vec::new();
+    let mut index = 0;
+    while index < lines.len() {
+        if lines[index] != KANI_ONLY {
+            index += 1;
+            continue;
+        }
+        let mut declaration = index + 1;
+        while lines
+            .get(declaration)
+            .is_some_and(|line| line.starts_with("#["))
+        {
+            declaration += 1;
+        }
+        let name = lines.get(declaration).and_then(|line| {
+            line.trim_start_matches("pub(crate) ")
+                .trim_start_matches("pub ")
+                .strip_prefix("mod ")?
+                .strip_suffix(" {")
+        });
+        let close = lines
+            .iter()
+            .skip(declaration)
+            .position(|line| *line == "}")
+            .map(|offset| declaration + offset);
+        match (name, close) {
+            (Some(name), Some(close)) => {
+                modules.push(KaniModule {
+                    name,
+                    lines: index + 1..=close + 1,
+                });
+                index = close + 1;
+            }
+            _ => index += 1,
+        }
+    }
+    (modules, attributes)
+}
+
+/// Whether the campaign mutates `listed` in `text`: never inside a module that only Kani compiles, and never a negative control.
 fn mutable(listed: &Listed, text: &str) -> bool {
-    let proofs = text
-        .lines()
-        .position(|line| line.trim_start().starts_with(PROOFS))
-        .map(|index| index + 1);
-    let in_proofs = proofs.is_some_and(|line| listed.span.start.line >= line);
+    let (modules, _) = kani_modules(text);
+    let in_kani_module = modules
+        .iter()
+        .any(|module| module.lines.contains(&listed.span.start.line));
     let in_control = listed
         .function
         .as_ref()
         .is_some_and(|function| function.function_name.contains(NEGATIVE_CONTROL));
-    !in_proofs && !in_control
+    !in_kani_module && !in_control
 }
 
 /// The filter that selects the harnesses of the module that `file` holds.
@@ -453,14 +507,20 @@ fn verify_receipt(
 mod tests {
     use std::collections::BTreeSet;
 
+    use std::fs;
+    use std::path::Path;
+
     use super::{
-        Function, Key, Listed, Outcome, Position, Receipt, Run, Span, Verdict, apply, classify,
-        module_harnesses, mutable, verify_receipt,
+        CORE, Function, KaniModule, Key, Listed, Outcome, Position, Receipt, Run, Span, Verdict,
+        apply, classify, kani_modules, module_harnesses, mutable, verify_receipt,
     };
     use crate::container::Exit;
     use crate::proof_report::{KANI_VERSION, ProofReport};
 
     const TEXT: &str = "fn decide(a: bool) -> bool {\n    a && true\n}\n\n#[cfg(kani)]\nmod proofs {\n    const N: usize = 1 + 2;\n}\n";
+
+    /// Symbolic inputs for the harnesses, ahead of a decision that the campaign mutates.
+    const SYMBOLIC: &str = "#[cfg(kani)]\n#[allow(dead_code)]\npub(crate) mod symbolic {\n    pub(crate) fn any() -> u8 {\n        1 + 2\n    }\n}\n\nfn after(a: u8) -> u8 {\n    a + 1\n}\n";
 
     fn span(start: (usize, usize), end: (usize, usize)) -> Span {
         Span {
@@ -511,6 +571,62 @@ mod tests {
             &listed(span((2, 7), (2, 9)), Some("negative_control_skip_ahead")),
             TEXT
         ));
+    }
+
+    #[test]
+    fn a_module_that_only_kani_compiles_ends_at_its_closing_brace() {
+        assert_eq!(
+            kani_modules(SYMBOLIC),
+            (
+                vec![KaniModule {
+                    name: "symbolic",
+                    lines: 1..=7,
+                }],
+                1
+            )
+        );
+        assert!(!mutable(
+            &listed(span((5, 11), (5, 12)), Some("symbolic::any")),
+            SYMBOLIC
+        ));
+        assert!(mutable(
+            &listed(span((10, 7), (10, 8)), Some("after")),
+            SYMBOLIC
+        ));
+        let item = "#[cfg(kani)]\nfn helper() {}\n";
+        assert_eq!(kani_modules(item), (Vec::new(), 1));
+    }
+
+    /// A test build never compiles a module that only Kani compiles, so cargo-mutants has to leave each of them out.
+    #[test]
+    fn the_mutation_config_leaves_out_every_module_that_only_kani_compiles() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let config = fs::read_to_string(root.join(".cargo/mutants.toml")).unwrap();
+        let mut names = BTreeSet::new();
+        for core in CORE {
+            for entry in fs::read_dir(root.join(core).join("src")).unwrap() {
+                let path = entry.unwrap().path();
+                if path.extension().is_none_or(|extension| extension != "rs") {
+                    continue;
+                }
+                let text = fs::read_to_string(&path).unwrap();
+                let (modules, attributes) = kani_modules(&text);
+                assert_eq!(
+                    modules.len(),
+                    attributes,
+                    "{} puts `#[cfg(kani)]` on something other than a top-level inline module",
+                    path.display()
+                );
+                names.extend(modules.iter().map(|module| module.name.to_owned()));
+            }
+        }
+        assert!(names.contains("proofs") && names.contains("symbolic"));
+        for name in names {
+            assert!(
+                config.contains(&format!("\"{name}::\"")),
+                ".cargo/mutants.toml leaves the Kani-only module `{name}` among the mutants of a test build"
+            );
+        }
     }
 
     #[test]

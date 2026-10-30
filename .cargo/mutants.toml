@@ -1,2 +1,3 @@
-# Kani harnesses compile only under the verifier, and negative controls only under their own features, so a test build never runs a mutant of either.
-exclude_re = ["proofs::", "negative_control_"]
+# Kani harnesses and their symbolic inputs compile only under the verifier, and negative controls only under their own features, so a test build never runs a mutant of either.
+# A test in `xtask/src/proof_mutants.rs` keeps this list equal to the modules that only Kani compiles.
+exclude_re = ["proofs::", "symbolic::", "negative_control_"]

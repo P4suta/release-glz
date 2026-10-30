@@ -445,6 +445,16 @@ mod tests {
                 "Breaking-Change: not a trailer",
                 Bump::None,
             ),
+            (
+                "docs: explain",
+                "intro\nBREAKING CHANGE: a later footer line",
+                Bump::Major,
+            ),
+            (
+                "docs: explain",
+                "see BREAKING CHANGE: mid-line",
+                Bump::None,
+            ),
         ] {
             assert_eq!(conventional_bump(subject, body), bump, "{subject} / {body}");
         }
