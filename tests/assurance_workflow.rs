@@ -474,6 +474,27 @@ fn local_tool_pins_match_the_versions_ci_installs() {
 }
 
 #[test]
+fn the_fast_gate_type_checks_the_action_and_the_release_scripts() {
+    let ci: serde_norway::Value =
+        serde_norway::from_str(&fs::read_to_string(".github/workflows/ci.yml").unwrap()).unwrap();
+    let runs = ci["jobs"]["changes"]["steps"]
+        .as_sequence()
+        .unwrap()
+        .iter()
+        .filter_map(|step| step["run"].as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        runs.contains("npm ci --ignore-scripts"),
+        "the fast gate must install the locked compiler without running package scripts"
+    );
+    assert!(
+        runs.contains("npm run typecheck"),
+        "the fast gate must type-check the Action and the release scripts"
+    );
+}
+
+#[test]
 fn every_repository_workflow_is_valid_yaml_and_includes_assurance() {
     let paths = fs::read_dir(".github/workflows")
         .unwrap()

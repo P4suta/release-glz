@@ -1,28 +1,57 @@
 #!/usr/bin/env node
+// @ts-check
 "use strict";
 
 const fs = require("node:fs");
 
 const MAX_REPORT_BYTES = 512 * 1024 * 1024;
 
+/** @typedef {{"--report": string, "--lines": number, "--branches": number}} CoverageOptions */
+
+/**
+ * @param {unknown} value
+ * @returns {value is Record<string, unknown>}
+ */
+function isRecord(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+/**
+ * The covered percentage of one total in an LLVM coverage report.
+ * @param {unknown} totals
+ * @param {"lines" | "branches"} name
+ * @returns {number}
+ */
 function metric(totals, name) {
-  const value = totals?.[name];
+  const value = isRecord(totals) ? totals[name] : undefined;
+  const count = isRecord(value) ? value.count : undefined;
+  const covered = isRecord(value) ? value.covered : undefined;
   const label = name === "branches" ? "branch" : "line";
   if (
-    !value ||
-    !Number.isSafeInteger(value.count) ||
-    !Number.isSafeInteger(value.covered) ||
-    value.count <= 0 ||
-    value.covered < 0 ||
-    value.covered > value.count
+    typeof count !== "number" ||
+    typeof covered !== "number" ||
+    !Number.isSafeInteger(count) ||
+    !Number.isSafeInteger(covered) ||
+    count <= 0 ||
+    covered < 0 ||
+    covered > count
   ) {
     throw new Error(`${label} coverage data is missing or invalid`);
   }
-  return (value.covered * 100) / value.count;
+  return (covered * 100) / count;
 }
 
+/**
+ * @param {unknown} report
+ * @param {number} minimumLines
+ * @param {number} minimumBranches
+ * @returns {{lines: number, branches: number}}
+ */
 function evaluateCoverage(report, minimumLines, minimumBranches) {
-  const totals = report?.data?.length === 1 ? report.data[0]?.totals : undefined;
+  const data = isRecord(report) ? report.data : undefined;
+  /** @type {unknown} */
+  const onlyExport = Array.isArray(data) && data.length === 1 ? data[0] : undefined;
+  const totals = isRecord(onlyExport) ? onlyExport.totals : undefined;
   if (!totals) throw new Error("unsupported LLVM coverage report shape");
   const lines = metric(totals, "lines");
   const branches = metric(totals, "branches");
@@ -35,11 +64,16 @@ function evaluateCoverage(report, minimumLines, minimumBranches) {
   return { lines, branches };
 }
 
+/**
+ * @param {string[]} argv
+ * @returns {CoverageOptions}
+ */
 function argumentsFrom(argv) {
+  /** @type {Record<string, string | undefined>} */
   const values = { "--report": "coverage.json" };
   if (argv.length % 2 !== 0) throw new Error("each coverage option requires one value");
   for (let index = 0; index < argv.length; index += 2) {
-    const option = argv[index];
+    const option = argv[index] ?? "";
     if (!["--report", "--lines", "--branches"].includes(option)) {
       throw new Error("usage: [--report FILE] --lines PERCENT --branches PERCENT");
     }
@@ -48,16 +82,28 @@ function argumentsFrom(argv) {
     }
     values[option] = argv[index + 1];
   }
-  for (const option of ["--lines", "--branches"]) {
-    const threshold = Number(values[option]);
-    if (!Number.isFinite(threshold) || threshold < 0 || threshold > 100) {
+  /**
+   * @param {"--lines" | "--branches"} option
+   * @returns {number}
+   */
+  const threshold = (option) => {
+    const value = Number(values[option]);
+    if (!Number.isFinite(value) || value < 0 || value > 100) {
       throw new Error(`${option.slice(2)} threshold must be between 0 and 100`);
     }
-    values[option] = threshold;
-  }
-  return values;
+    return value;
+  };
+  return {
+    "--report": values["--report"] ?? "coverage.json",
+    "--lines": threshold("--lines"),
+    "--branches": threshold("--branches"),
+  };
 }
 
+/**
+ * @param {string[]} argv
+ * @returns {void}
+ */
 function main(argv = process.argv.slice(2)) {
   const options = argumentsFrom(argv);
   const metadata = fs.lstatSync(options["--report"]);
@@ -80,7 +126,8 @@ if (require.main === module) {
   try {
     main();
   } catch (error) {
-    process.stderr.write(`coverage gate failed: ${error.message}\n`);
+    const message = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`coverage gate failed: ${message}\n`);
     process.exitCode = 1;
   }
 }

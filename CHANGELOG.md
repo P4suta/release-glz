@@ -114,6 +114,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Offline `verify --candidate` and `status --candidate` no longer need a manifest in the working directory, and the exit code table describes partial releases and inspection commands.
 - The Action installs release-glz on Windows.
   Its archive scripts used `[IO.Compression.ZipFile]` without loading the assembly that Windows PowerShell 5.1 needs, and the extraction passed an argument that only .NET Core accepts.
+- The Action and the release evidence scripts check the type of every JSON field they read.
+  The Action refuses a `command/v2` diagnostic without a code or a message, and a bundled checksum that isn't a string.
+  It used to print `undefined` for a missing field, and a checksum stored as a list failed later with an unrelated error.
+  The SBOM generator refuses `cargo metadata` whose package fields have another type.
 - A Unix release archive depends only on the binary inside it, as the Windows ZIP already did.
   `scripts/package-unix.js` writes one ustar entry with a fixed mode, owner, group, and time.
   It stores the binary uncompressed, so no compressor version or CPU feature changes the bytes.

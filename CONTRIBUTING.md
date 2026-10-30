@@ -45,6 +45,8 @@ mise x -- cargo fetch --locked --manifest-path fuzz/Cargo.toml
 mise x -- cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 mise x -- cargo test --workspace --all-targets --locked
 mise x -- cargo doc --workspace --no-deps --locked
+mise x -- npm ci --ignore-scripts
+mise x -- npm run typecheck
 mise x -- npm test --prefix action
 mise x -- node --test scripts/*.test.js
 mise x -- node scripts/verify-workflows.js .github/workflows
@@ -52,6 +54,10 @@ mise x -- node scripts/de-shell.js .github/workflows
 mise x -- actionlint
 jq -L .github -n -e -f .github/check-required.jq
 ```
+
+The TypeScript compiler that `package-lock.json` pins checks the Action and the release scripts in strict mode from their JSDoc types.
+Every JavaScript file starts with `// @ts-check`, and `scripts/type-contracts.test.js` refuses a named function whose JSDoc declares no return type.
+The Action itself has no dependencies, so the compiler stays a development tool of the repository.
 
 Ordinary CI uses one Linux Rust gate and always checks workflow metadata, Action behavior, and distribution evidence tools.
 Other native platforms and the minimum and configured Gleam versions run through shipping assurance.

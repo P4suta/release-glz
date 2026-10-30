@@ -1,3 +1,4 @@
+// @ts-check
 "use strict";
 
 const assert = require("node:assert/strict");
@@ -8,6 +9,8 @@ const path = require("node:path");
 const test = require("node:test");
 const zlib = require("node:zlib");
 const {
+  CommandFailure,
+  ProcessExitError,
   acquireBinary,
   expectedChecksum,
   extract,
@@ -108,8 +111,18 @@ test("accepts only command envelope schema v2 and extracts domain outputs", () =
       next_actions: [],
     }),
   );
-  assert.equal(envelope.result.state, "candidate_ready");
+  assert.equal(resultOutputs(envelope).state, "candidate_ready");
   assert.throws(() => parseCommandEnvelope('{"ok":true}'), /command\/v2/);
+  assert.throws(
+    () =>
+      parseCommandEnvelope(
+        JSON.stringify({
+          ...envelope,
+          diagnostics: [{ level: "error", message: "no code", detail: null }],
+        }),
+      ),
+    /command\/v2/,
+  );
   assert.throws(
     () =>
       parseCommandEnvelope(
@@ -157,14 +170,18 @@ test("accepts only command envelope schema v2 and extracts domain outputs", () =
 
 test("the Action metadata declares exactly the inputs it reads and the outputs it writes", () => {
   const metadata = fs.readFileSync(path.join(__dirname, "..", "action.yml"), "utf8");
+  /**
+   * @param {string} section
+   * @returns {string[]}
+   */
   const declared = (section) => {
-    const block = metadata.split(`\n${section}:\n`)[1].split(/\n(?=\S)/)[0];
-    return [...block.matchAll(/^ {2}([a-z-]+):$/gm)].map((match) => match[1]).sort();
+    const block = metadata.split(`\n${section}:\n`)[1]?.split(/\n(?=\S)/)[0] ?? "";
+    return [...block.matchAll(/^ {2}([a-z-]+):$/gm)].map((match) => match[1] ?? "").sort();
   };
   const source = fs.readFileSync(path.join(__dirname, "index.js"), "utf8");
   const read = [
     ...source.matchAll(/INPUT_([A-Z-]+)|booleanInput\(environment, "([A-Z-]+)"\)/g),
-  ].map((match) => (match[1] || match[2]).toLowerCase());
+  ].map((match) => (match[1] || match[2] || "").toLowerCase());
   assert.deepEqual([...new Set(read)].sort(), declared("inputs"));
   const written = Object.keys(resultOutputs({ result: {}, next_actions: [] }));
   assert.deepEqual(written.sort(), declared("outputs"));
@@ -276,9 +293,8 @@ test("download follows only same-origin redirects and enforces the byte limit", 
       response.writeHead(200, { "content-length": "8" }).end("12345678");
     }
   });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = await listenOnLoopback(server);
   t.after(() => server.close());
-  const { port } = server.address();
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "release-glz-download-test-"));
   const destination = path.join(directory, "file");
   await download(`http://127.0.0.1:${port}/redirect`, destination, {
@@ -319,12 +335,11 @@ test("download stops a server that trickles bytes at its total deadline", {
     sockets.add(socket);
     socket.on("close", () => sockets.delete(socket));
   });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = await listenOnLoopback(server);
   t.after(() => {
     for (const socket of sockets) socket.destroy();
     server.close();
   });
-  const { port } = server.address();
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "release-glz-deadline-test-"));
   const destination = path.join(directory, "file");
   const started = Date.now();
@@ -483,9 +498,10 @@ test("streaming subprocess execution is bounded and times out", async () => {
       },
     ),
     (error) => {
+      assert.ok(error instanceof ProcessExitError);
       assert.equal(error.exitCode, 4);
       assert.equal(
-        parseCommandEnvelope(error.stdout).diagnostics[0].code,
+        parseCommandEnvelope(error.stdout).diagnostics[0]?.code,
         "immutable_state_conflict",
       );
       return true;
@@ -616,6 +632,7 @@ test("writes multiline-safe GitHub outputs", () => {
     /^pr<<release_glz_[a-f0-9]+\nhttps:\/\/example\.test\/pr\/1\nrelease_glz_[a-f0-9]+\n$/,
   );
   const delimiters = contents.match(/release_glz_[a-f0-9]+/g);
+  assert.equal(delimiters?.length, 2);
   assert.equal(delimiters[0], delimiters[1]);
 });
 
@@ -666,7 +683,8 @@ test("Action pauses workflow commands while release-glz output reaches the log",
     );
     assert.equal(code, 4);
     const lines = logged.trimEnd().split("\n");
-    const [, token] = lines[0].match(/^::stop-commands::([a-f0-9]{32})$/);
+    const token = lines[0]?.match(/^::stop-commands::([a-f0-9]{32})$/)?.[1];
+    assert.ok(token !== undefined, "the Action didn't pause workflow commands first");
     assert.equal(lines.at(-1), `::${token}::`);
     assert.deepEqual(
       lines.filter((line) => line.startsWith("::error::")),
@@ -734,8 +752,9 @@ test("Action preserves a nonzero command envelope, diagnostics, argv, and exit c
       async () => ({ binary, cleanup: () => {} }),
     ),
     (error) => {
+      assert.ok(error instanceof CommandFailure);
       assert.equal(error.exitCode, 4);
-      assert.equal(error.envelope.diagnostics[0].code, "immutable_state_conflict");
+      assert.equal(error.envelope.diagnostics[0]?.code, "immutable_state_conflict");
       assert.match(error.message, /sealed bytes differ/);
       assert.match(error.message, /next:/);
       return true;
@@ -747,6 +766,23 @@ test("Action preserves a nonzero command envelope, diagnostics, argv, and exit c
   assert.match(outputs, /path with space/);
 });
 
+/**
+ * Start `server` on a loopback port and return the port.
+ * @param {http.Server} server
+ * @returns {Promise<number>}
+ */
+async function listenOnLoopback(server) {
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(undefined)));
+  const address = server.address();
+  assert.ok(address !== null && typeof address === "object", "the server has no TCP address");
+  return address.port;
+}
+
+/**
+ * A gzip-compressed ustar archive of `entries`, each a regular file.
+ * @param {Array<{path: string, body: Buffer}>} entries
+ * @returns {Buffer}
+ */
 function tarGz(entries) {
   const chunks = [];
   for (const entry of entries) {

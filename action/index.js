@@ -1,3 +1,4 @@
+// @ts-check
 "use strict";
 
 const crypto = require("node:crypto");
@@ -91,7 +92,21 @@ const SUPPORTED_ARCHIVES = Object.freeze([
   "release-glz-aarch64-pc-windows-msvc.zip",
 ]);
 
+/** @typedef {"tar.gz" | "zip"} ArchiveExtension */
+
+/**
+ * Where the Action writes text or relayed bytes, such as `process.stdout`.
+ * @typedef {{write(chunk: string | Uint8Array): unknown}} OutputSink
+ */
+
+/**
+ * The release target and archive format for a runner platform.
+ * @param {string} platform
+ * @param {string} arch
+ * @returns {[string, ArchiveExtension]}
+ */
 function targetFor(platform = process.platform, arch = process.arch) {
+  /** @type {Record<string, [string, ArchiveExtension]>} */
   const targets = {
     "linux:x64": ["x86_64-unknown-linux-musl", "tar.gz"],
     "linux:arm64": ["aarch64-unknown-linux-musl", "tar.gz"],
@@ -105,6 +120,13 @@ function targetFor(platform = process.platform, arch = process.arch) {
   return target;
 }
 
+/**
+ * The `vX.Y.Z` release to install: the input, an exact Action ref, or the bundled version.
+ * @param {string | undefined} input
+ * @param {string | undefined} actionRef
+ * @param {string} bundledVersion
+ * @returns {string}
+ */
 function normalizedVersion(input, actionRef, bundledVersion = require("./package.json").version) {
   const pattern = /^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
   const exactRef = pattern.test(actionRef || "") ? actionRef : "";
@@ -117,48 +139,85 @@ function normalizedVersion(input, actionRef, bundledVersion = require("./package
   return value.startsWith("v") ? value : `v${value}`;
 }
 
+/**
+ * @param {string} file
+ * @returns {string}
+ */
 function sha256(file) {
   return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
 }
 
+/**
+ * The lowercase digest that a `SHA256SUMS` listing records for `filename`.
+ * @param {string} checksums
+ * @param {string} filename
+ * @returns {string}
+ */
 function expectedChecksum(checksums, filename) {
   for (const line of checksums.split(/\r?\n/)) {
-    const match = line.trim().match(/^([a-fA-F0-9]{64})\s+\*?(.+)$/);
-    if (match && match[2] === filename) return match[1].toLowerCase();
+    const [, digest, name] = line.trim().match(/^([a-fA-F0-9]{64})\s+\*?(.+)$/) ?? [];
+    if (digest !== undefined && name === filename) return digest.toLowerCase();
   }
   throw new Error(`SHA256SUMS does not contain ${filename}`);
 }
 
+/**
+ * @param {string} file
+ * @param {string | undefined} expected
+ * @returns {void}
+ */
 function verifyChecksum(file, expected) {
-  if (!SHA256_HEX_ANY_CASE.test(expected || "")) {
+  const digest = expected || "";
+  if (!SHA256_HEX_ANY_CASE.test(digest)) {
     throw new Error("Expected checksum must be a full SHA-256 digest");
   }
   const actual = sha256(file);
   const actualBytes = Buffer.from(actual, "hex");
-  const expectedBytes = Buffer.from(expected, "hex");
+  const expectedBytes = Buffer.from(digest, "hex");
   if (!crypto.timingSafeEqual(actualBytes, expectedBytes)) {
     throw new Error(
-      `Checksum mismatch for ${path.basename(file)}: expected ${expected}, got ${actual}`,
+      `Checksum mismatch for ${path.basename(file)}: expected ${digest}, got ${actual}`,
     );
   }
 }
 
+/**
+ * @param {unknown} value
+ * @returns {value is Record<string, unknown>}
+ */
+function isRecord(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+/**
+ * @param {unknown} error
+ * @returns {string}
+ */
+function errorMessage(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * The digest that the bundled checksum manifest records for one archive of `version`.
+ * @param {unknown} source
+ * @param {string} version
+ * @param {string} filename
+ * @returns {string}
+ */
 function bundledChecksum(source, version, filename) {
   if (typeof source !== "string" || Buffer.byteLength(source) > CHECKSUM_LIST_LIMIT) {
     throw new Error("Bundled checksum manifest exceeds its size limit");
   }
+  /** @type {unknown} */
   let manifest;
   try {
     manifest = JSON.parse(source);
   } catch (error) {
-    throw new Error(`Bundled checksum manifest is invalid JSON: ${error.message}`);
+    throw new Error(`Bundled checksum manifest is invalid JSON: ${errorMessage(error)}`);
   }
-  const keys =
-    manifest && typeof manifest === "object" && !Array.isArray(manifest)
-      ? Object.keys(manifest).sort()
-      : [];
   if (
-    keys.join(",") !== "artifacts,schema,version" ||
+    !isRecord(manifest) ||
+    Object.keys(manifest).sort().join(",") !== "artifacts,schema,version" ||
     manifest.schema !== "release-glz-action-checksums/v1"
   ) {
     throw new Error("Bundled checksum manifest has an unsupported schema");
@@ -168,14 +227,11 @@ function bundledChecksum(source, version, filename) {
       `Bundled checksum manifest version ${manifest.version} does not match ${version}`,
     );
   }
-  if (
-    !manifest.artifacts ||
-    typeof manifest.artifacts !== "object" ||
-    Array.isArray(manifest.artifacts)
-  ) {
+  const artifacts = manifest.artifacts;
+  if (!isRecord(artifacts)) {
     throw new Error("Bundled checksum manifest artifacts are invalid");
   }
-  const names = Object.keys(manifest.artifacts).sort();
+  const names = Object.keys(artifacts).sort();
   const expectedNames = [...SUPPORTED_ARCHIVES].sort();
   if (
     names.length !== expectedNames.length ||
@@ -183,17 +239,26 @@ function bundledChecksum(source, version, filename) {
   ) {
     throw new Error("Bundled checksum manifest must cover every supported platform exactly once");
   }
-  for (const [name, digest] of Object.entries(manifest.artifacts)) {
-    if (!SHA256_HEX.test(digest) || SHA256_HEX_ZEROED.test(digest)) {
+  for (const [name, digest] of Object.entries(artifacts)) {
+    if (typeof digest !== "string" || !SHA256_HEX.test(digest) || SHA256_HEX_ZEROED.test(digest)) {
       throw new Error(`Bundled checksum for ${name} is not a lowercase SHA-256 digest`);
     }
   }
-  if (!SUPPORTED_ARCHIVES.includes(filename)) {
+  const digest = artifacts[filename];
+  if (!SUPPORTED_ARCHIVES.includes(filename) || typeof digest !== "string") {
     throw new Error(`Archive ${filename} is not a supported release-glz platform`);
   }
-  return manifest.artifacts[filename];
+  return digest;
 }
 
+/**
+ * Refuse a provenance file unless it has the expected digest and binds `filename` to `archiveDigest`.
+ * @param {string} file
+ * @param {string} expectedDigest
+ * @param {string} filename
+ * @param {string} archiveDigest
+ * @returns {void}
+ */
 function verifyProvenance(file, expectedDigest, filename, archiveDigest) {
   const metadata = fs.lstatSync(file);
   if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size > CHECKSUM_MANIFEST_LIMIT) {
@@ -204,27 +269,39 @@ function verifyProvenance(file, expectedDigest, filename, archiveDigest) {
     .readFileSync(file, "utf8")
     .split(/\r?\n/)
     .filter((line) => line.trim());
-  if (lines.length !== 1) throw new Error("Provenance must contain exactly one JSON statement");
+  const [line] = lines;
+  if (lines.length !== 1 || line === undefined) {
+    throw new Error("Provenance must contain exactly one JSON statement");
+  }
+  /** @type {unknown} */
   let statement;
   try {
-    statement = JSON.parse(lines[0]);
+    statement = JSON.parse(line);
   } catch (error) {
-    throw new Error(`Provenance is invalid JSON: ${error.message}`);
+    throw new Error(`Provenance is invalid JSON: ${errorMessage(error)}`);
   }
+  const subjects = isRecord(statement) ? statement.subject : undefined;
+  /** @type {unknown} */
+  const subject = Array.isArray(subjects) && subjects.length === 1 ? subjects[0] : undefined;
+  const subjectDigest = isRecord(subject) && isRecord(subject.digest) ? subject.digest : undefined;
   if (
+    !isRecord(statement) ||
     statement._type !== "https://in-toto.io/Statement/v1" ||
     statement.predicateType !== "https://slsa.dev/provenance/v1" ||
     !statement.predicate ||
     typeof statement.predicate !== "object" ||
-    !Array.isArray(statement.subject) ||
-    statement.subject.length !== 1 ||
-    statement.subject[0]?.name !== filename ||
-    statement.subject[0]?.digest?.sha256 !== archiveDigest
+    !isRecord(subject) ||
+    subject.name !== filename ||
+    subjectDigest?.sha256 !== archiveDigest
   ) {
     throw new Error("Provenance subject does not bind the selected release archive");
   }
 }
 
+/**
+ * @param {string} hostname
+ * @returns {boolean}
+ */
 function isLoopback(hostname) {
   return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
 }
@@ -234,6 +311,12 @@ const GITHUB_RELEASE_ASSET_HOSTS = new Set([
   "release-assets.githubusercontent.com",
 ]);
 
+/**
+ * Whether a download that started at `initial` may follow a redirect to `target`.
+ * @param {string | URL} initial
+ * @param {string | URL} target
+ * @returns {boolean}
+ */
 function isAllowedDownloadRedirect(initial, target) {
   const initialUrl = initial instanceof URL ? initial : new URL(initial);
   const targetUrl = target instanceof URL ? target : new URL(target);
@@ -248,6 +331,24 @@ function isAllowedDownloadRedirect(initial, target) {
   );
 }
 
+/**
+ * @typedef {object} DownloadOptions
+ * @property {number} [maxBytes] Bytes the response body may hold.
+ * @property {number} [timeoutMs] Milliseconds the connection may stay silent.
+ * @property {number} [totalTimeoutMs] Milliseconds the download may take across its redirects.
+ * @property {number} [deadline] Epoch milliseconds the download has to finish by.
+ * @property {boolean} [allowHttpLoopback] Whether a loopback URL may use plain HTTP.
+ * @property {number} [redirects] Redirects already followed.
+ * @property {string | URL} [initialUrl] URL the download started from.
+ */
+
+/**
+ * Download `url` into a new file at `destination`, following only redirects that stay at the origin or move to GitHub's release asset hosts.
+ * @param {string} url
+ * @param {string} destination
+ * @param {DownloadOptions} options
+ * @returns {Promise<void>}
+ */
 function download(url, destination, options = {}) {
   const maxBytes = options.maxBytes ?? DOWNLOAD_LIMIT;
   const timeoutMs = options.timeoutMs ?? DOWNLOAD_TIMEOUT_MS;
@@ -275,7 +376,9 @@ function download(url, destination, options = {}) {
 
   return new Promise((resolve, reject) => {
     let settled = false;
+    /** @type {NodeJS.Timeout | undefined} */
     let deadlineTimer;
+    /** @param {Error} error */
     const fail = (error) => {
       if (settled) return;
       settled = true;
@@ -283,8 +386,10 @@ function download(url, destination, options = {}) {
       try {
         fs.unlinkSync(destination);
       } catch (unlinkError) {
-        if (unlinkError.code !== "ENOENT")
-          error.message += `; cleanup failed: ${unlinkError.message}`;
+        if (
+          !(unlinkError instanceof Error && "code" in unlinkError && unlinkError.code === "ENOENT")
+        )
+          error.message += `; cleanup failed: ${errorMessage(unlinkError)}`;
       }
       reject(error);
     };
@@ -295,9 +400,10 @@ function download(url, destination, options = {}) {
         timeout: timeoutMs,
       },
       (response) => {
+        const status = response.statusCode ?? 0;
         if (
-          response.statusCode >= HTTP_REDIRECT_MIN &&
-          response.statusCode < HTTP_REDIRECT_MAX &&
+          status >= HTTP_REDIRECT_MIN &&
+          status < HTTP_REDIRECT_MAX &&
           response.headers.location
         ) {
           response.resume();
@@ -321,7 +427,7 @@ function download(url, destination, options = {}) {
           }).then(resolve, reject);
           return;
         }
-        if (response.statusCode !== HTTP_OK) {
+        if (status !== HTTP_OK) {
           response.resume();
           fail(new Error(`Download failed with HTTP ${response.statusCode}: ${url}`));
           return;
@@ -335,7 +441,7 @@ function download(url, destination, options = {}) {
         let received = 0;
         const output = fs.createWriteStream(destination, { flags: "wx", mode: 0o600 });
         output.on("error", fail);
-        response.on("data", (chunk) => {
+        response.on("data", (/** @type {Buffer} */ chunk) => {
           received += chunk.length;
           if (received > maxBytes) {
             response.destroy(new Error(`Download exceeds the ${maxBytes} byte limit: ${url}`));
@@ -365,6 +471,26 @@ function download(url, destination, options = {}) {
   });
 }
 
+/**
+ * One entry of an archive inventory.
+ * @typedef {object} ArchiveEntry
+ * @property {string} path Path inside the archive, with `/` separators.
+ * @property {string} kind `file` or `directory` for an entry this Action extracts.
+ * @property {number} size Bytes the entry expands to.
+ */
+
+/**
+ * @typedef {object} ArchiveLimits
+ * @property {number} [maxEntries] Entries the archive may hold.
+ * @property {number} [maxBytes] Bytes its entries may expand to in total.
+ */
+
+/**
+ * Refuse an inventory with an unsafe path, an entry that isn't a file or directory, a duplicate, or one beyond the limits.
+ * @param {ArchiveEntry[]} entries
+ * @param {ArchiveLimits} limits
+ * @returns {ArchiveEntry[]}
+ */
 function validateArchiveInventory(entries, limits = {}) {
   const maxEntries = limits.maxEntries ?? ARCHIVE_ENTRY_LIMIT;
   const maxBytes = limits.maxBytes ?? DOWNLOAD_LIMIT;
@@ -398,6 +524,12 @@ function validateArchiveInventory(entries, limits = {}) {
   return entries;
 }
 
+/**
+ * Signal a child and, on Unix, its process group.
+ * @param {import("node:child_process").ChildProcess} child
+ * @param {boolean} force
+ * @returns {void}
+ */
 function terminateProcess(child, force = false) {
   if (!child || child.exitCode !== null) return;
   const signal = force ? "SIGKILL" : "SIGTERM";
@@ -422,6 +554,43 @@ function terminateProcess(child, force = false) {
   }
 }
 
+/**
+ * @typedef {object} ProcessOptions
+ * @property {number} [timeoutMs] Milliseconds the child may run.
+ * @property {number} [terminateGraceMs] Milliseconds a terminated child has before it is killed.
+ * @property {number} [maxOutputBytes] Bytes each output stream may hold.
+ * @property {string} [cwd]
+ * @property {NodeJS.ProcessEnv} [env]
+ * @property {AbortSignal} [signal] Cancels the child.
+ * @property {boolean} [streamStderr] Whether to relay the child's stderr as it arrives.
+ * @property {OutputSink} [stderr] Stream that relays the child's stderr.
+ */
+
+/** @typedef {{stdout: string, stderr: string, code: number | null}} ProcessResult */
+
+/** A child that exited with a status other than 0, with what it printed. */
+class ProcessExitError extends Error {
+  /**
+   * @param {string} message
+   * @param {number} exitCode
+   * @param {string} stdout
+   * @param {string} stderr
+   */
+  constructor(message, exitCode, stdout, stderr) {
+    super(message);
+    this.exitCode = exitCode;
+    this.stdout = stdout;
+    this.stderr = stderr;
+  }
+}
+
+/**
+ * Run `executable` without a shell, bounded in time and output, and reject unless it exits with status 0.
+ * @param {string} executable
+ * @param {string[]} args
+ * @param {ProcessOptions} options
+ * @returns {Promise<ProcessResult>}
+ */
 function runProcess(executable, args, options = {}) {
   const timeoutMs = options.timeoutMs ?? PROCESS_TIMEOUT_MS;
   const terminateGraceMs = options.terminateGraceMs ?? TERMINATE_GRACE_MS;
@@ -435,16 +604,27 @@ function runProcess(executable, args, options = {}) {
     stdio: ["ignore", "pipe", "pipe"],
   });
   return new Promise((resolve, reject) => {
+    /** @type {Buffer} */
     let stdout = Buffer.alloc(0);
+    /** @type {Buffer} */
     let stderr = Buffer.alloc(0);
+    /** @type {Error | undefined} */
     let failure;
+    /** @type {NodeJS.Timeout | undefined} */
     let forceTimer;
+    /** @param {Error} error */
     const stop = (error) => {
       if (failure) return;
       failure = error;
       terminateProcess(child, false);
       forceTimer = setTimeout(() => terminateProcess(child, true), terminateGraceMs);
     };
+    /**
+     * @param {string} name
+     * @param {Buffer} current
+     * @param {Buffer} chunk
+     * @returns {Buffer}
+     */
     const collect = (name, current, chunk) => {
       if (current.length + chunk.length > maxOutputBytes) {
         stop(new Error(`${name} exceeded the subprocess output limit`));
@@ -452,10 +632,10 @@ function runProcess(executable, args, options = {}) {
       }
       return Buffer.concat([current, chunk]);
     };
-    child.stdout.on("data", (chunk) => {
+    child.stdout.on("data", (/** @type {Buffer} */ chunk) => {
       stdout = collect("stdout", stdout, chunk);
     });
-    child.stderr.on("data", (chunk) => {
+    child.stderr.on("data", (/** @type {Buffer} */ chunk) => {
       stderr = collect("stderr", stderr, chunk);
       if (options.streamStderr !== false) (options.stderr ?? process.stderr).write(chunk);
     });
@@ -475,17 +655,24 @@ function runProcess(executable, args, options = {}) {
       if (options.signal) options.signal.removeEventListener("abort", abort);
       if (failure) return reject(failure);
       if (code !== 0) {
-        const error = new Error(`release-glz exited with status ${code ?? signal}`);
-        error.exitCode = Number.isInteger(code) ? code : 1;
-        error.stdout = stdout.toString("utf8");
-        error.stderr = stderr.toString("utf8");
-        return reject(error);
+        return reject(
+          new ProcessExitError(
+            `release-glz exited with status ${code ?? signal}`,
+            typeof code === "number" ? code : 1,
+            stdout.toString("utf8"),
+            stderr.toString("utf8"),
+          ),
+        );
       }
       resolve({ stdout: stdout.toString("utf8"), stderr: stderr.toString("utf8"), code });
     });
   });
 }
 
+/**
+ * @param {Buffer} field
+ * @returns {string}
+ */
 function tarString(field) {
   const end = field.indexOf(0);
   const bytes = end === -1 ? field : field.subarray(0, end);
@@ -494,8 +681,13 @@ function tarString(field) {
   return value;
 }
 
+/**
+ * @param {Buffer} field
+ * @param {string} description
+ * @returns {number}
+ */
 function tarOctal(field, description) {
-  if (field[0] & TAR_BASE256_FLAG)
+  if ((field[0] ?? 0) & TAR_BASE256_FLAG)
     throw new Error(`Tar ${description} uses unsupported base-256 encoding`);
   const value = field.toString("ascii").replace(/\0.*$/, "").trim();
   if (!value || !/^[0-7]+$/.test(value)) throw new Error(`Tar ${description} is not valid octal`);
@@ -505,15 +697,19 @@ function tarOctal(field, description) {
   return parsed;
 }
 
+/**
+ * @param {Buffer} header
+ * @returns {ArchiveEntry}
+ */
 function parseTarHeader(header) {
   const expectedChecksum = tarOctal(
     header.subarray(TAR_CHECKSUM_START, TAR_CHECKSUM_END),
     "checksum",
   );
   let actualChecksum = 0;
-  for (let index = 0; index < header.length; index += 1) {
+  for (const [index, byte] of header.entries()) {
     actualChecksum +=
-      index >= TAR_CHECKSUM_START && index < TAR_CHECKSUM_END ? TAR_CHECKSUM_BLANK : header[index];
+      index >= TAR_CHECKSUM_START && index < TAR_CHECKSUM_END ? TAR_CHECKSUM_BLANK : byte;
   }
   if (actualChecksum !== expectedChecksum) throw new Error("Tar header checksum mismatch");
   const name = tarString(header.subarray(0, TAR_NAME_END));
@@ -521,6 +717,7 @@ function parseTarHeader(header) {
   const prefix = prefixBytes.every((byte) => byte === 0) ? "" : tarString(prefixBytes);
   const entryPath = `${prefix ? `${prefix}/` : ""}${name}`.replace(/\/+$/, "");
   const type = header[TAR_TYPE_OFFSET];
+  /** @type {string} */
   let kind;
   if (type === 0 || type === TAR_TYPE_FILE_ALTERNATE) kind = "file";
   else if (type === TAR_TYPE_DIRECTORY) kind = "directory";
@@ -530,6 +727,12 @@ function parseTarHeader(header) {
   return { path: entryPath, kind, size };
 }
 
+/**
+ * The inventory of a gzip-compressed tar, read from its headers within the limits.
+ * @param {string} archive
+ * @param {ArchiveLimits} limits
+ * @returns {Promise<ArchiveEntry[]>}
+ */
 async function inventoryTarGz(archive, limits = {}) {
   const maxEntries = limits.maxEntries ?? ARCHIVE_ENTRY_LIMIT;
   const maxBytes = limits.maxBytes ?? DOWNLOAD_LIMIT;
@@ -537,7 +740,9 @@ async function inventoryTarGz(archive, limits = {}) {
   const input = fs.createReadStream(archive);
   const gunzip = zlib.createGunzip();
   input.pipe(gunzip);
+  /** @type {ArchiveEntry[]} */
   const entries = [];
+  /** @type {Buffer} */
   let buffer = Buffer.alloc(0);
   let contentRemaining = 0;
   let paddingRemaining = 0;
@@ -545,7 +750,9 @@ async function inventoryTarGz(archive, limits = {}) {
   let ended = false;
   let streamBytes = 0;
   try {
-    for await (const chunk of gunzip) {
+    for await (const decompressed of gunzip) {
+      /** @type {Buffer} */
+      const chunk = decompressed;
       streamBytes += chunk.length;
       if (streamBytes > maxStreamBytes)
         throw new Error("Tar stream exceeds its bounded expansion size");
@@ -596,6 +803,12 @@ async function inventoryTarGz(archive, limits = {}) {
   return validateArchiveInventory(entries, { maxEntries, maxBytes });
 }
 
+/**
+ * Whether a ZIP entry is a file, a directory, or something this Action refuses, from its Unix mode and Windows attributes.
+ * @param {string} entryPath
+ * @param {unknown} externalAttributes
+ * @returns {"file" | "directory" | "unsupported"}
+ */
 function zipEntryKind(entryPath, externalAttributes) {
   const attributes = Number(externalAttributes) >>> 0;
   const unixType = (attributes >>> 16) & 0o170000;
@@ -611,6 +824,7 @@ function zipEntryKind(entryPath, externalAttributes) {
 // Windows PowerShell runs on .NET Framework, which loads ZipFile only on request and has no overwrite overload.
 const WINDOWS_ZIP_ASSEMBLY = "Add-Type -AssemblyName System.IO.Compression.FileSystem;";
 
+/** @returns {string} */
 function windowsZipInventoryScript() {
   return [
     WINDOWS_ZIP_ASSEMBLY,
@@ -619,6 +833,7 @@ function windowsZipInventoryScript() {
   ].join(" ");
 }
 
+/** @returns {string} */
 function windowsZipExtractScript() {
   return [
     WINDOWS_ZIP_ASSEMBLY,
@@ -626,6 +841,13 @@ function windowsZipExtractScript() {
   ].join(" ");
 }
 
+/**
+ * Extract a release archive into a new directory after checking its inventory.
+ * @param {string} archive
+ * @param {ArchiveExtension} extension
+ * @param {string} destination
+ * @returns {Promise<void>}
+ */
 async function extract(archive, extension, destination) {
   fs.mkdirSync(destination, { recursive: false, mode: 0o700 });
   if (extension === "zip") {
@@ -643,7 +865,7 @@ async function extract(archive, extension, destination) {
       .split(/\r?\n/)
       .filter(Boolean)
       .map((line) => {
-        const [entryPath, size, externalAttributes] = line.split("\t");
+        const [entryPath = "", size, externalAttributes] = line.split("\t");
         return {
           path: entryPath.replace(/\/$/, ""),
           kind: zipEntryKind(entryPath, externalAttributes),
@@ -671,6 +893,13 @@ async function extract(archive, extension, destination) {
   }
 }
 
+/**
+ * Append one step output under a random delimiter, so its value can't end the output early.
+ * @param {string} name
+ * @param {string | undefined} value
+ * @param {string | undefined} outputFile
+ * @returns {void}
+ */
 function setOutput(name, value, outputFile = process.env.GITHUB_OUTPUT) {
   if (!outputFile) return;
   const delimiter = `release_glz_${crypto.randomBytes(12).toString("hex")}`;
@@ -679,6 +908,11 @@ function setOutput(name, value, outputFile = process.env.GITHUB_OUTPUT) {
   });
 }
 
+/**
+ * @param {NodeJS.ProcessEnv} environment
+ * @param {string} name
+ * @returns {boolean}
+ */
 function booleanInput(environment, name) {
   const key = `INPUT_${name.toUpperCase()}`;
   const value = (environment[key] || "false").toLowerCase();
@@ -688,8 +922,14 @@ function booleanInput(environment, name) {
   return value === "true";
 }
 
+/**
+ * The release-glz arguments for `command`, refusing an input that the command doesn't take.
+ * @param {string | undefined} command
+ * @param {NodeJS.ProcessEnv} environment
+ * @returns {string[]}
+ */
 function buildCommandArgs(command, environment = process.env) {
-  if (!SUPPORTED_COMMANDS.has(command)) {
+  if (command === undefined || !SUPPORTED_COMMANDS.has(command)) {
     throw new Error(
       `command is required and must be one of: ${[...SUPPORTED_COMMANDS].join(", ")}`,
     );
@@ -737,7 +977,7 @@ function buildCommandArgs(command, environment = process.env) {
   } else if (command === "release-pr" && planFile) {
     args.push("--plan", planFile);
   } else if (command === "rehearse") {
-    if (!GIT_OBJECT_HEX.test(sourceRef || "")) {
+    if (sourceRef === undefined || !GIT_OBJECT_HEX.test(sourceRef)) {
       throw new Error("rehearse requires source-ref to be a full lowercase commit SHA");
     }
     if (!candidate) throw new Error("rehearse requires the candidate output directory input");
@@ -760,15 +1000,83 @@ function buildCommandArgs(command, environment = process.env) {
   return args;
 }
 
+/**
+ * One diagnostic of a `command/v2` result, with the fields the Action reads.
+ * @typedef {{code: string, message: string} & Record<string, unknown>} Diagnostic
+ */
+
+/**
+ * One next action of a `command/v2` result, with the fields the Action reads.
+ * @typedef {{command: string, argv: string[]} & Record<string, unknown>} NextAction
+ */
+
+/**
+ * A `command/v2` result, typed as far as the Action reads it.
+ * @typedef {object} CommandEnvelopeFields
+ * @property {"command/v2"} schema
+ * @property {boolean} ok
+ * @property {string} command
+ * @property {unknown} [result]
+ * @property {Diagnostic[]} diagnostics
+ * @property {NextAction[]} next_actions
+ */
+
+/** @typedef {CommandEnvelopeFields & Record<string, unknown>} CommandEnvelope */
+
+/**
+ * @param {unknown} value
+ * @returns {value is Diagnostic}
+ */
+function isDiagnostic(value) {
+  return isRecord(value) && typeof value.code === "string" && typeof value.message === "string";
+}
+
+/**
+ * @param {unknown} value
+ * @returns {value is NextAction}
+ */
+function isNextAction(value) {
+  return (
+    isRecord(value) &&
+    typeof value.command === "string" &&
+    Array.isArray(value.argv) &&
+    value.argv.every((argument) => typeof argument === "string")
+  );
+}
+
+/**
+ * @param {unknown} value
+ * @returns {value is CommandEnvelope}
+ */
+function isCommandEnvelope(value) {
+  return (
+    isRecord(value) &&
+    value.schema === "command/v2" &&
+    typeof value.ok === "boolean" &&
+    typeof value.command === "string" &&
+    Array.isArray(value.diagnostics) &&
+    value.diagnostics.every(isDiagnostic) &&
+    Array.isArray(value.next_actions) &&
+    value.next_actions.every(isNextAction)
+  );
+}
+
+/**
+ * The `command/v2` result that release-glz printed.
+ * @param {string} stdout
+ * @returns {CommandEnvelope}
+ */
 function parseCommandEnvelope(stdout) {
+  /** @type {unknown} */
   let value;
   try {
     value = JSON.parse(stdout.trim());
   } catch (error) {
-    throw new Error(`release-glz returned invalid JSON: ${error.message}`);
+    throw new Error(`release-glz returned invalid JSON: ${errorMessage(error)}`);
   }
   if (
-    value?.schema !== "command/v2" ||
+    !isRecord(value) ||
+    value.schema !== "command/v2" ||
     typeof value.ok !== "boolean" ||
     typeof value.command !== "string" ||
     !Array.isArray(value.diagnostics) ||
@@ -776,38 +1084,59 @@ function parseCommandEnvelope(stdout) {
   ) {
     throw new Error("release-glz output is not command/v2");
   }
-  for (const action of value.next_actions) {
-    if (
-      !action ||
-      typeof action.command !== "string" ||
-      !Array.isArray(action.argv) ||
-      action.argv.some((argument) => typeof argument !== "string")
-    ) {
-      throw new Error("release-glz next action does not contain canonical argv");
-    }
+  if (!value.next_actions.every(isNextAction)) {
+    throw new Error("release-glz next action does not contain canonical argv");
+  }
+  // What remains is a diagnostic without a code or a message.
+  if (!isCommandEnvelope(value)) {
+    throw new Error("release-glz output is not command/v2");
   }
   return value;
 }
 
+/**
+ * The first argument that is a non-empty string, or an empty string.
+ * @param {...unknown} values
+ * @returns {string}
+ */
+function firstText(...values) {
+  for (const value of values) {
+    if (typeof value === "string" && value) return value;
+  }
+  return "";
+}
+
+/**
+ * The step outputs that a command result sets.
+ * @param {{result?: unknown, next_actions: NextAction[]} & Record<string, unknown>} envelope
+ * @returns {Record<string, string>}
+ */
 function resultOutputs(envelope) {
-  const result = envelope.result || {};
-  const candidate = result.candidate || {};
+  const result = isRecord(envelope.result) ? envelope.result : {};
+  const candidate = isRecord(result.candidate) ? result.candidate : {};
   return {
-    state: result.state || candidate.state || "",
+    state: firstText(result.state, candidate.state),
     "release-required": String(Boolean(result.release_required)),
-    version: result.version || candidate.version || "",
-    "intent-digest": result.intent_digest || candidate.intent_digest || "",
-    "candidate-digest": result.candidate_digest || candidate.candidate_digest || "",
-    "pr-url": result.pr_url || "",
-    "release-pr-head": result.release_pr_head || "",
-    "intent-binding": result.intent_binding || "",
-    "hex-url": result.hex_url || "",
-    "github-release-url": result.github_release_url || "",
+    version: firstText(result.version, candidate.version),
+    "intent-digest": firstText(result.intent_digest, candidate.intent_digest),
+    "candidate-digest": firstText(result.candidate_digest, candidate.candidate_digest),
+    "pr-url": firstText(result.pr_url),
+    "release-pr-head": firstText(result.release_pr_head),
+    "intent-binding": firstText(result.intent_binding),
+    "hex-url": firstText(result.hex_url),
+    "github-release-url": firstText(result.github_release_url),
     "next-action": envelope.next_actions[0]?.command || "",
     "next-action-argv": JSON.stringify(envelope.next_actions[0]?.argv || []),
   };
 }
 
+/**
+ * Set the step outputs of a command result and print it.
+ * @param {CommandEnvelope} envelope
+ * @param {NodeJS.ProcessEnv} environment
+ * @param {OutputSink} stdout
+ * @returns {void}
+ */
 function emitEnvelope(envelope, environment, stdout = process.stdout) {
   for (const [name, value] of Object.entries(resultOutputs(envelope))) {
     setOutput(name, value, environment.GITHUB_OUTPUT);
@@ -815,6 +1144,17 @@ function emitEnvelope(envelope, environment, stdout = process.stdout) {
   stdout.write(`${JSON.stringify(envelope)}\n`);
 }
 
+/**
+ * @typedef {object} AcquiredBinary
+ * @property {string} binary Path of the verified executable.
+ * @property {() => void} cleanup Removes the download directory.
+ */
+
+/**
+ * Download, verify, and extract the release-glz binary for this runner.
+ * @param {NodeJS.ProcessEnv} environment
+ * @returns {Promise<AcquiredBinary>}
+ */
 async function acquireBinary(environment = process.env) {
   const [target, extension] = targetFor();
   const inputVersion = environment.INPUT_VERSION || "";
@@ -836,7 +1176,7 @@ async function acquireBinary(environment = process.env) {
     const archive = path.join(temporary, filename);
     let expected = environment["INPUT_BINARY-CHECKSUM"] || "";
     if (inputVersion) {
-      const provenanceExpected = environment.INPUT_PROVENANCE;
+      const provenanceExpected = environment.INPUT_PROVENANCE ?? "";
       if (!SHA256_HEX.test(expected) || !SHA256_HEX.test(provenanceExpected)) {
         throw new Error(
           "Explicit override checksum and provenance must be lowercase SHA-256 digests",
@@ -874,6 +1214,28 @@ async function acquireBinary(environment = process.env) {
   }
 }
 
+/** A release-glz command that failed, with the result it printed and its exit status. */
+class CommandFailure extends Error {
+  /**
+   * @param {string} message
+   * @param {number | undefined} exitCode
+   * @param {CommandEnvelope} envelope
+   */
+  constructor(message, exitCode, envelope) {
+    super(message);
+    this.exitCode = exitCode;
+    this.envelope = envelope;
+  }
+}
+
+/**
+ * Run the release-glz command that the inputs name and relay its result as step outputs.
+ * @param {NodeJS.ProcessEnv} environment
+ * @param {OutputSink} stdout
+ * @param {(environment: NodeJS.ProcessEnv) => Promise<AcquiredBinary>} acquire
+ * @param {OutputSink} stderr
+ * @returns {Promise<CommandEnvelope>}
+ */
 async function main(
   environment = process.env,
   stdout = process.stdout,
@@ -901,6 +1263,7 @@ async function main(
         `timeout-seconds must be between ${MIN_TIMEOUT_SECONDS} and ${MAX_TIMEOUT_SECONDS}`,
       );
     }
+    /** @type {ProcessResult} */
     let result;
     try {
       result = await runProcess(acquired.binary, args, {
@@ -911,21 +1274,21 @@ async function main(
         stderr,
       });
     } catch (error) {
-      if (typeof error.stdout === "string" && error.stdout.trim()) {
-        const envelope = parseCommandEnvelope(error.stdout);
+      const printed = isRecord(error) && typeof error.stdout === "string" ? error.stdout : "";
+      if (printed.trim()) {
+        const envelope = parseCommandEnvelope(printed);
         emitEnvelope(envelope, environment, stdout);
         const diagnostics = envelope.diagnostics
           .map((diagnostic) => `${diagnostic.code}: ${diagnostic.message}`)
           .join("; ");
         const next = envelope.next_actions[0]?.command;
-        const failure = new Error(
+        throw new CommandFailure(
           [diagnostics || `release-glz ${command} failed`, next ? `next: ${next}` : ""]
             .filter(Boolean)
             .join("; "),
+          isRecord(error) && typeof error.exitCode === "number" ? error.exitCode : undefined,
+          envelope,
         );
-        failure.exitCode = error.exitCode;
-        failure.envelope = envelope;
-        throw failure;
       }
       throw error;
     }
@@ -939,14 +1302,30 @@ async function main(
   }
 }
 
-/// Pause workflow commands until the returned function runs, so text that release-glz relays can't issue one.
+/**
+ * Pause workflow commands until the returned function runs, so text that release-glz relays can't issue one.
+ * @param {OutputSink} stream
+ * @returns {() => void}
+ */
 function pauseWorkflowCommands(stream) {
   const token = crypto.randomBytes(WORKFLOW_COMMAND_TOKEN_BYTES).toString("hex");
   stream.write(`::stop-commands::${token}\n`);
   return () => stream.write(`::${token}::\n`);
 }
 
-/// Run the Action and return its exit code, with workflow commands paused until the last diagnostic is written.
+/**
+ * @typedef {object} ActionIo
+ * @property {OutputSink} [stdout]
+ * @property {OutputSink} [stderr]
+ * @property {(environment: NodeJS.ProcessEnv) => Promise<AcquiredBinary>} [acquire]
+ */
+
+/**
+ * Run the Action and return its exit code, with workflow commands paused until the last diagnostic is written.
+ * @param {NodeJS.ProcessEnv} environment
+ * @param {ActionIo} io
+ * @returns {Promise<number>}
+ */
 async function run(environment = process.env, io = {}) {
   const stderr = io.stderr ?? process.stderr;
   const resume = pauseWorkflowCommands(stderr);
@@ -954,8 +1333,10 @@ async function run(environment = process.env, io = {}) {
     await main(environment, io.stdout ?? process.stdout, io.acquire ?? acquireBinary, stderr);
     return 0;
   } catch (error) {
-    stderr.write(`release-glz action failed: ${error.message}\n`);
-    return error.exitCode || 1;
+    stderr.write(`release-glz action failed: ${errorMessage(error)}\n`);
+    return isRecord(error) && typeof error.exitCode === "number" && error.exitCode
+      ? error.exitCode
+      : 1;
   } finally {
     resume();
   }
@@ -968,6 +1349,8 @@ if (require.main === module) {
 }
 
 module.exports = {
+  CommandFailure,
+  ProcessExitError,
   acquireBinary,
   buildCommandArgs,
   bundledChecksum,

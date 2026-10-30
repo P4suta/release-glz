@@ -1,8 +1,10 @@
 #!/usr/bin/env node
+// @ts-check
 "use strict";
 
 const fs = require("node:fs");
 const path = require("node:path");
+const zlib = require("node:zlib");
 
 const KIB = 1024;
 const MIB = 1024 * KIB;
@@ -80,32 +82,26 @@ const NO_INTERNAL_ATTRIBUTES = 0;
 const FIRST_DISK = 0;
 const FIRST_ENTRY_OFFSET = 0;
 const ENTRY_COUNT = 1;
-const CRC_TABLE = Object.freeze(
-  Array.from({ length: 256 }, (_, index) => {
-    let value = index;
-    for (let bit = 0; bit < 8; bit += 1) {
-      value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
-    }
-    return value >>> 0;
-  }),
-);
 
-function crc32(bytes) {
-  let crc = 0xffffffff;
-  for (const byte of bytes) crc = CRC_TABLE[(crc ^ byte) & 0xff] ^ (crc >>> 8);
-  return (crc ^ 0xffffffff) >>> 0;
-}
-
+/**
+ * @param {string} output
+ * @returns {void}
+ */
 function outputMustNotExist(output) {
   try {
     fs.lstatSync(output);
   } catch (error) {
-    if (error.code === "ENOENT") return;
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") return;
     throw error;
   }
   throw new Error("output already exists");
 }
 
+/**
+ * @param {string} binary
+ * @param {string} output
+ * @returns {void}
+ */
 function createStoredZip(binary, output) {
   const metadata = fs.lstatSync(binary);
   if (
@@ -119,7 +115,7 @@ function createStoredZip(binary, output) {
   outputMustNotExist(output);
   const contents = fs.readFileSync(binary);
   const name = Buffer.from(ENTRY_NAME, "utf8");
-  const checksum = crc32(contents);
+  const checksum = zlib.crc32(contents);
 
   const local = Buffer.alloc(LOCAL.BYTES);
   local.writeUInt32LE(LOCAL.SIGNATURE, LOCAL.SIGNATURE_AT);
@@ -174,16 +170,31 @@ function createStoredZip(binary, output) {
   });
 }
 
+/**
+ * @param {string[]} argv
+ * @returns {{binary: string, output: string}}
+ */
 function argumentsFrom(argv) {
-  if (argv.length !== 4 || argv[0] !== "--binary" || argv[2] !== "--out" || !argv[1] || !argv[3]) {
+  const [binaryFlag, binary, outputFlag, output] = argv;
+  if (
+    argv.length !== 4 ||
+    binaryFlag !== "--binary" ||
+    outputFlag !== "--out" ||
+    !binary ||
+    !output
+  ) {
     throw new Error("usage: --binary FILE --out FILE");
   }
-  if (path.resolve(argv[1]) === path.resolve(argv[3])) {
+  if (path.resolve(binary) === path.resolve(output)) {
     throw new Error("binary and output must be different paths");
   }
-  return { binary: argv[1], output: argv[3] };
+  return { binary, output };
 }
 
+/**
+ * @param {string[]} argv
+ * @returns {void}
+ */
 function main(argv = process.argv.slice(2)) {
   const options = argumentsFrom(argv);
   createStoredZip(options.binary, options.output);
@@ -193,9 +204,10 @@ if (require.main === module) {
   try {
     main();
   } catch (error) {
-    process.stderr.write(`Windows package generation failed: ${error.message}\n`);
+    const message = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`Windows package generation failed: ${message}\n`);
     process.exitCode = 1;
   }
 }
 
-module.exports = { argumentsFrom, createStoredZip, crc32 };
+module.exports = { argumentsFrom, createStoredZip };

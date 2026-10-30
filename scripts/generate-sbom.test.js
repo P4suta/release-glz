@@ -1,3 +1,4 @@
+// @ts-check
 "use strict";
 
 const assert = require("node:assert/strict");
@@ -72,7 +73,7 @@ checksum = "${"a".repeat(64)}"
     documents.sbom.components.map((component) => component.name),
     ["alpha", "zeta"],
   );
-  assert.equal(documents.sbom.components[0].hashes[0].content, "a".repeat(64));
+  assert.equal(documents.sbom.components[0]?.hashes?.[0]?.content, "a".repeat(64));
   assert.deepEqual(
     documents.licenses.packages.map((entry) => [entry.name, entry.license]),
     [
@@ -95,6 +96,10 @@ test("includes only the union of runtime dependencies for shipped targets", () =
     source: null,
     repository: null,
   };
+  /**
+   * @param {string} name
+   * @returns {object}
+   */
   const pkg = (name) => ({
     name,
     version: "1.0.0",
@@ -112,6 +117,10 @@ test("includes only the union of runtime dependencies for shipped targets", () =
     pkg("build-only"),
     pkg("unsupported-target"),
   ];
+  /**
+   * @param {string} targetDependency
+   * @returns {object}
+   */
   const snapshot = (targetDependency) => ({
     packages,
     workspace_members: ["root"],
@@ -154,6 +163,11 @@ test("includes only the union of runtime dependencies for shipped targets", () =
 });
 
 test("compares workspace identity independently of metadata member order", () => {
+  /**
+   * @param {string} id
+   * @param {string} name
+   * @returns {object}
+   */
   const workspacePackage = (id, name) => ({
     name,
     version: "1.0.0",
@@ -162,6 +176,10 @@ test("compares workspace identity independently of metadata member order", () =>
     source: null,
     repository: null,
   });
+  /**
+   * @param {string[]} members
+   * @returns {object}
+   */
   const snapshot = (members) => ({
     packages: [workspacePackage("root", "release-glz"), workspacePackage("helper", "z-helper")],
     workspace_members: members,
@@ -180,5 +198,34 @@ test("compares workspace identity independently of metadata member order", () =>
     () =>
       generateDocuments([snapshot(["root", "helper"]), snapshot(["root", "different"])], new Map()),
     /disagree on workspace identity/,
+  );
+});
+
+test("refuses cargo metadata whose fields have another type", () => {
+  /**
+   * @param {Record<string, unknown>} rootFields
+   * @param {unknown[]} members
+   * @param {unknown[]} nodes
+   * @returns {object}
+   */
+  const snapshot = (rootFields, members, nodes) => ({
+    packages: [{ name: "release-glz", version: "1.0.0", id: "root", ...rootFields }],
+    workspace_members: members,
+    resolve: { nodes },
+  });
+  const rootNode = { id: "root", deps: [] };
+  assert.doesNotThrow(() => generateDocuments(snapshot({}, ["root"], [rootNode]), new Map()));
+  for (const malformed of [
+    snapshot({ version: 1 }, ["root"], [rootNode]),
+    snapshot({ license: ["MIT"] }, ["root"], [rootNode]),
+    snapshot({}, [1], [rootNode]),
+    snapshot({}, ["root"], [{ deps: [] }]),
+  ]) {
+    assert.throws(() => generateDocuments(malformed, new Map()), /unsupported shape/);
+  }
+  const unknownKind = { id: "root", deps: [{ pkg: "dependency", dep_kinds: [null] }] };
+  assert.throws(
+    () => generateDocuments(snapshot({}, ["root"], [unknownKind]), new Map()),
+    /dependency has an unsupported shape/,
   );
 });

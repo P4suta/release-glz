@@ -1,0 +1,13 @@
+{
+  "name": "release-glz-tooling",
+  "private": true,
+  "description": "Development tools that check the Action and the release scripts",
+  "type": "commonjs",
+  "scripts": {
+    "typecheck": "tsc --project tsconfig.json"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "typescript": "7.0.2"
+  }
+}
