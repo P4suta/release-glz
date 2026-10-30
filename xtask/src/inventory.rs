@@ -46,7 +46,7 @@ const fn control(
 }
 
 /// Every harness of the proof packages, with its cover count.
-pub const HARNESSES: [Harness; 71] = [
+pub const HARNESSES: [Harness; 72] = [
     harness(
         "proofs::a_proof_run_is_admitted_only_when_every_expected_harness_verified",
         2,
@@ -163,6 +163,10 @@ pub const HARNESSES: [Harness; 71] = [
     ),
     harness(
         "selection::proofs::a_train_moves_forward_or_counts_up_within_its_channel",
+        2,
+    ),
+    harness(
+        "selection::proofs::an_explicit_version_decides_the_selection_on_a_train",
         2,
     ),
     harness(
@@ -292,7 +296,7 @@ const CORE: &str = "release-glz-core";
 const ASSURANCE: &str = "assurance-core";
 
 /// Every negative control, each of which has to fail exactly its harness's assertion.
-pub const CONTROLS: [Control; 77] = [
+pub const CONTROLS: [Control; 78] = [
     control(
         ASSURANCE,
         "negative-control-incomplete-run",
@@ -514,6 +518,12 @@ pub const CONTROLS: [Control; 77] = [
         "negative-control-backward-train",
         "selection::proofs::a_train_moves_forward_or_counts_up_within_its_channel",
         "a train must not move back without an explicitly higher core",
+    ),
+    control(
+        CORE,
+        "negative-control-explicit-retrain",
+        "selection::proofs::an_explicit_version_decides_the_selection_on_a_train",
+        "an explicit version must decide the selection on a train",
     ),
     control(
         CORE,

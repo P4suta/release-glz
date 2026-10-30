@@ -243,9 +243,13 @@ Kani proves it for every core and train number over versions that are stable or 
 ### A release train only moves forward
 
 A train counts up within its channel or moves on to a later channel, a move back needs an explicitly higher core, and a first release joins the configured train.
+A refused move back names the missing explicit core whenever the required step alone raises the core.
+On a train, the selection takes an explicit version on the train as written and starts the train at the core of a stable explicit version.
+It refuses any other explicit version as off the train.
 Kani proves it for every core, channel, and train number over versions that are stable or on a train.
 
 - Kani: `selection::proofs::a_train_moves_forward_or_counts_up_within_its_channel`
+- Kani: `selection::proofs::an_explicit_version_decides_the_selection_on_a_train`
 - Kani: `selection::proofs::the_first_release_joins_the_configured_train`
 - Kani: `precedence::proofs::a_train_counts_up_and_moves_through_its_channels_in_precedence`
 - Test: `src/version.rs::backward_channel_moves_require_an_explicitly_higher_core`
