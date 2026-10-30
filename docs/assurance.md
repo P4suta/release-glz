@@ -103,6 +103,7 @@ A failed blocking effect that the world still lacks stops the run, and an observ
 - Kani: `run::proofs::a_failed_effect_counts_only_once_the_world_holds_it`
 - Kani: `run::proofs::a_run_stops_when_the_number_of_objects_changes`
 - Quint: `aLandedFailureCountsTest`
+- Quint: `aFailedCallThatNeverLandedStopsTheRunTest`
 - Quint: `anUnshownCommitStopsTheRunTest`
 - Quint: `aFailedObservationAfterAFailedCallKeepsThePlanTest`
 - Quint: `aFailedFirstObservationBlocksTest`
@@ -110,6 +111,23 @@ A failed blocking effect that the world still lacks stops the run, and an observ
 - Test: `tests/release_executor.rs::an_observation_failure_after_an_ambiguous_effect_preserves_the_pre_effect_state`
 - Test: `tests/release_executor.rs::a_required_notification_failure_is_partial_and_is_never_rolled_back`
 - Test: `tests/run_replay.rs::a_trace_that_decides_otherwise_fails_the_replay`
+
+### A run that knows the release started never reports less than a partial release
+
+Once a run knows the release started, because an observation showed a published object or one of its effects landed, every state it reports is `partially_released` or `released`.
+A later observation that lags behind can't lower the report.
+That holds when the run stops, when an effect fails, when an observation fails, and when the run stops without converging, and `partially_released` exits with code 7.
+A conflict keeps its own state.
+The run harnesses cover releases of at most three objects and four observations, and the Quint model covers three objects and two runs.
+
+- Kani: `run::proofs::a_run_never_reports_less_than_partially_released_once_the_release_started`
+- Quint: `floored`
+- Quint: `aFailedObservationAfterALandedCallIsPartialTest`
+- Quint: `forgetsWhatItPublishedTest`
+- Test: `tests/release_executor.rs::an_observation_failure_after_a_published_package_is_a_partial_release`
+- Test: `tests/release_executor.rs::a_failed_notification_observation_after_finalization_is_a_partial_release`
+- Test: `tests/release_executor.rs::a_target_that_never_records_success_stops_after_the_effects_of_its_first_plan`
+- Test: `tests/run_replay.rs::every_committed_trace_replays_through_the_run_machine`
 
 ### Release states move forward, and a terminal state never changes
 

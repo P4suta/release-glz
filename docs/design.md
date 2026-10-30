@@ -75,6 +75,7 @@ Kani proves which effect comes next, when a failed call counts as applied, and w
 An unknown package POST result transitions into observation/polling.
 It cannot authorize a second POST until absence is established.
 Required notify failure does not roll back earlier public effects and is reported as `partially_released`.
+Once an effect of a run lands, the run never reports less than `partially_released`, even when a later observation lags behind it.
 Optional notify failure is diagnostic only.
 
 ## Approval boundary
