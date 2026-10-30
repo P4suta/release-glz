@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::container::{Container, Exit, Failure, Mounts};
 use crate::inventory::HARNESSES;
 use crate::proof_report::{KANI_VERSION, ProofReport};
-use crate::proofs::{TARGET_DIRECTORY, admit_every_harness, keep_logs, read_report};
+use crate::proofs::{Module, TARGET_DIRECTORY, admit_every_harness, keep_logs, read_report};
 use crate::source_snapshot::{SourceSnapshot, copy_roots, digest_of, roots};
 
 /// The cargo-mutants release that `verification/kani.Dockerfile` installs.
@@ -238,6 +238,18 @@ fn module_harnesses(file: &str) -> String {
     }
 }
 
+/// The harness filters that a mutant of `package` in `file` runs through, one bounded run each: its own module's first, then every other module of its package.
+fn filters_for(modules: &[Module], package: &str, file: &str) -> Vec<String> {
+    let own = module_harnesses(file);
+    let mut filters = modules
+        .iter()
+        .filter(|module| module.package == package)
+        .map(|module| module.filter.clone())
+        .collect::<Vec<_>>();
+    filters.sort_by_key(|filter| *filter != own);
+    filters
+}
+
 /// What a Kani run with the exit `exit` and the export `report` showed.
 fn classify(exit: &Exit, report: Option<&ProofReport>) -> Run {
     let Some(report) = report else {
@@ -266,16 +278,24 @@ fn try_mutant(
     container: &Container,
     mounts: &Mounts<'_>,
     package: &str,
-    filter: Option<&str>,
+    filter: &str,
     name: &str,
 ) -> Result<Run, Failure> {
     let reports = mounts.evidence.join("mutants");
     let export = format!("/evidence/mutants/{name}.json");
-    let mut command = vec!["cargo", "kani", "--package", package, "--fail-fast"];
-    if let Some(filter) = filter {
-        command.extend(["--harness", filter]);
-    }
-    command.extend(["-Z", "unstable-options", "--export-json", &export]);
+    let command = [
+        "cargo",
+        "kani",
+        "--package",
+        package,
+        "--fail-fast",
+        "--harness",
+        filter,
+        "-Z",
+        "unstable-options",
+        "--export-json",
+        &export,
+    ];
     let exit = match container.run(mounts, &[("CARGO_TARGET_DIR", TARGET_DIRECTORY)], &command) {
         Ok(exit) => exit,
         Err(failure) => return Ok(Run::Inconclusive(failure.to_string())),
@@ -312,7 +332,7 @@ pub fn run(root: &Path) -> Result<(), Failure> {
         .map_err(|error| Failure::new(format!("cargo-mutants listed no JSON: {error}")))?;
 
     // The campaign means nothing unless the unmutated core proves.
-    admit_every_harness(&container, &snapshot, &source, root, "baseline")?;
+    let modules = admit_every_harness(&container, &snapshot, &source, root, "baseline")?;
     println!("the unmutated core proves; {} mutants listed", listed.len());
 
     let work = evidence.join("work");
@@ -342,22 +362,19 @@ pub fn run(root: &Path) -> Result<(), Failure> {
             replacement: mutant.replacement.clone(),
         };
         fs::write(&path, mutated).map_err(Failure::io)?;
-        let filter = module_harnesses(&mutant.file);
-        let mut outcome = try_mutant(
-            &container,
-            &working,
-            &mutant.package,
-            Some(&filter),
-            &format!("{index:03}-module"),
-        )?;
-        if outcome == Run::Proved {
+        let filters = filters_for(&modules, &mutant.package, &mutant.file);
+        let mut outcome = Run::Inconclusive("its package has no harness".to_owned());
+        for (attempt, filter) in filters.iter().enumerate() {
             outcome = try_mutant(
                 &container,
                 &working,
                 &mutant.package,
-                None,
-                &format!("{index:03}-package"),
+                filter,
+                &format!("{index:03}-{attempt:02}"),
             )?;
+            if outcome != Run::Proved {
+                break;
+            }
         }
         fs::write(&path, &text).map_err(Failure::io)?;
         println!("{}: {outcome:?}", mutant.name);
@@ -379,6 +396,14 @@ pub fn run(root: &Path) -> Result<(), Failure> {
             }),
             Run::Inconclusive(reason) => inconclusive.push(format!("{}: {reason}", mutant.name)),
         }
+        // The verdicts so far stay in the evidence, so a campaign that stops early still shows what it found.
+        let progress = serde_json::json!({ "mutants": &verdicts, "inconclusive": &inconclusive });
+        fs::write(
+            evidence.join("verdicts.json"),
+            serde_json::to_vec_pretty(&progress)
+                .map_err(|error| Failure::new(error.to_string()))?,
+        )
+        .map_err(Failure::io)?;
     }
     if !inconclusive.is_empty() {
         return Err(Failure::new(format!(
@@ -511,8 +536,9 @@ mod tests {
     use std::path::Path;
 
     use super::{
-        CORE, Function, KaniModule, Key, Listed, Outcome, Position, Receipt, Run, Span, Verdict,
-        apply, classify, kani_modules, module_harnesses, mutable, verify_receipt,
+        CORE, Function, KaniModule, Key, Listed, Module, Outcome, Position, Receipt, Run, Span,
+        Verdict, apply, classify, filters_for, kani_modules, module_harnesses, mutable,
+        verify_receipt,
     };
     use crate::container::Exit;
     use crate::proof_report::{KANI_VERSION, ProofReport};
@@ -639,6 +665,46 @@ mod tests {
             module_harnesses("crates/assurance-core/src/lib.rs"),
             "proofs::"
         );
+    }
+
+    #[test]
+    fn a_mutant_runs_its_own_module_first_and_then_every_other_module_of_its_package() {
+        let module = |package, filter: &str| Module {
+            package,
+            filter: filter.to_owned(),
+            harnesses: Vec::new(),
+        };
+        let modules = [
+            module("assurance-core", "proofs::"),
+            module("release-glz-core", "approval::proofs::"),
+            module("release-glz-core", "run::proofs::"),
+            module("release-glz-core", "version::proofs::"),
+        ];
+        assert_eq!(
+            filters_for(
+                &modules,
+                "release-glz-core",
+                "crates/release-glz-core/src/run.rs"
+            ),
+            ["run::proofs::", "approval::proofs::", "version::proofs::"]
+        );
+        assert_eq!(
+            filters_for(
+                &modules,
+                "release-glz-core",
+                "crates/release-glz-core/src/lib.rs"
+            ),
+            ["approval::proofs::", "run::proofs::", "version::proofs::"]
+        );
+        assert_eq!(
+            filters_for(
+                &modules,
+                "assurance-core",
+                "crates/assurance-core/src/lib.rs"
+            ),
+            ["proofs::"]
+        );
+        assert!(filters_for(&modules, "other", "crates/other/src/lib.rs").is_empty());
     }
 
     fn exit(code: Option<i32>, stderr: &str) -> Exit {

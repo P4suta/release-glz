@@ -37,13 +37,13 @@ The audit also refuses a source that changed during the run, and `crates/assuran
 Each `negative-control-*` feature breaks one decision, such as the checked increment or the conflict for an object that differs, inside a `negative_control_*` function that production code calls only under that feature.
 The task builds each negative control on its own and requires its harness to fail on exactly the expected assertion and on nothing else.
 Every harness has a negative control, and a test without the solver keeps the inventory equal to the harnesses, covers, and features in the sources.
-`.cargo/mutants.toml` keeps cargo-mutants away from the functions of the negative controls, which no test build compiles.
-cargo-mutants names a mutant without its module path, so the configuration can't name the harnesses.
-The proof campaign leaves the harnesses out by their place in the source instead.
+`.cargo/mutants.toml` keeps cargo-mutants away from the harnesses, their symbolic inputs, and the negative controls, which no test build compiles.
+A test keeps that list equal to the modules that only Kani compiles, and the proof campaign also leaves those modules out by their place in the source.
 
 `cargo xtask proof-mutants` shows that the harnesses pin down the core decisions, and it runs on an owner machine, never on Actions.
 It proves the unmutated core first, then applies each mutant of the core crates to a frozen copy and runs the harnesses of its module.
-Before it calls a mutant a survivor, it runs every harness of the mutant's package.
+Before it calls a mutant a survivor, it runs the harnesses of every other module of the mutant's package, one bounded run each.
+It keeps the verdicts so far in its evidence after each mutant, so a campaign that stops early still shows what it found.
 Each outcome comes from Kani's audited report: detected, unviable when the mutant doesn't compile, or inconclusive, which fails the campaign.
 A survivor has to appear in `verification/equivalent-mutants.json` with the reason no harness can detect it, and the campaign refuses an entry that no longer survives.
 The campaign writes a receipt with the digest of the core sources and the outcome of every mutant, and the owner commits it as `verification/proof-mutants.json`.

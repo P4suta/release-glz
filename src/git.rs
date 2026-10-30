@@ -450,11 +450,7 @@ mod tests {
                 "intro\nBREAKING CHANGE: a later footer line",
                 Bump::Major,
             ),
-            (
-                "docs: explain",
-                "see BREAKING CHANGE: mid-line",
-                Bump::None,
-            ),
+            ("docs: explain", "see BREAKING CHANGE: mid-line", Bump::None),
         ] {
             assert_eq!(conventional_bump(subject, body), bump, "{subject} / {body}");
         }
