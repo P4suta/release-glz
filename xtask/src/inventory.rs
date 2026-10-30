@@ -46,7 +46,7 @@ const fn control(
 }
 
 /// Every harness of the proof packages, with its cover count.
-pub const HARNESSES: [Harness; 74] = [
+pub const HARNESSES: [Harness; 83] = [
     harness(
         "proofs::a_proof_run_is_admitted_only_when_every_expected_harness_verified",
         2,
@@ -104,6 +104,19 @@ pub const HARNESSES: [Harness; 74] = [
         1,
     ),
     harness(
+        "marker::proofs::a_marker_writes_each_key_and_value_in_order",
+        1,
+    ),
+    harness(
+        "marker::proofs::the_marker_that_ends_a_body_is_found_after_inert_text",
+        1,
+    ),
+    harness("marker::proofs::the_marker_is_found_with_its_own_texts", 1),
+    harness(
+        "marker::proofs::the_fields_of_a_marker_give_back_each_value",
+        1,
+    ),
+    harness(
         "precedence::proofs::a_version_equals_itself_and_order_flips_with_its_operands",
         2,
     ),
@@ -118,6 +131,22 @@ pub const HARNESSES: [Harness; 74] = [
     harness(
         "precedence::proofs::a_train_counts_up_and_moves_through_its_channels_in_precedence",
         1,
+    ),
+    harness(
+        "precedence::proofs::a_train_compares_like_the_text_that_spells_it",
+        2,
+    ),
+    harness(
+        "precedence::proofs::a_train_meets_its_own_label_by_its_number",
+        2,
+    ),
+    harness(
+        "precedence::proofs::text_parses_as_a_train_exactly_when_it_spells_one",
+        2,
+    ),
+    harness(
+        "precedence::proofs::the_prerelease_grammar_is_the_one_semantic_versioning_states",
+        2,
     ),
     harness(
         "publication::proofs::an_effect_concerns_only_an_object_the_world_lacks",
@@ -163,6 +192,10 @@ pub const HARNESSES: [Harness; 74] = [
     ),
     harness(
         "selection::proofs::a_train_moves_forward_or_counts_up_within_its_channel",
+        2,
+    ),
+    harness(
+        "selection::proofs::an_explicit_version_decides_the_selection_on_a_train",
         2,
     ),
     harness(
@@ -304,7 +337,7 @@ const CORE: &str = "release-glz-core";
 const ASSURANCE: &str = "assurance-core";
 
 /// Every negative control, each of which has to fail exactly its harness's assertion.
-pub const CONTROLS: [Control; 80] = [
+pub const CONTROLS: [Control; 89] = [
     control(
         ASSURANCE,
         "negative-control-incomplete-run",
@@ -427,6 +460,30 @@ pub const CONTROLS: [Control; 80] = [
     ),
     control(
         CORE,
+        "negative-control-fields-run-together",
+        "marker::proofs::a_marker_writes_each_key_and_value_in_order",
+        "a marker must write each key and value in order",
+    ),
+    control(
+        CORE,
+        "negative-control-search-skips-start",
+        "marker::proofs::the_marker_that_ends_a_body_is_found_after_inert_text",
+        "the marker that ends a body must be found after inert text",
+    ),
+    control(
+        CORE,
+        "negative-control-marker-at-start",
+        "marker::proofs::the_marker_is_found_with_its_own_texts",
+        "the marker must be found with its own texts",
+    ),
+    control(
+        CORE,
+        "negative-control-missing-key",
+        "marker::proofs::the_fields_of_a_marker_give_back_each_value",
+        "the fields of a marker must give back each value",
+    ),
+    control(
+        CORE,
         "negative-control-equal-prereleases",
         "precedence::proofs::a_version_equals_itself_and_order_flips_with_its_operands",
         "a version must equal itself",
@@ -448,6 +505,30 @@ pub const CONTROLS: [Control; 80] = [
         "negative-control-reverse-numbers",
         "precedence::proofs::a_train_counts_up_and_moves_through_its_channels_in_precedence",
         "a train's next number must follow it",
+    ),
+    control(
+        CORE,
+        "negative-control-reverse-numbers",
+        "precedence::proofs::a_train_meets_its_own_label_by_its_number",
+        "a train must meet its own label by its number",
+    ),
+    control(
+        CORE,
+        "negative-control-one-label",
+        "precedence::proofs::a_train_compares_like_the_text_that_spells_it",
+        "a train must compare like the text that spells it",
+    ),
+    control(
+        CORE,
+        "negative-control-unchecked-train",
+        "precedence::proofs::text_parses_as_a_train_exactly_when_it_spells_one",
+        "text must parse as a train exactly when it spells one",
+    ),
+    control(
+        CORE,
+        "negative-control-leading-zero",
+        "precedence::proofs::the_prerelease_grammar_is_the_one_semantic_versioning_states",
+        "the prerelease grammar must be the one semantic versioning states",
     ),
     control(
         CORE,
@@ -526,6 +607,12 @@ pub const CONTROLS: [Control; 80] = [
         "negative-control-backward-train",
         "selection::proofs::a_train_moves_forward_or_counts_up_within_its_channel",
         "a train must not move back without an explicitly higher core",
+    ),
+    control(
+        CORE,
+        "negative-control-explicit-retrain",
+        "selection::proofs::an_explicit_version_decides_the_selection_on_a_train",
+        "an explicit version must decide the selection on a train",
     ),
     control(
         CORE,

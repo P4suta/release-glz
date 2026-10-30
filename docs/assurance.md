@@ -243,9 +243,13 @@ Kani proves it for every core and train number over versions that are stable or 
 ### A release train only moves forward
 
 A train counts up within its channel or moves on to a later channel, a move back needs an explicitly higher core, and a first release joins the configured train.
+A refused move back names the missing explicit core whenever the required step alone raises the core.
+On a train, the selection takes an explicit version on the train as written and starts the train at the core of a stable explicit version.
+It refuses any other explicit version as off the train.
 Kani proves it for every core, channel, and train number over versions that are stable or on a train.
 
 - Kani: `selection::proofs::a_train_moves_forward_or_counts_up_within_its_channel`
+- Kani: `selection::proofs::an_explicit_version_decides_the_selection_on_a_train`
 - Kani: `selection::proofs::the_first_release_joins_the_configured_train`
 - Kani: `precedence::proofs::a_train_counts_up_and_moves_through_its_channels_in_precedence`
 - Test: `src/version.rs::backward_channel_moves_require_an_explicitly_higher_core`
@@ -255,12 +259,20 @@ Kani proves it for every core, channel, and train number over versions that are 
 ### Versions compare by semantic version precedence
 
 The core decides before the prerelease, a stable release follows every prerelease of its core, and build metadata never changes precedence.
+A train compares, parses, and names its channel exactly as the text `<label>.<number>` that spells it, and the prerelease grammar is the one semantic versioning states.
 Kani covers prerelease text of at most three bytes for one version and two bytes for each of a pair.
+It compares trains with one-digit numbers to any valid text of at most two bytes.
+It compares a train with any number to its own label and any valid one-byte identifier, which reaches the comparison of the number.
+It parses any text of at most eight bytes, and it checks the grammar of any text of at most four bytes.
 The differential tests and the fuzz target compare the core with the `semver` crate on longer text.
 
 - Kani: `precedence::proofs::a_version_equals_itself_and_order_flips_with_its_operands`
 - Kani: `precedence::proofs::a_stable_release_follows_every_prerelease_of_its_core`
 - Kani: `precedence::proofs::the_core_decides_before_the_prerelease`
+- Kani: `precedence::proofs::a_train_compares_like_the_text_that_spells_it`
+- Kani: `precedence::proofs::a_train_meets_its_own_label_by_its_number`
+- Kani: `precedence::proofs::text_parses_as_a_train_exactly_when_it_spells_one`
+- Kani: `precedence::proofs::the_prerelease_grammar_is_the_one_semantic_versioning_states`
 - Fuzz: `prerelease`
 - Test: `tests/version_precedence.rs::core_precedence_agrees_with_semver_on_every_pair`
 - Test: `tests/version_precedence.rs::a_train_compares_like_the_prerelease_that_spells_it`
@@ -377,6 +389,10 @@ Fuzzing checks them, and every pull request replays the committed corpus of each
 A rendered marker after inert text is the one marker that ends the body, its fields give back every value, and a body with an earlier marker has no marker.
 Kani proves inert text for texts of at most three bytes and the byte search for haystacks of at most four bytes with needles of at most two.
 It proves reading one field for fields of at most nine bytes, and Lean proves the marker for bodies of every length.
+Kani also pins writing a marker for values of one byte each and for empty values.
+It proves finding the block that ends a body for every body of up to five bytes with one-byte opening and closing texts.
+It pins finding the marker itself on an empty body and on the shortest marker.
+It pins reading the fields of a marker in two orders and with a key missing.
 The adapter trims trailing whitespace and splits the fields at Unicode whitespace before the core reads them.
 That split agrees with the model's split at spaces, because no value that release-glz writes holds whitespace.
 
@@ -384,6 +400,10 @@ That split agrees with the model's split at spaces, because no value that releas
 - Kani: `marker::proofs::the_first_occurrence_is_the_earliest_match`
 - Kani: `marker::proofs::the_last_occurrence_is_the_latest_match`
 - Kani: `marker::proofs::a_field_is_recorded_only_under_a_new_known_key`
+- Kani: `marker::proofs::a_marker_writes_each_key_and_value_in_order`
+- Kani: `marker::proofs::the_marker_that_ends_a_body_is_found_after_inert_text`
+- Kani: `marker::proofs::the_marker_is_found_with_its_own_texts`
+- Kani: `marker::proofs::the_fields_of_a_marker_give_back_each_value`
 - Lean: `ReleaseGlz.Marker.inert_holds_no_less_than`
 - Lean: `ReleaseGlz.Marker.a_rendered_marker_ends_the_body`
 - Lean: `ReleaseGlz.Marker.an_earlier_marker_is_refused`
