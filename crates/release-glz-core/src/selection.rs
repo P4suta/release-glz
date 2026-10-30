@@ -176,7 +176,7 @@ pub fn select_version(
     let mut selected = Selection::Computed(computed);
     if let Some(explicit) = explicit {
         let (candidate, version) = match channel {
-            Some(channel) if matches!(explicit.pre, Pre::Stable) => {
+            Some(channel) if starts_train_at_its_core(explicit) => {
                 let train =
                     next_prerelease(published, explicit.core, channel, explicitly_higher_core)?;
                 (Selection::Computed(train), train.version())
@@ -218,6 +218,21 @@ fn stable_core(published: VersionCore, required: VersionCore) -> VersionCore {
 #[cfg(feature = "negative-control-understep")]
 fn negative_control_published_core(published: VersionCore) -> Option<VersionCore> {
     Some(published)
+}
+
+/// Whether an explicit version names only the core at which the configured train starts, which a stable version does.
+fn starts_train_at_its_core(explicit: &Version<'_>) -> bool {
+    #[cfg(feature = "negative-control-explicit-retrain")]
+    if let Some(starts) = negative_control_explicit_retrain() {
+        return starts;
+    }
+    matches!(explicit.pre, Pre::Stable)
+}
+
+/// Takes every explicit version as only a core, so an explicit version on the train starts the train again.
+#[cfg(feature = "negative-control-explicit-retrain")]
+fn negative_control_explicit_retrain() -> Option<bool> {
+    Some(true)
 }
 
 /// Whether an explicit version is lower than the version the release requires.
@@ -457,13 +472,9 @@ mod proofs {
         let explicit = symbolic::release();
         let explicit = if kani::any() { Some(&explicit) } else { None };
         let channel: Channel = kani::any();
-        let result = select_version(
-            &published,
-            kani::any(),
-            kani::any(),
-            explicit,
-            Some(channel),
-        );
+        let latest_stable: Option<VersionCore> = kani::any();
+        let required: Bump = kani::any();
+        let result = select_version(&published, latest_stable, required, explicit, Some(channel));
         let current = published.pre.numbered_label();
         let backward =
             current.is_some_and(|(label, _)| Label::Channel(channel).rank() < label.rank());
@@ -474,6 +485,17 @@ mod proofs {
                 result.is_err(),
                 "a train must not move back without an explicitly higher core",
             );
+            // When the required step alone raises the core, the refusal names the missing explicit core.
+            let raised = latest_stable
+                .unwrap_or(published.core)
+                .bumped(required)
+                .is_some_and(|core| core > published.core);
+            if raised {
+                kani::assert(
+                    result == Err(Refusal::BackwardWithoutExplicitCore { channel }),
+                    "a train must not move back without an explicitly higher core",
+                );
+            }
         }
         match result {
             Ok(Selection::Computed(Computed { core, train })) => {
@@ -504,6 +526,47 @@ mod proofs {
             (Some((Label::Channel(current), _)), Ok(Selection::Computed(Computed { train: Some((on, number)), .. })))
                 if current == on && number > 1
         ));
+    }
+
+    /// With a configured train, an explicit version that follows the published one decides the selection.
+    ///
+    /// The selection takes a version on the train as written, starts the train at the core of a stable version, and refuses any other version as off the train, unless another rule refuses it first.
+    /// Every core and train number is symbolic, and each version is stable or on a train.
+    #[kani::proof]
+    #[kani::unwind(1)]
+    fn an_explicit_version_decides_the_selection_on_a_train() {
+        let published = symbolic::release();
+        let explicit = symbolic::release();
+        let channel: Channel = kani::any();
+        let result = select_version(
+            &published,
+            kani::any(),
+            kani::any(),
+            Some(&explicit),
+            Some(channel),
+        );
+        let stable = matches!(explicit.pre, Pre::Stable);
+        let on_train = explicit.pre.starts_with(channel);
+        if explicit.follows(&published) {
+            let decided = match result {
+                Ok(Selection::Explicit) => on_train,
+                Ok(Selection::Computed(Computed {
+                    core,
+                    train: Some((on, _)),
+                })) => stable && core == explicit.core && on == channel,
+                Ok(Selection::Computed(Computed { train: None, .. })) => false,
+                Err(Refusal::ExplicitOffTrain { channel: refused }) => {
+                    refused == channel && !stable && !on_train
+                }
+                Err(_) => true,
+            };
+            kani::assert(
+                decided,
+                "an explicit version must decide the selection on a train",
+            );
+        }
+        kani::cover!(matches!(result, Ok(Selection::Explicit)));
+        kani::cover!(stable && matches!(result, Ok(Selection::Computed(_))));
     }
 
     /// An explicit version that follows the published one but stays below the required core is refused, and an explicit version is taken only when it follows the published one.

@@ -92,6 +92,8 @@ negative-control-reselect = []
 negative-control-understep = []
 # Letting a train move back to an earlier channel.
 negative-control-backward-train = []
+# Taking every explicit version as only a core, so one on the train starts the train again.
+negative-control-explicit-retrain = []
 # Taking an explicit version below the required one.
 negative-control-override-floor = []
 # Keeping a first prerelease of another train.
