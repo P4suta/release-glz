@@ -1455,6 +1455,40 @@ impl GitHubClient {
         Ok(uploaded)
     }
 
+    /// Delete the asset `name` that a failed upload left unfinished on the draft `release`, which the caller has just read.
+    ///
+    /// GitHub keeps the name of such an asset, so no upload can take the name until this call removes the asset.
+    /// The call refuses an asset that GitHub reports as uploaded and every asset of a published Release.
+    pub async fn delete_unfinished_release_asset(
+        &self,
+        release: &GitHubRelease,
+        name: &str,
+    ) -> Result<()> {
+        self.require_token()?;
+        if !release.draft {
+            bail!(
+                "GitHub Release asset `{name}` belongs to a published Release, which stays as it is"
+            );
+        }
+        let mut found = release.assets.iter().filter(|asset| asset.name == name);
+        let asset = match (found.next(), found.next()) {
+            (Some(asset), None) => asset,
+            (Some(_), Some(_)) => bail!("GitHub Release contains duplicate asset `{name}`"),
+            (None, _) => bail!("GitHub Release has no asset `{name}` to delete"),
+        };
+        if asset.state == "uploaded" {
+            bail!(
+                "GitHub Release asset `{name}` is uploaded, and a release never deletes an uploaded asset"
+            );
+        }
+        if asset.id == 0 {
+            bail!("GitHub Release asset `{name}` has no id");
+        }
+        let url = self.url(&format!("releases/assets/{}", asset.id));
+        checked(self.request(Method::DELETE, &url).send().await?, &url).await?;
+        Ok(())
+    }
+
     async fn create_ref(&self, branch: &str, sha: &str) -> Result<()> {
         self.post_empty(
             "git/refs",

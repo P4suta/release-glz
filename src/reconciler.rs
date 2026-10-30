@@ -155,6 +155,11 @@ pub struct ExternalReleaseState {
     /// Assets already attached, keyed by name.
     #[serde(default)]
     pub release_assets: BTreeMap<String, ObservedArtifact>,
+    /// Names of the assets that GitHub holds unfinished, as a failed upload can leave them.
+    ///
+    /// Such an asset of the Candidate is pending on a draft, and the next upload completes it.
+    #[serde(default)]
+    pub unfinished_release_assets: BTreeSet<String>,
     /// Notifications already observed, keyed by idempotency key.
     pub notifications: BTreeMap<String, NotifyObservation>,
 }
@@ -168,6 +173,7 @@ impl Default for ExternalReleaseState {
             tag: None,
             github_release: None,
             release_assets: BTreeMap::new(),
+            unfinished_release_assets: BTreeSet::new(),
             notifications: BTreeMap::new(),
         }
     }
@@ -357,6 +363,15 @@ fn validate_inputs(
             ));
         }
     }
+    if let Some(name) = observed
+        .unfinished_release_assets
+        .iter()
+        .find(|name| observed.release_assets.contains_key(*name))
+    {
+        return conflict(format!(
+            "GitHub Release reports asset `{name}` both as uploaded and as unfinished"
+        ));
+    }
     Ok(())
 }
 
@@ -473,17 +488,28 @@ fn items<'a>(
             ),
         ),
     ];
+    // An upload completes an unfinished asset only while the Release is still a draft.
+    let completable = observed
+        .github_release
+        .as_ref()
+        .is_some_and(|release| release.draft);
     for asset in &intent.release_assets {
-        let observed_asset = observed.release_assets.get(&asset.name);
-        items.push((
-            Item::Asset(asset),
-            object(
-                true,
-                presence(observed_asset, |found| found.sha256 == asset.sha256),
-            ),
-        ));
+        let held = if !observed.unfinished_release_assets.contains(&asset.name) {
+            presence(observed.release_assets.get(&asset.name), |found| {
+                found.sha256 == asset.sha256
+            })
+        } else if completable {
+            Presence::Pending
+        } else {
+            Presence::Differs
+        };
+        items.push((Item::Asset(asset), object(true, held)));
     }
-    for name in observed.release_assets.keys() {
+    for name in observed
+        .release_assets
+        .keys()
+        .chain(&observed.unfinished_release_assets)
+    {
         if !intent
             .release_assets
             .iter()

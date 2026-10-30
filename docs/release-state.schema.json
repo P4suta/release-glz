@@ -4,7 +4,7 @@
   "title": "release-glz ReleaseState v1",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "package", "docs", "tag", "github_release", "release_assets", "notifications"],
+  "required": ["schema", "package", "docs", "tag", "github_release", "release_assets", "unfinished_release_assets", "notifications"],
   "properties": {
     "schema": { "const": "state/v1" },
     "package": { "oneOf": [{ "$ref": "#/$defs/artifact" }, { "type": "null" }] },
@@ -15,6 +15,11 @@
       "type": "object",
       "propertyNames": { "type": "string", "minLength": 1 },
       "additionalProperties": { "$ref": "#/$defs/artifact" }
+    },
+    "unfinished_release_assets": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 }
     },
     "notifications": {
       "type": "object",
