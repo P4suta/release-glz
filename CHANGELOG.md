@@ -112,6 +112,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- An archive whose entries differ only in Unicode normalization, such as `café.txt` with a precomposed and a decomposed `é`, is refused before extraction.
+  The default macOS file system stores such entries under one name, so the later one could replace the earlier one there.
 - Once a run knows the release started, every failure it reports is `partially_released` and exits with code 7.
   Before, a failed observation after a published package reported `blocked` with code 5, and a run that didn't converge reported `blocked` with code 1.
   A required notification whose observation failed after finalization reported `blocked` with code 6.

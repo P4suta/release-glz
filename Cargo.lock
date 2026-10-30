@@ -1373,6 +1373,7 @@ dependencies = [
  "clap",
  "clap_complete",
  "flate2",
+ "icu_normalizer",
  "process-wrap",
  "release-glz-core",
  "release-glz-test-support",

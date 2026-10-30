@@ -247,10 +247,14 @@ Kani proves it for names of at most one character, and longer names compare by t
 
 ### Unpacking an archive writes only portable relative paths
 
-An accepted path is relative, and none of its components is empty, `.`, `..`, a name that Windows reserves for a device, or a name with a character that some supported OS forbids.
-Two entries whose paths fold to the same file or directory once letter case no longer counts never both stand.
+An accepted path is relative, and none of its components is empty, `.`, or `..`.
+No component is a name that Windows reserves for a device or holds a character that some supported OS forbids.
+Two entries whose paths fold to the same file or directory once letter case and Unicode normalization no longer count never both stand.
 Kani proves the character rules for every byte and every byte pair, and the device names for every stem of up to eight bytes.
-It proves where a stem ends for components of up to six bytes, what an accepted component may hold for components of up to eight bytes, and the collision rule for pairs of folded paths of up to five bytes, which nest two directories deep.
+It proves where a stem ends for components of up to six bytes and what an accepted component may hold for components of up to eight bytes.
+It proves the collision rule for pairs of folded paths of up to five bytes, which nest two directories deep.
+The shell folds a path through canonical decomposition, Unicode's lowercase mapping, and canonical decomposition again.
+That fold rests on `icu_normalizer` and the tests, and it approximates the default macOS file system's own folding.
 
 - Kani: `archive_path::proofs::a_component_refuses_exactly_the_characters_windows_forbids`
 - Kani: `archive_path::proofs::a_stem_names_a_device_exactly_when_it_is_reserved`
@@ -261,6 +265,8 @@ It proves where a stem ends for components of up to six bytes, what an accepted 
 - Fuzz: `archive`
 - Test: `tests/artifact_security.rs::archive_paths_reject_every_ambiguous_or_traversing_form`
 - Test: `tests/artifact_security.rs::archive_paths_reject_entries_that_collide_once_letter_case_no_longer_counts`
+- Test: `tests/artifact_security.rs::archive_paths_reject_entries_that_differ_only_in_unicode_normalization`
+- Test: `tests/artifact_security.rs::names_that_differ_beyond_normalization_still_pass`
 - Test: `tests/artifact_security.rs::unpacking_uses_only_validated_relative_regular_files`
 
 ### Parsers refuse malformed input without panicking

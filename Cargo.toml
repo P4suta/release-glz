@@ -19,6 +19,9 @@ chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 clap = { version = "4.6.6", features = ["derive"] }
 clap_complete = "4.6.6"
 flate2 = "1.1.10"
+icu_normalizer = { version = "2.2.0", default-features = false, features = [
+  "compiled_data",
+] }
 release-glz-core = { path = "crates/release-glz-core", version = "0.0.0", features = [
   "serde",
 ] }
@@ -57,7 +60,12 @@ process-wrap = { version = "10.0.1", default-features = false, features = [
 release-glz-test-support = { path = "crates/test-support", version = "0.0.0" }
 
 [workspace]
-members = ["crates/assurance-core", "crates/release-glz-core", "crates/test-support", "xtask"]
+members = [
+  "crates/assurance-core",
+  "crates/release-glz-core",
+  "crates/test-support",
+  "xtask",
+]
 
 [profile.release]
 lto = "thin"
