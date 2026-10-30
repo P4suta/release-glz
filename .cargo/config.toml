@@ -4,3 +4,6 @@
 GIT_CONFIG_GLOBAL = { value = "tests/fixtures/git/isolated.gitconfig", relative = true, force = true }
 GIT_CONFIG_NOSYSTEM = { value = "1", force = true }
 GIT_TERMINAL_PROMPT = { value = "0", force = true }
+
+[alias]
+xtask = "run --locked --package xtask --"

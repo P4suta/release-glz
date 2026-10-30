@@ -263,6 +263,33 @@ jobs:
           negative-control-substitution|a_push_approval_never_rests_on_manual_inputs|a push approval must not rest on manual inputs
           CONTROLS
 
+  lean:
+    name: Lean theorems of the publication model
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal --no-self-update
+          rustup default 1.88.0
+      - name: Prove the model for every list length and its refinement of the core crate
+        run: cargo xtask lean
+      - name: Show that a core that republishes matching objects fails the refinement
+        run: |
+          set -euo pipefail
+          if cargo run --locked --package xtask --features negative-control-republish -- lean \
+            > negative-control.log 2>&1; then
+            cat negative-control.log
+            echo "the refinement admitted a core that republishes matching objects" >&2
+            exit 1
+          fi
+          grep -F "'ReleaseGlz.Refinement.decision_refines_rust' depends on axioms: [sorryAx]" negative-control.log
+
   fuzz:
     name: Bounded parser fuzz smoke
     runs-on: ubuntu-24.04

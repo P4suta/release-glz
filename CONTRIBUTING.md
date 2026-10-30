@@ -38,6 +38,13 @@ Each `negative-control-*` feature of the core crate breaks one decision, such as
 Shipping assurance builds each one and requires the harness for that decision to fail with its own message.
 The harnesses over lists of objects cover releases of at most three objects, and the decisions for single objects and approvals cover every input.
 
+`verification/lean/Publication.lean` models the same decisions in Lean 4 and proves the list properties for releases of every length.
+`cargo xtask lean` builds the image that `verification/lean.Dockerfile` pins and runs Lean in a container with the same limits as the bounded runner.
+It generates refinement vectors from the core crate, and Lean proves by `decide` that the model decides every object and every list of at most two objects as the core does.
+It refuses a theorem that depends on an axiom outside Lean's standard three, and it replays every module through `leanchecker --fresh`.
+The theorems for longer lists concern the model, so they bind the core only through the refinement on the short lists and the shared structure of the two definitions.
+Building the xtask with `--features negative-control-republish` generates the vectors from a broken core, and shipping assurance requires the refinement to fail then.
+
 Run the fast checks before opening a pull request:
 
 ```console
