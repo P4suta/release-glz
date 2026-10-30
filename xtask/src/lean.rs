@@ -6,7 +6,7 @@ use std::path::Path;
 
 use release_glz_core::{Decision, Object, Outcome, Presence, ReleaseState, reconcile};
 
-use crate::container::{Container, Failure};
+use crate::container::{Container, Failure, Mounts};
 
 /// The Lean release that `verification/lean.Dockerfile` installs.
 const LEAN_VERSION: &str = "4.35.0";
@@ -35,6 +35,9 @@ const ALLOWED_AXIOMS: [&str; 3] = ["propext", "Classical.choice", "Quot.sound"];
 
 /// The longest object list whose reconcile outcome the vectors compare.
 const VECTOR_OBJECTS: usize = 2;
+
+/// Where the refinement of a broken decision table lives in the container, beside the evidence of the real one.
+const BROKEN: &str = "/evidence/broken";
 
 const PRESENCES: [Presence; 4] = [
     Presence::Absent,
@@ -124,6 +127,19 @@ fn lean_outcome(outcome: Outcome<'_>) -> Result<String, Failure> {
 
 /// The Lean module that compares the model with the core crate on every object and every list of at most [`VECTOR_OBJECTS`] objects.
 pub fn refinement() -> Result<String, Failure> {
+    refinement_with(Object::decision)
+}
+
+/// The republish defect: a decision table that publishes a wanted object again although the world already holds it.
+fn republish(object: Object) -> Decision {
+    match (object.wanted, object.presence) {
+        (true, Presence::Matches) => Decision::Create,
+        _ => object.decision(),
+    }
+}
+
+/// The refinement module whose decision vectors come from `decide` and whose plan vectors come from the core crate.
+fn refinement_with(decide: impl Fn(Object) -> Decision) -> Result<String, Failure> {
     let mut source = String::from(
         "import Publication\n\nset_option autoImplicit false\nset_option maxRecDepth 100000\n\nnamespace ReleaseGlz.Refinement\n\nopen ReleaseGlz\n\ndef decisionVectors : List (Obj × Decision) := [\n",
     );
@@ -132,7 +148,7 @@ pub fn refinement() -> Result<String, Failure> {
         rows.push(format!(
             "  ({}, {})",
             lean_object(object),
-            lean_decision(object.decision())
+            lean_decision(decide(object))
         ));
     }
     source.push_str(&rows.join(",\n"));
@@ -191,7 +207,27 @@ fn axioms_admitted(report: &str, theorems: &[&str]) -> bool {
         })
 }
 
-/// Check the model, its refinement of the core crate, and a fresh kernel replay of both, in the pinned image.
+/// Whether the report of the refinement of a broken decision table shows that only the decision refinement failed: it rests on `sorryAx`, and the plan refinement keeps the allowed axioms.
+fn refuses_the_defect(report: &str) -> bool {
+    let [decision, plan] = REFINEMENT_THEOREMS;
+    let failed = format!("'{decision}' depends on axioms: [");
+    let plan_prefix = format!("'{plan}' ");
+    let plan_report = report
+        .lines()
+        .filter(|line| line.starts_with(&plan_prefix))
+        .collect::<Vec<_>>()
+        .join("\n");
+    report.lines().any(|line| {
+        line.strip_prefix(&failed).is_some_and(|axioms| {
+            axioms
+                .trim_end_matches(']')
+                .split(',')
+                .any(|axiom| axiom.trim() == "sorryAx")
+        })
+    }) && axioms_admitted(&plan_report, &[plan])
+}
+
+/// Check the model, its refinement of the core crate, a fresh kernel replay of both, and the refusal of a broken decision table, in the pinned image.
 pub fn run(root: &Path) -> Result<(), Failure> {
     let evidence = crate::container::evidence_directory(root, "lean")?;
     fs::write(evidence.join("Refinement.lean"), refinement()?).map_err(Failure::io)?;
@@ -231,8 +267,41 @@ pub fn run(root: &Path) -> Result<(), Failure> {
         }
         container.output(root, &evidence, &["leanchecker", "--fresh", module])?;
     }
+
+    // The same refinement has to fail for a table with the republish defect, and only on the decision vectors.
+    fs::create_dir(evidence.join("broken")).map_err(Failure::io)?;
+    fs::write(
+        evidence.join("broken").join("Refinement.lean"),
+        refinement_with(republish)?,
+    )
+    .map_err(Failure::io)?;
+    let mounts = Mounts {
+        workspace: root,
+        evidence: &evidence,
+        network: false,
+    };
+    let broken = container.run(
+        &mounts,
+        &[],
+        &[
+            "lean",
+            "-DwarningAsError=true",
+            &format!("--root={BROKEN}"),
+            "-o",
+            &format!("{BROKEN}/Refinement.olean"),
+            &format!("{BROKEN}/Refinement.lean"),
+        ],
+    )?;
+    let report = format!("{}{}", broken.stdout, broken.stderr);
+    fs::write(evidence.join("broken-axioms.log"), &report).map_err(Failure::io)?;
+    if broken.code == Some(0) || !refuses_the_defect(&report) {
+        return Err(Failure::new(format!(
+            "the refinement admitted a decision table that republishes matching objects; see {}",
+            evidence.display()
+        )));
+    }
     println!(
-        "Lean {LEAN_VERSION} proved {} model theorems and {} refinements of the core crate; evidence in {}",
+        "Lean {LEAN_VERSION} proved {} model theorems and {} refinements of the core crate, and refused the republish defect; evidence in {}",
         MODEL_THEOREMS.len(),
         REFINEMENT_THEOREMS.len(),
         evidence.display()
@@ -242,7 +311,38 @@ pub fn run(root: &Path) -> Result<(), Failure> {
 
 #[cfg(test)]
 mod tests {
-    use super::{axioms_admitted, lists, objects, refinement};
+    use super::{
+        axioms_admitted, lists, objects, refinement, refinement_with, refuses_the_defect, republish,
+    };
+    use release_glz_core::Object;
+
+    #[test]
+    fn the_broken_table_differs_from_the_core_only_where_the_defect_republishes() {
+        let differing = objects()
+            .into_iter()
+            .filter(|object| republish(*object) != object.decision())
+            .collect::<Vec<_>>();
+        assert_eq!(differing.len(), 2, "{differing:?}");
+        assert_ne!(refinement().unwrap(), refinement_with(republish).unwrap());
+        assert_eq!(
+            refinement().unwrap(),
+            refinement_with(Object::decision).unwrap()
+        );
+    }
+
+    #[test]
+    fn only_a_failed_decision_refinement_with_an_intact_plan_refinement_shows_the_defect() {
+        let failed = "'ReleaseGlz.Refinement.decision_refines_rust' depends on axioms: [sorryAx]\n'ReleaseGlz.Refinement.reconcile_refines_rust' depends on axioms: [propext]\n";
+        assert!(refuses_the_defect(failed));
+        for report in [
+            "'ReleaseGlz.Refinement.decision_refines_rust' does not depend on any axioms\n'ReleaseGlz.Refinement.reconcile_refines_rust' does not depend on any axioms\n",
+            "'ReleaseGlz.Refinement.decision_refines_rust' depends on axioms: [sorryAx]\n'ReleaseGlz.Refinement.reconcile_refines_rust' depends on axioms: [sorryAx]\n",
+            "'ReleaseGlz.Refinement.decision_refines_rust' depends on axioms: [sorryAx]\n",
+            "error: unknown package 'Publication'\n",
+        ] {
+            assert!(!refuses_the_defect(report), "{report:?}");
+        }
+    }
 
     #[test]
     fn the_vectors_cover_every_object_and_every_short_list() {

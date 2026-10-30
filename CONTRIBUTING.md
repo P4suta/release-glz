@@ -56,7 +56,7 @@ It also writes the traces of the model's scenario tests and of a seeded simulati
 `cargo xtask trace`, and a test that the fast gate runs, refuse a citation that names nothing and a property without evidence.
 They also refuse a harness, theorem, invariant, model test, or fuzz target that no property cites, so a new check needs a property before it merges.
 The theorems for longer lists concern the model, so they bind the core only through the refinement on the short lists and the shared structure of the two definitions.
-Building the xtask with `--features negative-control-republish` generates the vectors from a broken core, and shipping assurance requires the refinement to fail then.
+The task also generates the decision vectors from a table with the republish defect, and it requires Lean to fail on exactly the decision refinement then.
 
 Run the fast checks before opening a pull request:
 

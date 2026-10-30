@@ -54,8 +54,6 @@ fn assurance_workflow_has_fixed_fail_closed_shipping_gates() {
         "run: cargo xtask lean",
         "run: cargo xtask quint",
         "run: cargo xtask trace",
-        "--features negative-control-republish -- lean",
-        "'ReleaseGlz.Refinement.decision_refines_rust' depends on axioms: [sorryAx]",
         "cargo deny check -D warnings",
         "cargo audit -D warnings",
         "cargo audit -D warnings --file fuzz/Cargo.lock",
@@ -91,8 +89,16 @@ fn assurance_workflow_has_fixed_fail_closed_shipping_gates() {
     assert!(!yaml.contains("RELEASE_GLZ_ACTION_SHA"));
     assert!(!yaml.contains("cargo install --locked zizmor --version"));
     assert!(!yaml.contains("continue-on-error: true"));
-    // The proof job runs the audited task, so nothing in the workflow reads Kani's text output.
-    for text_check in ["cargo kani", "Failed Checks", "cover properties satisfied"] {
+    // The proof, model, and theorem jobs run audited tasks, so nothing in the workflow reads a verifier's text output.
+    for text_check in [
+        "cargo kani",
+        "Failed Checks",
+        "cover properties satisfied",
+        "depends on axioms",
+        "negative-control-",
+        "quint verify",
+        "lean -",
+    ] {
         assert!(!yaml.contains(text_check), "the gate parses {text_check}");
     }
     // Without --workspace, cargo-mutants mutates no file of another workspace member, so listing one claims coverage that never runs.
