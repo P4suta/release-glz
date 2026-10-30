@@ -6,6 +6,27 @@
       "original": ">",
       "replacement": ">=",
       "reason": "ReleaseState::can_advance_to returns before it calls forward when the two states are equal, and position gives distinct states distinct indices, so forward never compares two equal indices."
+    },
+    {
+      "file": "crates/release-glz-core/src/precedence.rs",
+      "function": "train_against_text",
+      "original": "!first.numeric",
+      "replacement": "true",
+      "reason": "Every train label starts with a letter, which sorts after every digit byte, so comparing the label with a numeric first identifier gives Greater, as the arm for a numeric identifier does."
+    },
+    {
+      "file": "crates/release-glz-core/src/precedence.rs",
+      "function": "train_against_text",
+      "original": "second.numeric",
+      "replacement": "true",
+      "reason": "parse_number refuses any identifier that holds a byte other than a digit, so number_against_digits answers Less for a non-numeric second identifier, as the arm for one does."
+    },
+    {
+      "file": "crates/release-glz-core/src/precedence.rs",
+      "function": "parse_number",
+      "original": ">",
+      "replacement": ">=",
+      "reason": "parse_number only reads identifiers of a valid prerelease, and the semver crate refuses an empty identifier before any prerelease reaches the core, so the digits it reads are never empty."
     }
   ]
 }
