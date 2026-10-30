@@ -134,9 +134,14 @@ pub fn next_prerelease(
 /// Whether moving from a prerelease labeled `current` to `channel` goes back along the train.
 fn moves_back(current: Label, channel: Channel) -> bool {
     #[cfg(feature = "negative-control-backward-train")]
-    return Label::Channel(channel).rank() > current.rank();
+    return negative_control_moves_forward(current, channel);
     #[cfg(not(feature = "negative-control-backward-train"))]
     return Label::Channel(channel).rank() < current.rank();
+}
+
+#[cfg(feature = "negative-control-backward-train")]
+fn negative_control_moves_forward(current: Label, channel: Channel) -> bool {
+    Label::Channel(channel).rank() > current.rank()
 }
 
 /// Select the version of a release that follows `published`.
@@ -205,27 +210,40 @@ pub fn select_version(
 /// The core of a stable selection, which never falls below the published core.
 fn stable_core(published: VersionCore, required: VersionCore) -> VersionCore {
     #[cfg(feature = "negative-control-understep")]
-    let _ = required;
-    #[cfg(feature = "negative-control-understep")]
-    return published;
+    return negative_control_published_core(published, required);
     #[cfg(not(feature = "negative-control-understep"))]
     return max(published, required);
+}
+
+#[cfg(feature = "negative-control-understep")]
+fn negative_control_published_core(published: VersionCore, _required: VersionCore) -> VersionCore {
+    published
 }
 
 /// Whether an explicit version is lower than the version the release requires.
 fn below_required(explicit: &Version<'_>, required: &Version<'_>) -> bool {
     #[cfg(feature = "negative-control-override-floor")]
-    return compare(explicit, required) == Ordering::Greater;
+    return negative_control_above_required(explicit, required);
     #[cfg(not(feature = "negative-control-override-floor"))]
     return compare(explicit, required) == Ordering::Less;
+}
+
+#[cfg(feature = "negative-control-override-floor")]
+fn negative_control_above_required(explicit: &Version<'_>, required: &Version<'_>) -> bool {
+    compare(explicit, required) == Ordering::Greater
 }
 
 /// Whether a computed selection follows the published version, which is the last guard before a version leaves the planner.
 fn after_published(selected: &Version<'_>, published: &Version<'_>) -> bool {
     #[cfg(feature = "negative-control-reselect")]
-    return !published.follows(selected);
+    return negative_control_not_before(selected, published);
     #[cfg(not(feature = "negative-control-reselect"))]
     return selected.follows(published);
+}
+
+#[cfg(feature = "negative-control-reselect")]
+fn negative_control_not_before(selected: &Version<'_>, published: &Version<'_>) -> bool {
+    !published.follows(selected)
 }
 
 /// How the version of a first release relates to the manifest's version.
@@ -266,11 +284,14 @@ pub fn initial_version(
 /// Whether a prerelease belongs to `channel`'s train.
 fn joins_train(pre: Pre<'_>, channel: Channel) -> bool {
     #[cfg(feature = "negative-control-initial-train")]
-    let _ = (pre, channel);
-    #[cfg(feature = "negative-control-initial-train")]
-    return true;
+    return negative_control_any_train(pre, channel);
     #[cfg(not(feature = "negative-control-initial-train"))]
     return pre.starts_with(channel);
+}
+
+#[cfg(feature = "negative-control-initial-train")]
+fn negative_control_any_train(_pre: Pre<'_>, _channel: Channel) -> bool {
+    true
 }
 
 /// The step a release needs once Hex's rule for versions below 1.0 applies.
@@ -286,11 +307,14 @@ pub fn effective_bump(major: u64, required: Bump) -> Bump {
 
 fn below_one(major: u64) -> bool {
     #[cfg(feature = "negative-control-zero-major")]
-    let _ = major;
-    #[cfg(feature = "negative-control-zero-major")]
-    return false;
+    return negative_control_never_below_one(major);
     #[cfg(not(feature = "negative-control-zero-major"))]
     return major == 0;
+}
+
+#[cfg(feature = "negative-control-zero-major")]
+fn negative_control_never_below_one(_major: u64) -> bool {
+    false
 }
 
 /// The step that separates two versions, named by the highest component that changed.
@@ -311,9 +335,14 @@ pub fn bump_between(from: &Version<'_>, to: &Version<'_>) -> Bump {
 /// Whether two versions with the same major and minor numbers differ in their patch number or prerelease.
 fn differ_below_minor(from: &Version<'_>, to: &Version<'_>) -> bool {
     #[cfg(feature = "negative-control-bump-between")]
-    return to.core.patch != from.core.patch;
+    return negative_control_patch_differs(from, to);
     #[cfg(not(feature = "negative-control-bump-between"))]
     return compare(to, from) != Ordering::Equal;
+}
+
+#[cfg(feature = "negative-control-bump-between")]
+fn negative_control_patch_differs(from: &Version<'_>, to: &Version<'_>) -> bool {
+    to.core.patch != from.core.patch
 }
 
 /// Whether a release of a version with `major` needs an acknowledgement that the owner hasn't given.
@@ -321,11 +350,14 @@ fn differ_below_minor(from: &Version<'_>, to: &Version<'_>) -> bool {
 /// Gleam warns against versions below 1.0, so a 0.x release needs `allow_version_zero`.
 pub fn version_zero_refused(major: u64, acknowledged: bool) -> bool {
     #[cfg(feature = "negative-control-version-zero")]
-    let _ = (major, acknowledged);
-    #[cfg(feature = "negative-control-version-zero")]
-    return false;
+    return negative_control_never_refused(major, acknowledged);
     #[cfg(not(feature = "negative-control-version-zero"))]
     return major == 0 && !acknowledged;
+}
+
+#[cfg(feature = "negative-control-version-zero")]
+fn negative_control_never_refused(_major: u64, _acknowledged: bool) -> bool {
+    false
 }
 
 #[cfg(kani)]

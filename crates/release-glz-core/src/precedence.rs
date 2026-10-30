@@ -151,7 +151,7 @@ impl Version<'_> {
 /// The precedence of `left` relative to `right`.
 pub fn compare(left: &Version<'_>, right: &Version<'_>) -> Ordering {
     #[cfg(feature = "negative-control-prerelease-first")]
-    return compare_prereleases(left.pre, right.pre).then_with(|| left.core.cmp(&right.core));
+    return negative_control_prerelease_first(left, right);
     #[cfg(not(feature = "negative-control-prerelease-first"))]
     return left
         .core
@@ -159,17 +159,22 @@ pub fn compare(left: &Version<'_>, right: &Version<'_>) -> Ordering {
         .then_with(|| compare_prereleases(left.pre, right.pre));
 }
 
+#[cfg(feature = "negative-control-prerelease-first")]
+fn negative_control_prerelease_first(left: &Version<'_>, right: &Version<'_>) -> Ordering {
+    compare_prereleases(left.pre, right.pre).then_with(|| left.core.cmp(&right.core))
+}
+
 fn compare_prereleases(left: Pre<'_>, right: Pre<'_>) -> Ordering {
     match (left, right) {
         (Pre::Stable, Pre::Stable) => Ordering::Equal,
-        (Pre::Stable, _) => STABLE_AFTER_PRERELEASE,
-        (_, Pre::Stable) => STABLE_AFTER_PRERELEASE.reverse(),
+        (Pre::Stable, _) => stable_after_prerelease(),
+        (_, Pre::Stable) => stable_after_prerelease().reverse(),
         _ => {
             let mut left = left.identifiers();
             let mut right = right.identifiers();
             loop {
                 match (left.next(), right.next()) {
-                    (None, None) => return SAME_IDENTIFIERS,
+                    (None, None) => return same_identifiers(),
                     (None, Some(_)) => return Ordering::Less,
                     (Some(_), None) => return Ordering::Greater,
                     (Some(left), Some(right)) => match compare_identifiers(left, right) {
@@ -183,19 +188,30 @@ fn compare_prereleases(left: Pre<'_>, right: Pre<'_>) -> Ordering {
 }
 
 /// A stable version's precedence relative to a prerelease of its core.
-const STABLE_AFTER_PRERELEASE: Ordering =
-    if cfg!(feature = "negative-control-stable-before-prerelease") {
-        Ordering::Less
-    } else {
-        Ordering::Greater
-    };
+fn stable_after_prerelease() -> Ordering {
+    #[cfg(feature = "negative-control-stable-before-prerelease")]
+    return negative_control_stable_first();
+    #[cfg(not(feature = "negative-control-stable-before-prerelease"))]
+    return Ordering::Greater;
+}
+
+#[cfg(feature = "negative-control-stable-before-prerelease")]
+fn negative_control_stable_first() -> Ordering {
+    Ordering::Less
+}
 
 /// The precedence of two prereleases with the same identifiers.
-const SAME_IDENTIFIERS: Ordering = if cfg!(feature = "negative-control-equal-prereleases") {
+fn same_identifiers() -> Ordering {
+    #[cfg(feature = "negative-control-equal-prereleases")]
+    return negative_control_unequal();
+    #[cfg(not(feature = "negative-control-equal-prereleases"))]
+    return Ordering::Equal;
+}
+
+#[cfg(feature = "negative-control-equal-prereleases")]
+fn negative_control_unequal() -> Ordering {
     Ordering::Less
-} else {
-    Ordering::Equal
-};
+}
 
 /// One dot-separated identifier of a prerelease.
 #[derive(Debug, Clone, Copy)]
@@ -222,10 +238,7 @@ impl<'a> Identifier<'a> {
 /// Two numbers too large for 64 bits compare by length first, which is their value order because a valid one has no leading zero.
 fn compare_identifiers(left: Identifier<'_>, right: Identifier<'_>) -> Ordering {
     match (left, right) {
-        #[cfg(feature = "negative-control-reverse-numbers")]
-        (Identifier::Number(left), Identifier::Number(right)) => right.cmp(&left),
-        #[cfg(not(feature = "negative-control-reverse-numbers"))]
-        (Identifier::Number(left), Identifier::Number(right)) => left.cmp(&right),
+        (Identifier::Number(left), Identifier::Number(right)) => compare_numbers(left, right),
         (Identifier::Number(_), Identifier::LargeNumber(_)) => Ordering::Less,
         (Identifier::LargeNumber(_), Identifier::Number(_)) => Ordering::Greater,
         (Identifier::LargeNumber(left), Identifier::LargeNumber(right)) => {
@@ -237,6 +250,18 @@ fn compare_identifiers(left: Identifier<'_>, right: Identifier<'_>) -> Ordering 
         }
         (Identifier::Text(left), Identifier::Text(right)) => left.cmp(right),
     }
+}
+
+fn compare_numbers(left: u64, right: u64) -> Ordering {
+    #[cfg(feature = "negative-control-reverse-numbers")]
+    return negative_control_reversed(left, right);
+    #[cfg(not(feature = "negative-control-reverse-numbers"))]
+    return left.cmp(&right);
+}
+
+#[cfg(feature = "negative-control-reverse-numbers")]
+fn negative_control_reversed(left: u64, right: u64) -> Ordering {
+    right.cmp(&left)
 }
 
 /// The identifiers of a prerelease, in order.

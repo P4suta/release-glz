@@ -24,17 +24,27 @@ pub fn conventional_bump(subject: &str, body: &str) -> Bump {
 /// Whether a body line opens a breaking-change footer, which Conventional Commits spells only in uppercase.
 fn breaking_footer(line: &str) -> bool {
     #[cfg(feature = "negative-control-breaking-footer")]
-    return line.starts_with("BREAKING CHANGE:");
+    return negative_control_spaced_footer_only(line);
     #[cfg(not(feature = "negative-control-breaking-footer"))]
     return line.starts_with("BREAKING CHANGE:") || line.starts_with("BREAKING-CHANGE:");
+}
+
+#[cfg(feature = "negative-control-breaking-footer")]
+fn negative_control_spaced_footer_only(line: &str) -> bool {
+    line.starts_with("BREAKING CHANGE:")
 }
 
 /// Whether a commit type is `name` in any letter case.
 fn names(kind: &str, name: &str) -> bool {
     #[cfg(feature = "negative-control-commit-type-case")]
-    return kind == name;
+    return negative_control_exact_case(kind, name);
     #[cfg(not(feature = "negative-control-commit-type-case"))]
     return kind.eq_ignore_ascii_case(name);
+}
+
+#[cfg(feature = "negative-control-commit-type-case")]
+fn negative_control_exact_case(kind: &str, name: &str) -> bool {
+    kind == name
 }
 
 #[cfg(kani)]
