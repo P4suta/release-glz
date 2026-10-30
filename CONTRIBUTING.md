@@ -28,7 +28,9 @@ Release decisions that depend only on their inputs live in `crates/release-glz-c
 Kani proves its `#[kani::proof]` harnesses for every admitted input, and each harness carries cover properties that show its assumptions leave inputs to check.
 `cargo xtask proofs` builds the image that `verification/kani.Dockerfile` pins to Kani 0.68.0, and it runs Kani from a frozen copy of the sources with the bounded runner's limits.
 It audits Kani's JSON report with the committed inventory in `xtask/src/inventory.rs`, which names every harness and its cover count.
-A run counts only when every listed harness verified and no other ran, and when every owned assertion succeeded.
+The harnesses of each module get their own bounded run.
+Before the first run, a build that compiles every harness without verifying any lets the gate refuse a harness that the inventory doesn't list.
+A run counts only when every listed harness of its module verified and no other ran, and when every owned assertion succeeded.
 Each harness must also reach exactly its listed covers, and the tool versions and target must be the pinned ones.
 The audit also refuses a source that changed during the run, and `crates/assurance-core` decides admission from what the audit found, under its own Kani proofs.
 
