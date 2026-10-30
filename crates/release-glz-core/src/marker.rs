@@ -21,13 +21,28 @@ pub fn write_marker(values: [&[u8]; 6], mut sink: impl FnMut(&[u8])) {
     sink(MARKER_PREFIX.as_bytes());
     for (index, (key, value)) in MARKER_KEYS.iter().zip(values).enumerate() {
         if index > 0 {
-            sink(b" ");
+            sink(field_separator());
         }
         sink(key.as_bytes());
         sink(b"=");
         sink(value);
     }
     sink(MARKER_SUFFIX.as_bytes());
+}
+
+/// The bytes between two fields of a marker.
+fn field_separator() -> &'static [u8] {
+    #[cfg(feature = "negative-control-fields-run-together")]
+    if let Some(separator) = negative_control_fields_run_together() {
+        return separator;
+    }
+    b" "
+}
+
+/// Writes the fields of a marker with nothing between them.
+#[cfg(feature = "negative-control-fields-run-together")]
+fn negative_control_fields_run_together() -> Option<&'static [u8]> {
+    Some(b"")
 }
 
 /// Feed `sink` `text` with every `<` written as `&lt;`, so the text can't open an HTML comment, a tag, or a marker.
@@ -56,12 +71,27 @@ fn negative_control_inert_less_than(text: &[u8], sink: &mut impl FnMut(&[u8])) -
 
 /// The offset of the marker that ends `body`, whose trailing whitespace the caller removed, when no other marker starts before it.
 pub fn marker_start(body: &[u8]) -> Option<usize> {
-    let start = last_occurrence(body, MARKER_PREFIX.as_bytes())?;
-    let marker_end = first_occurrence(&body[start..], MARKER_SUFFIX.as_bytes())?
+    #[cfg(feature = "negative-control-marker-at-start")]
+    if let Some(start) = negative_control_marker_at_start() {
+        return start;
+    }
+    block_at_end(body, MARKER_PREFIX.as_bytes(), MARKER_SUFFIX.as_bytes())
+}
+
+/// Finds a marker at the start of every body, an empty one too.
+#[cfg(feature = "negative-control-marker-at-start")]
+fn negative_control_marker_at_start() -> Option<Option<usize>> {
+    Some(Some(0))
+}
+
+/// The offset of the block that `open` starts and `close` ends at the end of `body`, when no other `open` starts before it.
+fn block_at_end(body: &[u8], open: &[u8], close: &[u8]) -> Option<usize> {
+    let start = last_occurrence(body, open)?;
+    let block_end = first_occurrence(&body[start..], close)?
         .checked_add(start)?
-        .checked_add(MARKER_SUFFIX.len())?;
-    let alone = first_occurrence(&body[..start], MARKER_PREFIX.as_bytes()).is_none();
-    (alone && marker_end == body.len()).then_some(start)
+        .checked_add(close.len())?;
+    let alone = first_occurrence(&body[..start], open).is_none();
+    (alone && block_end == body.len()).then_some(start)
 }
 
 /// The values of a marker whose fields are `fields`, in the order of [`MARKER_KEYS`], when they name each key exactly once and nothing else.
@@ -72,8 +102,18 @@ pub fn marker_values<'a>(fields: impl Iterator<Item = &'a [u8]>) -> Option<[&'a 
     for field in fields {
         record(&mut values, field)?;
     }
+    #[cfg(feature = "negative-control-missing-key")]
+    if let Some(values) = negative_control_missing_key(values) {
+        return values;
+    }
     let [package, branch, head, digest, version, intent] = values;
     Some([package?, branch?, head?, digest?, version?, intent?])
+}
+
+/// Gives back an empty value for a key that no field named.
+#[cfg(feature = "negative-control-missing-key")]
+fn negative_control_missing_key(values: [Option<&[u8]>; 6]) -> Option<Option<[&[u8]; 6]>> {
+    Some(Some(values.map(|value| value.unwrap_or(b""))))
 }
 
 /// Record the value of `field` under its key, refusing a field without `=`, an unknown key, and a key seen before.
@@ -145,7 +185,10 @@ fn negative_control_search_stops_short(haystack: &[u8], needle: &[u8]) -> Option
 
 #[cfg(kani)]
 mod proofs {
-    use super::{MARKER_KEYS, first_occurrence, last_occurrence, record, write_inert};
+    use super::{
+        MARKER_KEYS, block_at_end, first_occurrence, last_occurrence, marker_start, marker_values,
+        record, write_inert, write_marker,
+    };
 
     /// The longest text the inert proof covers.
     const TEXT: usize = 3;
@@ -317,5 +360,165 @@ mod proofs {
             "a field must be recorded only under a new known key",
         );
         kani::cover!(accepted && slot == 4 && field.len() == FIELD);
+    }
+
+    /// Whether `write_marker` feeds its sink exactly `expected`, part by part, for `values`.
+    fn writes(values: [&[u8]; 6], expected: &[&[u8]; 25]) -> bool {
+        let mut parts = 0;
+        let mut matched = true;
+        write_marker(values, |part| {
+            matched &= expected.get(parts).is_some_and(|wanted| *wanted == part);
+            parts += 1;
+        });
+        matched && parts == expected.len()
+    }
+
+    /// A marker is the prefix, each key with `=` and its value in the order release-glz writes them, one space between two fields, and the suffix.
+    ///
+    /// Every value is one byte of any value, or every value is empty, and the expected parts are written out here instead of read from the keys.
+    #[kani::proof]
+    #[kani::unwind(30)]
+    fn a_marker_writes_each_key_and_value_in_order() {
+        let bytes: [u8; 6] = kani::any();
+        let [package, branch, head, digest, version, intent]: [&[u8]; 6] =
+            core::array::from_fn(|index| &bytes[index..=index]);
+        let filled = writes(
+            [package, branch, head, digest, version, intent],
+            &[
+                b"<!-- release-glz:managed ",
+                b"package",
+                b"=",
+                package,
+                b" ",
+                b"branch",
+                b"=",
+                branch,
+                b" ",
+                b"head",
+                b"=",
+                head,
+                b" ",
+                b"digest",
+                b"=",
+                digest,
+                b" ",
+                b"version",
+                b"=",
+                version,
+                b" ",
+                b"intent",
+                b"=",
+                intent,
+                b" -->",
+            ],
+        );
+        let empty = writes(
+            [b""; 6],
+            &[
+                b"<!-- release-glz:managed ",
+                b"package",
+                b"=",
+                b"",
+                b" ",
+                b"branch",
+                b"=",
+                b"",
+                b" ",
+                b"head",
+                b"=",
+                b"",
+                b" ",
+                b"digest",
+                b"=",
+                b"",
+                b" ",
+                b"version",
+                b"=",
+                b"",
+                b" ",
+                b"intent",
+                b"=",
+                b"",
+                b" -->",
+            ],
+        );
+        kani::assert(
+            filled && empty,
+            "a marker must write each key and value in order",
+        );
+        kani::cover!(bytes[0] == b'=');
+    }
+
+    /// `marker_start` finds the block that the marker's own texts open and close, which the harness below decides for short texts.
+    ///
+    /// The marker's texts are long, and a search over a body that holds them exhausts the solver, so the harness pins an empty body and the shortest marker.
+    #[kani::proof]
+    #[kani::unwind(31)]
+    fn the_marker_is_found_with_its_own_texts() {
+        let found = marker_start(b"<!-- release-glz:managed  -->");
+        kani::assert(
+            marker_start(b"").is_none() && found == Some(0),
+            "the marker must be found with its own texts",
+        );
+        kani::cover!(found.is_some());
+    }
+
+    /// A body has the block that ends it exactly when that block's opening text occurs nowhere earlier and its closing text first follows the opening at the end.
+    ///
+    /// Every body of up to five arbitrary bytes, with a one-byte opening and closing text, against the definitions of occurrence.
+    #[kani::proof]
+    #[kani::unwind(7)]
+    fn the_marker_that_ends_a_body_is_found_after_inert_text() {
+        let bytes: [u8; 5] = kani::any();
+        let length: usize = kani::any_where(|length| *length <= bytes.len());
+        let body = &bytes[..length];
+        let (open, close): (&[u8], &[u8]) = (b"<", b">");
+        let mut last_open = None;
+        let mut opens = 0;
+        for at in 0..length {
+            if occurs(body, open, at) {
+                last_open = Some(at);
+                opens += 1;
+            }
+        }
+        let expected = last_open.filter(|&start| {
+            let mut first_close = None;
+            for at in start..length {
+                if first_close.is_none() && occurs(body, close, at) {
+                    first_close = Some(at);
+                }
+            }
+            opens == 1 && first_close == Some(length - 1)
+        });
+        let found = block_at_end(body, open, close);
+        kani::assert(
+            found == expected,
+            "the marker that ends a body must be found after inert text",
+        );
+        kani::cover!(found.is_some_and(|start| start > 0));
+    }
+
+    /// The fields of a marker give back each value in the order of the keys, in any order of the fields, and fields that miss a key give back nothing.
+    ///
+    /// Fixed fields in two orders, and the same fields without their last one.
+    #[kani::proof]
+    #[kani::unwind(10)]
+    fn the_fields_of_a_marker_give_back_each_value() {
+        let fields: [&[u8]; 6] = [
+            b"package=p",
+            b"branch=b",
+            b"head=h",
+            b"digest=d",
+            b"version=v",
+            b"intent=i",
+        ];
+        let values: [&[u8]; 6] = [b"p", b"b", b"h", b"d", b"v", b"i"];
+        kani::assert(
+            marker_values(fields.iter().copied()) == Some(values)
+                && marker_values(fields.iter().rev().copied()) == Some(values)
+                && marker_values(fields[..5].iter().copied()).is_none(),
+            "the fields of a marker must give back each value",
+        );
+        kani::cover!(marker_values(fields.iter().copied()).is_some());
     }
 }

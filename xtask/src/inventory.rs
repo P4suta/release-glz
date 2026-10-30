@@ -46,7 +46,7 @@ const fn control(
 }
 
 /// Every harness of the proof packages, with its cover count.
-pub const HARNESSES: [Harness; 76] = [
+pub const HARNESSES: [Harness; 80] = [
     harness(
         "proofs::a_proof_run_is_admitted_only_when_every_expected_harness_verified",
         2,
@@ -101,6 +101,19 @@ pub const HARNESSES: [Harness; 76] = [
     harness("marker::proofs::the_last_occurrence_is_the_latest_match", 1),
     harness(
         "marker::proofs::a_field_is_recorded_only_under_a_new_known_key",
+        1,
+    ),
+    harness(
+        "marker::proofs::a_marker_writes_each_key_and_value_in_order",
+        1,
+    ),
+    harness(
+        "marker::proofs::the_marker_that_ends_a_body_is_found_after_inert_text",
+        1,
+    ),
+    harness("marker::proofs::the_marker_is_found_with_its_own_texts", 1),
+    harness(
+        "marker::proofs::the_fields_of_a_marker_give_back_each_value",
         1,
     ),
     harness(
@@ -312,7 +325,7 @@ const CORE: &str = "release-glz-core";
 const ASSURANCE: &str = "assurance-core";
 
 /// Every negative control, each of which has to fail exactly its harness's assertion.
-pub const CONTROLS: [Control; 82] = [
+pub const CONTROLS: [Control; 86] = [
     control(
         ASSURANCE,
         "negative-control-incomplete-run",
@@ -432,6 +445,30 @@ pub const CONTROLS: [Control; 82] = [
         "negative-control-duplicate-keys",
         "marker::proofs::a_field_is_recorded_only_under_a_new_known_key",
         "a field must be recorded only under a new known key",
+    ),
+    control(
+        CORE,
+        "negative-control-fields-run-together",
+        "marker::proofs::a_marker_writes_each_key_and_value_in_order",
+        "a marker must write each key and value in order",
+    ),
+    control(
+        CORE,
+        "negative-control-search-skips-start",
+        "marker::proofs::the_marker_that_ends_a_body_is_found_after_inert_text",
+        "the marker that ends a body must be found after inert text",
+    ),
+    control(
+        CORE,
+        "negative-control-marker-at-start",
+        "marker::proofs::the_marker_is_found_with_its_own_texts",
+        "the marker must be found with its own texts",
+    ),
+    control(
+        CORE,
+        "negative-control-missing-key",
+        "marker::proofs::the_fields_of_a_marker_give_back_each_value",
+        "the fields of a marker must give back each value",
     ),
     control(
         CORE,
