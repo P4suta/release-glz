@@ -30,6 +30,9 @@ The owner keeps mutation campaigns off Actions because of their cost.
   The list names each mutant by file, function, original text, and replacement, so edits elsewhere in a file leave it valid.
   The campaign refuses an entry that no longer survives.
 - The campaign writes a receipt with the digest of the core sources, the tool releases, and the outcome of every mutant, which the owner commits as [`verification/proof-mutants.json`](../../verification/proof-mutants.json).
+- A campaign may run as shards, each over the mutants whose place in the listing leaves its index after division by the number of shards.
+  Each shard proves the unmutated core on its own.
+  A merge joins the shards' receipts only when they come from the same sources, tools, and listing and try every mutant exactly once.
 
 The release gate runs `cargo xtask proof-mutants check`.
 It refuses a receipt for other core sources or other tool releases, a receipt without a detected mutant, and a receipt whose survivors differ from the equivalent list.
@@ -42,5 +45,6 @@ It refuses a receipt for other core sources or other tool releases, a receipt wi
 - An unviable mutant counts as neither detected nor survived, because the compiler rejects it before any proof runs.
 - Rejected: the campaign on Actions.
   It takes the time of one Kani run per mutant, which the owner keeps on owner machines.
+- Shards spend one proof of the unmutated core each, and in return a campaign over hundreds of mutants finishes in hours instead of most of a day.
 - Rejected: cargo-mutants with the test suite as its oracle.
   The core crates have no tests, and their harnesses are the oracle that matters.

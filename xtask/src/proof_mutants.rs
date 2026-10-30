@@ -8,6 +8,7 @@ use std::ops::RangeInclusive;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::container::{Container, Exit, Failure, Mounts};
 use crate::inventory::HARNESSES;
@@ -305,8 +306,70 @@ fn try_mutant(
     Ok(classify(&exit, report.as_ref()))
 }
 
-/// Run every mutant of the core crates through the harnesses, and write the receipt of the campaign.
-pub fn run(root: &Path) -> Result<(), Failure> {
+/// One part of a campaign: the mutants whose position in the campaign's listing leaves `index` after division by `count`.
+///
+/// Shards run side by side in their own containers, and `merge` joins their verdicts into one receipt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Shard {
+    index: usize,
+    count: usize,
+}
+
+impl Shard {
+    /// The shard with `index` among `count` shards, which needs `index` below `count`.
+    pub fn new(index: usize, count: usize) -> Result<Self, Failure> {
+        if index >= count {
+            return Err(Failure::new(format!(
+                "a campaign of {count} shards has no shard {index}"
+            )));
+        }
+        Ok(Self { index, count })
+    }
+
+    /// Whether this shard tries the mutant at `position` of the listing.
+    fn holds(self, position: usize) -> bool {
+        position % self.count == self.index
+    }
+}
+
+/// The verdict on the mutant at `position` of the campaign's listing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Placed {
+    position: usize,
+    #[serde(flatten)]
+    verdict: Verdict,
+}
+
+/// What one shard of a campaign found, which `merge` joins with the other shards' findings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Partial {
+    core: String,
+    kani: String,
+    cargo_mutants: String,
+    shard: Shard,
+    /// How many mutants the whole campaign tries.
+    mutants: usize,
+    /// The digest of their names in listing order, so every shard tried the same listing.
+    listing: String,
+    verdicts: Vec<Placed>,
+}
+
+/// The digest of mutant `names` in order, each framed by its length.
+fn listing_digest<'a>(names: impl Iterator<Item = &'a str>) -> String {
+    let mut digest = Sha256::new();
+    for name in names {
+        digest.update((name.len() as u64).to_le_bytes());
+        digest.update(name.as_bytes());
+    }
+    digest
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// Run every mutant of the core crates through the harnesses, or the mutants of one shard, and write the receipt of the campaign or of the shard.
+pub fn run(root: &Path, shard: Option<Shard>) -> Result<(), Failure> {
     let evidence = crate::container::evidence_directory(root, "proof-mutants")?;
     println!("mutation evidence: {}", evidence.display());
     let source = SourceSnapshot::capture(root, &evidence)?;
@@ -343,15 +406,22 @@ pub fn run(root: &Path) -> Result<(), Failure> {
         evidence: &evidence,
         network: true,
     };
+    let mut candidates = Vec::new();
+    for mutant in &listed {
+        let text = fs::read_to_string(source.path().join(&mutant.file)).map_err(Failure::io)?;
+        if mutable(mutant, &text) {
+            candidates.push((mutant, text));
+        }
+    }
+    let listing = listing_digest(candidates.iter().map(|(mutant, _)| mutant.name.as_str()));
     let mut verdicts = Vec::new();
     let mut inconclusive = Vec::new();
-    for (index, mutant) in listed.iter().enumerate() {
-        let path = work.join(&mutant.file);
-        let text = fs::read_to_string(source.path().join(&mutant.file)).map_err(Failure::io)?;
-        if !mutable(mutant, &text) {
+    for (position, (mutant, text)) in candidates.iter().enumerate() {
+        if shard.is_some_and(|shard| !shard.holds(position)) {
             continue;
         }
-        let (mutated, original) = apply(&text, mutant.span, &mutant.replacement)?;
+        let path = work.join(&mutant.file);
+        let (mutated, original) = apply(text, mutant.span, &mutant.replacement)?;
         let key = Key {
             file: mutant.file.clone(),
             function: mutant
@@ -370,40 +440,37 @@ pub fn run(root: &Path) -> Result<(), Failure> {
                 &working,
                 &mutant.package,
                 filter,
-                &format!("{index:03}-{attempt:02}"),
+                &format!("{position:03}-{attempt:02}"),
             )?;
             if outcome != Run::Proved {
                 break;
             }
         }
-        fs::write(&path, &text).map_err(Failure::io)?;
+        fs::write(&path, text).map_err(Failure::io)?;
         println!("{}: {outcome:?}", mutant.name);
+        let verdict = |outcome, detected_by| Verdict {
+            key,
+            outcome,
+            detected_by,
+        };
         match outcome {
-            Run::Detected(harness) => verdicts.push(Verdict {
-                key,
-                outcome: Outcome::Detected,
-                detected_by: Some(harness),
+            Run::Detected(harness) => verdicts.push(Placed {
+                position,
+                verdict: verdict(Outcome::Detected, Some(harness)),
             }),
-            Run::Unviable => verdicts.push(Verdict {
-                key,
-                outcome: Outcome::Unviable,
-                detected_by: None,
+            Run::Unviable => verdicts.push(Placed {
+                position,
+                verdict: verdict(Outcome::Unviable, None),
             }),
-            Run::Proved => verdicts.push(Verdict {
-                key,
-                outcome: Outcome::Survived,
-                detected_by: None,
+            Run::Proved => verdicts.push(Placed {
+                position,
+                verdict: verdict(Outcome::Survived, None),
             }),
             Run::Inconclusive(reason) => inconclusive.push(format!("{}: {reason}", mutant.name)),
         }
         // The verdicts so far stay in the evidence, so a campaign that stops early still shows what it found.
         let progress = serde_json::json!({ "mutants": &verdicts, "inconclusive": &inconclusive });
-        fs::write(
-            evidence.join("verdicts.json"),
-            serde_json::to_vec_pretty(&progress)
-                .map_err(|error| Failure::new(error.to_string()))?,
-        )
-        .map_err(Failure::io)?;
+        write_json(&evidence.join("verdicts.json"), &progress)?;
     }
     if !inconclusive.is_empty() {
         return Err(Failure::new(format!(
@@ -415,18 +482,119 @@ pub fn run(root: &Path) -> Result<(), Failure> {
     if !source.matches(root)? {
         return Err(Failure::new("the sources changed during the campaign"));
     }
-    let receipt = Receipt {
+    let partial = Partial {
         core,
         kani: KANI_VERSION.to_owned(),
         cargo_mutants: MUTANTS_VERSION.to_owned(),
-        mutants: verdicts,
+        shard: shard.unwrap_or(Shard { index: 0, count: 1 }),
+        mutants: candidates.len(),
+        listing,
+        verdicts,
     };
+    if let Some(shard) = shard {
+        let written = evidence.join(format!(
+            "proof-mutants-shard-{}-of-{}.json",
+            shard.index, shard.count
+        ));
+        write_json(&written, &partial)?;
+        println!(
+            "shard {}/{} tried {} of {} mutants; merge the receipts of every shard with `cargo xtask proof-mutants merge`: {}",
+            shard.index,
+            shard.count,
+            partial.verdicts.len(),
+            partial.mutants,
+            written.display()
+        );
+        return Ok(());
+    }
+    let receipt = combine(vec![partial], &digest_of(root, &CORE)?)?;
+    finish(root, &evidence, &receipt)
+}
+
+/// Join the receipts of every shard of one campaign, read from `paths`, into the receipt of the campaign.
+pub fn merge(root: &Path, paths: &[&str]) -> Result<(), Failure> {
+    let mut partials = Vec::new();
+    for path in paths {
+        let text = fs::read_to_string(path).map_err(Failure::io)?;
+        partials.push(
+            serde_json::from_str::<Partial>(&text)
+                .map_err(|error| Failure::new(format!("{path} is no shard receipt: {error}")))?,
+        );
+    }
+    let receipt = combine(partials, &digest_of(root, &CORE)?)?;
+    let evidence = crate::container::evidence_directory(root, "proof-mutants")?;
+    finish(root, &evidence, &receipt)
+}
+
+/// The receipt of a campaign over the core sources with the digest `core`, from the findings of all its shards.
+///
+/// Every shard has to come from the same sources, tools, and listing, each shard exactly once, and together they have to try every mutant exactly once.
+fn combine(partials: Vec<Partial>, core: &str) -> Result<Receipt, Failure> {
+    let first = partials
+        .first()
+        .ok_or_else(|| Failure::new("name the receipt of every shard"))?;
+    let (count, mutants, listing) = (first.shard.count, first.mutants, first.listing.clone());
+    let (kani, cargo_mutants) = (first.kani.clone(), first.cargo_mutants.clone());
+    let mut shards = BTreeSet::new();
+    let mut placed = vec![None; mutants];
+    for partial in partials {
+        if partial.core != core {
+            return Err(Failure::new(
+                "a shard covers other core sources than these, so its campaign has to run again",
+            ));
+        }
+        if (&partial.kani, &partial.cargo_mutants) != (&kani, &cargo_mutants)
+            || (partial.shard.count, partial.mutants, &partial.listing)
+                != (count, mutants, &listing)
+        {
+            return Err(Failure::new(
+                "the shards come from different tools or listings",
+            ));
+        }
+        if !shards.insert(partial.shard.index) {
+            return Err(Failure::new(format!(
+                "shard {}/{count} appears twice",
+                partial.shard.index
+            )));
+        }
+        for Placed { position, verdict } in partial.verdicts {
+            let slot = placed
+                .get_mut(position)
+                .filter(|slot| partial.shard.holds(position) && slot.is_none())
+                .ok_or_else(|| {
+                    Failure::new(format!(
+                        "shard {}/{count} names mutant {position}, which isn't its own or appears twice",
+                        partial.shard.index
+                    ))
+                })?;
+            *slot = Some(verdict);
+        }
+    }
+    if shards.len() != count {
+        return Err(Failure::new(format!(
+            "the campaign has {count} shards, but only {} receipts",
+            shards.len()
+        )));
+    }
+    let mutants = placed
+        .into_iter()
+        .enumerate()
+        .map(|(position, verdict)| {
+            verdict.ok_or_else(|| Failure::new(format!("no shard tried mutant {position}")))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Receipt {
+        core: core.to_owned(),
+        kani,
+        cargo_mutants,
+        mutants,
+    })
+}
+
+/// Write the campaign's receipt into `evidence`, report its outcomes, and check it against the equivalent list.
+fn finish(root: &Path, evidence: &Path, receipt: &Receipt) -> Result<(), Failure> {
     let written = evidence.join("proof-mutants.json");
-    fs::write(
-        &written,
-        serde_json::to_vec_pretty(&receipt).map_err(|error| Failure::new(error.to_string()))?,
-    )
-    .map_err(Failure::io)?;
+    write_json(&written, receipt)?;
     let count = |outcome| {
         receipt
             .mutants
@@ -442,9 +610,17 @@ pub fn run(root: &Path) -> Result<(), Failure> {
         written.display()
     );
     // The receipt holds every outcome either way, so a survivor that the list later explains needs no new campaign.
-    verify_receipt(&receipt, &receipt.core, &equivalent_keys(root)?)?;
+    verify_receipt(receipt, &receipt.core, &equivalent_keys(root)?)?;
     println!("commit the receipt as {RECEIPT}");
     Ok(())
+}
+
+fn write_json(path: &Path, value: &impl Serialize) -> Result<(), Failure> {
+    fs::write(
+        path,
+        serde_json::to_vec_pretty(value).map_err(|error| Failure::new(error.to_string()))?,
+    )
+    .map_err(Failure::io)
 }
 
 /// The keys of the committed equivalent list, refusing an entry without a reason.
@@ -536,9 +712,9 @@ mod tests {
     use std::path::Path;
 
     use super::{
-        CORE, Function, KaniModule, Key, Listed, Module, Outcome, Position, Receipt, Run, Span,
-        Verdict, apply, classify, filters_for, kani_modules, module_harnesses, mutable,
-        verify_receipt,
+        CORE, Function, KaniModule, Key, Listed, Module, Outcome, Partial, Placed, Position,
+        Receipt, Run, Shard, Span, Verdict, apply, classify, combine, filters_for, kani_modules,
+        listing_digest, module_harnesses, mutable, verify_receipt,
     };
     use crate::container::Exit;
     use crate::proof_report::{KANI_VERSION, ProofReport};
@@ -781,5 +957,96 @@ mod tests {
         let mut old = good.clone();
         old.cargo_mutants = "26.0.0".to_owned();
         assert!(verify_receipt(&old, "digest", &equivalent).is_err());
+    }
+
+    #[test]
+    fn a_shard_names_its_part_of_the_mutants_and_every_mutant_falls_in_one_shard() {
+        assert_eq!(Shard::new(0, 1).unwrap(), Shard { index: 0, count: 1 });
+        assert_eq!(Shard::new(2, 3).unwrap(), Shard { index: 2, count: 3 });
+        for (index, count) in [(3, 3), (1, 0), (0, 0)] {
+            assert!(Shard::new(index, count).is_err(), "{index}/{count}");
+        }
+        for position in 0..20 {
+            let holders = (0..4)
+                .filter(|index| {
+                    Shard {
+                        index: *index,
+                        count: 4,
+                    }
+                    .holds(position)
+                })
+                .count();
+            assert_eq!(holders, 1, "{position}");
+        }
+    }
+
+    /// The findings of a shard of `count` over `mutants` mutants, with the outcome of each of its positions.
+    fn partial(index: usize, count: usize, mutants: usize, core: &str) -> Partial {
+        let shard = Shard { index, count };
+        Partial {
+            core: core.to_owned(),
+            kani: KANI_VERSION.to_owned(),
+            cargo_mutants: "27.1.0".to_owned(),
+            shard,
+            mutants,
+            listing: listing_digest(["a", "b", "c"].into_iter()),
+            verdicts: (0..mutants)
+                .filter(|position| shard.holds(*position))
+                .map(|position| Placed {
+                    position,
+                    verdict: Verdict {
+                        key: key(&position.to_string()),
+                        outcome: Outcome::Detected,
+                        detected_by: Some("a harness".to_owned()),
+                    },
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn the_shards_of_a_campaign_join_into_its_receipt_only_when_they_try_each_mutant_once() {
+        let joined = combine(
+            vec![partial(1, 2, 5, "digest"), partial(0, 2, 5, "digest")],
+            "digest",
+        )
+        .unwrap();
+        let originals = joined
+            .mutants
+            .iter()
+            .map(|verdict| verdict.key.original.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(originals, ["0", "1", "2", "3", "4"]);
+
+        let missing = combine(vec![partial(0, 2, 5, "digest")], "digest");
+        assert!(missing.is_err());
+        let twice = combine(
+            vec![partial(0, 2, 5, "digest"), partial(0, 2, 5, "digest")],
+            "digest",
+        );
+        assert!(twice.is_err());
+        let stale = combine(
+            vec![partial(0, 2, 5, "old"), partial(1, 2, 5, "old")],
+            "digest",
+        );
+        assert!(stale.is_err());
+        let mut other_listing = partial(1, 2, 5, "digest");
+        other_listing.listing = listing_digest(["a", "b"].into_iter());
+        assert!(combine(vec![partial(0, 2, 5, "digest"), other_listing], "digest").is_err());
+        let mut foreign = partial(1, 2, 5, "digest");
+        foreign.verdicts[0].position = 0;
+        assert!(combine(vec![partial(0, 2, 5, "digest"), foreign], "digest").is_err());
+        let mut short = partial(1, 2, 5, "digest");
+        short.verdicts.pop();
+        assert!(combine(vec![partial(0, 2, 5, "digest"), short], "digest").is_err());
+        assert!(combine(Vec::new(), "digest").is_err());
+    }
+
+    #[test]
+    fn the_listing_digest_frames_each_name() {
+        assert_ne!(
+            listing_digest(["ab", "c"].into_iter()),
+            listing_digest(["a", "bc"].into_iter())
+        );
     }
 }

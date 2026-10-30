@@ -47,6 +47,8 @@ It keeps the verdicts so far in its evidence after each mutant, so a campaign th
 Each outcome comes from Kani's audited report: detected, unviable when the mutant doesn't compile, or inconclusive, which fails the campaign.
 A survivor has to appear in `verification/equivalent-mutants.json` with the reason no harness can detect it, and the campaign refuses an entry that no longer survives.
 The campaign writes a receipt with the digest of the core sources and the outcome of every mutant, and the owner commits it as `verification/proof-mutants.json`.
+`cargo xtask proof-mutants --shard K --of N` runs only the mutants whose place in the listing leaves `K` after division by `N`, so `N` shards can run side by side in their own containers.
+`cargo xtask proof-mutants merge` then joins the receipts of the shards, and it refuses them unless they come from the same sources, tools, and listing and try every mutant exactly once.
 The release gate runs `cargo xtask proof-mutants check`, which refuses a receipt for other core sources, so a change to the core needs a new campaign before a release.
 The harnesses over lists of objects and over runs cover releases of at most three objects, and the decisions for single objects and approvals cover every input.
 A run harness lets the world answer each observation with any presence of each object, so its properties hold for every way the world changes between observations.
