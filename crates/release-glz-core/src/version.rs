@@ -79,9 +79,9 @@ impl VersionCore {
 
 /// One more than `value`, or `None` when `value` is `u64::MAX`.
 pub fn increment(value: u64) -> Option<u64> {
-    #[cfg(not(feature = "negative-control"))]
+    #[cfg(not(feature = "negative-control-increment"))]
     return value.checked_add(1);
-    #[cfg(feature = "negative-control")]
+    #[cfg(feature = "negative-control-increment")]
     return Some(value.wrapping_add(1));
 }
 

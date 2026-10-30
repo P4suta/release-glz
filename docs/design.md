@@ -65,6 +65,7 @@ After all preflight validation and required verify hooks, effects are ordered:
 annotated tag, GitHub draft, package, docs, release assets/finalization, and notifications.
 Every invocation observes before applying.
 If an existing package checksum, docs checksum, tag target, release Candidate digest, or asset checksum differs, reconciliation ends in `conflict`; it never replaces it.
+The decisions about each object and about approval live in `release-glz-core`, where Kani proves them, as [decide publication from object presence](adr/decide-publication-from-object-presence.md) records.
 
 An unknown package POST result transitions into observation/polling.
 It cannot authorize a second POST until absence is established.

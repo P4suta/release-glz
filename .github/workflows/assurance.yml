@@ -209,10 +209,12 @@ jobs:
           printf '%s\n' "$NEXTEST_DIR" >> "$GITHUB_PATH"
       - name: Require every viable critical mutation to be caught
         run: >-
-          cargo mutants --in-place --test-tool nextest
+          cargo mutants --in-place --test-tool nextest --test-workspace=true
           --shard "$MUTATION_SHARD" --timeout 300 --cargo-arg=--locked
           --file src/version.rs --file src/registry.rs
           --file src/artifact.rs --file src/reconciler.rs
+          --file crates/release-glz-core/src/publication.rs
+          --file crates/release-glz-core/src/approval.rs
 
   proofs:
     name: Kani proofs of the release core
@@ -237,17 +239,29 @@ jobs:
           expected=$(grep -rho '#\[kani::proof\]' crates/release-glz-core/src | wc -l)
           grep -F "Complete - ${expected} successfully verified harnesses, 0 failures, ${expected} total." kani.log
           awk '/cover properties satisfied/ { if ($2 != $4) { print; unsatisfied = 1 } } END { exit unsatisfied }' kani.log
-      - name: Show that a wrapping increment fails its proof
+      - name: Show that each broken decision fails its proof
         run: |
           set -euo pipefail
-          if cargo kani --package release-glz-core --features negative-control \
-            --harness a_bump_raises_the_core_or_reports_an_overflow > negative-control.log 2>&1; then
-            cat negative-control.log
-            echo "the negative control passed a proof that must fail" >&2
-            exit 1
-          fi
-          grep -F "Failed Checks: a bump must raise the version core" negative-control.log
-          grep -F "VERIFICATION:- FAILED" negative-control.log
+          while IFS='|' read -r feature harness message; do
+            if cargo kani --package release-glz-core --features "$feature" \
+              --harness "$harness" > negative-control.log 2>&1; then
+              cat negative-control.log
+              echo "the $feature negative control passed $harness, which must fail" >&2
+              exit 1
+            fi
+            grep -F "Failed Checks: $message" negative-control.log
+            grep -F "VERIFICATION:- FAILED" negative-control.log
+          done <<'CONTROLS'
+          negative-control-increment|a_bump_raises_the_core_or_reports_an_overflow|a bump must raise the version core
+          negative-control-overwrite|an_object_that_differs_ends_in_a_conflict|an object that differs must end in a conflict
+          negative-control-overwrite|a_conflict_anywhere_stops_the_release|an object that differs must end in a conflict
+          negative-control-republish|an_effect_concerns_only_an_object_the_world_lacks|an effect must concern an object the world lacks
+          negative-control-republish|publishing_an_effect_removes_exactly_that_effect|publishing an effect must remove exactly that effect
+          negative-control-unapproved|no_effect_leaves_without_approval|no effect may leave without approval
+          negative-control-optional-blocks|the_release_is_released_once_no_blocking_effect_remains|a release must be released exactly when no blocking effect remains
+          negative-control-approval|an_approval_needs_every_conjunct_of_its_path|an approval must cover the Candidate digest
+          negative-control-substitution|a_push_approval_never_rests_on_manual_inputs|a push approval must not rest on manual inputs
+          CONTROLS
 
   fuzz:
     name: Bounded parser fuzz smoke
