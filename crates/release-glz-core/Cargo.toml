@@ -78,6 +78,8 @@ negative-control-version-zero = []
 negative-control-breaking-footer = []
 # Matching commit types in lowercase only.
 negative-control-commit-type-case = []
+# Taking a breaking-change marker inside a line as a footer.
+negative-control-marker-anywhere = []
 
 [dependencies]
 serde = { version = "1.0.228", default-features = false, features = [

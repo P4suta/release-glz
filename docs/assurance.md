@@ -174,10 +174,13 @@ The differential tests and the fuzz target compare the core with the `semver` cr
 ### The required step follows the commits and the rules for versions below 1.0
 
 A breaking marker asks for a major release, and otherwise the commit type decides the step in any letter case.
+Only a marker that starts a body line counts, so a marker inside a line leaves the step to the type.
 Below 1.0 a breaking change is a minor release, a release needs its acknowledgement, and the step between two versions names the highest component that changed.
+The commit proofs cover three symbolic ASCII bytes around each marker and unknown types of at most four bytes.
 
 - Kani: `commit::proofs::a_breaking_marker_always_asks_for_a_major_release`
 - Kani: `commit::proofs::the_commit_type_decides_the_step_without_a_breaking_marker`
+- Kani: `commit::proofs::only_a_marker_that_starts_a_line_breaks_the_release`
 - Kani: `selection::proofs::a_breaking_change_below_one_is_a_minor_release`
 - Kani: `selection::proofs::a_zero_major_release_needs_its_acknowledgement`
 - Kani: `selection::proofs::the_step_between_versions_names_the_highest_changed_component`
