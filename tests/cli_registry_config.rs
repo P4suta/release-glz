@@ -967,6 +967,116 @@ fn a_candidate_whose_head_the_release_pr_left_binds_nothing_and_succeeds() {
 }
 
 #[test]
+fn a_merged_release_pr_authorizes_a_candidate_only_with_the_intent_it_recorded() {
+    let temp = tempfile::tempdir().unwrap();
+    let (_registry_listener, registry_url) = bound_listener();
+    let gleam = initialize_initial_package(temp.path(), &registry_url);
+    let source_sha = git_output(temp.path(), &["rev-parse", "HEAD"]);
+    let candidate = temp.path().join("candidate");
+    let rehearse = candidate_command(temp.path(), &gleam)
+        .args([
+            "--output",
+            "json",
+            "rehearse",
+            "--ref",
+            &source_sha,
+            "--out",
+        ])
+        .arg(&candidate)
+        .output()
+        .unwrap();
+    assert_success(&rehearse, "rehearse");
+    let candidate_intent = json(&rehearse)["result"]["intent_digest"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let (refusing, compiler_runs) = refusing_gleam(temp.path());
+
+    for (recorded_intent, state, binding) in [
+        ("e".repeat(64), "blocked", "unbound"),
+        (candidate_intent, "awaiting_approval", "merged"),
+    ] {
+        let (github_listener, github_url) = bound_listener();
+        let head = "c".repeat(40);
+        let (digest, [commit, blob]) = generated_changelog_commit(&"0".repeat(40));
+        let merged = format!(
+            r#"[{{"number":7,"title":"chore(release): widget 1.0.0","body":"<!-- release-glz:managed package=widget branch=release-glz/widget head={head} digest={digest} version=1.0.0 intent={recorded_intent} -->","html_url":"https://github.test/acme/widget/pull/7","merge_commit_sha":"{source_sha}","merged_at":"2026-01-01T00:00:00Z","user":{{"login":"bot"}},"labels":[],"head":{{"ref":"release-glz/widget","sha":"{head}","repo":{{"full_name":"acme/widget","default_branch":"main"}}}},"base":{{"ref":"main","repo":{{"full_name":"acme/widget","default_branch":"main"}}}}}}]"#
+        );
+        let (github_requests, github_server) = serve_recording(
+            github_listener,
+            vec![http_response(200, merged.as_bytes()), commit, blob],
+        );
+
+        let authorized = isolated_command(env!("CARGO_BIN_EXE_release-glz"))
+            .current_dir(temp.path())
+            .args(["--output", "json", "release-pr", "--dry-run", "--candidate"])
+            .arg(&candidate)
+            .env("RELEASE_GLZ_GLEAM", &refusing)
+            .env("GITHUB_TOKEN", "github-value")
+            .env("GITHUB_API_URL", &github_url)
+            .env("GITHUB_GRAPHQL_URL", format!("{github_url}/graphql"))
+            .output()
+            .unwrap();
+        github_server.join().unwrap();
+
+        assert_success(&authorized, "release-pr --dry-run --candidate");
+        let result = &json(&authorized)["result"];
+        assert_eq!(result["state"], state, "{result}");
+        assert_eq!(result["intent_binding"], binding, "{result}");
+        assert_eq!(github_requests.try_iter().count(), 3);
+    }
+    assert!(
+        !compiler_runs.exists(),
+        "release-pr --candidate ran the compiler"
+    );
+}
+
+#[test]
+fn a_release_outside_an_actions_job_stops_before_it_asks_github_for_approval() {
+    let temp = tempfile::tempdir().unwrap();
+    let (_registry_listener, registry_url) = bound_listener();
+    let gleam = initialize_initial_package(temp.path(), &registry_url);
+    let source_sha = git_output(temp.path(), &["rev-parse", "HEAD"]);
+    let candidate = temp.path().join("candidate");
+    let rehearse = candidate_command(temp.path(), &gleam)
+        .args([
+            "--output",
+            "json",
+            "rehearse",
+            "--ref",
+            &source_sha,
+            "--out",
+        ])
+        .arg(&candidate)
+        .output()
+        .unwrap();
+    assert_success(&rehearse, "rehearse");
+    // Nothing listens here, so a run that reached GitHub would fail differently.
+    let (github_listener, github_url) = bound_listener();
+    drop(github_listener);
+
+    let release = candidate_command(temp.path(), &gleam)
+        .args(["--output", "json", "release", "--candidate"])
+        .arg(&candidate)
+        .env("GITHUB_TOKEN", "github-value")
+        .env("GITHUB_API_URL", &github_url)
+        .env("GITHUB_GRAPHQL_URL", format!("{github_url}/graphql"))
+        .output()
+        .unwrap();
+
+    assert_eq!(release.status.code(), Some(3), "{release:?}");
+    let diagnostic = &json(&release)["diagnostics"][0];
+    assert_eq!(diagnostic["code"], "policy_or_approval");
+    assert!(
+        diagnostic["message"]
+            .as_str()
+            .unwrap()
+            .contains("GitHub Actions OIDC request URL"),
+        "{diagnostic}"
+    );
+}
+
+#[test]
 fn top_level_diagnostics_redact_the_configured_registry_credential() {
     let temp = tempfile::tempdir().unwrap();
     let secret = "custom-registry-value-that-must-never-escape";
