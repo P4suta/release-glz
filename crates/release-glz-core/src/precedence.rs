@@ -724,8 +724,9 @@ mod proofs {
         kani::assume(length <= SPELLED);
         let text = &bytes[..length];
         let expected = spelled_train(text);
+        let parsed = Pre::parse(text);
         kani::assert(
-            match (Pre::parse(text), expected) {
+            match (parsed, expected) {
                 (Pre::Train(channel, number), Some((spelled, value))) => {
                     channel == spelled && number == value
                 }
@@ -736,9 +737,11 @@ mod proofs {
             "text must parse as a train exactly when it spells one",
         );
         let channel: Channel = kani::any();
-        assert!(
-            Pre::Other(text).starts_with(channel)
-                == first_identifier_is(text, spelled_label(channel))
+        let names = first_identifier_is(text, spelled_label(channel));
+        assert!(Pre::Other(text).starts_with(channel) == names);
+        kani::assert(
+            parsed.starts_with(channel) == names,
+            "a parsed prerelease must name the channel that its first identifier spells",
         );
         kani::cover!(expected.is_some());
         kani::cover!(expected.is_none() && text.starts_with(b"rc.0") && length > 4);
