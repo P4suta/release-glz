@@ -45,7 +45,8 @@ struct PublicPaths {
 impl PublicPaths {
     fn of(manifest: &Manifest) -> Result<Self> {
         let package = fs::canonicalize(manifest.package_dir())?;
-        let root = match GitRepo::discover(&package) {
+        // Git gets the directory as the manifest names it, since a canonical Windows path carries a prefix that git doesn't read.
+        let root = match GitRepo::discover(manifest.package_dir()) {
             Ok(repository) => fs::canonicalize(repository.root())?,
             Err(_) => package.clone(),
         };
