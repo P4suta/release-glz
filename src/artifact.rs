@@ -9,6 +9,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 use flate2::{Compression, GzBuilder, read::GzDecoder};
+use icu_normalizer::DecomposingNormalizerBorrowed;
 use release_glz_core::{FoldedPaths, PathRefusal, archive_path};
 use sha2::{Digest, Sha256};
 use tar::Archive;
@@ -507,14 +508,24 @@ fn safe_archive_path_value(raw: &[u8]) -> Result<String> {
     }
 }
 
-/// Record a file path of an archive, refusing it when it names the same file or directory as an earlier entry once letter case no longer counts.
+/// Record a file path of an archive, refusing it when it names the same file or directory as an earlier entry once letter case and Unicode normalization no longer count.
 fn claim_folded(folded: &mut FoldedPaths, path: &str) -> Result<()> {
-    folded.claim(path).map_err(|collision| {
+    folded.claim(&fold(path), path).map_err(|collision| {
         anyhow::anyhow!(
-            "archive path `{path}` collides with `{}` once letter case no longer counts",
+            "archive path `{path}` collides with `{}` once letter case and Unicode normalization no longer count",
             collision.earlier()
         )
     })
+}
+
+/// The form under which a file system that ignores letter case and Unicode normalization stores `path`, as the default one on macOS does.
+///
+/// Canonical decomposition comes before and after Unicode's lowercase mapping, and neither moves a `/`.
+fn fold(path: &str) -> String {
+    let decompose = DecomposingNormalizerBorrowed::new_nfd();
+    decompose
+        .normalize(&decompose.normalize(path).to_lowercase())
+        .into_owned()
 }
 
 fn read_entry_contents<R: Read>(

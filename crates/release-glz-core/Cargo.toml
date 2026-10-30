@@ -54,6 +54,8 @@ negative-control-reshape = []
 negative-control-forget-success = []
 # Reporting the state of the newest plan even below what the run already published.
 negative-control-unfloored = []
+# Lowering released to partially released once the run started.
+negative-control-lower-released = []
 # Accepting uppercase hexadecimal digits in a digest or an object id.
 negative-control-hex-case = []
 # Accepting a digest or an object id when any one byte is a digit.
@@ -130,6 +132,26 @@ negative-control-search-skips-start = []
 negative-control-search-stops-short = []
 # Letting a later marker field replace an earlier one with the same key.
 negative-control-duplicate-keys = []
+# Accepting a token at the second it expires.
+negative-control-token-expiry = []
+# Adding the clock skew with wrapping, so a clock near the largest time refuses every token.
+negative-control-token-skew-wrap = []
+# Reading a leading `+` as part of a run attempt.
+negative-control-signed-attempt = []
+# Trusting a host that ends with the runner token zone without a dot before it.
+negative-control-zone-without-dot = []
+# Letting a push consume the Candidate of another run.
+negative-control-push-from-another-run = []
+# Waiting after the last attempt of a request too.
+negative-control-retry-after-last-attempt = []
+# Waiting as long as a busy response asks, however long that is.
+negative-control-uncapped-busy-wait = []
+# Polling again after the last poll of a wait too.
+negative-control-sleep-after-last-poll = []
+# Counting a listed version as visible without the docs it needs.
+negative-control-ready-without-docs = []
+# Reading a signed Retry-After header as a delay.
+negative-control-signed-delay = []
 
 [dependencies]
 serde = { version = "1.0.228", default-features = false, features = [

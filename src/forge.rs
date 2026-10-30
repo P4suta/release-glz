@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use anyhow::{Context, Result, bail};
 use base64::Engine;
 use chrono::Utc;
-use release_glz_core::{MARKER_PREFIX, MARKER_SUFFIX};
+use release_glz_core::{Answer, GITHUB_READS, MARKER_PREFIX, MARKER_SUFFIX, Next, RunRefusal};
 use reqwest::{
     Method, StatusCode,
     header::{CONTENT_TYPE, RETRY_AFTER},
@@ -28,9 +28,6 @@ const GITHUB_API_VERSION: &str = "2026-03-10";
 /// Seconds a single GitHub request may take before it is abandoned.
 const REQUEST_TIMEOUT_SECONDS: u64 = 60;
 
-/// Seconds a `Retry-After` header may ask this client to wait.
-const MAX_RETRY_AFTER_SECONDS: u64 = 30;
-
 /// Size an Actions artifact may reach before it is refused.
 const MAX_ACTIONS_ARTIFACT_BYTES: u64 = GIB;
 
@@ -48,7 +45,6 @@ const HTTPS_PORT: u16 = 443;
 
 const MAX_GITHUB_JSON_BYTES: usize = 4 * 1024 * 1024;
 const MAX_GITHUB_ERROR_BYTES: usize = 64 * 1024;
-const GITHUB_GET_ATTEMPTS: usize = 3;
 const OPEN_PULL_REQUEST_PAGE_SIZE: usize = 100;
 
 /// Files a generated commit changes at most, which bounds the blobs that recognizing one reads.
@@ -77,9 +73,6 @@ const MAX_NAME_LEN: usize = 100;
 
 /// Seconds a GitHub connection may take to open.
 const CONNECT_TIMEOUT_SECONDS: u64 = 10;
-
-/// Milliseconds added to the wait before each repeated GET.
-const GET_RETRY_STEP_MS: u64 = 100;
 
 /// The public GitHub REST API, when `GITHUB_API_URL` names none.
 const DEFAULT_GITHUB_API_URL: &str = "https://api.github.com";
@@ -492,27 +485,45 @@ impl CandidateRun {
         current_run_id: &str,
         candidate_run_id: &str,
     ) -> Result<Self> {
-        match (event_name, current_run_id == candidate_run_id) {
-            ("push", true) => Ok(Self::Current),
-            ("push", false) => {
+        match release_glz_core::candidate_run(
+            event_name.as_bytes(),
+            current_run_id == candidate_run_id,
+        ) {
+            Ok(run) => Ok(run.into()),
+            Err(RunRefusal::PushFromAnotherRun) => {
                 bail!("a push publishes only the Candidate that its own run prepared")
             }
-            ("workflow_dispatch", false) => Ok(Self::Completed),
-            ("workflow_dispatch", true) => {
+            Err(RunRefusal::PromotionOfItsOwnRun) => {
                 bail!(
                     "manual promotion must consume a Candidate from a completed prior prepare run"
                 )
             }
-            (other, _) => {
-                bail!("only a push or a manual promotion publishes a Candidate, not `{other}`")
+            Err(RunRefusal::OtherEvent) => {
+                bail!("only a push or a manual promotion publishes a Candidate, not `{event_name}`")
             }
         }
     }
 
     fn admits(self, status: &str, conclusion: Option<&str>) -> bool {
-        match self {
-            Self::Current => status == "in_progress",
-            Self::Completed => status == "completed" && conclusion == Some("success"),
+        release_glz_core::CandidateRun::from(self)
+            .admits(status.as_bytes(), conclusion.map(str::as_bytes))
+    }
+}
+
+impl From<release_glz_core::CandidateRun> for CandidateRun {
+    fn from(run: release_glz_core::CandidateRun) -> Self {
+        match run {
+            release_glz_core::CandidateRun::Current => Self::Current,
+            release_glz_core::CandidateRun::Completed => Self::Completed,
+        }
+    }
+}
+
+impl From<CandidateRun> for release_glz_core::CandidateRun {
+    fn from(run: CandidateRun) -> Self {
+        match run {
+            CandidateRun::Current => Self::Current,
+            CandidateRun::Completed => Self::Completed,
         }
     }
 }
@@ -1719,32 +1730,26 @@ impl GitHubClient {
     }
 
     async fn get_response(&self, url: &str) -> Result<reqwest::Response> {
-        for attempt in 0..GITHUB_GET_ATTEMPTS {
-            let response = match self.request(Method::GET, url).send().await {
-                Ok(response) => response,
-                Err(_) if attempt + 1 < GITHUB_GET_ATTEMPTS => {
-                    tokio::time::sleep(std::time::Duration::from_millis(
-                        GET_RETRY_STEP_MS * (attempt as u64 + 1),
-                    ))
-                    .await;
-                    continue;
+        let mut attempt = 0;
+        loop {
+            let (answer, got) = match self.request(Method::GET, url).send().await {
+                Ok(response) if !retryable_status(response.status()) => return Ok(response),
+                Ok(response) => {
+                    let asked = retry_after(response.headers());
+                    (Answer::Busy(asked), Ok(response))
                 }
-                Err(error) => return Err(error.into()),
+                Err(error) => (Answer::Unreachable, Err(error)),
             };
-            if !retryable_status(response.status()) || attempt + 1 == GITHUB_GET_ATTEMPTS {
-                return Ok(response);
+            // The core waits only while another attempt follows, so the loop ends within the policy's attempts.
+            match GITHUB_READS.after(attempt, answer) {
+                Next::Stop => return got.map_err(Into::into),
+                Next::Retry(wait) => {
+                    drop(got);
+                    tokio::time::sleep(std::time::Duration::from_millis(wait)).await;
+                    attempt += 1;
+                }
             }
-            let delay = response
-                .headers()
-                .get(RETRY_AFTER)
-                .and_then(|value| value.to_str().ok())
-                .and_then(|value| value.parse::<u64>().ok())
-                .unwrap_or(1_u64 << attempt)
-                .min(MAX_RETRY_AFTER_SECONDS);
-            drop(response);
-            tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
         }
-        unreachable!("GitHub GET retry loop always returns")
     }
 
     async fn post<B: Serialize + ?Sized, T: DeserializeOwned>(
@@ -1921,6 +1926,13 @@ async fn read_limited(mut response: reqwest::Response, limit: usize) -> Result<V
         bytes.extend_from_slice(&chunk);
     }
     Ok(bytes)
+}
+
+/// The seconds that a busy response's `Retry-After` header asks the read to wait, when it names them in digits.
+fn retry_after(headers: &reqwest::header::HeaderMap) -> Option<u64> {
+    headers
+        .get(RETRY_AFTER)
+        .and_then(|value| release_glz_core::delay_seconds(value.as_bytes()))
 }
 
 fn retryable_status(status: StatusCode) -> bool {
@@ -2109,6 +2121,23 @@ mod tests {
             digest: "c".repeat(64),
             version: "2.0.0".into(),
             intent_digest,
+        }
+    }
+
+    /// A `Retry-After` header names a wait only in digits, so a sign or a date leaves the read's default wait.
+    #[test]
+    fn a_busy_read_waits_only_as_long_as_digits_ask() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        assert_eq!(retry_after(&headers), None);
+        for (value, asked) in [
+            ("5", Some(5)),
+            ("0", Some(0)),
+            ("+5", None),
+            ("-5", None),
+            ("Wed, 21 Oct 2015 07:28:00 GMT", None),
+        ] {
+            headers.insert(RETRY_AFTER, value.parse().unwrap());
+            assert_eq!(retry_after(&headers), asked, "{value}");
         }
     }
 

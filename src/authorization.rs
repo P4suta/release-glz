@@ -5,6 +5,7 @@
 
 use anyhow::{Result, bail};
 use base64::Engine;
+use release_glz_core::{OidcUrlKind, OriginRefusal, TokenTimes, WindowRefusal};
 use reqwest::{Client, StatusCode, Url};
 use ring::signature;
 use serde::{Deserialize, Serialize};
@@ -19,8 +20,6 @@ pub const GITHUB_OIDC_ISSUER: &str = "https://token.actions.githubusercontent.co
 ///
 /// A token issued for any other audience is rejected, so a token minted for a different tool cannot authorize a publication.
 pub const RELEASE_GLZ_AUDIENCE: &str = "release-glz";
-/// Seconds of clock difference tolerated when checking a token's validity.
-const CLOCK_SKEW_SECONDS: i64 = 30;
 
 /// Size a compact JWT may reach before it is refused.
 const MAX_COMPACT_JWT_BYTES: usize = 32 * KIB as usize;
@@ -207,13 +206,6 @@ impl GithubOidcVerifier {
     }
 }
 
-#[derive(Clone, Copy)]
-enum OidcUrlKind {
-    Discovery,
-    RunnerToken,
-    Jwks,
-}
-
 fn validate_oidc_url(raw: &str, allow_http_loopback: bool, kind: OidcUrlKind) -> Result<Url> {
     let url = Url::parse(raw).map_err(|_| anyhow::anyhow!("GitHub OIDC URL is invalid"))?;
     if !url.username().is_empty() || url.password().is_some() || url.fragment().is_some() {
@@ -222,28 +214,17 @@ fn validate_oidc_url(raw: &str, allow_http_loopback: bool, kind: OidcUrlKind) ->
     let host = url
         .host_str()
         .ok_or_else(|| anyhow::anyhow!("GitHub OIDC URL has no host"))?;
-    let loopback = url.scheme() == "http" && host_is_loopback_ip(host);
-    if allow_http_loopback && loopback {
-        return Ok(url);
+    match release_glz_core::oidc_origin(
+        kind,
+        url.scheme().as_bytes(),
+        host.as_bytes(),
+        host_is_loopback_ip(host),
+        allow_http_loopback,
+    ) {
+        Ok(()) => Ok(url),
+        Err(OriginRefusal::NotHttps) => bail!("GitHub OIDC URLs must use HTTPS"),
+        Err(OriginRefusal::UntrustedHost) => bail!("GitHub OIDC URL origin is not trusted"),
     }
-    if url.scheme() != "https" {
-        bail!("GitHub OIDC URLs must use HTTPS");
-    }
-    let trusted = match kind {
-        OidcUrlKind::Discovery | OidcUrlKind::Jwks => {
-            host.eq_ignore_ascii_case("token.actions.githubusercontent.com")
-        }
-        OidcUrlKind::RunnerToken => {
-            host.eq_ignore_ascii_case("actions.githubusercontent.com")
-                || host
-                    .to_ascii_lowercase()
-                    .ends_with(".actions.githubusercontent.com")
-        }
-    };
-    if !trusted {
-        bail!("GitHub OIDC URL origin is not trusted");
-    }
-    Ok(url)
 }
 
 async fn checked_body(
@@ -451,7 +432,7 @@ fn validate_github_claims(
     if claims.source_sha != expected.source_sha || !is_full_sha(&claims.source_sha) {
         bail!("GitHub OIDC source SHA does not match the sealed Candidate");
     }
-    if claims.run_id.is_empty() || !claims.run_id.bytes().all(|byte| byte.is_ascii_digit()) {
+    if !release_glz_core::is_run_id(claims.run_id.as_bytes()) {
         bail!("GitHub OIDC run ID is invalid");
     }
     if let Some(expected_run) = &expected.run_id
@@ -459,26 +440,21 @@ fn validate_github_claims(
     {
         bail!("GitHub OIDC run ID does not match the publishing run");
     }
-    // `u64::from_str` admits a leading `+`, so the attempt passes the digit rule of the run ID first.
-    let run_attempt = Some(claims.run_attempt.as_str())
-        .filter(|attempt| !attempt.is_empty() && attempt.bytes().all(|byte| byte.is_ascii_digit()))
-        .and_then(|attempt| attempt.parse::<u64>().ok())
-        .filter(|attempt| *attempt > 0)
+    let run_attempt = release_glz_core::run_attempt(claims.run_attempt.as_bytes())
         .ok_or_else(|| anyhow::anyhow!("GitHub OIDC run attempt is invalid"))?;
     if !matches!(claims.event_name.as_str(), "push" | "workflow_dispatch") {
         bail!("GitHub OIDC event is not an authorized release trigger");
     }
-    if claims.expires_at <= now_unix_seconds {
-        bail!("GitHub OIDC token has expired");
-    }
-    if claims.issued_at > now_unix_seconds.saturating_add(CLOCK_SKEW_SECONDS) {
-        bail!("GitHub OIDC token was issued in the future");
-    }
-    if claims
-        .not_before
-        .is_some_and(|not_before| not_before > now_unix_seconds.saturating_add(CLOCK_SKEW_SECONDS))
-    {
-        bail!("GitHub OIDC token is not valid yet");
+    let times = TokenTimes {
+        issued_at: claims.issued_at,
+        not_before: claims.not_before,
+        expires_at: claims.expires_at,
+    };
+    match release_glz_core::token_window(times, now_unix_seconds) {
+        Ok(()) => {}
+        Err(WindowRefusal::Expired) => bail!("GitHub OIDC token has expired"),
+        Err(WindowRefusal::IssuedInFuture) => bail!("GitHub OIDC token was issued in the future"),
+        Err(WindowRefusal::NotYetValid) => bail!("GitHub OIDC token is not valid yet"),
     }
 
     Ok(VerifiedGithubOidc {
