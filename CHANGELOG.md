@@ -104,6 +104,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Offline `verify --candidate` and `status --candidate` no longer need a manifest in the working directory, and the exit code table describes partial releases and inspection commands.
 - The Action installs release-glz on Windows.
   Its archive scripts used `[IO.Compression.ZipFile]` without loading the assembly that Windows PowerShell 5.1 needs, and the extraction passed an argument that only .NET Core accepts.
+- A Unix release archive depends only on the binary inside it, as the Windows ZIP already did.
+  `scripts/package-unix.js` writes one ustar entry with a fixed mode, owner, group, and time.
+  It stores the binary uncompressed, so no compressor version or CPU feature changes the bytes.
+  The runner's `tar` used to record the runner account.
+  On macOS, bsdtar could also add an AppleDouble entry and an extended header that the Action's tar reader refuses.
 - Publication after a merged Release PR can succeed.
   The push run's publish job consumes the Candidate that its own `prepare` job uploaded.
   The artifact check had required that run to have completed, which it can't have while it publishes.

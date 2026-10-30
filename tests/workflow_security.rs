@@ -20,7 +20,9 @@ fn distribution_builds_and_smokes_every_supported_native_target() {
     assert!(yaml.contains("runner: windows-2025"));
     assert!(!yaml.contains("runner: windows-latest"));
     assert!(yaml.contains("runner: windows-11-arm"));
-    assert!(yaml.contains("release-glz --version"));
+    assert!(yaml.contains("binary=\"target/$TARGET/release/release-glz\""));
+    assert!(yaml.contains("\"$binary\" --version"));
+    assert!(yaml.contains("release-glz.exe\" --version"));
     assert!(yaml.contains("ldd") && yaml.contains("not a dynamic executable"));
 }
 
@@ -179,4 +181,16 @@ fn distribution_prepares_checksums_without_mutating_a_release_before_the_tag() {
     assert!(yaml.contains("steps.upload_checksums.outputs.artifact-digest"));
     assert!(yaml.contains("node scripts/package-windows.js"));
     assert!(!yaml.contains("Compress-Archive"));
+}
+
+#[test]
+fn distribution_packages_unix_archives_without_the_runner_tar() {
+    let yaml = fs::read_to_string(".github/workflows/distribute.yml").unwrap();
+    assert!(yaml.contains("node scripts/package-unix.js"));
+    for host_archiver in ["tar -C", "tar -c", "gzip -n", "touch -t"] {
+        assert!(
+            !yaml.contains(host_archiver),
+            "the Unix archive bytes must not depend on the runner's `{host_archiver}`"
+        );
+    }
 }
