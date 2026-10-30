@@ -5,6 +5,7 @@
 #![warn(missing_docs)]
 
 pub mod api;
+pub mod approval;
 pub mod artifact;
 pub mod authorization;
 pub mod candidate;

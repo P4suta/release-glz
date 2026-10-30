@@ -28,6 +28,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A verified approval identity comes only from signature verification of the GitHub OIDC token.
   `release --dry-run`, `verify --online`, and `status --online` used to build one from invented claims, and only a dry-run flag in another argument kept that evidence from approving a publication.
   They now inspect through a runner entry point that holds no evidence and applies no effect.
+- A push release takes its approved intent digest from the marker of the merged Release PR that GitHub returns for the source commit, and every approval takes its Environment from the verified OIDC claims.
+  The generated workflow used to pass both values from the publish job's own outputs, so their comparisons only repeated what the run already knew.
+  It no longer sets `RELEASE_GLZ_APPROVED_INTENT_DIGEST` or `RELEASE_GLZ_ENVIRONMENT`, and release-glz ignores them.
 - On Windows, a hook runs in a job object from its first instruction, and a hook that times out ends together with every process it started.
   Only the hook's own process used to end, so its children kept running and could hold its pipes open after release-glz moved on.
 - Archive validation refuses, on every host, a path that some supported OS can't store under the same name, and two entries that collide once letter case no longer counts.
