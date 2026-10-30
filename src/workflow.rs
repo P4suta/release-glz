@@ -479,12 +479,10 @@ jobs:
           candidate: .release-glz/candidate
         env:
           {registry_credential_env}: ${{{{ secrets.{registry_credential_env} }}}}
-          RELEASE_GLZ_APPROVED_INTENT_DIGEST: ${{{{ needs.prepare.outputs.intent-digest || steps.verify.outputs.intent-digest }}}}
           RELEASE_GLZ_APPROVED_CANDIDATE_DIGEST: ${{{{ inputs.candidate-digest || needs.prepare.outputs.candidate-digest }}}}
           RELEASE_GLZ_ACTIONS_RUN_ID: ${{{{ inputs.candidate-run-id || github.run_id }}}}
           RELEASE_GLZ_ACTIONS_ARTIFACT_ID: ${{{{ inputs.artifact-id || needs.prepare.outputs.artifact-id }}}}
           RELEASE_GLZ_ACTIONS_ARTIFACT_DIGEST: ${{{{ inputs.artifact-digest || needs.prepare.outputs.artifact-digest }}}}
-          RELEASE_GLZ_ENVIRONMENT: {environment}
           RELEASE_GLZ_MANUAL_SOURCE_SHA: ${{{{ inputs.source-sha }}}}
           RELEASE_GLZ_MANUAL_REASON: ${{{{ inputs.reason }}}}
 "#
@@ -771,9 +769,9 @@ mod tests {
         assert!(publish.contains(
             "RELEASE_GLZ_ACTIONS_ARTIFACT_DIGEST: ${{ inputs.artifact-digest || needs.prepare.outputs.artifact-digest }}"
         ));
-        assert!(publish.contains(
-            "RELEASE_GLZ_APPROVED_INTENT_DIGEST: ${{ needs.prepare.outputs.intent-digest || steps.verify.outputs.intent-digest }}"
-        ));
+        // Approval takes the intent from the merged Release PR and the Environment from the verified OIDC claims, never from the job's own outputs.
+        assert!(!publish.contains("RELEASE_GLZ_APPROVED_INTENT_DIGEST"));
+        assert!(!publish.contains("RELEASE_GLZ_ENVIRONMENT"));
         assert!(yaml.contains("inputs.operation == 'prepare'"));
         assert!(yaml.contains("inputs.operation == 'promote'"));
         assert!(yaml.contains("Require canonical source, reason, and four evidence values"));

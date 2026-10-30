@@ -256,6 +256,7 @@ async fn merged_release_pr_evidence_is_bound_to_the_candidate_merge_commit() {
     let mut responses = vec![response(200, &pull(&merged, &"1".repeat(64)))];
     responses.extend(generated_commit_on(&release_files(), &"0".repeat(40)));
     responses.push(response(200, &pull(&merged, &"e".repeat(64))));
+    responses.extend(generated_commit_on(&release_files(), &"0".repeat(40)));
     responses.push(response(200, &pull(&"b".repeat(40), &"1".repeat(64))));
     let server = FakeServer::start(responses).await;
     let client = GitHubClient::new(
@@ -265,45 +266,19 @@ async fn merged_release_pr_evidence_is_bound_to_the_candidate_merge_commit() {
         Some("token".into()),
     )
     .unwrap();
+    let lookup = || client.merged_release_pr(&merged, "widget", "1.2.3", "release-glz/");
 
-    assert!(
-        client
-            .merged_release_pr_for_head(
-                &merged,
-                "widget",
-                "1.2.3",
-                "release-glz/",
-                &"1".repeat(64),
-            )
-            .await
-            .unwrap()
-            .is_some()
+    let found = lookup().await.unwrap().unwrap();
+    assert_eq!(found.html_url, "https://github.test/o/r/pull/7");
+    assert_eq!(found.intent_digest, Some("1".repeat(64)));
+    assert_eq!(
+        lookup().await.unwrap().unwrap().intent_digest,
+        Some("e".repeat(64)),
+        "the lookup reports the intent that the merge approved, and the caller compares it"
     );
     assert!(
-        client
-            .merged_release_pr_for_head(
-                &merged,
-                "widget",
-                "1.2.3",
-                "release-glz/",
-                &"1".repeat(64),
-            )
-            .await
-            .unwrap()
-            .is_none()
-    );
-    assert!(
-        client
-            .merged_release_pr_for_head(
-                &merged,
-                "widget",
-                "1.2.3",
-                "release-glz/",
-                &"1".repeat(64),
-            )
-            .await
-            .unwrap()
-            .is_none()
+        lookup().await.unwrap().is_none(),
+        "a pull request that merged as another commit"
     );
 }
 
@@ -442,8 +417,7 @@ async fn a_merged_release_pr_counts_only_from_this_repository_into_its_default_b
     responses.extend(generated_commit_on(&release_files(), &"0".repeat(40)));
     let server = FakeServer::start(responses).await;
     let client = test_client(&server, Some("token"));
-    let lookup =
-        || client.merged_release_pr_for_head(&merged, "widget", "1.2.3", "release-glz/", &intent);
+    let lookup = || client.merged_release_pr(&merged, "widget", "1.2.3", "release-glz/");
 
     for refused in ["fork", "deleted fork", "other base", "merge commit head"] {
         assert!(lookup().await.unwrap().is_none(), "{refused}");
@@ -476,15 +450,16 @@ async fn only_the_merged_release_pr_for_the_planned_version_marks_a_commit_as_pe
     responses.extend(generated_commit_on(&release_files(), &"0".repeat(40)));
     let server = FakeServer::start(responses).await;
     let client = test_client(&server, Some("token"));
-    let lookup = || client.merged_release_pr_at(&merged, "widget", "1.2.3", "release-glz/");
+    let lookup = || client.merged_release_pr(&merged, "widget", "1.2.3", "release-glz/");
 
     assert!(lookup().await.unwrap().is_none(), "another version");
     assert!(lookup().await.unwrap().is_none(), "a fork");
+    let pending = lookup().await.unwrap().unwrap();
     assert_eq!(
-        lookup().await.unwrap().unwrap().html_url,
-        "https://github.test/o/r/pull/7",
+        pending.html_url, "https://github.test/o/r/pull/7",
         "a merged Release PR without a bound intent still marks its version as pending"
     );
+    assert_eq!(pending.intent_digest, None);
     assert_eq!(server.requests().len(), 6);
 }
 
@@ -1408,7 +1383,7 @@ async fn a_verified_commit_with_the_digest_line_counts_only_when_its_changes_mat
         let server = FakeServer::start(responses).await;
 
         let found = test_client(&server, Some("token"))
-            .merged_release_pr_at(&merged, "widget", "1.2.3", "release-glz/")
+            .merged_release_pr(&merged, "widget", "1.2.3", "release-glz/")
             .await
             .unwrap();
 
@@ -1696,7 +1671,7 @@ async fn a_generated_file_counts_up_to_exactly_2_mib() {
         let server = FakeServer::start(responses).await;
 
         let found = test_client(&server, Some("token"))
-            .merged_release_pr_at(&merged, "widget", "1.2.3", "release-glz/")
+            .merged_release_pr(&merged, "widget", "1.2.3", "release-glz/")
             .await
             .unwrap();
 

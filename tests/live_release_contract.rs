@@ -310,9 +310,8 @@ fn approved(manifest: &release_glz::candidate::CandidateManifest) -> ApprovalEvi
     )
     .unwrap();
     ApprovalEvidence {
-        release_pr_intent_digest: Some(manifest.intent_digest.clone()),
+        approved_intent_digest: Some(manifest.intent_digest.clone()),
         environment_candidate_digest: Some(manifest.candidate_digest.clone()),
-        environment: Some(manifest.approval.environment.clone()),
         github_oidc: Some(github_oidc),
         ..ApprovalEvidence::default()
     }

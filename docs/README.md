@@ -265,6 +265,7 @@ Both digests are SHA-256 over RFC 8785-style canonical JSON, but they answer dif
 - `candidate_digest` additionally binds the exact source SHA, package/docs checksums, policy, hook definitions/evidence, and sidecars approved by the GitHub Environment.
 
 The normal route requires both the verified server-side Release PR merge and the protected Environment.
+The approved intent is the one that the merged Release PR's marker recorded, and the Environment is the one that the verified OIDC claims name.
 Solo mode can use a self-approval Environment gate.
 Strict separation additionally requires a different reviewer, prevent-self-review, protected default branch, and protected-branch-only deployment policy.
 `doctor` refuses to silently weaken these rules when a private repository's GitHub plan cannot provide required reviewers; solo mode may explicitly configure `private_repository_fallback = "workflow-dispatch-digest"`.

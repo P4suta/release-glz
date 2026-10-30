@@ -32,7 +32,7 @@ A verified identity comes only from signature verification, and an inspection ho
 - No combination of public calls publishes with an identity that a signature check didn't produce.
 - An inspection reports the same remaining effects as an approved run, since `preview` and `reconcile` share the planning and the checks of the observed state.
 - Library callers that built evidence from unsigned claims, or passed `ReleaseExecutionOptions`, must sign their claims or call `inspect`.
-- The values in the approval evidence other than the identity still come from the workflow, and #118 covers their sources.
+- The values in the approval evidence other than the identity still come from the workflow, and [bind each approval conjunct to a checked source](bind-each-approval-conjunct-to-a-checked-source.md) covers their sources.
 - Rejected: keeping `dry_run` beside an authority enum.
   Two separate entry points leave no call that pairs inspection with an apply.
 - Rejected: a test-only constructor behind a feature flag.
