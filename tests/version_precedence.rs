@@ -3,7 +3,7 @@
 //! The Kani proofs of the version decisions rely on that precedence and assume that grammar, so these tests tie both to an independent implementation.
 
 use release_glz::version::view;
-use release_glz_core::{Pre, compare};
+use release_glz_core::{Channel, Pre, VersionCore, compare};
 use semver::{BuildMetadata, Prerelease, Version};
 
 const PRERELEASES: [&str; 31] = [
@@ -65,6 +65,50 @@ fn core_precedence_agrees_with_semver_on_every_pair() {
                 compare(&view(left), &view(right)),
                 left.cmp(right),
                 "{left} against {right}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_train_compares_like_the_prerelease_that_spells_it() {
+    let core = Version::new(1, 1, 1);
+    let mut trains = Vec::new();
+    for channel in [Channel::Alpha, Channel::Beta, Channel::Rc] {
+        for number in [0, 1, 2, 10, 11, u64::MAX] {
+            trains.push((channel, number));
+        }
+    }
+    let train = |(channel, number)| release_glz_core::Version {
+        core: VersionCore {
+            major: core.major,
+            minor: core.minor,
+            patch: core.patch,
+        },
+        pre: Pre::Train(channel, number),
+    };
+    let spelled = |(channel, number): (Channel, u64)| {
+        let mut version = core.clone();
+        version.pre = Prerelease::new(&format!("{}.{number}", channel.label())).unwrap();
+        version
+    };
+    let versions = versions();
+    for &left in &trains {
+        for version in &versions {
+            assert_eq!(
+                compare(&train(left), &view(version)),
+                spelled(left).cmp(version),
+                "{} against {version}",
+                spelled(left)
+            );
+        }
+        for &right in &trains {
+            assert_eq!(
+                compare(&train(left), &train(right)),
+                spelled(left).cmp(&spelled(right)),
+                "{} against {}",
+                spelled(left),
+                spelled(right)
             );
         }
     }
