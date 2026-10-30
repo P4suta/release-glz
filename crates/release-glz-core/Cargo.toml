@@ -100,6 +100,8 @@ negative-control-version-zero = []
 negative-control-breaking-footer = []
 # Matching commit types in lowercase only.
 negative-control-commit-type-case = []
+# Taking a breaking-change marker inside a line as a footer.
+negative-control-marker-anywhere = []
 # Leaving the last byte of each secret occurrence unredacted.
 negative-control-redaction-partial = []
 # Redacting the byte after each secret occurrence too.

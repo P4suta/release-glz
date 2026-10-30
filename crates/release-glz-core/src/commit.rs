@@ -2,15 +2,11 @@
 
 use crate::Bump;
 
-/// The release step that a Conventional Commits message asks for.
+/// The release step that a Conventional Commits message asks for, from the bytes of its subject and body.
 ///
 /// A `!` right before the colon of the header, or a body line that starts with `BREAKING CHANGE:` or `BREAKING-CHANGE:`, asks for a major release.
 /// Otherwise the type decides in any letter case: `feat` asks for a minor release, and `fix` or `perf` for a patch.
-pub fn conventional_bump(subject: &str, body: &str) -> Bump {
-    bump_of(subject.as_bytes(), body.as_bytes())
-}
-
-fn bump_of(subject: &[u8], body: &[u8]) -> Bump {
+pub fn conventional_bump(subject: &[u8], body: &[u8]) -> Bump {
     let header = before(subject, b':');
     if header.last() == Some(&b'!') || has_breaking_footer(body) {
         return Bump::Major;
@@ -40,6 +36,10 @@ fn before(text: &[u8], separator: u8) -> &[u8] {
 ///
 /// One indexed scan visits every line start, which a proof unwinds once per byte.
 fn has_breaking_footer(body: &[u8]) -> bool {
+    #[cfg(feature = "negative-control-marker-anywhere")]
+    if let Some(found) = negative_control_marker_anywhere(body) {
+        return found;
+    }
     let mut index = 0;
     let mut line_start = true;
     while let Some(byte) = body.get(index) {
@@ -67,6 +67,22 @@ fn negative_control_spaced_footer_only(line: &[u8]) -> Option<bool> {
     Some(line.starts_with(b"BREAKING CHANGE:"))
 }
 
+/// Takes a breaking-change marker anywhere in the body as a footer, inside a line too.
+#[cfg(feature = "negative-control-marker-anywhere")]
+fn negative_control_marker_anywhere(body: &[u8]) -> Option<bool> {
+    let mut index = 0;
+    while let Some(rest) = body.get(index..) {
+        if rest.is_empty() {
+            break;
+        }
+        if breaking_footer(rest) {
+            return Some(true);
+        }
+        index += 1;
+    }
+    Some(false)
+}
+
 /// Whether a commit type is `name` in any letter case.
 fn names(kind: &[u8], name: &[u8]) -> bool {
     #[cfg(feature = "negative-control-commit-type-case")]
@@ -84,7 +100,7 @@ fn negative_control_exact_case(kind: &[u8], name: &[u8]) -> Option<bool> {
 
 #[cfg(kani)]
 mod proofs {
-    use super::bump_of;
+    use super::conventional_bump;
     use crate::Bump;
 
     /// The number of free bytes around each marker that the proofs cover.
@@ -121,7 +137,7 @@ mod proofs {
         body[FREE + 1..FREE + 1 + MARKER].copy_from_slice(marker);
         body[FREE + 1 + MARKER..].copy_from_slice(&after);
         kani::assert(
-            bump_of(&subject, &body) == Bump::Major,
+            conventional_bump(&subject, &body) == Bump::Major,
             "a breaking-change footer must ask for a major release",
         );
         kani::cover!(hyphen);
@@ -133,7 +149,7 @@ mod proofs {
         subject[..FREE].copy_from_slice(&header);
         subject[FREE..FREE + 2].copy_from_slice(b"!:");
         subject[FREE + 2..].copy_from_slice(&after);
-        assert!(bump_of(&subject, &before) == Bump::Major);
+        assert!(conventional_bump(&subject, &before) == Bump::Major);
     }
 
     /// Without a breaking marker, the type decides the step in any letter case, and any other type asks for none.
@@ -167,7 +183,7 @@ mod proofs {
             length += 1;
         }
         kani::assert(
-            bump_of(&subject[..length], b"") == step,
+            conventional_bump(&subject[..length], b"") == step,
             "a commit type must decide the step in any letter case",
         );
         kani::cover!(which == 0 && subject[..4] != *b"feat");
@@ -184,6 +200,38 @@ mod proofs {
                 && !other.eq_ignore_ascii_case(b"fix")
                 && !other.eq_ignore_ascii_case(b"perf"),
         );
-        assert!(bump_of(other, b"") == Bump::None);
+        assert!(conventional_bump(other, b"") == Bump::None);
+    }
+
+    /// A body whose lines don't start with a breaking-change marker leaves the step to the commit type, even when a marker appears inside a line.
+    ///
+    /// The text around the marker is three symbolic ASCII bytes on each side, and the text before it holds no line break.
+    #[kani::proof]
+    #[kani::unwind(24)]
+    fn only_a_marker_that_starts_a_line_breaks_the_release() {
+        let which: u8 = kani::any();
+        kani::assume(which < 3);
+        let (subject, step): (&[u8], Bump) = match which {
+            0 => (b"feat: a", Bump::Minor),
+            1 => (b"fix: a", Bump::Patch),
+            _ => (b"docs: a", Bump::None),
+        };
+        let before: [u8; FREE] = ascii();
+        kani::assume(!before.contains(&b'\n'));
+        let after: [u8; FREE] = ascii();
+        let marker: &[u8; MARKER] = if kani::any() {
+            b"BREAKING-CHANGE:"
+        } else {
+            b"BREAKING CHANGE:"
+        };
+        let mut body = [0_u8; 2 * FREE + MARKER];
+        body[..FREE].copy_from_slice(&before);
+        body[FREE..FREE + MARKER].copy_from_slice(marker);
+        body[FREE + MARKER..].copy_from_slice(&after);
+        kani::assert(
+            conventional_bump(subject, &body) == step,
+            "a body without a marker at the start of a line must leave the step to the commit type",
+        );
+        kani::cover!(which == 2 && after.contains(&b'\n'));
     }
 }
