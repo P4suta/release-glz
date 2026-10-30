@@ -23,6 +23,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Tests check the real output of every command with these schemas and assert every `format`.
 - `completion --output json` names its result format as `completion/v1`, like every other command result.
 
+### Changed
+
+- When the observed world contradicts the Candidate in more than one object, the conflict names the first object in publication order, so a tag conflict outranks a package conflict.
+- A notification record for a hook that the Candidate doesn't have no longer makes a release count as `partially_released`.
+
 ### Security
 
 - A verified approval identity comes only from signature verification of the GitHub OIDC token.

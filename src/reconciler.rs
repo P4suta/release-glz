@@ -3,9 +3,10 @@
 //! Given what a Candidate intends, what the world already contains, and what has been approved, it returns the effects that are still missing.
 //! It never replaces an existing object, so a resumed release completes rather than republishes.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
+use release_glz_core::{Approval, Object, Outcome, Presence, RunIdentity, Trigger};
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -260,15 +261,7 @@ pub fn reconcile(
     observed: &ExternalReleaseState,
     approval: &ApprovalEvidence,
 ) -> Result<ReconcilePlan, ReconcileError> {
-    validate_observed(intent, observed)?;
-    if !approved(intent, approval) {
-        return Ok(ReconcilePlan {
-            schema: "reconcile/v1".into(),
-            state: ReleaseState::AwaitingApproval,
-            effects: Vec::new(),
-        });
-    }
-    Ok(plan(intent, observed))
+    plan(intent, observed, approved(intent, approval))
 }
 
 /// The plan an approved release would follow, for an inspection that holds no approval.
@@ -278,11 +271,39 @@ pub fn preview(
     intent: &ReleaseIntent,
     observed: &ExternalReleaseState,
 ) -> Result<ReconcilePlan, ReconcileError> {
-    validate_observed(intent, observed)?;
-    Ok(plan(intent, observed))
+    plan(intent, observed, true)
 }
 
-fn validate_observed(
+fn plan(
+    intent: &ReleaseIntent,
+    observed: &ExternalReleaseState,
+    approved: bool,
+) -> Result<ReconcilePlan, ReconcileError> {
+    validate_inputs(intent, observed)?;
+    let items = items(intent, observed);
+    let objects = items.iter().map(|(_, object)| *object).collect::<Vec<_>>();
+    let (state, effects) = match release_glz_core::reconcile(&objects, approved) {
+        Outcome::Conflict(index) => {
+            let (item, object) = &items[index];
+            return conflict(item.conflict(object.wanted));
+        }
+        Outcome::AwaitingApproval => (ReleaseState::AwaitingApproval, Vec::new()),
+        Outcome::Proceed { state, effects } => (
+            state,
+            effects
+                .filter_map(|index| items[index].0.effect())
+                .collect(),
+        ),
+    };
+    Ok(ReconcilePlan {
+        schema: "reconcile/v1".into(),
+        state,
+        effects,
+    })
+}
+
+/// Refuse an observation in another format and a Candidate that describes its own assets inconsistently.
+fn validate_inputs(
     intent: &ReleaseIntent,
     observed: &ExternalReleaseState,
 ) -> Result<(), ReconcileError> {
@@ -292,188 +313,220 @@ fn validate_observed(
             observed.schema
         ));
     }
-    validate_existing(intent, observed)
-}
-
-fn plan(intent: &ReleaseIntent, observed: &ExternalReleaseState) -> ReconcilePlan {
-    let already_started = observed.package.is_some()
-        || observed.docs.is_some()
-        || observed.tag.is_some()
-        || observed.github_release.is_some()
-        || !observed.release_assets.is_empty()
-        || !observed.notifications.is_empty();
-    let mut effects = Vec::new();
-    if observed.tag.is_none() {
-        effects.push(ReconcileEffect::PrepareAnnotatedTag);
-    }
-    if intent.github_release && observed.github_release.is_none() {
-        effects.push(ReconcileEffect::PrepareGithubDraft);
-    }
-    if observed.package.is_none() {
-        effects.push(ReconcileEffect::PublishPackage);
-    }
-    if intent.docs_sha256.is_some() && observed.docs.is_none() {
-        effects.push(ReconcileEffect::PublishDocs);
-    }
-    for asset in &intent.release_assets {
-        if !observed.release_assets.contains_key(&asset.name) {
-            effects.push(ReconcileEffect::UploadGithubAsset {
-                hook_id: asset.hook_id.clone(),
-                name: asset.name.clone(),
-                sha256: asset.sha256.clone(),
-            });
-        }
-    }
-    if intent.github_release
-        && observed
-            .github_release
-            .as_ref()
-            .is_none_or(|release| release.draft)
-    {
-        effects.push(ReconcileEffect::FinalizeGithubRelease);
-    }
-    for hook in &intent.notify_hooks {
-        let key = notification_key(&intent.candidate_digest, &hook.id);
-        if !observed
-            .notifications
-            .get(&hook.id)
-            .is_some_and(|notification| {
-                notification.complete && notification.idempotency_key == key
-            })
-        {
-            effects.push(ReconcileEffect::Notify {
-                hook_id: hook.id.clone(),
-                idempotency_key: key,
-                required: hook.required,
-            });
-        }
-    }
-
-    let has_blocking_effect = effects.iter().any(|effect| {
-        !matches!(
-            effect,
-            ReconcileEffect::Notify {
-                required: false,
-                ..
-            }
-        )
-    });
-    let state = if effects.is_empty() || !has_blocking_effect {
-        ReleaseState::Released
-    } else if already_started {
-        ReleaseState::PartiallyReleased
-    } else {
-        ReleaseState::CandidateReady
-    };
-    ReconcilePlan {
-        schema: "reconcile/v1".into(),
-        state,
-        effects,
-    }
-}
-
-fn approved(intent: &ReleaseIntent, approval: &ApprovalEvidence) -> bool {
-    let candidate =
-        approval.environment_candidate_digest.as_deref() == Some(intent.candidate_digest.as_str());
-    let intent_approved =
-        approval.approved_intent_digest.as_deref() == Some(intent.intent_digest.as_str());
-    let manual = intent_approved
-        && approval.source_sha.as_deref() == Some(intent.source_sha.as_str())
-        && approval
-            .manual_reason
-            .as_deref()
-            .is_some_and(|reason| !reason.trim().is_empty())
-        && approval.github_oidc.as_ref().is_some_and(|identity| {
-            intent
-                .manual_refs
-                .iter()
-                .any(|allowed| allowed == identity.git_ref())
-        });
-    let workflow_prefix = format!("{}/{}@", intent.github_repository, intent.workflow_path);
-    let oidc = approval.github_oidc.as_ref().filter(|identity| {
-        identity.repository() == intent.github_repository
-            && identity.environment() == intent.approval_environment
-            && identity.source_sha() == intent.source_sha
-            && identity.workflow_ref().starts_with(&workflow_prefix)
-    });
-    let path_approved = match oidc.map(VerifiedGithubOidc::event_name) {
-        Some("push") => intent_approved,
-        Some("workflow_dispatch") => manual,
-        _ => false,
-    };
-    candidate && oidc.is_some() && path_approved
-}
-
-fn validate_existing(
-    intent: &ReleaseIntent,
-    observed: &ExternalReleaseState,
-) -> Result<(), ReconcileError> {
-    if let Some(package) = &observed.package
-        && package.sha256 != intent.package_sha256
-    {
-        return conflict("the published package checksum differs from the Candidate".into());
-    }
-    match (&intent.docs_sha256, &observed.docs) {
-        (Some(expected), Some(docs)) if &docs.sha256 != expected => {
-            return conflict(
-                "the published documentation checksum differs from the Candidate".into(),
-            );
-        }
-        (None, Some(_)) => {
-            return conflict("documentation exists but the Candidate contains none".into());
-        }
-        _ => {}
-    }
-    if let Some(tag) = &observed.tag
-        && (tag.target_sha != intent.source_sha || !tag.annotated)
-    {
-        return conflict("the existing git tag has a different immutable identity".into());
-    }
-    if !intent.github_release && observed.github_release.is_some() {
-        return conflict("a GitHub Release exists but the Candidate disables it".into());
-    }
     if !intent.github_release && !intent.release_assets.is_empty() {
         return conflict(
             "the Candidate requests release assets while GitHub Releases are disabled".into(),
         );
     }
-    if let Some(release) = &observed.github_release
-        && (release.target_sha != intent.source_sha
-            || release.candidate_digest != intent.candidate_digest)
-    {
-        return conflict("the existing GitHub Release differs from the Candidate".into());
-    }
-    let mut expected_assets = BTreeMap::new();
+    let mut names = BTreeSet::new();
     for asset in &intent.release_assets {
-        if expected_assets.insert(&asset.name, asset).is_some() {
+        if !names.insert(&asset.name) {
             return conflict(format!(
                 "duplicate Candidate release asset `{}`",
                 asset.name
             ));
         }
     }
-    for (name, observed_asset) in &observed.release_assets {
-        let Some(expected) = expected_assets.get(name) else {
-            return conflict(format!("GitHub Release contains unsealed asset `{name}`"));
-        };
-        if observed_asset.sha256 != expected.sha256 {
-            return conflict(format!(
-                "GitHub Release asset `{name}` differs from the Candidate"
-            ));
-        }
+    Ok(())
+}
+
+/// One object that a release publishes, as the reconciler names it in effects and conflicts.
+enum Item<'a> {
+    Tag,
+    Draft,
+    Package,
+    Docs,
+    Asset(&'a ReleaseAsset),
+    UnsealedAsset(&'a str),
+    Finalize,
+    Notify(&'a NotifyHookIntent, String),
+}
+
+impl Item<'_> {
+    /// The effect that publishes or completes this object, which an unsealed asset doesn't have because the Candidate never wants one.
+    fn effect(&self) -> Option<ReconcileEffect> {
+        Some(match self {
+            Self::Tag => ReconcileEffect::PrepareAnnotatedTag,
+            Self::Draft => ReconcileEffect::PrepareGithubDraft,
+            Self::Package => ReconcileEffect::PublishPackage,
+            Self::Docs => ReconcileEffect::PublishDocs,
+            Self::Asset(asset) => ReconcileEffect::UploadGithubAsset {
+                hook_id: asset.hook_id.clone(),
+                name: asset.name.clone(),
+                sha256: asset.sha256.clone(),
+            },
+            Self::UnsealedAsset(_) => return None,
+            Self::Finalize => ReconcileEffect::FinalizeGithubRelease,
+            Self::Notify(hook, key) => ReconcileEffect::Notify {
+                hook_id: hook.id.clone(),
+                idempotency_key: key.clone(),
+                required: hook.required,
+            },
+        })
     }
-    for hook in &intent.notify_hooks {
-        if let Some(notification) = observed.notifications.get(&hook.id)
-            && notification.complete
-            && notification.idempotency_key != notification_key(&intent.candidate_digest, &hook.id)
-        {
-            return conflict(format!(
+
+    /// Why this object stops the release, given whether the Candidate wants it.
+    fn conflict(&self, wanted: bool) -> String {
+        match self {
+            Self::Tag => "the existing git tag has a different immutable identity".into(),
+            Self::Draft | Self::Finalize if !wanted => {
+                "a GitHub Release exists but the Candidate disables it".into()
+            }
+            Self::Draft | Self::Finalize => {
+                "the existing GitHub Release differs from the Candidate".into()
+            }
+            Self::Package => "the published package checksum differs from the Candidate".into(),
+            Self::Docs if !wanted => "documentation exists but the Candidate contains none".into(),
+            Self::Docs => "the published documentation checksum differs from the Candidate".into(),
+            Self::Asset(asset) => format!(
+                "GitHub Release asset `{}` differs from the Candidate",
+                asset.name
+            ),
+            Self::UnsealedAsset(name) => {
+                format!("GitHub Release contains unsealed asset `{name}`")
+            }
+            Self::Notify(hook, _) => format!(
                 "notify hook `{}` completed under a different idempotency key",
                 hook.id
-            ));
+            ),
         }
     }
-    Ok(())
+}
+
+/// The objects of the release in publication order, each with how the world holds it.
+fn items<'a>(
+    intent: &'a ReleaseIntent,
+    observed: &'a ExternalReleaseState,
+) -> Vec<(Item<'a>, Object)> {
+    let object = |wanted, presence| Object {
+        wanted,
+        presence,
+        blocking: true,
+    };
+    let release_matches = |release: &ObservedGithubRelease| {
+        release.target_sha == intent.source_sha
+            && release.candidate_digest == intent.candidate_digest
+    };
+    let mut items = vec![
+        (
+            Item::Tag,
+            object(
+                true,
+                presence(observed.tag.as_ref(), |tag| {
+                    tag.target_sha == intent.source_sha && tag.annotated
+                }),
+            ),
+        ),
+        (
+            Item::Draft,
+            object(
+                intent.github_release,
+                presence(observed.github_release.as_ref(), release_matches),
+            ),
+        ),
+        (
+            Item::Package,
+            object(
+                true,
+                presence(observed.package.as_ref(), |package| {
+                    package.sha256 == intent.package_sha256
+                }),
+            ),
+        ),
+        (
+            Item::Docs,
+            object(
+                intent.docs_sha256.is_some(),
+                presence(observed.docs.as_ref(), |docs| {
+                    intent.docs_sha256.as_ref() == Some(&docs.sha256)
+                }),
+            ),
+        ),
+    ];
+    for asset in &intent.release_assets {
+        let observed_asset = observed.release_assets.get(&asset.name);
+        items.push((
+            Item::Asset(asset),
+            object(
+                true,
+                presence(observed_asset, |found| found.sha256 == asset.sha256),
+            ),
+        ));
+    }
+    for name in observed.release_assets.keys() {
+        if !intent
+            .release_assets
+            .iter()
+            .any(|asset| &asset.name == name)
+        {
+            items.push((Item::UnsealedAsset(name), object(false, Presence::Differs)));
+        }
+    }
+    // A Release that differs from the Candidate already conflicts as the draft, which comes first.
+    let finalized = match &observed.github_release {
+        None => Presence::Absent,
+        Some(release) if release.draft => Presence::Pending,
+        Some(_) => Presence::Matches,
+    };
+    items.push((Item::Finalize, object(intent.github_release, finalized)));
+    for hook in &intent.notify_hooks {
+        let key = notification_key(&intent.candidate_digest, &hook.id);
+        let delivered = match observed.notifications.get(&hook.id) {
+            None => Presence::Absent,
+            Some(notification) if !notification.complete => Presence::Pending,
+            Some(notification) if notification.idempotency_key == key => Presence::Matches,
+            Some(_) => Presence::Differs,
+        };
+        items.push((
+            Item::Notify(hook, key),
+            Object {
+                wanted: true,
+                presence: delivered,
+                blocking: hook.required,
+            },
+        ));
+    }
+    items
+}
+
+/// How the world holds an object that `matches` compares with the Candidate.
+fn presence<T>(observed: Option<&T>, matches: impl FnOnce(&T) -> bool) -> Presence {
+    match observed {
+        None => Presence::Absent,
+        Some(found) if matches(found) => Presence::Matches,
+        Some(_) => Presence::Differs,
+    }
+}
+
+/// Compare the approval evidence with the Candidate, and let the core decide whether it approves.
+fn approved(intent: &ReleaseIntent, approval: &ApprovalEvidence) -> bool {
+    let workflow_prefix = format!("{}/{}@", intent.github_repository, intent.workflow_path);
+    Approval {
+        candidate: approval.environment_candidate_digest.as_deref()
+            == Some(intent.candidate_digest.as_str()),
+        intent: approval.approved_intent_digest.as_deref() == Some(intent.intent_digest.as_str()),
+        identity: approval.github_oidc.as_ref().map(|identity| RunIdentity {
+            repository: identity.repository() == intent.github_repository,
+            environment: identity.environment() == intent.approval_environment,
+            source: identity.source_sha() == intent.source_sha,
+            workflow: identity.workflow_ref().starts_with(&workflow_prefix),
+            trigger: match identity.event_name() {
+                "push" => Trigger::Push,
+                "workflow_dispatch" => Trigger::ManualDispatch,
+                _ => Trigger::Other,
+            },
+            manual_ref: intent
+                .manual_refs
+                .iter()
+                .any(|allowed| allowed == identity.git_ref()),
+        }),
+        manual_source: approval.source_sha.as_deref() == Some(intent.source_sha.as_str()),
+        manual_reason: approval
+            .manual_reason
+            .as_deref()
+            .is_some_and(|reason| !reason.trim().is_empty()),
+    }
+    .approves()
 }
 
 /// The idempotency key for one notification of one Candidate.
