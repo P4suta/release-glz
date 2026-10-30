@@ -188,7 +188,9 @@ pub struct PullRequest {
     pub base: Option<PullBase>,
 }
 
-/// A managed Release PR that merged, whose head GitHub verified as the commit that release-glz generated.
+/// A managed Release PR that merged, whose head has the shape of the commit that release-glz generates.
+///
+/// Anyone who can push to the repository can make a commit of that shape, so the review of the merge and the Environment approval stay the controls.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MergedReleasePr {
     /// Page for humans.
@@ -226,7 +228,7 @@ pub struct DefaultBranch {
     pub repository_id: String,
 }
 
-/// A server-verified commit that this tool created on top of one parent.
+/// A server-verified commit on top of one parent with the shape of the commit that this tool generates.
 struct GeneratedCommit {
     digest: String,
     parent: String,
@@ -1121,7 +1123,8 @@ impl GitHubClient {
 
     /// The managed Release PR for `version` whose merge produced `sha`, and the intent its marker recorded.
     ///
-    /// The pull request counts only when it came from this repository and its head is the server-verified commit that release-glz generated.
+    /// The pull request counts only when it came from this repository and its head has the shape of the commit that release-glz generates.
+    /// A writer could push such a commit too, which the review of the merge has to catch.
     /// The marker's intent digest is reported rather than compared, so the caller decides what the merge approved.
     pub async fn merged_release_pr(
         &self,
@@ -1595,7 +1598,7 @@ impl GitHubClient {
         response.data.context("GitHub GraphQL response had no data")
     }
 
-    /// The files digest of a commit that release-glz created, or `None` for any other commit.
+    /// The files digest of a commit with the shape that release-glz generates, or `None` for any other commit.
     async fn generated_commit_digest(&self, sha: &str) -> Result<Option<String>> {
         Ok(self
             .generated_commit(sha)
@@ -1603,8 +1606,9 @@ impl GitHubClient {
             .map(|commit| commit.digest))
     }
 
-    /// The digest and parent of a commit that release-glz created, or `None` for any other commit.
+    /// The digest and parent of a commit with the shape that release-glz generates, or `None` for any other commit.
     ///
+    /// The check can't tell who made the commit, since anyone who can push can make one of this shape.
     /// A generated commit is server-verified and has exactly one parent, since a merge commit could bring in other work.
     /// It only adds or modifies files, and the files digest of their contents equals the digest its message records, so an amended commit that keeps the message doesn't count.
     /// A failure to read a file is an error rather than `None`, because `None` leads a caller to close the Release PR.
