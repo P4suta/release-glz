@@ -1027,7 +1027,9 @@ fn a_merged_release_pr_authorizes_a_candidate_only_with_the_intent_it_recorded()
         github_server.join().unwrap();
 
         assert_success(&authorized, "release-pr --dry-run --candidate");
-        let result = &json(&authorized)["result"];
+        let envelope = json(&authorized);
+        assert_published_envelope(&envelope);
+        let result = &envelope["result"];
         assert_eq!(result["state"], state, "{result}");
         assert_eq!(result["intent_binding"], binding, "{result}");
         assert_eq!(github_requests.try_iter().count(), 3);
