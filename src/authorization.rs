@@ -460,10 +460,10 @@ fn validate_github_claims(
     {
         bail!("GitHub OIDC run ID does not match the publishing run");
     }
-    let run_attempt = claims
-        .run_attempt
-        .parse::<u64>()
-        .ok()
+    // `u64::from_str` admits a leading `+`, so the attempt passes the digit rule of the run ID first.
+    let run_attempt = Some(claims.run_attempt.as_str())
+        .filter(|attempt| !attempt.is_empty() && attempt.bytes().all(|byte| byte.is_ascii_digit()))
+        .and_then(|attempt| attempt.parse::<u64>().ok())
         .filter(|attempt| *attempt > 0)
         .ok_or_else(|| anyhow::anyhow!("GitHub OIDC run attempt is invalid"))?;
     if !matches!(claims.event_name.as_str(), "push" | "workflow_dispatch") {

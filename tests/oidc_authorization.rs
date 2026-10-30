@@ -126,6 +126,7 @@ fn claim_values_that_match_textually_still_require_canonical_safe_shapes() {
         "nondigit-run-id",
         "invalid-attempt",
         "overflow-attempt",
+        "signed-attempt",
     ] {
         let mut expected = expectation();
         let mut candidate = claims();
@@ -149,6 +150,7 @@ fn claim_values_that_match_textually_still_require_canonical_safe_shapes() {
             }
             "invalid-attempt" => candidate.run_attempt = "not-a-number".into(),
             "overflow-attempt" => candidate.run_attempt = "18446744073709551616".into(),
+            "signed-attempt" => candidate.run_attempt = "+3".into(),
             _ => unreachable!(),
         }
         assert!(
