@@ -101,6 +101,12 @@ fn a_train_compares_like_the_prerelease_that_spells_it() {
                 "{} against {version}",
                 spelled(left)
             );
+            assert_eq!(
+                compare(&view(version), &train(left)),
+                version.cmp(&spelled(left)),
+                "{version} against {}",
+                spelled(left)
+            );
         }
         for &right in &trains {
             assert_eq!(
@@ -112,6 +118,37 @@ fn a_train_compares_like_the_prerelease_that_spells_it() {
             );
         }
     }
+}
+
+/// The selection proofs cover published versions that are stable or on a train, so every train spelling has to parse as its train.
+#[test]
+fn parse_reads_every_train_spelling_as_its_train() {
+    for (text, channel, number) in [
+        ("alpha.0", Channel::Alpha, 0),
+        ("beta.11", Channel::Beta, 11),
+        ("rc.18446744073709551615", Channel::Rc, u64::MAX),
+    ] {
+        assert!(
+            matches!(Pre::parse(text.as_bytes()), Pre::Train(parsed, value) if parsed == channel && value == number),
+            "{text}"
+        );
+    }
+    for text in [
+        "rc.18446744073709551616",
+        "rc",
+        "rc.1.1",
+        "rc.x",
+        "preview.4",
+        "alpha.beta",
+        "1.2",
+        "alpha.01",
+    ] {
+        assert!(
+            matches!(Pre::parse(text.as_bytes()), Pre::Other(other) if other == text.as_bytes()),
+            "{text}"
+        );
+    }
+    assert!(matches!(Pre::parse(b""), Pre::Stable));
 }
 
 #[test]

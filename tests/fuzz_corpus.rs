@@ -11,13 +11,16 @@ mod config;
 mod identifiers;
 #[path = "../fuzz/invariants/pr_marker.rs"]
 mod pr_marker;
+#[path = "../fuzz/invariants/prerelease.rs"]
+mod prerelease;
 
-const REPLAYED_TARGETS: [&str; 5] = [
+const REPLAYED_TARGETS: [&str; 6] = [
     "api_interface",
     "archive",
     "config",
     "identifiers",
     "pr_marker",
+    "prerelease",
 ];
 
 fn fuzz_directory() -> &'static Path {
@@ -159,6 +162,15 @@ fn the_archive_corpus_holds_a_built_seed_for_each_unportable_path_form() {
 fn marker_seeds_reach_managed_and_unmanaged_bodies() {
     let verdicts = replay("pr_marker", pr_marker::check);
     assert!(reached(&verdicts, pr_marker::Reached::Managed));
+    assert!(refused(&verdicts));
+}
+
+#[test]
+fn prerelease_seeds_reach_trains_text_comparison_and_refusal() {
+    let verdicts = replay("prerelease", prerelease::check);
+    assert!(reached(&verdicts, prerelease::Reached::Train));
+    assert!(reached(&verdicts, prerelease::Reached::Text));
+    assert!(reached(&verdicts, prerelease::Reached::Compared));
     assert!(refused(&verdicts));
 }
 

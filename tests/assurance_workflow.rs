@@ -213,6 +213,7 @@ fn every_required_parser_has_a_bounded_fuzz_target() {
         "pr_marker",
         "api_interface",
         "identifiers",
+        "prerelease",
     ] {
         assert!(
             targets.iter().any(|name| name == target),

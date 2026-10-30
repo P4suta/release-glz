@@ -134,20 +134,23 @@ pub fn next_prerelease(
 /// Whether moving from a prerelease labeled `current` to `channel` goes back along the train.
 fn moves_back(current: Label, channel: Channel) -> bool {
     #[cfg(feature = "negative-control-backward-train")]
-    return negative_control_moves_forward(current, channel);
-    #[cfg(not(feature = "negative-control-backward-train"))]
-    return Label::Channel(channel).rank() < current.rank();
+    if let Some(back) = negative_control_moves_forward(current, channel) {
+        return back;
+    }
+    Label::Channel(channel).rank() < current.rank()
 }
 
+/// Takes a move forward along the train for the move back.
 #[cfg(feature = "negative-control-backward-train")]
-fn negative_control_moves_forward(current: Label, channel: Channel) -> bool {
-    Label::Channel(channel).rank() > current.rank()
+fn negative_control_moves_forward(current: Label, channel: Channel) -> Option<bool> {
+    Some(Label::Channel(channel).rank() > current.rank())
 }
 
 /// Select the version of a release that follows `published`.
 ///
 /// The step starts from `latest_stable`, or from the published core when nothing stable is published.
-/// An explicit version that follows the published one overrides the computed version only when it isn't lower, and with a train it has to belong to that train.
+/// An explicit version counts only when it follows the published one, so an unchanged manifest is no explicit request.
+/// It overrides the computed version only when it isn't lower, and with a train it has to belong to that train.
 pub fn select_version(
     published: &Version<'_>,
     latest_stable: Option<VersionCore>,
@@ -160,11 +163,9 @@ pub fn select_version(
         core: base,
         bump: required,
     })?;
-    let explicit_override = explicit.filter(|explicit| explicit.follows(published));
-    let explicitly_higher_core =
-        explicit_override.is_some_and(|explicit| explicit.core > published.core);
-    let target =
-        explicit_override.map_or(required_core, |explicit| max(explicit.core, required_core));
+    let explicit = explicit.filter(|explicit| explicit.follows(published));
+    let explicitly_higher_core = explicit.is_some_and(|explicit| explicit.core > published.core);
+    let target = explicit.map_or(required_core, |explicit| max(explicit.core, required_core));
     let computed = match channel {
         Some(channel) => next_prerelease(published, target, channel, explicitly_higher_core)?,
         None => Computed {
@@ -185,9 +186,7 @@ pub fn select_version(
             }
             _ => (Selection::Explicit, *explicit),
         };
-        if !version.follows(published) {
-            // An unchanged manifest is no explicit override.
-        } else if below_required(&version, &computed.version()) {
+        if below_required(&version, &computed.version()) {
             return Err(Refusal::ExplicitBelowRequired {
                 candidate: match candidate {
                     Selection::Computed(train) => Some(train),
@@ -195,9 +194,8 @@ pub fn select_version(
                 },
                 required: computed,
             });
-        } else {
-            selected = candidate;
         }
+        selected = candidate;
     }
     if let Selection::Computed(selected) = selected
         && !after_published(&selected.version(), published)
@@ -210,40 +208,46 @@ pub fn select_version(
 /// The core of a stable selection, which never falls below the published core.
 fn stable_core(published: VersionCore, required: VersionCore) -> VersionCore {
     #[cfg(feature = "negative-control-understep")]
-    return negative_control_published_core(published, required);
-    #[cfg(not(feature = "negative-control-understep"))]
-    return max(published, required);
+    if let Some(core) = negative_control_published_core(published) {
+        return core;
+    }
+    max(published, required)
 }
 
+/// Takes the published core without the required step.
 #[cfg(feature = "negative-control-understep")]
-fn negative_control_published_core(published: VersionCore, _required: VersionCore) -> VersionCore {
-    published
+fn negative_control_published_core(published: VersionCore) -> Option<VersionCore> {
+    Some(published)
 }
 
 /// Whether an explicit version is lower than the version the release requires.
 fn below_required(explicit: &Version<'_>, required: &Version<'_>) -> bool {
     #[cfg(feature = "negative-control-override-floor")]
-    return negative_control_above_required(explicit, required);
-    #[cfg(not(feature = "negative-control-override-floor"))]
-    return compare(explicit, required) == Ordering::Less;
+    if let Some(below) = negative_control_above_required(explicit, required) {
+        return below;
+    }
+    compare(explicit, required) == Ordering::Less
 }
 
+/// Refuses only an explicit version above the required one.
 #[cfg(feature = "negative-control-override-floor")]
-fn negative_control_above_required(explicit: &Version<'_>, required: &Version<'_>) -> bool {
-    compare(explicit, required) == Ordering::Greater
+fn negative_control_above_required(explicit: &Version<'_>, required: &Version<'_>) -> Option<bool> {
+    Some(compare(explicit, required) == Ordering::Greater)
 }
 
 /// Whether a computed selection follows the published version, which is the last guard before a version leaves the planner.
 fn after_published(selected: &Version<'_>, published: &Version<'_>) -> bool {
     #[cfg(feature = "negative-control-reselect")]
-    return negative_control_not_before(selected, published);
-    #[cfg(not(feature = "negative-control-reselect"))]
-    return selected.follows(published);
+    if let Some(after) = negative_control_not_before(selected, published) {
+        return after;
+    }
+    selected.follows(published)
 }
 
+/// Lets a selection equal the published version.
 #[cfg(feature = "negative-control-reselect")]
-fn negative_control_not_before(selected: &Version<'_>, published: &Version<'_>) -> bool {
-    !published.follows(selected)
+fn negative_control_not_before(selected: &Version<'_>, published: &Version<'_>) -> Option<bool> {
+    Some(!published.follows(selected))
 }
 
 /// How the version of a first release relates to the manifest's version.
@@ -284,14 +288,16 @@ pub fn initial_version(
 /// Whether a prerelease belongs to `channel`'s train.
 fn joins_train(pre: Pre<'_>, channel: Channel) -> bool {
     #[cfg(feature = "negative-control-initial-train")]
-    return negative_control_any_train(pre, channel);
-    #[cfg(not(feature = "negative-control-initial-train"))]
-    return pre.starts_with(channel);
+    if let Some(joins) = negative_control_any_train() {
+        return joins;
+    }
+    pre.starts_with(channel)
 }
 
+/// Lets a prerelease of any train join the configured one.
 #[cfg(feature = "negative-control-initial-train")]
-fn negative_control_any_train(_pre: Pre<'_>, _channel: Channel) -> bool {
-    true
+fn negative_control_any_train() -> Option<bool> {
+    Some(true)
 }
 
 /// The step a release needs once Hex's rule for versions below 1.0 applies.
@@ -307,14 +313,16 @@ pub fn effective_bump(major: u64, required: Bump) -> Bump {
 
 fn below_one(major: u64) -> bool {
     #[cfg(feature = "negative-control-zero-major")]
-    return negative_control_never_below_one(major);
-    #[cfg(not(feature = "negative-control-zero-major"))]
-    return major == 0;
+    if let Some(below) = negative_control_never_below_one() {
+        return below;
+    }
+    major == 0
 }
 
+/// Never applies the rule for versions below 1.0.
 #[cfg(feature = "negative-control-zero-major")]
-fn negative_control_never_below_one(_major: u64) -> bool {
-    false
+fn negative_control_never_below_one() -> Option<bool> {
+    Some(false)
 }
 
 /// The step that separates two versions, named by the highest component that changed.
@@ -335,14 +343,16 @@ pub fn bump_between(from: &Version<'_>, to: &Version<'_>) -> Bump {
 /// Whether two versions with the same major and minor numbers differ in their patch number or prerelease.
 fn differ_below_minor(from: &Version<'_>, to: &Version<'_>) -> bool {
     #[cfg(feature = "negative-control-bump-between")]
-    return negative_control_patch_differs(from, to);
-    #[cfg(not(feature = "negative-control-bump-between"))]
-    return compare(to, from) != Ordering::Equal;
+    if let Some(differ) = negative_control_patch_differs(from, to) {
+        return differ;
+    }
+    compare(to, from) != Ordering::Equal
 }
 
+/// Looks at the patch number alone, so a change of the prerelease is no step.
 #[cfg(feature = "negative-control-bump-between")]
-fn negative_control_patch_differs(from: &Version<'_>, to: &Version<'_>) -> bool {
-    to.core.patch != from.core.patch
+fn negative_control_patch_differs(from: &Version<'_>, to: &Version<'_>) -> Option<bool> {
+    Some(to.core.patch != from.core.patch)
 }
 
 /// Whether a release of a version with `major` needs an acknowledgement that the owner hasn't given.
@@ -350,14 +360,16 @@ fn negative_control_patch_differs(from: &Version<'_>, to: &Version<'_>) -> bool 
 /// Gleam warns against versions below 1.0, so a 0.x release needs `allow_version_zero`.
 pub fn version_zero_refused(major: u64, acknowledged: bool) -> bool {
     #[cfg(feature = "negative-control-version-zero")]
-    return negative_control_never_refused(major, acknowledged);
-    #[cfg(not(feature = "negative-control-version-zero"))]
-    return major == 0 && !acknowledged;
+    if let Some(refused) = negative_control_never_refused() {
+        return refused;
+    }
+    major == 0 && !acknowledged
 }
 
+/// Releases a version below 1.0 without its acknowledgement.
 #[cfg(feature = "negative-control-version-zero")]
-fn negative_control_never_refused(_major: u64, _acknowledged: bool) -> bool {
-    false
+fn negative_control_never_refused() -> Option<bool> {
+    Some(false)
 }
 
 #[cfg(kani)]
@@ -368,7 +380,7 @@ mod proofs {
         Computed, Initial, Refusal, Selection, bump_between, effective_bump, initial_version,
         select_version, version_zero_refused,
     };
-    use crate::precedence::symbolic::{self, TEXT};
+    use crate::precedence::symbolic;
     use crate::precedence::{Channel, Label, Pre, Version, compare};
     use crate::{Bump, VersionCore};
 
@@ -382,14 +394,12 @@ mod proofs {
 
     /// A selection never names a version that doesn't follow the published one, so it never names a version Hex already holds.
     ///
-    /// Every core and train number is symbolic, and prerelease text has at most four bytes.
+    /// Every core and train number is symbolic, and each version is stable or on a train.
     #[kani::proof]
-    #[kani::unwind(8)]
+    #[kani::unwind(1)]
     fn a_selected_version_follows_the_published_one() {
-        let published_bytes: [u8; TEXT] = kani::any();
-        let explicit_bytes: [u8; TEXT] = kani::any();
-        let published = symbolic::version(&published_bytes);
-        let explicit = symbolic::version(&explicit_bytes);
+        let published = symbolic::release();
+        let explicit = symbolic::release();
         let explicit = if kani::any() { Some(&explicit) } else { None };
         let channel: Option<Channel> = kani::any();
         let result = select_version(&published, kani::any(), kani::any(), explicit, channel);
@@ -413,14 +423,12 @@ mod proofs {
 
     /// A selection reaches the core that the required step demands from the latest stable release.
     ///
-    /// Every core and train number is symbolic, and prerelease text has at most four bytes.
+    /// Every core and train number is symbolic, and each version is stable or on a train.
     #[kani::proof]
-    #[kani::unwind(8)]
+    #[kani::unwind(1)]
     fn a_selection_reaches_the_core_the_required_step_demands() {
-        let published_bytes: [u8; TEXT] = kani::any();
-        let explicit_bytes: [u8; TEXT] = kani::any();
-        let published = symbolic::version(&published_bytes);
-        let explicit = symbolic::version(&explicit_bytes);
+        let published = symbolic::release();
+        let explicit = symbolic::release();
         let explicit = if kani::any() { Some(&explicit) } else { None };
         let latest_stable: Option<VersionCore> = kani::any();
         let required: Bump = kani::any();
@@ -441,14 +449,12 @@ mod proofs {
 
     /// A train moves forward through its channels or counts up within one, and a move back needs an explicitly higher core.
     ///
-    /// Every core and train number is symbolic, and prerelease text has at most four bytes.
+    /// Every core and train number is symbolic, and each version is stable or on a train.
     #[kani::proof]
-    #[kani::unwind(8)]
+    #[kani::unwind(1)]
     fn a_train_moves_forward_or_counts_up_within_its_channel() {
-        let published_bytes: [u8; TEXT] = kani::any();
-        let explicit_bytes: [u8; TEXT] = kani::any();
-        let published = symbolic::version(&published_bytes);
-        let explicit = symbolic::version(&explicit_bytes);
+        let published = symbolic::release();
+        let explicit = symbolic::release();
         let explicit = if kani::any() { Some(&explicit) } else { None };
         let channel: Channel = kani::any();
         let result = select_version(
@@ -502,14 +508,12 @@ mod proofs {
 
     /// An explicit version that follows the published one but stays below the required core is refused, and an explicit version is taken only when it follows the published one.
     ///
-    /// Every core and train number is symbolic, and prerelease text has at most four bytes.
+    /// Every core and train number is symbolic, and each version is stable or on a train.
     #[kani::proof]
-    #[kani::unwind(8)]
+    #[kani::unwind(1)]
     fn an_explicit_version_below_the_required_one_is_refused() {
-        let published_bytes: [u8; TEXT] = kani::any();
-        let explicit_bytes: [u8; TEXT] = kani::any();
-        let published = symbolic::version(&published_bytes);
-        let explicit = symbolic::version(&explicit_bytes);
+        let published = symbolic::release();
+        let explicit = symbolic::release();
         let latest_stable: Option<VersionCore> = kani::any();
         let required: Bump = kani::any();
         let channel: Option<Channel> = kani::any();
@@ -540,12 +544,11 @@ mod proofs {
 
     /// A first release joins the configured train, starting at its first number, or keeps a prerelease that belongs to it.
     ///
-    /// The core is symbolic, and prerelease text has at most four bytes.
+    /// The core and train number are symbolic, and the version is stable or on a train.
     #[kani::proof]
-    #[kani::unwind(8)]
+    #[kani::unwind(1)]
     fn the_first_release_joins_the_configured_train() {
-        let bytes: [u8; TEXT] = kani::any();
-        let version = symbolic::version(&bytes);
+        let version = symbolic::release();
         let channel: Option<Channel> = kani::any();
         let stable: bool = kani::any();
         match initial_version(&version, channel, stable) {
@@ -577,6 +580,7 @@ mod proofs {
         kani::cover!(channel.is_some() && !matches!(version.pre, Pre::Stable));
     }
 
+    /// Below 1.0 a breaking change is a minor release, and every other step stays as required, for every major number and step.
     #[kani::proof]
     fn a_breaking_change_below_one_is_a_minor_release() {
         let major: u64 = kani::any();
@@ -595,14 +599,12 @@ mod proofs {
 
     /// The step between two versions names the highest component that changed, and a change of the prerelease alone is a patch step.
     ///
-    /// Every core is symbolic, and prerelease text has at most four bytes.
+    /// Every core and train number is symbolic, and each version is stable or on a train.
     #[kani::proof]
-    #[kani::unwind(8)]
+    #[kani::unwind(1)]
     fn the_step_between_versions_names_the_highest_changed_component() {
-        let from_bytes: [u8; TEXT] = kani::any();
-        let to_bytes: [u8; TEXT] = kani::any();
-        let from = symbolic::version(&from_bytes);
-        let to = symbolic::version(&to_bytes);
+        let from = symbolic::release();
+        let to = symbolic::release();
         let step = bump_between(&from, &to);
         if from.core == to.core && compare(&from, &to) != Ordering::Equal {
             kani::assert(
@@ -619,6 +621,7 @@ mod proofs {
         kani::cover!(step == Bump::Patch && from.core == to.core);
     }
 
+    /// A release below 1.0 is refused exactly when its acknowledgement is missing, for every major number.
     #[kani::proof]
     fn a_zero_major_release_needs_its_acknowledgement() {
         let major: u64 = kani::any();
