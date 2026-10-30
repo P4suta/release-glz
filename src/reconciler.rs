@@ -462,9 +462,9 @@ fn items<'a>(
             items.push((Item::UnsealedAsset(name), object(false, Presence::Differs)));
         }
     }
+    // A Release that differs from the Candidate already conflicts as the draft, which comes first.
     let finalized = match &observed.github_release {
         None => Presence::Absent,
-        Some(release) if !release_matches(release) => Presence::Differs,
         Some(release) if release.draft => Presence::Pending,
         Some(_) => Presence::Matches,
     };
