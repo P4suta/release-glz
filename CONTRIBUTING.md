@@ -71,7 +71,9 @@ Release coverage requires at least 90% lines and 85% branches, with no viable cr
 Workflow changes must pass zizmor against both repository workflows and the generated consumer workflow during shipping assurance.
 
 Public JSON is a compatibility contract.
-Commands use `command/v2`, while `plan/v3`, `candidate/v1`, `state/v1`, and `hook/v1` evolve independently.
+Commands use `command/v2`, and every result format, `hook/v1`, and `state/v1` evolve independently with the schemas that [docs/README.md](docs/README.md#machine-readable-contract) lists.
+A new format needs its schema under `docs/` and an entry in `release_glz_test_support::schema::RESULT_SCHEMAS`, or `tests/json_schema_contract.rs` fails.
+Tests that print a result check it with `assert_published_envelope` or `assert_published_result`.
 Update schemas, fixtures, documentation, human output, and Action outputs together.
 Public paths use repository-relative `/` strings.
 

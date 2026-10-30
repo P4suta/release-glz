@@ -1,6 +1,7 @@
 use std::process::Command;
 
 use release_glz_test_support::isolated_command;
+use release_glz_test_support::schema::assert_published_envelope;
 
 fn binary() -> Command {
     isolated_command(env!("CARGO_BIN_EXE_release-glz"))
@@ -80,6 +81,7 @@ fn json_usage_errors_are_machine_readable_and_keep_the_requested_command() {
     assert_eq!(output.status.code(), Some(2));
     assert!(output.stderr.is_empty());
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_published_envelope(&value);
     assert_eq!(value["schema"], "command/v2");
     assert_eq!(value["ok"], false);
     assert_eq!(value["command"], "release");
@@ -122,23 +124,27 @@ fn completion_supports_all_documented_shells() {
 
 #[test]
 fn json_output_uses_the_command_envelope_v2() {
-    let output = binary()
-        .args(["--output", "json", "completion", "bash"])
-        .output()
-        .unwrap();
-    assert!(output.status.success());
-    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(value["schema"], "command/v2");
-    assert_eq!(value["ok"], true);
-    assert_eq!(value["command"], "completion");
-    assert!(
-        value["result"]["source"]
-            .as_str()
-            .unwrap()
-            .contains("complete")
-    );
-    assert!(value["diagnostics"].is_array());
-    assert!(value["next_actions"].is_array());
+    for shell in ["bash", "zsh", "fish", "powershell"] {
+        let output = binary()
+            .args(["--output", "json", "completion", shell])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{shell}");
+        let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_published_envelope(&value);
+        assert_eq!(value["schema"], "command/v2");
+        assert_eq!(value["ok"], true);
+        assert_eq!(value["command"], "completion");
+        assert_eq!(value["result"]["schema"], "completion/v1");
+        assert_eq!(value["result"]["shell"], shell);
+        assert!(
+            value["result"]["source"]
+                .as_str()
+                .unwrap()
+                .contains("candidate-build"),
+            "{shell}"
+        );
+    }
 }
 
 #[test]
@@ -158,6 +164,7 @@ fn json_configuration_failures_use_envelope_v2_and_exit_two() {
         .unwrap();
     assert_eq!(output.status.code(), Some(2));
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_published_envelope(&value);
     assert_eq!(value["schema"], "command/v2");
     assert_eq!(value["ok"], false);
     assert_eq!(value["command"], "doctor");

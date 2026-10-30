@@ -1369,7 +1369,6 @@ dependencies = [
  "clap",
  "clap_complete",
  "flate2",
- "jsonschema",
  "process-wrap",
  "release-glz-core",
  "release-glz-test-support",
@@ -1400,6 +1399,7 @@ name = "release-glz-test-support"
 version = "0.0.0"
 dependencies = [
  "base64 0.23.1",
+ "jsonschema",
  "ring",
  "serde",
  "serde_json",

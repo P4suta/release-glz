@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/P4suta/release-glz/v1.0.0/docs/doctor-report.schema.json",
+  "title": "release-glz Doctor Report v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "state", "config_schema", "required_compiler", "installed_compiler",
+    "diagnostics", "next_actions"
+  ],
+  "properties": {
+    "schema": { "const": "doctor/v1" },
+    "state": { "enum": ["up_to_date", "blocked"] },
+    "config_schema": { "enum": [1, 2] },
+    "required_compiler": { "$ref": "#/$defs/version" },
+    "installed_compiler": { "anyOf": [{ "$ref": "#/$defs/version" }, { "type": "null" }] },
+    "diagnostics": {
+      "type": "array",
+      "items": { "$ref": "command-envelope.schema.json#/$defs/diagnostic" }
+    },
+    "next_actions": {
+      "type": "array",
+      "items": { "$ref": "command-envelope.schema.json#/$defs/nextAction" }
+    }
+  },
+  "if": { "properties": { "state": { "const": "blocked" } } },
+  "then": {
+    "properties": {
+      "diagnostics": { "contains": { "properties": { "level": { "const": "error" } } } }
+    }
+  },
+  "else": {
+    "properties": {
+      "diagnostics": { "items": { "properties": { "level": { "enum": ["info", "warning"] } } } }
+    }
+  },
+  "$defs": {
+    "version": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$"
+    }
+  }
+}

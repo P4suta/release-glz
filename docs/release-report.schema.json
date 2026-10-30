@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/P4suta/release-glz/v1.0.0/docs/release-report.schema.json",
+  "title": "release-glz Release Report v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "state", "candidate_digest", "applied", "remaining"],
+  "properties": {
+    "schema": { "const": "release/v1" },
+    "state": {
+      "enum": ["candidate_ready", "awaiting_approval", "partially_released", "released"]
+    },
+    "candidate_digest": { "$ref": "#/$defs/sha256" },
+    "applied": { "type": "array", "items": { "$ref": "#/$defs/effect" } },
+    "remaining": { "type": "array", "items": { "$ref": "#/$defs/effect" } }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "state": { "const": "awaiting_approval" } } },
+      "then": { "properties": { "applied": { "maxItems": 0 }, "remaining": { "maxItems": 0 } } }
+    },
+    {
+      "if": { "properties": { "state": { "const": "released" } } },
+      "then": { "properties": { "remaining": { "items": { "$ref": "#/$defs/optionalNotify" } } } }
+    }
+  ],
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "effect": {
+      "oneOf": [
+        { "$ref": "#/$defs/stageEffect" },
+        { "$ref": "#/$defs/uploadGithubAsset" },
+        { "$ref": "#/$defs/notify" }
+      ]
+    },
+    "stageEffect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": {
+          "enum": [
+            "prepare_annotated_tag", "prepare_github_draft", "publish_package",
+            "publish_docs", "finalize_github_release"
+          ]
+        }
+      }
+    },
+    "uploadGithubAsset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "hook_id", "name", "sha256"],
+      "properties": {
+        "kind": { "const": "upload_github_asset" },
+        "hook_id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "notify": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "hook_id", "idempotency_key", "required"],
+      "properties": {
+        "kind": { "const": "notify" },
+        "hook_id": { "type": "string", "minLength": 1 },
+        "idempotency_key": { "$ref": "#/$defs/sha256" },
+        "required": { "type": "boolean" }
+      }
+    },
+    "optionalNotify": {
+      "$ref": "#/$defs/notify",
+      "properties": { "required": { "const": false } }
+    }
+  }
+}
