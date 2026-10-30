@@ -1,8 +1,10 @@
 //! Properties of the generated release workflow, read from its parsed YAML rather than its text.
 
+use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::path::Path;
 
+use release_glz::approval::ApprovalRequest;
 use release_glz::workflow::{CANDIDATE_ARTIFACT_PREFIX, render_configured};
 use serde_norway::Value;
 
@@ -265,6 +267,40 @@ fn the_candidate_artifact_carries_the_name_that_publication_accepts() {
     assert_eq!(
         release["env"]["RELEASE_GLZ_ACTIONS_RUN_ID"].as_str(),
         Some("${{ inputs.candidate-run-id || github.run_id }}")
+    );
+}
+
+/// The publish step passes exactly the release-glz variables that approval reads, so a renamed or dropped one fails here instead of at publication.
+#[test]
+fn the_publish_step_passes_exactly_the_variables_that_approval_reads() {
+    let workflow = workflow();
+    let release = action_step(job(&workflow, "publish"), "release");
+    let passed = release["env"]
+        .as_mapping()
+        .unwrap()
+        .keys()
+        .filter_map(Value::as_str)
+        .filter(|name| name.starts_with("RELEASE_GLZ_"))
+        .map(str::to_owned)
+        .collect::<BTreeSet<_>>();
+
+    let read = RefCell::new(BTreeSet::new());
+    ApprovalRequest::from_variables(|name| {
+        read.borrow_mut().insert(name.to_owned());
+        Some("1".into())
+    })
+    .unwrap();
+    let read = read
+        .into_inner()
+        .into_iter()
+        .filter(|name| name.starts_with("RELEASE_GLZ_"))
+        .collect::<BTreeSet<_>>();
+
+    assert_eq!(passed, read);
+    // The runner provides these to a job that may mint an OIDC token, and approval reads them too.
+    assert_eq!(
+        job(&workflow, "publish")["permissions"]["id-token"].as_str(),
+        Some("write")
     );
 }
 

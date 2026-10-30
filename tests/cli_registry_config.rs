@@ -1041,13 +1041,117 @@ fn a_merged_release_pr_authorizes_a_candidate_only_with_the_intent_it_recorded()
 }
 
 #[test]
-fn a_release_outside_an_actions_job_stops_before_it_asks_github_for_approval() {
+fn a_release_without_a_verifiable_approval_stops_before_it_asks_github_for_anything() {
     let temp = tempfile::tempdir().unwrap();
     let (_registry_listener, registry_url) = bound_listener();
     let gleam = initialize_initial_package(temp.path(), &registry_url);
-    let source_sha = git_output(temp.path(), &["rev-parse", "HEAD"]);
-    let candidate = temp.path().join("candidate");
-    let rehearse = candidate_command(temp.path(), &gleam)
+    let candidate = rehearsed_candidate(temp.path(), &gleam);
+    // Nothing listens here, so a run that reached GitHub would fail differently.
+    let (github_listener, github_url) = bound_listener();
+    drop(github_listener);
+    // The verifier trusts no token endpoint on this host, so a run that got this far would refuse it without a request.
+    let actions_job = [
+        (
+            "ACTIONS_ID_TOKEN_REQUEST_URL",
+            "https://untrusted.invalid/token",
+        ),
+        ("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "runner-secret"),
+        ("GITHUB_RUN_ID", "42"),
+        ("RELEASE_GLZ_ACTIONS_ARTIFACT_ID", "7"),
+        ("RELEASE_GLZ_ACTIONS_ARTIFACT_DIGEST", &"3".repeat(64)),
+        ("RELEASE_GLZ_ACTIONS_RUN_ID", "42"),
+    ];
+
+    for (case, overrides, message) in [
+        (
+            "outside an Actions job",
+            vec![("ACTIONS_ID_TOKEN_REQUEST_URL", None)],
+            "release approval requires GitHub Actions OIDC request URL",
+        ),
+        (
+            "an artifact ID that isn't a number",
+            vec![("RELEASE_GLZ_ACTIONS_ARTIFACT_ID", Some("seven"))],
+            "release approval Actions artifact ID is invalid",
+        ),
+    ] {
+        let mut command = candidate_command(temp.path(), &gleam);
+        command
+            .args(["--output", "json", "release", "--candidate"])
+            .arg(&candidate)
+            .env("GITHUB_TOKEN", "github-value")
+            .env("GITHUB_API_URL", &github_url)
+            .env("GITHUB_GRAPHQL_URL", format!("{github_url}/graphql"));
+        for (name, value) in actions_job {
+            command.env(name, value);
+        }
+        for (name, value) in overrides {
+            match value {
+                Some(value) => command.env(name, value),
+                None => command.env_remove(name),
+            };
+        }
+        let release = command.output().unwrap();
+
+        assert_eq!(release.status.code(), Some(3), "{case}: {release:?}");
+        let envelope = json(&release);
+        assert_published_envelope(&envelope);
+        let diagnostic = &envelope["diagnostics"][0];
+        assert_eq!(diagnostic["code"], "policy_or_approval", "{case}");
+        assert!(
+            diagnostic.to_string().contains(message),
+            "{case}: {diagnostic}"
+        );
+    }
+}
+
+#[test]
+fn an_inspection_of_a_world_that_contradicts_the_candidate_is_an_immutable_conflict() {
+    let temp = tempfile::tempdir().unwrap();
+    let (registry_listener, registry_url) = bound_listener();
+    let (github_listener, github_url) = bound_listener();
+    let gleam = initialize_initial_package(temp.path(), &registry_url);
+    let candidate = rehearsed_candidate(temp.path(), &gleam);
+    let published = serde_json::json!({
+        "version": "1.0.0",
+        "checksum": "f".repeat(64),
+        "has_docs": false
+    });
+    let (_registry_requests, registry_server) = serve_recording(
+        registry_listener,
+        vec![http_response(200, published.to_string().as_bytes())],
+    );
+    let (_github_requests, github_server) = serve_recording(
+        github_listener,
+        vec![http_response(404, b""), http_response(404, b"")],
+    );
+
+    let release = candidate_command(temp.path(), &gleam)
+        .args(["--output", "json", "release", "--dry-run", "--candidate"])
+        .arg(&candidate)
+        .env("GITHUB_API_URL", &github_url)
+        .env("GITHUB_GRAPHQL_URL", format!("{github_url}/graphql"))
+        .output()
+        .unwrap();
+    registry_server.join().unwrap();
+    github_server.join().unwrap();
+
+    assert_eq!(release.status.code(), Some(4), "{release:?}");
+    let envelope = json(&release);
+    assert_published_envelope(&envelope);
+    assert_eq!(envelope["ok"], false);
+    let diagnostic = &envelope["diagnostics"][0];
+    assert_eq!(diagnostic["code"], "immutable_state_conflict");
+    assert_eq!(
+        diagnostic["message"],
+        "immutable state conflict: the published package checksum differs from the Candidate"
+    );
+}
+
+/// Rehearse the committed package in `directory` into a Candidate and return its directory.
+fn rehearsed_candidate(directory: &std::path::Path, gleam: &std::path::Path) -> std::path::PathBuf {
+    let source_sha = git_output(directory, &["rev-parse", "HEAD"]);
+    let candidate = directory.join("candidate");
+    let rehearse = candidate_command(directory, gleam)
         .args([
             "--output",
             "json",
@@ -1060,29 +1164,7 @@ fn a_release_outside_an_actions_job_stops_before_it_asks_github_for_approval() {
         .output()
         .unwrap();
     assert_success(&rehearse, "rehearse");
-    // Nothing listens here, so a run that reached GitHub would fail differently.
-    let (github_listener, github_url) = bound_listener();
-    drop(github_listener);
-
-    let release = candidate_command(temp.path(), &gleam)
-        .args(["--output", "json", "release", "--candidate"])
-        .arg(&candidate)
-        .env("GITHUB_TOKEN", "github-value")
-        .env("GITHUB_API_URL", &github_url)
-        .env("GITHUB_GRAPHQL_URL", format!("{github_url}/graphql"))
-        .output()
-        .unwrap();
-
-    assert_eq!(release.status.code(), Some(3), "{release:?}");
-    let diagnostic = &json(&release)["diagnostics"][0];
-    assert_eq!(diagnostic["code"], "policy_or_approval");
-    assert!(
-        diagnostic["message"]
-            .as_str()
-            .unwrap()
-            .contains("GitHub Actions OIDC request URL"),
-        "{diagnostic}"
-    );
+    candidate
 }
 
 #[test]
@@ -1090,21 +1172,7 @@ fn a_refused_approval_names_the_check_that_refused_it() {
     let temp = tempfile::tempdir().unwrap();
     let (_registry_listener, registry_url) = bound_listener();
     let gleam = initialize_initial_package(temp.path(), &registry_url);
-    let source_sha = git_output(temp.path(), &["rev-parse", "HEAD"]);
-    let candidate = temp.path().join("candidate");
-    let rehearse = candidate_command(temp.path(), &gleam)
-        .args([
-            "--output",
-            "json",
-            "rehearse",
-            "--ref",
-            &source_sha,
-            "--out",
-        ])
-        .arg(&candidate)
-        .output()
-        .unwrap();
-    assert_success(&rehearse, "rehearse");
+    let candidate = rehearsed_candidate(temp.path(), &gleam);
     let (github_listener, github_url) = bound_listener();
     drop(github_listener);
 
