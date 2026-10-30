@@ -347,6 +347,14 @@ Two entries whose paths fold to the same file or directory once letter case and 
 Kani proves the character rules for every byte and every byte pair, and the device names for every stem of up to eight bytes.
 It proves where a stem ends for components of up to six bytes and what an accepted component may hold for components of up to eight bytes.
 It proves the collision rule for pairs of folded paths of up to five bytes, which nest two directories deep.
+It proves that a path passes exactly when each of its components does for every path of three bytes over `a`, `.`, and `/`.
+It proves the trimming of trailing slashes for every path of up to two bytes over those bytes.
+It proves which directories hold a folded path for every folded path of up to four bytes, and it pins reading a path from its text on fixed paths.
+It proves what a claim records and which second claim it refuses for every pair of folded paths of up to three bytes.
+It pins on fixed paths that a directory keeps its first entry.
+Symbolic bytes across a whole path exhaust the solver.
+The shell decodes each path as UTF-8 before the core reads it.
+The shell keeps the claimed paths in maps, which exhaust the solver, so the archive tests check that storage.
 The shell folds a path through canonical decomposition, Unicode's lowercase mapping, and canonical decomposition again.
 That fold rests on `icu_normalizer` and the tests, and it approximates the default macOS file system's own folding.
 
@@ -356,6 +364,10 @@ That fold rests on `icu_normalizer` and the tests, and it approximates the defau
 - Kani: `archive_path::proofs::an_accepted_archive_path_stays_inside_its_destination`
 - Kani: `archive_path::proofs::two_accepted_entries_never_collide_once_case_no_longer_counts`
 - Kani: `archive_path::proofs::entries_two_directories_deep_never_collide_once_case_no_longer_counts`
+- Kani: `archive_path::proofs::a_path_passes_exactly_when_each_component_does`
+- Kani: `archive_path::proofs::an_archive_path_is_its_text_without_trailing_slashes`
+- Kani: `archive_path::proofs::the_directories_above_a_path_are_its_prefixes_before_each_slash`
+- Kani: `archive_path::proofs::claiming_records_each_entry_and_names_the_earlier_one`
 - Fuzz: `archive`
 - Test: `tests/artifact_security.rs::archive_paths_reject_every_ambiguous_or_traversing_form`
 - Test: `tests/artifact_security.rs::archive_paths_reject_entries_that_collide_once_letter_case_no_longer_counts`
@@ -380,6 +392,10 @@ Fuzzing checks them, and every pull request replays the committed corpus of each
 A rendered marker after inert text is the one marker that ends the body, its fields give back every value, and a body with an earlier marker has no marker.
 Kani proves inert text for texts of at most three bytes and the byte search for haystacks of at most four bytes with needles of at most two.
 It proves reading one field for fields of at most nine bytes, and Lean proves the marker for bodies of every length.
+Kani also pins writing a marker for values of one byte each and for empty values.
+It proves finding the block that ends a body for every body of up to five bytes with one-byte opening and closing texts.
+It pins finding the marker itself on an empty body and on the shortest marker.
+It pins reading the fields of a marker in two orders and with a key missing.
 The adapter trims trailing whitespace and splits the fields at Unicode whitespace before the core reads them.
 That split agrees with the model's split at spaces, because no value that release-glz writes holds whitespace.
 
@@ -387,6 +403,10 @@ That split agrees with the model's split at spaces, because no value that releas
 - Kani: `marker::proofs::the_first_occurrence_is_the_earliest_match`
 - Kani: `marker::proofs::the_last_occurrence_is_the_latest_match`
 - Kani: `marker::proofs::a_field_is_recorded_only_under_a_new_known_key`
+- Kani: `marker::proofs::a_marker_writes_each_key_and_value_in_order`
+- Kani: `marker::proofs::the_marker_that_ends_a_body_is_found_after_inert_text`
+- Kani: `marker::proofs::the_marker_is_found_with_its_own_texts`
+- Kani: `marker::proofs::the_fields_of_a_marker_give_back_each_value`
 - Lean: `ReleaseGlz.Marker.inert_holds_no_less_than`
 - Lean: `ReleaseGlz.Marker.a_rendered_marker_ends_the_body`
 - Lean: `ReleaseGlz.Marker.an_earlier_marker_is_refused`

@@ -72,6 +72,16 @@ negative-control-device-case = []
 negative-control-device-stem = []
 # Letting a file and a directory of the same folded name both stand.
 negative-control-case-collision = []
+# Checking only the first component of a path.
+negative-control-first-component = []
+# Keeping the trailing slashes of an archive path.
+negative-control-keep-trailing-slashes = []
+# Taking the prefix before every byte of a path for a directory.
+negative-control-directory-at-every-byte = []
+# Accepting an archive entry without recording it.
+negative-control-forget-files = []
+# Recording a later entry for a directory that an earlier entry claimed.
+negative-control-overwrite-directory = []
 # Ordering two prereleases with the same identifiers as unequal.
 negative-control-equal-prereleases = []
 # Ordering a stable release before the prereleases of its core.
@@ -132,6 +142,12 @@ negative-control-inert-less-than = []
 negative-control-search-skips-start = []
 # Stopping the search for a last occurrence before the last offset.
 negative-control-search-stops-short = []
+# Writing the fields of a marker with nothing between them.
+negative-control-fields-run-together = []
+# Giving back an empty value for a key that no field of a marker named.
+negative-control-missing-key = []
+# Finding a marker at the start of every body.
+negative-control-marker-at-start = []
 # Letting a later marker field replace an earlier one with the same key.
 negative-control-duplicate-keys = []
 # Accepting a token at the second it expires.

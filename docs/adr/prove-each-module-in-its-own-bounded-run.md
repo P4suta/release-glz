@@ -6,8 +6,8 @@ date: 2026-10-30
 
 ## Status
 
-Proposed.
-It partly supersedes [admit proofs only from audited reports](admit-proofs-only-from-audited-reports.md), whose gate proved every harness in one run.
+Superseded by [prove each harness in its own bounded run](prove-each-harness-in-its-own-bounded-run.md) while still proposed.
+It partly superseded [admit proofs only from audited reports](admit-proofs-only-from-audited-reports.md), whose gate proved every harness in one run.
 
 ## Context
 

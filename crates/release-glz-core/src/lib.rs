@@ -28,7 +28,7 @@ mod version;
 mod wait;
 
 pub use approval::{Approval, RunIdentity, Trigger};
-pub use archive_path::{Collision, FoldedPaths, PathRefusal, archive_path};
+pub use archive_path::{ClaimedPaths, Collision, archive_path, claim_path};
 pub use candidate_choice::{CandidateRun, RunRefusal, candidate_run};
 pub use commit::conventional_bump;
 pub use framing::{FILES_DOMAIN, NOTIFICATION_DOMAIN, frame_file, notification_frame};

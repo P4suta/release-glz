@@ -23,7 +23,8 @@ The owner keeps mutation campaigns off Actions because of their cost.
 - It proves the unmutated core first, through the same audit as `cargo xtask proofs`, and stops unless the audit admits that run.
 - cargo-mutants lists the mutants, and the campaign leaves out the harnesses and the negative controls by their place in the source.
 - The campaign applies each mutant to a copy of the frozen sources and runs the harnesses of the mutant's module, stopping at the first failure.
-  Before it calls a mutant a survivor, it runs the harnesses of every other module of the package, one bounded run each, so no run outgrows the bounded time limit.
+  Before it calls a mutant a survivor, it runs every other harness of the package.
+  Each harness gets its own bounded run, as [prove each harness in its own bounded run](prove-each-harness-in-its-own-bounded-run.md) records for the gate.
 - Each outcome comes from Kani's audited report: detected when a harness fails the audit, unviable when the mutant doesn't compile, and inconclusive otherwise.
   An inconclusive mutant fails the campaign.
 - A survivor has to appear in [`verification/equivalent-mutants.json`](../../verification/equivalent-mutants.json) with the reason that no harness can detect it.

@@ -1,6 +1,6 @@
 //! Every Kani harness and every negative control, run from a frozen source in the pinned image and audited before the gate relies on them.
 //!
-//! The harnesses of each module get their own bounded run, so the time limit of one run never grows with the number of modules.
+//! Each harness gets its own bounded run, so neither the time nor the memory of one run grows with the other harnesses.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -39,43 +39,44 @@ struct Metadata {
     proof_harnesses: Vec<CompiledHarness>,
 }
 
-/// The harnesses of one module, which one bounded run proves.
-#[derive(Debug, Clone)]
-pub struct Module {
+/// One harness of the inventory and the package that holds it, which one bounded run proves.
+#[derive(Debug, Clone, Copy)]
+pub struct Proof {
     pub package: &'static str,
-    /// The harness filter that selects them, which starts the name of each one.
-    pub filter: String,
-    pub harnesses: Vec<Harness>,
+    pub harness: Harness,
 }
 
-impl Module {
-    /// The name of its run in the evidence.
+impl Proof {
+    /// The name of its run in the evidence, which `-` keeps apart from every other harness because a name holds `-` nowhere else.
     fn label(&self) -> String {
-        let module = self
-            .filter
-            .trim_end_matches("proofs::")
-            .trim_end_matches("::");
-        format!(
-            "{}-{}",
+        format!("{}-{}", self.package, self.harness.name.replace("::", "-"))
+    }
+
+    /// The arguments of the Kani run that proves exactly this harness and exports its report to `export`.
+    fn arguments<'a>(&'a self, export: &'a str) -> [&'a str; 11] {
+        [
+            "cargo",
+            "kani",
+            "--package",
             self.package,
-            if module.is_empty() { "lib" } else { module }
-        )
+            "--harness",
+            self.harness.name,
+            "--exact",
+            "-Z",
+            "unstable-options",
+            "--export-json",
+            export,
+        ]
     }
 }
 
-/// The module of the harness `name`: its path up to and including the last `::`, which every harness of that module starts with.
-fn module_of(name: &str) -> Option<&str> {
-    name.rfind("::").and_then(|end| name.get(..end + 2))
-}
-
-/// Split the inventory into the modules of the harnesses that the compiler found, by package.
+/// Pair each harness of the inventory with the package in which the compiler found it, in the order of the inventory.
 ///
-/// It refuses a harness that only the compiler or only the inventory names, and a harness outside every module.
-/// Kani selects a module's harnesses by a substring of their names, so it also refuses a module whose filter another module's harness contains.
-fn split(
+/// It refuses a harness that only the compiler or only the inventory names.
+fn proofs_to_run(
     compiled: &BTreeMap<String, &'static str>,
     harnesses: &[Harness],
-) -> Result<Vec<Module>, Failure> {
+) -> Result<Vec<Proof>, Failure> {
     let listed = harnesses
         .iter()
         .map(|harness| harness.name)
@@ -88,39 +89,13 @@ fn split(
             listed.difference(&found).collect::<Vec<_>>()
         )));
     }
-    let mut modules = BTreeMap::<(&str, &str), Module>::new();
-    for harness in harnesses {
-        let package = compiled[harness.name];
-        let filter = module_of(harness.name).ok_or_else(|| {
-            Failure::new(format!(
-                "the harness {} lies outside every module",
-                harness.name
-            ))
-        })?;
-        modules
-            .entry((package, filter))
-            .or_insert_with(|| Module {
-                package,
-                filter: filter.to_owned(),
-                harnesses: Vec::new(),
-            })
-            .harnesses
-            .push(*harness);
-    }
-    let modules = modules.into_values().collect::<Vec<_>>();
-    for module in &modules {
-        if let Some((name, _)) = compiled.iter().find(|(name, package)| {
-            **package == module.package
-                && module_of(name) != Some(module.filter.as_str())
-                && name.contains(&module.filter)
-        }) {
-            return Err(Failure::new(format!(
-                "the filter {} of {} would also select {name}",
-                module.filter, module.package
-            )));
-        }
-    }
-    Ok(modules)
+    Ok(harnesses
+        .iter()
+        .map(|harness| Proof {
+            package: compiled[harness.name],
+            harness: *harness,
+        })
+        .collect())
 }
 
 /// Every file under `directory` in which Kani's compiler recorded a crate, without following links.
@@ -233,10 +208,10 @@ pub fn run(root: &Path) -> Result<(), Failure> {
     };
     let environment = [("CARGO_TARGET_DIR", TARGET_DIRECTORY)];
 
-    let modules = admit_every_harness(&container, &mounts, &source, root, "proofs")?.len();
+    let proofs = admit_every_harness(&container, &mounts, &source, root, "proofs")?;
     println!(
-        "verified all {} harnesses in {modules} module runs",
-        HARNESSES.len()
+        "verified all {} harnesses, each in its own run",
+        proofs.len()
     );
 
     for (index, control) in CONTROLS.iter().enumerate() {
@@ -275,7 +250,7 @@ pub fn run(root: &Path) -> Result<(), Failure> {
     fs::write(
         evidence.join("receipt.txt"),
         format!(
-            "source {}\nfiles {}\nimage {}\nharnesses {}\nmodule runs {modules}\nnegative controls {}\nverdict admitted\n",
+            "source {}\nfiles {}\nimage {}\nharnesses {}\nnegative controls {}\nverdict admitted\n",
             source.digest,
             source.files,
             container.image(),
@@ -292,58 +267,42 @@ pub fn run(root: &Path) -> Result<(), Failure> {
     Ok(())
 }
 
-/// Prove every harness of the inventory from `source`, one bounded run per module named after `name`, and refuse unless the audit admits each run.
+/// Prove every harness of the inventory from `source`, each in its own bounded run named after `name`, and refuse unless the audit admits each run.
 ///
-/// It returns the modules it proved.
+/// It returns the harnesses it proved, each with its package, in the order of the inventory.
 pub fn admit_every_harness(
     container: &Container,
     mounts: &Mounts<'_>,
     source: &SourceSnapshot,
     root: &Path,
     name: &str,
-) -> Result<Vec<Module>, Failure> {
-    let modules = split(&census(container, mounts)?, &HARNESSES)?;
-    for module in &modules {
-        let run = format!("{name}-{}", module.label());
+) -> Result<Vec<Proof>, Failure> {
+    let proofs = proofs_to_run(&census(container, mounts)?, &HARNESSES)?;
+    for proof in &proofs {
+        let run = format!("{name}-{}", proof.label());
         let export = format!("/evidence/{run}.json");
         let exit = container.run(
             mounts,
             &[("CARGO_TARGET_DIR", TARGET_DIRECTORY)],
-            &[
-                "cargo",
-                "kani",
-                "--package",
-                module.package,
-                "--harness",
-                &module.filter,
-                "-Z",
-                "unstable-options",
-                "--export-json",
-                &export,
-            ],
+            &proof.arguments(&export),
         )?;
         keep_logs(mounts.evidence, &run, &exit.stdout, &exit.stderr)?;
         let report = read_report(mounts.evidence, &run)?;
-        let mut audit = report.audit_proofs(&module.harnesses);
+        let mut audit = report.audit_proofs(&[proof.harness]);
         audit.logs_supported = logs_supported(&exit.stdout, &exit.stderr);
         audit.source_matches = source.matches(root)?;
         let admission = admit_proofs(exit.code, audit);
         if admission != Admission::Admit {
             return Err(Failure::new(format!(
                 "the proof run of {} in {} is refused: {admission:?}; inspect {}",
-                module.filter,
-                module.package,
+                proof.harness.name,
+                proof.package,
                 mounts.evidence.display()
             )));
         }
-        println!(
-            "verified the {} harnesses of {} in {}",
-            module.harnesses.len(),
-            module.filter,
-            module.package
-        );
+        println!("verified {} in {}", proof.harness.name, proof.package);
     }
-    Ok(modules)
+    Ok(proofs)
 }
 
 fn refused(control: &Control, admission: Admission, evidence: &Path) -> Failure {
@@ -376,7 +335,7 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet};
     use std::fs;
 
-    use super::{census_of, metadata_files, module_of, split};
+    use super::{Proof, census_of, metadata_files, proofs_to_run};
     use crate::inventory::{HARNESSES, Harness};
 
     fn harness(name: &'static str) -> Harness {
@@ -391,15 +350,7 @@ mod tests {
     }
 
     #[test]
-    fn a_harness_belongs_to_the_module_its_name_starts_with() {
-        assert_eq!(module_of("run::proofs::a"), Some("run::proofs::"));
-        assert_eq!(module_of("proofs::a"), Some("proofs::"));
-        assert_eq!(module_of("a::b::proofs::c"), Some("a::b::proofs::"));
-        assert_eq!(module_of("a"), None);
-    }
-
-    #[test]
-    fn each_harness_of_the_inventory_runs_once_in_the_run_of_its_own_module() {
+    fn each_harness_of_the_inventory_runs_once_in_a_run_of_its_own() {
         // The harnesses of `assurance-core` live at its root, and those of `release-glz-core` in its modules.
         let census = HARNESSES
             .iter()
@@ -411,46 +362,58 @@ mod tests {
                 };
                 (harness.name.to_owned(), package)
             })
-            .collect();
-        let modules = split(&census, &HARNESSES).unwrap();
-        let mut proved = BTreeSet::new();
-        for module in &modules {
-            assert!(!module.harnesses.is_empty());
-            for harness in &module.harnesses {
-                assert!(harness.name.starts_with(&module.filter));
-                assert!(proved.insert(harness.name), "{} runs twice", harness.name);
-            }
-        }
-        assert_eq!(proved.len(), HARNESSES.len());
-        let labels = modules
+            .collect::<BTreeMap<_, _>>();
+        let proofs = proofs_to_run(&census, &HARNESSES).unwrap();
+        let names = proofs
             .iter()
-            .map(super::Module::label)
-            .collect::<BTreeSet<_>>();
-        assert_eq!(labels.len(), modules.len(), "two runs share a name");
-        assert!(labels.contains("assurance-core-lib") && labels.contains("release-glz-core-run"));
+            .map(|proof| proof.harness.name)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            HARNESSES
+                .iter()
+                .map(|harness| harness.name)
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            proofs
+                .iter()
+                .all(|proof| census[proof.harness.name] == proof.package)
+        );
+        let labels = proofs.iter().map(Proof::label).collect::<BTreeSet<_>>();
+        assert_eq!(labels.len(), proofs.len(), "two runs share a name");
     }
 
     #[test]
-    fn the_split_refuses_a_harness_that_only_the_compiler_or_the_inventory_names() {
+    fn a_run_selects_exactly_its_own_harness() {
+        let proof = Proof {
+            package: "core",
+            harness: harness("run::proofs::a"),
+        };
+        let arguments = proof.arguments("/evidence/a.json");
+        let selected = arguments
+            .windows(3)
+            .any(|window| window == ["--harness", "run::proofs::a", "--exact"]);
+        assert!(selected, "{arguments:?}");
+        assert!(
+            arguments
+                .windows(2)
+                .any(|window| window == ["--package", "core"])
+        );
+        assert_eq!(arguments.last(), Some(&"/evidence/a.json"));
+        assert_eq!(proof.label(), "core-run-proofs-a");
+    }
+
+    #[test]
+    fn the_runs_refuse_a_harness_that_only_the_compiler_or_the_inventory_names() {
         let census = compiled(&[("run::proofs::a", "core"), ("run::proofs::b", "core")]);
         let both = [harness("run::proofs::a"), harness("run::proofs::b")];
-        assert_eq!(split(&census, &both).unwrap().len(), 1);
-        assert!(split(&census, &both[..1]).is_err());
+        assert_eq!(proofs_to_run(&census, &both).unwrap().len(), 2);
+        assert!(proofs_to_run(&census, &both[..1]).is_err());
         let unknown = [both[0], both[1], harness("run::proofs::c")];
-        assert!(split(&census, &unknown).is_err());
+        assert!(proofs_to_run(&census, &unknown).is_err());
         let twice = [both[0], both[1], both[1]];
-        assert!(split(&census, &twice).is_err());
-        let outside = compiled(&[("a", "core")]);
-        assert!(split(&outside, &[harness("a")]).is_err());
-    }
-
-    #[test]
-    fn the_split_refuses_a_filter_that_selects_another_modules_harness() {
-        let harnesses = [harness("run::proofs::a"), harness("rerun::proofs::b")];
-        let overlapping = compiled(&[("run::proofs::a", "core"), ("rerun::proofs::b", "core")]);
-        assert!(split(&overlapping, &harnesses).is_err());
-        let apart = compiled(&[("run::proofs::a", "core"), ("rerun::proofs::b", "other")]);
-        assert_eq!(split(&apart, &harnesses).unwrap().len(), 2);
+        assert!(proofs_to_run(&census, &twice).is_err());
     }
 
     #[test]

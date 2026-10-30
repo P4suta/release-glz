@@ -28,9 +28,9 @@ Release decisions that depend only on their inputs live in `crates/release-glz-c
 Kani proves its `#[kani::proof]` harnesses for every admitted input, and each harness carries cover properties that show its assumptions leave inputs to check.
 `cargo xtask proofs` builds the image that `verification/kani.Dockerfile` pins to Kani 0.68.0, and it runs Kani from a frozen copy of the sources with the bounded runner's limits.
 It audits Kani's JSON report with the committed inventory in `xtask/src/inventory.rs`, which names every harness and its cover count.
-The harnesses of each module get their own bounded run.
+Each harness gets its own bounded run, so the memory that Kani keeps between harnesses never adds up.
 Before the first run, a build that compiles every harness without verifying any lets the gate refuse a harness that the inventory doesn't list.
-A run counts only when every listed harness of its module verified and no other ran, and when every owned assertion succeeded.
+A run counts only when its harness verified and no other ran, and when every owned assertion succeeded.
 Each harness must also reach exactly its listed covers, and the tool versions and target must be the pinned ones.
 The audit also refuses a source that changed during the run, and `crates/assurance-core` decides admission from what the audit found, under its own Kani proofs.
 
@@ -42,7 +42,7 @@ A test keeps that list equal to the modules that only Kani compiles, and the pro
 
 `cargo xtask proof-mutants` shows that the harnesses pin down the core decisions, and it runs on an owner machine, never on Actions.
 It proves the unmutated core first, then applies each mutant of the core crates to a frozen copy and runs the harnesses of its module.
-Before it calls a mutant a survivor, it runs the harnesses of every other module of the mutant's package, one bounded run each.
+Each harness gets its own bounded run, and before the campaign calls a mutant a survivor, it runs every other harness of the mutant's package the same way.
 It keeps the verdicts so far in its evidence after each mutant, so a campaign that stops early still shows what it found.
 Each outcome comes from Kani's audited report: detected, unviable when the mutant doesn't compile, or inconclusive, which fails the campaign.
 A survivor has to appear in `verification/equivalent-mutants.json` with the reason no harness can detect it, and the campaign refuses an entry that no longer survives.
