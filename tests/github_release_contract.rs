@@ -70,7 +70,7 @@ async fn github_release_is_observed_as_immutable_candidate_state_and_finalized_b
     let responses = vec![
         response(
             200,
-            r#"{"id":42,"html_url":"https://github.test/o/r/releases/42","tag_name":"v1.2.3","target_commitish":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","body":"release-glz-candidate-digest: dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","draft":true}"#,
+            r#"[{"id":41,"html_url":"https://github.test/o/r/releases/41","tag_name":"v1.2.2","target_commitish":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","draft":false},{"id":42,"html_url":"https://github.test/o/r/releases/42","tag_name":"v1.2.3","target_commitish":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","body":"release-glz-candidate-digest: dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","draft":true}]"#,
         ),
         response(
             200,
@@ -101,7 +101,8 @@ async fn github_release_is_observed_as_immutable_candidate_state_and_finalized_b
     assert!(!finalized.draft);
 
     let requests = server.requests();
-    assert!(requests[0].starts_with("GET /repos/o/r/releases/tags/v1.2.3 "));
+    // The tag endpoint hides drafts, so the lookup reads the release list.
+    assert!(requests[0].starts_with("GET /repos/o/r/releases?per_page=100&page=1 "));
     assert!(requests[1].starts_with("PATCH /repos/o/r/releases/42 "));
     assert!(requests[1].contains("\"draft\":false"));
 }
@@ -2551,7 +2552,7 @@ async fn github_get_retries_retry_after_without_reposting_and_bounds_json_bodies
         response_with_headers(503, r#"{"message":"busy"}"#, &["Retry-After: 0"]),
         response(
             200,
-            r#"{"id":42,"html_url":"https://github.test/o/r/releases/42","tag_name":"v1.2.3","target_commitish":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","draft":true}"#,
+            r#"[{"id":42,"html_url":"https://github.test/o/r/releases/42","tag_name":"v1.2.3","target_commitish":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","draft":true}]"#,
         ),
     ])
     .await;
@@ -2578,7 +2579,7 @@ async fn github_get_retries_retry_after_without_reposting_and_bounds_json_bodies
     );
 
     let oversized = format!(
-        r#"{{"id":42,"html_url":"https://github.test/o/r/releases/42","tag_name":"v1.2.3","target_commitish":"{}","draft":true,"padding":"{}"}}"#,
+        r#"[{{"id":42,"html_url":"https://github.test/o/r/releases/42","tag_name":"v1.2.3","target_commitish":"{}","draft":true,"padding":"{}"}}]"#,
         "a".repeat(40),
         "x".repeat(5 * 1024 * 1024)
     );
@@ -2600,7 +2601,7 @@ async fn github_get_retries_a_transport_failure_without_reposting() {
         Vec::new(),
         response(
             200,
-            r#"{"id":42,"html_url":"https://github.test/o/r/releases/42","tag_name":"v1.2.3","target_commitish":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","draft":true}"#,
+            r#"[{"id":42,"html_url":"https://github.test/o/r/releases/42","tag_name":"v1.2.3","target_commitish":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","draft":true}]"#,
         ),
     ])
     .await;
@@ -2619,6 +2620,66 @@ async fn github_get_retries_a_transport_failure_without_reposting() {
             .requests()
             .iter()
             .all(|request| request.starts_with("GET "))
+    );
+}
+
+/// A Release with another tag never matches, a full page leads to the next one, and two Releases with the tag are a conflict.
+#[tokio::test]
+async fn a_release_lookup_pages_through_the_list_and_refuses_an_ambiguous_tag() {
+    let release = |id: u64, tag: &str, draft: bool| {
+        serde_json::json!({
+            "id": id,
+            "html_url": format!("https://github.test/o/r/releases/{id}"),
+            "tag_name": tag,
+            "target_commitish": "a".repeat(40),
+            "draft": draft
+        })
+    };
+    let full_page = serde_json::Value::Array(
+        (0..100)
+            .map(|index| release(1000 + index, &format!("v0.0.{index}"), false))
+            .collect(),
+    )
+    .to_string();
+    let last_page = serde_json::json!([release(42, "v1.2.3", true)]).to_string();
+    let server =
+        FakeServer::start(vec![response(200, &full_page), response(200, &last_page)]).await;
+    let found = test_client(&server, Some("token"))
+        .release_details_for_tag("v1.2.3")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(found.id, 42);
+    assert!(found.draft);
+    let requests = server.requests();
+    assert!(requests[0].starts_with("GET /repos/o/r/releases?per_page=100&page=1 "));
+    assert!(requests[1].starts_with("GET /repos/o/r/releases?per_page=100&page=2 "));
+
+    let other_tags = serde_json::json!([release(41, "v1.2.2", false)]).to_string();
+    let server = FakeServer::start(vec![response(200, &other_tags)]).await;
+    assert!(
+        test_client(&server, Some("token"))
+            .release_details_for_tag("v1.2.3")
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    let two_drafts =
+        serde_json::json!([release(42, "v1.2.3", true), release(43, "v1.2.3", true)]).to_string();
+    let server = FakeServer::start(vec![response(200, &two_drafts)]).await;
+    let error = test_client(&server, Some("token"))
+        .release_details_for_tag("v1.2.3")
+        .await
+        .unwrap_err();
+    assert_eq!(
+        release_glz::failure::classify(&error),
+        release_glz::failure::FailureClass::ImmutableStateConflict
+    );
+    assert!(
+        error
+            .to_string()
+            .contains("2 GitHub Releases have the tag `v1.2.3`")
     );
 }
 

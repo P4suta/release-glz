@@ -650,7 +650,7 @@ where
             .target
             .observe(&intent)
             .await
-            .map_err(|source| run_error(ReleaseState::Blocked, source))?;
+            .map_err(|source| unobservable(ReleaseState::Blocked, source))?;
         let approval = match authority {
             Authority::Approval(approval) => approval,
             Authority::Inspection => {
@@ -733,7 +733,7 @@ where
                 .target
                 .observe(&intent)
                 .await
-                .map_err(|source| run_error(run.unobserved(), source))?;
+                .map_err(|source| unobservable(run.unobserved(), source))?;
         }
     }
 }
@@ -811,6 +811,15 @@ fn report(
         candidate_digest: manifest.candidate_digest.clone(),
         applied,
         remaining: plan.effects,
+    }
+}
+
+/// The error for an observation that failed while the release was in `state`, unless the world itself contradicts the Candidate, which is a conflict.
+fn unobservable(state: ReleaseState, source: anyhow::Error) -> ReleaseRunError {
+    if crate::failure::classify(&source) == crate::failure::FailureClass::ImmutableStateConflict {
+        run_error(ReleaseState::Conflict, source)
+    } else {
+        run_error(state, source)
     }
 }
 
