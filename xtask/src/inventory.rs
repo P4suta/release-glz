@@ -46,7 +46,7 @@ const fn control(
 }
 
 /// Every harness of the proof packages, with its cover count.
-pub const HARNESSES: [Harness; 40] = [
+pub const HARNESSES: [Harness; 48] = [
     harness(
         "proofs::a_proof_run_is_admitted_only_when_every_expected_harness_verified",
         2,
@@ -69,6 +69,16 @@ pub const HARNESSES: [Harness; 40] = [
     ),
     harness(
         "commit::proofs::the_commit_type_decides_the_step_without_a_breaking_marker",
+        1,
+    ),
+    harness("framing::proofs::the_files_framing_is_injective", 1),
+    harness("framing::proofs::the_notification_framing_is_injective", 1),
+    harness(
+        "key_order::proofs::member_names_sort_by_utf16_code_units",
+        1,
+    ),
+    harness(
+        "key_order::proofs::member_names_have_a_strict_total_order",
         1,
     ),
     harness("lifecycle::proofs::every_state_may_repeat", 1),
@@ -116,6 +126,19 @@ pub const HARNESSES: [Harness; 40] = [
         "publication::proofs::the_release_is_released_once_no_blocking_effect_remains",
         3,
     ),
+    harness(
+        "redaction::proofs::each_step_reaches_exactly_the_occurrences_that_start_there",
+        1,
+    ),
+    harness(
+        "redaction::proofs::redaction_covers_exactly_the_bytes_of_secret_occurrences",
+        1,
+    ),
+    harness(
+        "redaction::proofs::redaction_replaces_each_maximal_covered_run_once",
+        1,
+    ),
+    harness("redaction::proofs::redaction_never_splits_a_character", 1),
     harness(
         "selection::proofs::a_selected_version_follows_the_published_one",
         4,
@@ -195,7 +218,7 @@ const CORE: &str = "release-glz-core";
 const ASSURANCE: &str = "assurance-core";
 
 /// Every negative control, each of which has to fail exactly its harness's assertion.
-pub const CONTROLS: [Control; 43] = [
+pub const CONTROLS: [Control; 51] = [
     control(
         ASSURANCE,
         "negative-control-incomplete-run",
@@ -231,6 +254,30 @@ pub const CONTROLS: [Control; 43] = [
         "negative-control-commit-type-case",
         "commit::proofs::the_commit_type_decides_the_step_without_a_breaking_marker",
         "a commit type must decide the step in any letter case",
+    ),
+    control(
+        CORE,
+        "negative-control-unframed-files",
+        "framing::proofs::the_files_framing_is_injective",
+        "the files framing must be injective",
+    ),
+    control(
+        CORE,
+        "negative-control-unframed-notification",
+        "framing::proofs::the_notification_framing_is_injective",
+        "the notification framing must be injective",
+    ),
+    control(
+        CORE,
+        "negative-control-utf8-key-order",
+        "key_order::proofs::member_names_sort_by_utf16_code_units",
+        "member names must sort by UTF-16 code units",
+    ),
+    control(
+        CORE,
+        "negative-control-first-unit-key-order",
+        "key_order::proofs::member_names_have_a_strict_total_order",
+        "member names must compare equal only when they are equal",
     ),
     control(
         CORE,
@@ -321,6 +368,30 @@ pub const CONTROLS: [Control; 43] = [
         "negative-control-optional-blocks",
         "publication::proofs::the_release_is_released_once_no_blocking_effect_remains",
         "a release must be released exactly when no blocking effect remains",
+    ),
+    control(
+        CORE,
+        "negative-control-redaction-partial",
+        "redaction::proofs::each_step_reaches_exactly_the_occurrences_that_start_there",
+        "a step must reach exactly the occurrences that start at its byte",
+    ),
+    control(
+        CORE,
+        "negative-control-redaction-overreach",
+        "redaction::proofs::redaction_covers_exactly_the_bytes_of_secret_occurrences",
+        "every byte of every secret occurrence must be redacted, and no other",
+    ),
+    control(
+        CORE,
+        "negative-control-redaction-split",
+        "redaction::proofs::redaction_replaces_each_maximal_covered_run_once",
+        "each maximal covered run must be one segment",
+    ),
+    control(
+        CORE,
+        "negative-control-redaction-midchar",
+        "redaction::proofs::redaction_never_splits_a_character",
+        "a character must be redacted or kept as a whole",
     ),
     control(
         CORE,

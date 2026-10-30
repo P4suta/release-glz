@@ -50,8 +50,6 @@ const MAX_GITHUB_JSON_BYTES: usize = 4 * 1024 * 1024;
 const MAX_GITHUB_ERROR_BYTES: usize = 64 * 1024;
 const GITHUB_GET_ATTEMPTS: usize = 3;
 const OPEN_PULL_REQUEST_PAGE_SIZE: usize = 100;
-/// The tag that starts every files digest, so no other SHA-256 input that release-glz hashes can match one.
-const FILES_DIGEST_DOMAIN: &[u8] = b"release-glz release-pr-files\0";
 
 /// Files a generated commit changes at most, which bounds the blobs that recognizing one reads.
 const MAX_GENERATED_FILES: usize = 2;
@@ -1457,6 +1455,40 @@ impl GitHubClient {
         Ok(uploaded)
     }
 
+    /// Delete the asset `name` that a failed upload left unfinished on the draft `release`, which the caller has just read.
+    ///
+    /// GitHub keeps the name of such an asset, so no upload can take the name until this call removes the asset.
+    /// The call refuses an asset that GitHub reports as uploaded and every asset of a published Release.
+    pub async fn delete_unfinished_release_asset(
+        &self,
+        release: &GitHubRelease,
+        name: &str,
+    ) -> Result<()> {
+        self.require_token()?;
+        if !release.draft {
+            bail!(
+                "GitHub Release asset `{name}` belongs to a published Release, which stays as it is"
+            );
+        }
+        let mut found = release.assets.iter().filter(|asset| asset.name == name);
+        let asset = match (found.next(), found.next()) {
+            (Some(asset), None) => asset,
+            (Some(_), Some(_)) => bail!("GitHub Release contains duplicate asset `{name}`"),
+            (None, _) => bail!("GitHub Release has no asset `{name}` to delete"),
+        };
+        if asset.state == "uploaded" {
+            bail!(
+                "GitHub Release asset `{name}` is uploaded, and a release never deletes an uploaded asset"
+            );
+        }
+        if asset.id == 0 {
+            bail!("GitHub Release asset `{name}` has no id");
+        }
+        let url = self.url(&format!("releases/assets/{}", asset.id));
+        checked(self.request(Method::DELETE, &url).send().await?, &url).await?;
+        Ok(())
+    }
+
     async fn create_ref(&self, branch: &str, sha: &str) -> Result<()> {
         self.post_empty(
             "git/refs",
@@ -1934,12 +1966,9 @@ fn commit_change(commit: &Commit) -> ChangeEntry {
 /// A domain tag starts the input, and a length precedes every path and every content, so two different file sets never hash the same bytes.
 pub fn files_digest(files: &BTreeMap<String, Vec<u8>>) -> String {
     let mut digest = Sha256::new();
-    digest.update(FILES_DIGEST_DOMAIN);
+    digest.update(release_glz_core::FILES_DOMAIN);
     for (path, contents) in files {
-        for part in [path.as_bytes(), contents.as_slice()] {
-            digest.update((part.len() as u64).to_be_bytes());
-            digest.update(part);
-        }
+        release_glz_core::frame_file(path.as_bytes(), contents, |part| digest.update(part));
     }
     crate::hex::lower(&digest.finalize())
 }
