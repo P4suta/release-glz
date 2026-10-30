@@ -91,6 +91,21 @@ jobs:
       - run: cargo fmt --manifest-path fuzz/Cargo.toml -- --check
       - name: Check that the fuzz lockfile matches its manifest
         run: cargo fetch --locked --manifest-path fuzz/Cargo.toml
+      - name: Install fixed cargo-deny
+        env:
+          TOOL_DIR: ${{ runner.temp }}/release-glz-tools
+        run: |
+          mkdir -p "$TOOL_DIR"
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
+            --output "$TOOL_DIR/cargo-deny.tar.gz" \
+            https://github.com/EmbarkStudios/cargo-deny/releases/download/0.20.2/cargo-deny-0.20.2-x86_64-unknown-linux-musl.tar.gz
+          printf '%s  %s\n' 9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f "$TOOL_DIR/cargo-deny.tar.gz" \
+            | sha256sum --check -
+          tar --extract --gzip --file "$TOOL_DIR/cargo-deny.tar.gz" --directory "$TOOL_DIR" --strip-components 1 \
+            cargo-deny-0.20.2-x86_64-unknown-linux-musl/cargo-deny
+          printf '%s\n' "$TOOL_DIR" >> "$GITHUB_PATH"
+      - name: Enforce dependency source, license, and ban policy
+        run: cargo deny --locked check -D warnings bans licenses sources
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - run: cargo test --workspace --all-targets --locked
       - run: cargo run --locked -- --help
