@@ -36,7 +36,8 @@ Each `negative-control-*` feature breaks one decision, such as the checked incre
 The task builds each negative control on its own and requires its harness to fail on exactly the expected assertion and on nothing else.
 Every harness has a negative control, and a test without the solver keeps the inventory equal to the harnesses, covers, and features in the sources.
 `.cargo/mutants.toml` keeps cargo-mutants out of the harnesses and negative controls, which no test build compiles.
-The harnesses over lists of objects cover releases of at most three objects, and the decisions for single objects and approvals cover every input.
+The harnesses over lists of objects and over runs cover releases of at most three objects, and the decisions for single objects and approvals cover every input.
+A run harness lets the world answer each observation with any presence of each object, so its properties hold for every way the world changes between observations.
 
 `verification/lean/Publication.lean` models the same decisions in Lean 4 and proves the list properties for releases of every length.
 `cargo xtask lean` builds the image that `verification/lean.Dockerfile` pins and runs Lean in a container with the same limits as the bounded runner.

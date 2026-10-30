@@ -46,7 +46,7 @@ const fn control(
 }
 
 /// Every harness of the proof packages, with its cover count.
-pub const HARNESSES: [Harness; 18] = [
+pub const HARNESSES: [Harness; 25] = [
     harness(
         "proofs::a_proof_run_is_admitted_only_when_every_expected_harness_verified",
         2,
@@ -104,13 +104,38 @@ pub const HARNESSES: [Harness; 18] = [
         "version::proofs::a_bump_raises_the_core_or_reports_an_overflow",
         2,
     ),
+    harness(
+        "run::proofs::a_run_applies_only_owed_effects_in_publication_order",
+        1,
+    ),
+    harness(
+        "run::proofs::a_run_attempts_each_optional_effect_once_within_its_first_plan",
+        2,
+    ),
+    harness(
+        "run::proofs::a_failed_effect_counts_only_once_the_world_holds_it",
+        2,
+    ),
+    harness(
+        "run::proofs::a_run_stops_only_when_nothing_but_attempted_optional_effects_remains",
+        1,
+    ),
+    harness("run::proofs::a_run_whose_effects_land_ends_released", 1),
+    harness(
+        "run::proofs::every_step_keeps_the_record_that_bounds_a_run",
+        2,
+    ),
+    harness(
+        "run::proofs::a_run_stops_when_the_number_of_objects_changes",
+        1,
+    ),
 ];
 
 const CORE: &str = "release-glz-core";
 const ASSURANCE: &str = "assurance-core";
 
 /// Every negative control, each of which has to fail exactly its harness's assertion.
-pub const CONTROLS: [Control; 18] = [
+pub const CONTROLS: [Control; 27] = [
     control(
         ASSURANCE,
         "negative-control-incomplete-run",
@@ -218,6 +243,60 @@ pub const CONTROLS: [Control; 18] = [
         "negative-control-increment",
         "version::proofs::a_bump_raises_the_core_or_reports_an_overflow",
         "a bump must raise the version core",
+    ),
+    control(
+        CORE,
+        "negative-control-skip-ahead",
+        "run::proofs::a_run_applies_only_owed_effects_in_publication_order",
+        "a run must apply effects in publication order",
+    ),
+    control(
+        CORE,
+        "negative-control-unbudgeted",
+        "run::proofs::a_run_attempts_each_optional_effect_once_within_its_first_plan",
+        "a run must attempt at most as many effects as its first plan listed",
+    ),
+    control(
+        CORE,
+        "negative-control-retry-optional",
+        "run::proofs::a_run_attempts_each_optional_effect_once_within_its_first_plan",
+        "a run must attempt each optional effect at most once",
+    ),
+    control(
+        CORE,
+        "negative-control-trust-failure",
+        "run::proofs::a_failed_effect_counts_only_once_the_world_holds_it",
+        "a failed blocking effect that the world lacks must stop the run",
+    ),
+    control(
+        CORE,
+        "negative-control-forget-failure",
+        "run::proofs::a_failed_effect_counts_only_once_the_world_holds_it",
+        "a run that can't observe must report the state of the plan that chose its failed effect",
+    ),
+    control(
+        CORE,
+        "negative-control-stall",
+        "run::proofs::a_run_stops_only_when_nothing_but_attempted_optional_effects_remains",
+        "a run must stop only when nothing but optional effects it attempted remains",
+    ),
+    control(
+        CORE,
+        "negative-control-stall",
+        "run::proofs::a_run_whose_effects_land_ends_released",
+        "a run whose effects land must end released",
+    ),
+    control(
+        CORE,
+        "negative-control-unbudgeted",
+        "run::proofs::every_step_keeps_the_record_that_bounds_a_run",
+        "a step must spend exactly one attempt",
+    ),
+    control(
+        CORE,
+        "negative-control-reshape",
+        "run::proofs::a_run_stops_when_the_number_of_objects_changes",
+        "a run must stop when the number of objects changes",
     ),
 ];
 

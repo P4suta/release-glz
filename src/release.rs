@@ -2,7 +2,7 @@
 //!
 //! The runner verifies a sealed Candidate, asks the reconciler what is still missing, and applies only those effects, using bytes loaded from the Candidate itself.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
@@ -19,11 +19,12 @@ use crate::gleam::Gleam;
 use crate::hooks::{HookContext, HookRunner};
 use crate::model::ReleaseState;
 use crate::reconciler::{
-    ApprovalEvidence, ExternalReleaseState, NotifyObservation, ObservedArtifact,
-    ObservedGithubRelease, ObservedTag, ReconcileEffect, ReconcilePlan, ReleaseIntent,
-    notification_key, preview, reconcile,
+    ApprovalEvidence, ExternalReleaseState, NotifyObservation, Observation, ObservedArtifact,
+    ObservedGithubRelease, ObservedTag, ReconcileEffect, ReconcilePlan, ReleaseIntent, approves,
+    notification_key, preview,
 };
 use crate::registry::{HexRegistry, PublishOutcome, Registry};
+use release_glz_core::{Run, Step};
 
 /// What a run of the release loop acts under.
 #[derive(Clone, Copy)]
@@ -645,95 +646,112 @@ where
             docs: docs.as_deref(),
             release_assets: &release_assets,
         };
+        let mut observed = self
+            .target
+            .observe(&intent)
+            .await
+            .map_err(|source| run_error(ReleaseState::Blocked, source))?;
+        let approval = match authority {
+            Authority::Approval(approval) => approval,
+            Authority::Inspection => {
+                let plan = preview(&intent, &observed)
+                    .map_err(|source| run_error(source.state(), source.into()))?;
+                return Ok(report(&manifest, plan, Vec::new()));
+            }
+        };
+        let approved = approves(&intent, approval);
+        let objects = Observation::new(&intent, &observed)
+            .map_err(|source| run_error(source.state(), source.into()))?
+            .objects()
+            .len();
+        let mut attempted = vec![false; objects];
+        let mut run = Run::new(&mut attempted, approved);
         let mut applied = Vec::new();
-        let mut attempted_optional_notifications = BTreeSet::new();
-        // Each round attempts one effect, and the reconciler only lists effects it hasn't observed yet, so a run that needs more attempts than its first plan listed effects isn't converging.
-        let mut attempts_left: Option<usize> = None;
-
+        let mut failure = None;
         loop {
-            let observed = self
-                .target
-                .observe(&intent)
-                .await
-                .map_err(|source| run_error(ReleaseState::Blocked, source))?;
-            let approval = match authority {
-                Authority::Approval(approval) => approval,
-                Authority::Inspection => {
-                    let plan = preview(&intent, &observed)
+            let world = Observation::new(&intent, &observed)
+                .map_err(|source| run_error(source.state(), source.into()))?;
+            let step = run.observed(world.objects());
+            // A timed-out POST may already have committed, so an effect whose call failed counts once the world holds it, and the run never repeats it blindly.
+            if let Some(index) = run.landed() {
+                applied.push(effect_of(&world, index)?);
+            }
+            match step {
+                Step::Apply(index) => {
+                    let effect = effect_of(&world, index)?;
+                    match self.target.apply(&effect, &intent, payload).await {
+                        Ok(()) => {
+                            run.applied(true);
+                            applied.push(effect);
+                        }
+                        Err(source) => {
+                            run.applied(false);
+                            failure = Some(source);
+                        }
+                    }
+                }
+                Step::Finish(_) => {
+                    let plan = world
+                        .plan(approved)
                         .map_err(|source| run_error(source.state(), source.into()))?;
                     return Ok(report(&manifest, plan, applied));
                 }
-            };
-            let plan = reconcile(&intent, &observed, approval)
-                .map_err(|source| run_error(source.state(), source.into()))?;
-            if plan.state == ReleaseState::AwaitingApproval {
-                return Ok(report(&manifest, plan, applied));
-            }
-            let Some(effect) = plan
-                .effects
-                .iter()
-                .find(|effect| {
-                    !matches!(
-                        effect,
-                        ReconcileEffect::Notify {
-                            hook_id,
-                            required: false,
-                            ..
-                        } if attempted_optional_notifications.contains(hook_id)
-                    )
-                })
-                .cloned()
-            else {
-                return Ok(report(&manifest, plan, applied));
-            };
-            let attempts_left = attempts_left.get_or_insert(plan.effects.len());
-            if *attempts_left == 0 {
-                return Err(run_error(
-                    ReleaseState::Blocked,
-                    crate::failure::classified(
-                        crate::failure::FailureClass::Internal,
-                        "release reconciliation did not converge",
-                    ),
-                ));
-            }
-            *attempts_left -= 1;
-            if let ReconcileEffect::Notify {
-                hook_id,
-                required: false,
-                ..
-            } = &effect
-            {
-                attempted_optional_notifications.insert(hook_id.clone());
-            }
-            match self.target.apply(&effect, &intent, payload).await {
-                Ok(()) => applied.push(effect),
-                Err(source) => {
-                    // A timed-out POST may already have committed.
-                    // Re-observe before returning and never blindly repeat it.
-                    let refreshed = self
-                        .target
-                        .observe(&intent)
-                        .await
-                        .map_err(|observe| run_error(plan.state, observe))?;
-                    let refreshed = reconcile(&intent, &refreshed, approval)
-                        .map_err(|conflict| run_error(conflict.state(), conflict.into()))?;
-                    if refreshed.effects.contains(&effect) {
-                        if matches!(
-                            effect,
-                            ReconcileEffect::Notify {
-                                required: false,
-                                ..
-                            }
-                        ) {
-                            continue;
-                        }
-                        return Err(run_error(refreshed.state, source));
-                    }
-                    applied.push(effect);
+                Step::Conflict(index) => {
+                    return Err(run_error(
+                        ReleaseState::Conflict,
+                        world.conflict(index).into(),
+                    ));
+                }
+                Step::Failed { state, .. } => {
+                    return Err(run_error(
+                        state,
+                        failure.take().unwrap_or_else(|| {
+                            anyhow::anyhow!("a release effect failed without a reported cause")
+                        }),
+                    ));
+                }
+                Step::Diverged => {
+                    return Err(run_error(
+                        ReleaseState::Blocked,
+                        crate::failure::classified(
+                            crate::failure::FailureClass::Internal,
+                            "release reconciliation did not converge",
+                        ),
+                    ));
+                }
+                Step::Reshaped => {
+                    return Err(run_error(
+                        ReleaseState::Blocked,
+                        crate::failure::classified(
+                            crate::failure::FailureClass::Internal,
+                            "the release's objects changed in number during the run",
+                        ),
+                    ));
                 }
             }
+            observed = self
+                .target
+                .observe(&intent)
+                .await
+                .map_err(|source| run_error(run.unobserved(), source))?;
         }
     }
+}
+
+/// The effect of the object at `index`, which the run chose because the plan listed it.
+fn effect_of(
+    world: &Observation<'_>,
+    index: usize,
+) -> std::result::Result<ReconcileEffect, ReleaseRunError> {
+    world.effect(index).ok_or_else(|| {
+        run_error(
+            ReleaseState::Blocked,
+            crate::failure::classified(
+                crate::failure::FailureClass::Internal,
+                format!("the run chose object {index}, which has no effect"),
+            ),
+        )
+    })
 }
 
 fn release_intent(manifest: &CandidateManifest) -> ReleaseIntent {

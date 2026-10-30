@@ -10,9 +10,11 @@
 mod approval;
 mod lifecycle;
 mod publication;
+mod run;
 mod version;
 
 pub use approval::{Approval, RunIdentity, Trigger};
 pub use lifecycle::ReleaseState;
 pub use publication::{Decision, Effects, Object, Outcome, Presence, reconcile};
+pub use run::{Run, Step};
 pub use version::{Bump, VersionCore, increment};

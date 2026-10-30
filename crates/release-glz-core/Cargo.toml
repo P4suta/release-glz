@@ -36,6 +36,20 @@ negative-control-optional-blocks = []
 negative-control-approval = []
 # Approving a push from the inputs of a manual release.
 negative-control-substitution = []
+# Letting a run attempt effects without spending its budget.
+negative-control-unbudgeted = []
+# Retrying an optional effect that a run already attempted.
+negative-control-retry-optional = []
+# Applying the last effect a run may apply instead of the first.
+negative-control-skip-ahead = []
+# Going on after a failed blocking effect that the world still lacks.
+negative-control-trust-failure = []
+# Stopping a run once it has attempted anything.
+negative-control-stall = []
+# Reporting blocked when an observation fails after a failed effect.
+negative-control-forget-failure = []
+# Going on with an observation of another number of objects.
+negative-control-reshape = []
 
 [dependencies]
 serde = { version = "1.0.228", default-features = false, features = [
