@@ -34,7 +34,9 @@ dotfiles bounded run --image release-glz-kani@sha256:<image digest> --project . 
   env CARGO_TARGET_DIR=/tmp/kani-target cargo kani --package release-glz-core
 ```
 
-The `negative-control` feature swaps the checked increment for a wrapping one, and shipping assurance requires that build to fail the bump proof.
+Each `negative-control-*` feature of the core crate breaks one decision, such as the checked increment or the conflict for an object that differs.
+Shipping assurance builds each one and requires the harness for that decision to fail with its own message.
+The harnesses over lists of objects cover releases of at most three objects, and the decisions for single objects and approvals cover every input.
 
 Run the fast checks before opening a pull request:
 

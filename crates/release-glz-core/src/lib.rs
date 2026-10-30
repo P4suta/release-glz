@@ -7,8 +7,12 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+mod approval;
 mod lifecycle;
+mod publication;
 mod version;
 
+pub use approval::{Approval, RunIdentity, Trigger};
 pub use lifecycle::ReleaseState;
+pub use publication::{Decision, Effects, Object, Outcome, Presence, reconcile};
 pub use version::{Bump, VersionCore, increment};
