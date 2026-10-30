@@ -27,8 +27,18 @@ impl Bump {
     ///
     /// Signals combine by maximum, so no single signal can lower what another one already requires.
     pub fn max(self, other: Self) -> Self {
+        #[cfg(feature = "negative-control-join")]
+        if let Some(joined) = negative_control_join(self, other) {
+            return joined;
+        }
         core::cmp::max(self, other)
     }
+}
+
+/// Joins two bumps into the smaller one.
+#[cfg(feature = "negative-control-join")]
+fn negative_control_join(bump: Bump, other: Bump) -> Option<Bump> {
+    Some(core::cmp::min(bump, other))
 }
 
 impl fmt::Display for Bump {
@@ -79,10 +89,17 @@ impl VersionCore {
 
 /// One more than `value`, or `None` when `value` is `u64::MAX`.
 pub fn increment(value: u64) -> Option<u64> {
-    #[cfg(not(feature = "negative-control-increment"))]
-    return value.checked_add(1);
     #[cfg(feature = "negative-control-increment")]
-    return Some(value.wrapping_add(1));
+    if let Some(next) = negative_control_increment(value) {
+        return next;
+    }
+    value.checked_add(1)
+}
+
+/// Wraps around instead of reporting the largest value.
+#[cfg(feature = "negative-control-increment")]
+fn negative_control_increment(value: u64) -> Option<Option<u64>> {
+    Some(Some(value.wrapping_add(1)))
 }
 
 #[cfg(kani)]
@@ -94,9 +111,10 @@ mod proofs {
         let a: Bump = kani::any();
         let b: Bump = kani::any();
         let joined = a.max(b);
-        assert!(joined >= a && joined >= b);
-        assert!(joined == a || joined == b);
-        assert!(joined == b.max(a));
+        kani::assert(
+            joined >= a && joined >= b && (joined == a || joined == b) && joined == b.max(a),
+            "the join of two bumps must be the larger one",
+        );
         kani::cover!(a != b);
     }
 
@@ -104,8 +122,14 @@ mod proofs {
     fn an_increment_adds_one_or_reports_the_largest_value() {
         let value: u64 = kani::any();
         match increment(value) {
-            Some(next) => assert!(u128::from(next) == u128::from(value) + 1),
-            None => assert!(value == u64::MAX),
+            Some(next) => kani::assert(
+                u128::from(next) == u128::from(value) + 1,
+                "an increment must add exactly one",
+            ),
+            None => kani::assert(
+                value == u64::MAX,
+                "only the largest value may fail to increment",
+            ),
         }
         kani::cover!(increment(value).is_none());
         kani::cover!(increment(value).is_some());

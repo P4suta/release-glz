@@ -50,11 +50,7 @@ fn assurance_workflow_has_fixed_fail_closed_shipping_gates() {
         "4ee9aaa0d0171a985a5d0eb735b87355894c1c455972e9674fb9fdbd1387c9a3",
         "cargo-llvm-cov --version 0.9.0",
         "cargo-fuzz --version 0.13.2",
-        "kani-verifier --version 0.68.0",
-        "cargo kani --package release-glz-core",
-        "--features \"$feature\"",
-        "grep -F \"Failed Checks: $message\"",
-        "cover properties satisfied",
+        "run: cargo xtask proofs",
         "run: cargo xtask lean",
         "--features negative-control-republish -- lean",
         "'ReleaseGlz.Refinement.decision_refines_rust' depends on axioms: [sorryAx]",
@@ -71,8 +67,6 @@ fn assurance_workflow_has_fixed_fail_closed_shipping_gates() {
         "src/artifact.rs",
         "src/reconciler.rs",
         "--test-workspace=true",
-        "crates/release-glz-core/src/publication.rs",
-        "crates/release-glz-core/src/approval.rs",
         "actionlint",
         "zizmor",
         "rustup toolchain install 1.97.0 --profile minimal",
@@ -95,6 +89,15 @@ fn assurance_workflow_has_fixed_fail_closed_shipping_gates() {
     assert!(!yaml.contains("RELEASE_GLZ_ACTION_SHA"));
     assert!(!yaml.contains("cargo install --locked zizmor --version"));
     assert!(!yaml.contains("continue-on-error: true"));
+    // The proof job runs the audited task, so nothing in the workflow reads Kani's text output.
+    for text_check in ["cargo kani", "Failed Checks", "cover properties satisfied"] {
+        assert!(!yaml.contains(text_check), "the gate parses {text_check}");
+    }
+    // Without --workspace, cargo-mutants mutates no file of another workspace member, so listing one claims coverage that never runs.
+    assert!(
+        !yaml.contains("--file crates/"),
+        "the mutation job lists a file it can't mutate"
+    );
     assert!(Path::new("tests/fixtures/workflow/gleam.toml").is_file());
 
     let triggers = yaml
@@ -124,74 +127,6 @@ fn assurance_workflow_has_fixed_fail_closed_shipping_gates() {
             .unwrap();
         assert_eq!(reference.len(), 40, "mutable action reference: {line}");
         assert!(reference.bytes().all(|byte| byte.is_ascii_hexdigit()));
-    }
-}
-
-/// Every negative control of the core crate runs at the release gate, against a harness that exists and a failure message that the harness asserts.
-#[test]
-fn every_negative_control_breaks_a_named_harness() {
-    let yaml = fs::read_to_string(".github/workflows/assurance.yml").unwrap();
-    let controls = yaml
-        .split_once("<<'CONTROLS'")
-        .expect("the proof gate lists its negative controls")
-        .1
-        .split_once("CONTROLS")
-        .unwrap()
-        .0;
-    let rows = controls
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .map(|line| {
-            let [feature, harness, message] = line
-                .splitn(3, '|')
-                .collect::<Vec<_>>()
-                .try_into()
-                .unwrap_or_else(|_| panic!("malformed negative control: {line}"));
-            (feature, harness, message)
-        })
-        .collect::<Vec<_>>();
-
-    let manifest = fs::read_to_string("crates/release-glz-core/Cargo.toml")
-        .unwrap()
-        .parse::<toml_edit::DocumentMut>()
-        .unwrap();
-    let declared = manifest["features"]
-        .as_table()
-        .unwrap()
-        .iter()
-        .map(|(name, _)| name)
-        .filter(|name| name.starts_with("negative-control-"))
-        .collect::<std::collections::BTreeSet<_>>();
-    let run = rows
-        .iter()
-        .map(|(feature, _, _)| *feature)
-        .collect::<std::collections::BTreeSet<_>>();
-    assert_eq!(declared, run, "every declared negative control must run");
-
-    let sources = fs::read_dir("crates/release-glz-core/src")
-        .unwrap()
-        .map(|entry| fs::read_to_string(entry.unwrap().path()).unwrap())
-        .collect::<String>();
-    for (feature, harness, message) in rows {
-        assert!(
-            sources.contains(&format!("feature = \"{feature}\"")),
-            "{feature} breaks nothing"
-        );
-        let position = sources
-            .find(&format!("fn {harness}() {{"))
-            .unwrap_or_else(|| panic!("{feature} names no function {harness}"));
-        let attributes = sources[..position]
-            .rsplit_once("\n\n")
-            .map_or(&sources[..position], |(_, item)| item);
-        assert!(
-            attributes.contains("#[kani::proof]"),
-            "{feature} names {harness}, which is no harness"
-        );
-        assert!(
-            sources.contains(&format!("\"{message}\"")),
-            "{harness} asserts no message {message:?}"
-        );
     }
 }
 

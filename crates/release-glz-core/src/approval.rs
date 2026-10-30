@@ -52,25 +52,53 @@ impl Approval {
     /// Every publication needs the Candidate digest and a verified run of the managed workflow in the Candidate's repository, Environment, and commit.
     /// A push also needs the approved intent, and a manual dispatch needs the intent, its own source commit and reason, and an allowed ref.
     pub fn approves(self) -> bool {
+        #[cfg(feature = "negative-control-approval")]
+        if let Some(approves) = negative_control_approval(self) {
+            return approves;
+        }
+        self.candidate && self.authorizes()
+    }
+
+    /// Whether a verified run of the managed workflow took the approved path, whatever the Candidate digest.
+    fn authorizes(self) -> bool {
         let Some(identity) = self.identity else {
             return false;
         };
         let run =
             identity.repository && identity.environment && identity.source && identity.workflow;
-        let path = match identity.trigger {
-            #[cfg(feature = "negative-control-substitution")]
-            Trigger::Push => self.intent || (self.manual_source && self.manual_reason),
-            #[cfg(not(feature = "negative-control-substitution"))]
+        run && self.path(identity)
+    }
+
+    /// Whether the path that started the run carries its own approval.
+    fn path(self, identity: RunIdentity) -> bool {
+        #[cfg(feature = "negative-control-substitution")]
+        if let Some(path) = negative_control_substitution(self, identity) {
+            return path;
+        }
+        match identity.trigger {
             Trigger::Push => self.intent,
             Trigger::ManualDispatch => {
                 self.intent && self.manual_source && self.manual_reason && identity.manual_ref
             }
             Trigger::Other => false,
-        };
-        #[cfg(feature = "negative-control-approval")]
-        return run && path;
-        #[cfg(not(feature = "negative-control-approval"))]
-        return self.candidate && run && path;
+        }
+    }
+}
+
+/// Approves without the Candidate digest.
+#[cfg(feature = "negative-control-approval")]
+fn negative_control_approval(approval: Approval) -> Option<bool> {
+    Some(approval.authorizes())
+}
+
+/// Lets the inputs of a manual release approve a push.
+#[cfg(feature = "negative-control-substitution")]
+fn negative_control_substitution(approval: Approval, identity: RunIdentity) -> Option<bool> {
+    match identity.trigger {
+        Trigger::Push => {
+            Some(approval.intent || (approval.manual_source && approval.manual_reason))
+        }
+        _ => None,
     }
 }
 

@@ -12,6 +12,18 @@ serde = ["dep:serde"]
 # Each negative control breaks one decision, so the proof gate can show that the harness for it rejects a broken implementation.
 # Wrapping increments instead of checked ones.
 negative-control-increment = []
+# Joining two bumps into the smaller one.
+negative-control-join = []
+# Refusing to let a state repeat itself.
+negative-control-no-repeat = []
+# Letting a terminal state change again.
+negative-control-reopen = []
+# Letting a normal state move backward.
+negative-control-backward = []
+# Moving only to the next normal state, never past it.
+negative-control-no-skip = []
+# Refusing to let an unfinished release stop in conflict or blocked.
+negative-control-unstoppable = []
 # Keeping an object that differs from the Candidate.
 negative-control-overwrite = []
 # Publishing an object that already matches the Candidate again.

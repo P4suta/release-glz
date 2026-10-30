@@ -196,7 +196,7 @@ pub fn run(root: &Path) -> Result<(), Failure> {
     let evidence = crate::container::evidence_directory(root, "lean")?;
     fs::write(evidence.join("Refinement.lean"), refinement()?).map_err(Failure::io)?;
     let container = Container::build(root, &evidence, "verification/lean.Dockerfile")?;
-    let version = container.output(&evidence, &["lean", "--version"])?;
+    let version = container.output(root, &evidence, &["lean", "--version"])?;
     if !version.contains(LEAN_VERSION) {
         return Err(Failure::new(format!(
             "the image runs another Lean release: {version}"
@@ -211,6 +211,7 @@ pub fn run(root: &Path) -> Result<(), Failure> {
         ("Refinement", "/evidence", REFINEMENT_THEOREMS.as_slice()),
     ] {
         let report = container.output(
+            root,
             &evidence,
             &[
                 "lean",
@@ -228,7 +229,7 @@ pub fn run(root: &Path) -> Result<(), Failure> {
                 evidence.display()
             )));
         }
-        container.output(&evidence, &["leanchecker", "--fresh", module])?;
+        container.output(root, &evidence, &["leanchecker", "--fresh", module])?;
     }
     println!(
         "Lean {LEAN_VERSION} proved {} model theorems and {} refinements of the core crate; evidence in {}",

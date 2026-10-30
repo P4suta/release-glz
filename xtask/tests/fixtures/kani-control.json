@@ -1,0 +1,666 @@
+{
+  "metadata": {
+    "version": "1.0",
+    "kani_version": "0.68.0",
+    "target": "x86_64-unknown-linux-gnu"
+  },
+  "tools": {
+    "kani": "0.68.0",
+    "cbmc": "6.11.0 (cbmc-6.11.0)"
+  },
+  "harness_metadata": [
+    {
+      "pretty_name": "proofs::a_proof_run_is_admitted_only_when_every_expected_harness_verified",
+      "crate_name": "assurance_core",
+      "attributes": {
+        "kind": "Proof",
+        "should_panic": false
+      }
+    }
+  ],
+  "error_details": [
+    {
+      "harness_id": "proofs::a_proof_run_is_admitted_only_when_every_expected_harness_verified",
+      "has_errors": true,
+      "error_type": "assertion_failure",
+      "failed_properties_type": "PanicsOnly",
+      "exit_status": "properties_failed"
+    }
+  ],
+  "property_details": [
+    {
+      "harness_id": "proofs::a_proof_run_is_admitted_only_when_every_expected_harness_verified",
+      "property_details": {
+        "total_properties": 86,
+        "passed": 83,
+        "failed": 1,
+        "unreachable": 0,
+        "undetermined": 0,
+        "solver_error": 0,
+        "satisfied": 2,
+        "unsatisfiable": 0,
+        "covered": 0,
+        "uncovered": 0
+      }
+    }
+  ],
+  "verification_results": {
+    "summary": {
+      "total_harnesses": 1,
+      "executed": 1,
+      "status": "completed",
+      "successful": 0,
+      "failed": 1
+    },
+    "results": [
+      {
+        "harness_id": "proofs::a_proof_run_is_admitted_only_when_every_expected_harness_verified",
+        "status": "Failure",
+        "checks": [
+          {
+            "id": 1,
+            "function": "<core::option::Option<i32> as core::cmp::PartialEq>::eq",
+            "status": "Success",
+            "category": "unreachable",
+            "description": "unreachable code"
+          },
+          {
+            "id": 2,
+            "function": "admit_proofs",
+            "status": "Success",
+            "category": "unreachable",
+            "description": "unreachable code"
+          },
+          {
+            "id": 3,
+            "function": "proofs::a_proof_run_is_admitted_only_when_every_expected_harness_verified",
+            "status": "Failure",
+            "category": "assertion",
+            "description": "a proof run must complete before admission"
+          },
+          {
+            "id": 4,
+            "function": "proofs::a_proof_run_is_admitted_only_when_every_expected_harness_verified",
+            "status": "Success",
+            "category": "assertion",
+            "description": "a proof run must be admitted exactly when every expected harness verified"
+          },
+          {
+            "id": 5,
+            "function": "proofs::a_proof_run_is_admitted_only_when_every_expected_harness_verified",
+            "status": "Satisfied",
+            "category": "cover",
+            "description": "cover condition: admitted"
+          },
+          {
+            "id": 6,
+            "function": "proofs::a_proof_run_is_admitted_only_when_every_expected_harness_verified",
+            "status": "Satisfied",
+            "category": "cover",
+            "description": "cover condition: !admitted && run.completed"
+          },
+          {
+            "id": 7,
+            "function": "<Admission as core::cmp::PartialEq>::eq",
+            "status": "Success",
+            "category": "unreachable",
+            "description": "unreachable code"
+          },
+          {
+            "id": 8,
+            "function": "admit_proofs",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: dead object"
+          },
+          {
+            "id": 9,
+            "function": "core::cmp::impls::<impl core::cmp::PartialEq for &Refusal>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: pointer NULL"
+          },
+          {
+            "id": 10,
+            "function": "core::cmp::impls::<impl core::cmp::PartialEq for &Refusal>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: pointer invalid"
+          },
+          {
+            "id": 11,
+            "function": "core::cmp::impls::<impl core::cmp::PartialEq for &Refusal>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: deallocated dynamic object"
+          },
+          {
+            "id": 12,
+            "function": "core::cmp::impls::<impl core::cmp::PartialEq for &Refusal>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: dead object"
+          },
+          {
+            "id": 13,
+            "function": "core::cmp::impls::<impl core::cmp::PartialEq for &Refusal>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: pointer outside object bounds"
+          },
+          {
+            "id": 14,
+            "function": "core::cmp::impls::<impl core::cmp::PartialEq for &Refusal>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: invalid integer address"
+          },
+          {
+            "id": 15,
+            "function": "core::cmp::impls::<impl core::cmp::PartialEq for &Refusal>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: pointer NULL"
+          },
+          {
+            "id": 16,
+            "function": "core::cmp::impls::<impl core::cmp::PartialEq for &Refusal>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: pointer invalid"
+          },
+          {
+            "id": 17,
+            "function": "core::cmp::impls::<impl core::cmp::PartialEq for &Refusal>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: deallocated dynamic object"
+          },
+          {
+            "id": 18,
+            "function": "core::cmp::impls::<impl core::cmp::PartialEq for &Refusal>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: dead object"
+          },
+          {
+            "id": 19,
+            "function": "core::cmp::impls::<impl core::cmp::PartialEq for &Refusal>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: pointer outside object bounds"
+          },
+          {
+            "id": 20,
+            "function": "core::cmp::impls::<impl core::cmp::PartialEq for &Refusal>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: invalid integer address"
+          },
+          {
+            "id": 21,
+            "function": "<core::option::Option<i32> as core::cmp::PartialEq>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: pointer NULL"
+          },
+          {
+            "id": 22,
+            "function": "<core::option::Option<i32> as core::cmp::PartialEq>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: pointer invalid"
+          },
+          {
+            "id": 23,
+            "function": "<core::option::Option<i32> as core::cmp::PartialEq>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: deallocated dynamic object"
+          },
+          {
+            "id": 24,
+            "function": "<core::option::Option<i32> as core::cmp::PartialEq>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: dead object"
+          },
+          {
+            "id": 25,
+            "function": "<core::option::Option<i32> as core::cmp::PartialEq>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: pointer outside object bounds"
+          },
+          {
+            "id": 26,
+            "function": "<core::option::Option<i32> as core::cmp::PartialEq>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: invalid integer address"
+          },
+          {
+            "id": 27,
+            "function": "<core::option::Option<i32> as core::cmp::PartialEq>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: pointer NULL"
+          },
+          {
+            "id": 28,
+            "function": "<core::option::Option<i32> as core::cmp::PartialEq>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: pointer invalid"
+          },
+          {
+            "id": 29,
+            "function": "<core::option::Option<i32> as core::cmp::PartialEq>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: deallocated dynamic object"
+          },
+          {
+            "id": 30,
+            "function": "<core::option::Option<i32> as core::cmp::PartialEq>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: dead object"
+          },
+          {
+            "id": 31,
+            "function": "<core::option::Option<i32> as core::cmp::PartialEq>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: pointer outside object bounds"
+          },
+          {
+            "id": 32,
+            "function": "<core::option::Option<i32> as core::cmp::PartialEq>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: invalid integer address"
+          },
+          {
+            "id": 33,
+            "function": "<core::option::Option<i32> as core::cmp::PartialEq>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: pointer NULL"
+          },
+          {
+            "id": 34,
+            "function": "<core::option::Option<i32> as core::cmp::PartialEq>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: pointer invalid"
+          },
+          {
+            "id": 35,
+            "function": "<core::option::Option<i32> as core::cmp::PartialEq>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: deallocated dynamic object"
+          },
+          {
+            "id": 36,
+            "function": "<core::option::Option<i32> as core::cmp::PartialEq>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: dead object"
+          },
+          {
+            "id": 37,
+            "function": "<core::option::Option<i32> as core::cmp::PartialEq>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: pointer outside object bounds"
+          },
+          {
+            "id": 38,
+            "function": "<core::option::Option<i32> as core::cmp::PartialEq>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: invalid integer address"
+          },
+          {
+            "id": 39,
+            "function": "<Refusal as core::cmp::PartialEq>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: pointer NULL"
+          },
+          {
+            "id": 40,
+            "function": "<Refusal as core::cmp::PartialEq>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: pointer invalid"
+          },
+          {
+            "id": 41,
+            "function": "<Refusal as core::cmp::PartialEq>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: deallocated dynamic object"
+          },
+          {
+            "id": 42,
+            "function": "<Refusal as core::cmp::PartialEq>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: dead object"
+          },
+          {
+            "id": 43,
+            "function": "<Refusal as core::cmp::PartialEq>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: pointer outside object bounds"
+          },
+          {
+            "id": 44,
+            "function": "<Refusal as core::cmp::PartialEq>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: invalid integer address"
+          },
+          {
+            "id": 45,
+            "function": "<Refusal as core::cmp::PartialEq>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: pointer NULL"
+          },
+          {
+            "id": 46,
+            "function": "<Refusal as core::cmp::PartialEq>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: pointer invalid"
+          },
+          {
+            "id": 47,
+            "function": "<Refusal as core::cmp::PartialEq>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: deallocated dynamic object"
+          },
+          {
+            "id": 48,
+            "function": "<Refusal as core::cmp::PartialEq>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: dead object"
+          },
+          {
+            "id": 49,
+            "function": "<Refusal as core::cmp::PartialEq>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: pointer outside object bounds"
+          },
+          {
+            "id": 50,
+            "function": "<Refusal as core::cmp::PartialEq>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: invalid integer address"
+          },
+          {
+            "id": 51,
+            "function": "<Admission as core::cmp::PartialEq>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: pointer NULL"
+          },
+          {
+            "id": 52,
+            "function": "<Admission as core::cmp::PartialEq>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: pointer invalid"
+          },
+          {
+            "id": 53,
+            "function": "<Admission as core::cmp::PartialEq>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: deallocated dynamic object"
+          },
+          {
+            "id": 54,
+            "function": "<Admission as core::cmp::PartialEq>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: dead object"
+          },
+          {
+            "id": 55,
+            "function": "<Admission as core::cmp::PartialEq>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: pointer outside object bounds"
+          },
+          {
+            "id": 56,
+            "function": "<Admission as core::cmp::PartialEq>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: invalid integer address"
+          },
+          {
+            "id": 57,
+            "function": "<Admission as core::cmp::PartialEq>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: pointer NULL"
+          },
+          {
+            "id": 58,
+            "function": "<Admission as core::cmp::PartialEq>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: pointer invalid"
+          },
+          {
+            "id": 59,
+            "function": "<Admission as core::cmp::PartialEq>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: deallocated dynamic object"
+          },
+          {
+            "id": 60,
+            "function": "<Admission as core::cmp::PartialEq>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: dead object"
+          },
+          {
+            "id": 61,
+            "function": "<Admission as core::cmp::PartialEq>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: pointer outside object bounds"
+          },
+          {
+            "id": 62,
+            "function": "<Admission as core::cmp::PartialEq>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: invalid integer address"
+          },
+          {
+            "id": 63,
+            "function": "<Admission as core::cmp::PartialEq>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: pointer NULL"
+          },
+          {
+            "id": 64,
+            "function": "<Admission as core::cmp::PartialEq>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: pointer invalid"
+          },
+          {
+            "id": 65,
+            "function": "<Admission as core::cmp::PartialEq>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: deallocated dynamic object"
+          },
+          {
+            "id": 66,
+            "function": "<Admission as core::cmp::PartialEq>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: dead object"
+          },
+          {
+            "id": 67,
+            "function": "<Admission as core::cmp::PartialEq>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: pointer outside object bounds"
+          },
+          {
+            "id": 68,
+            "function": "<Admission as core::cmp::PartialEq>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: invalid integer address"
+          },
+          {
+            "id": 69,
+            "function": "<Admission as core::cmp::PartialEq>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: pointer NULL"
+          },
+          {
+            "id": 70,
+            "function": "<Admission as core::cmp::PartialEq>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: pointer invalid"
+          },
+          {
+            "id": 71,
+            "function": "<Admission as core::cmp::PartialEq>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: deallocated dynamic object"
+          },
+          {
+            "id": 72,
+            "function": "<Admission as core::cmp::PartialEq>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: dead object"
+          },
+          {
+            "id": 73,
+            "function": "<Admission as core::cmp::PartialEq>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: pointer outside object bounds"
+          },
+          {
+            "id": 74,
+            "function": "<Admission as core::cmp::PartialEq>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: invalid integer address"
+          },
+          {
+            "id": 75,
+            "function": "core::cmp::impls::<impl core::cmp::PartialEq for i32>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: pointer NULL"
+          },
+          {
+            "id": 76,
+            "function": "core::cmp::impls::<impl core::cmp::PartialEq for i32>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: pointer invalid"
+          },
+          {
+            "id": 77,
+            "function": "core::cmp::impls::<impl core::cmp::PartialEq for i32>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: deallocated dynamic object"
+          },
+          {
+            "id": 78,
+            "function": "core::cmp::impls::<impl core::cmp::PartialEq for i32>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: dead object"
+          },
+          {
+            "id": 79,
+            "function": "core::cmp::impls::<impl core::cmp::PartialEq for i32>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: pointer outside object bounds"
+          },
+          {
+            "id": 80,
+            "function": "core::cmp::impls::<impl core::cmp::PartialEq for i32>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: invalid integer address"
+          },
+          {
+            "id": 81,
+            "function": "core::cmp::impls::<impl core::cmp::PartialEq for i32>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: pointer NULL"
+          },
+          {
+            "id": 82,
+            "function": "core::cmp::impls::<impl core::cmp::PartialEq for i32>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: pointer invalid"
+          },
+          {
+            "id": 83,
+            "function": "core::cmp::impls::<impl core::cmp::PartialEq for i32>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: deallocated dynamic object"
+          },
+          {
+            "id": 84,
+            "function": "core::cmp::impls::<impl core::cmp::PartialEq for i32>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: dead object"
+          },
+          {
+            "id": 85,
+            "function": "core::cmp::impls::<impl core::cmp::PartialEq for i32>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: pointer outside object bounds"
+          },
+          {
+            "id": 86,
+            "function": "core::cmp::impls::<impl core::cmp::PartialEq for i32>::eq",
+            "status": "Success",
+            "category": "pointer_dereference",
+            "description": "dereference failure: invalid integer address"
+          }
+        ]
+      }
+    ]
+  }
+}
