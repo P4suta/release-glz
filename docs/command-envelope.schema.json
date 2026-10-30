@@ -19,6 +19,18 @@
       "items": { "$ref": "#/$defs/nextAction" }
     }
   },
+  "if": { "properties": { "ok": { "const": true } } },
+  "then": {
+    "properties": {
+      "result": { "not": { "type": "null" } },
+      "diagnostics": { "items": { "properties": { "level": { "enum": ["info", "warning"] } } } }
+    }
+  },
+  "else": {
+    "properties": {
+      "diagnostics": { "contains": { "properties": { "level": { "const": "error" } } } }
+    }
+  },
   "$defs": {
     "diagnostic": {
       "type": "object",

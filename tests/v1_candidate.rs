@@ -12,6 +12,7 @@ use release_glz::config::{
 };
 use release_glz::hooks::SidecarArtifact;
 use release_glz::release::{LiveReleaseTarget, SourceBoundCandidate};
+use release_glz_test_support::schema::assert_published_envelope;
 use release_glz_test_support::{git, init_repository, isolated_command};
 use semver::Version;
 use sha2::{Digest, Sha256};
@@ -721,6 +722,7 @@ fn a_candidate_path_that_is_not_a_directory_is_a_usage_error() {
             .output()
             .unwrap();
         let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_published_envelope(&envelope);
         let message = envelope["diagnostics"][0]["message"].as_str().unwrap();
         assert_eq!(output.status.code(), Some(2), "{arguments:?}: {message}");
         assert_eq!(envelope["diagnostics"][0]["code"], "usage_or_config");
@@ -752,8 +754,63 @@ fn offline_candidate_commands_need_no_manifest_in_the_working_directory() {
             String::from_utf8_lossy(&output.stdout)
         );
         let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_published_envelope(&envelope);
         assert_eq!(envelope["ok"], true, "{command}");
     }
+}
+
+#[test]
+fn offline_verify_and_status_print_a_populated_candidate_in_their_published_schemas() {
+    let temp = tempfile::tempdir().unwrap();
+    let candidate = temp.path().join("candidate");
+    let mut input = input_with_verify_hook();
+    input.docs_tarball = Some(tar_gz(&[("index.html", b"<h1>Widget</h1>")]));
+    input.outputs.docs = true;
+    input.package_interface = br#"{"modules":{}}"#.to_vec();
+    add_public_sidecar(&mut input, "sbom", "sbom.cdx.json");
+    input.notify_hooks = vec!["announce".into()];
+    input.notify_hook_definitions = vec![notify_hook("announce")];
+    Candidate::seal(&candidate, input).unwrap();
+
+    let run = |command: &str| {
+        let output = isolated_command(env!("CARGO_BIN_EXE_release-glz"))
+            .current_dir(temp.path())
+            .args(["--output", "json", command, "--candidate"])
+            .arg(&candidate)
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{command}: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_published_envelope(&envelope);
+        envelope
+    };
+    let verified = run("verify");
+    let sealed = &verified["result"]["candidate"];
+    for populated in [
+        "verify_hook_definitions",
+        "sidecar_hook_definitions",
+        "hook_evidence",
+        "sidecars",
+        "notify_hooks",
+        "notify_hook_definitions",
+    ] {
+        assert!(
+            !sealed[populated].as_array().unwrap().is_empty(),
+            "{populated}"
+        );
+    }
+    assert!(sealed["artifacts"]["docs"].is_object());
+    let status = run("status");
+    assert_eq!(
+        status["result"]["candidate_digest"],
+        sealed["candidate_digest"]
+    );
+    assert_eq!(status["next_actions"][0]["argv"][1], "release");
 }
 
 #[test]
@@ -771,6 +828,7 @@ fn release_refuses_a_forged_candidate_before_it_needs_any_token() {
         .output()
         .unwrap();
     let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_published_envelope(&envelope);
     let message = envelope["diagnostics"][0]["message"].as_str().unwrap();
     assert_eq!(output.status.code(), Some(4), "{message}");
     assert!(message.contains("registry"), "{message}");

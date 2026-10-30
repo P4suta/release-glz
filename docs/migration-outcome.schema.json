@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/P4suta/release-glz/v1.0.0/docs/migration-outcome.schema.json",
+  "title": "release-glz Migration Outcome v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "changed", "written", "manifest_path", "legacy_backup_path", "diff"],
+  "properties": {
+    "schema": { "const": "migration/v1" },
+    "changed": { "type": "boolean" },
+    "written": { "type": "boolean" },
+    "manifest_path": { "$ref": "#/$defs/path" },
+    "legacy_backup_path": { "anyOf": [{ "$ref": "#/$defs/path" }, { "type": "null" }] },
+    "diff": { "type": ["string", "null"] }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "changed": { "const": false } } },
+      "then": {
+        "properties": {
+          "written": { "const": false },
+          "legacy_backup_path": { "type": "null" },
+          "diff": { "type": "null" }
+        }
+      },
+      "else": { "properties": { "legacy_backup_path": { "type": "string" } } }
+    },
+    {
+      "if": { "properties": { "written": { "const": true } } },
+      "then": { "properties": { "diff": { "type": "null" } } }
+    }
+  ],
+  "$defs": {
+    "path": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?![A-Za-z]:)(?!.*(?:^|/)\\.\\.?(?:/|$))(?!.*\\\\).+$"
+    }
+  }
+}

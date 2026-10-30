@@ -9,6 +9,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use release_glz::workflow::{self, WorkflowMode, WorkflowSettings};
+use release_glz_test_support::schema::assert_published_envelope;
 use release_glz_test_support::{git, init_repository, isolated_command};
 
 /// Seconds the fake server keeps listening when a test never stops it.
@@ -91,6 +92,7 @@ fn doctor_cli_collects_local_and_github_checks_into_envelope_v2() {
         String::from_utf8_lossy(&output.stderr)
     );
     let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_published_envelope(&envelope);
     assert_eq!(envelope["schema"], "command/v2");
     assert_eq!(envelope["ok"], true);
     assert_eq!(envelope["result"]["schema"], "doctor/v1");
@@ -162,6 +164,7 @@ fn doctor_defaults_to_local_checks_without_contacting_registry_or_github() {
     assert_eq!(registry.request_count(), 0);
     assert_eq!(github.request_count(), 0);
     let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_published_envelope(&envelope);
     assert_eq!(envelope["result"]["state"], "up_to_date");
     registry.stop();
     github.stop();
@@ -207,6 +210,7 @@ fn candidate_build_reports_the_original_isolated_failure_without_claiming_creden
 
     assert_eq!(output.status.code(), Some(3));
     let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_published_envelope(&envelope);
     let diagnostic = envelope["diagnostics"]
         .as_array()
         .unwrap()
@@ -286,6 +290,7 @@ fn doctor_cli_uses_policy_exit_and_unsuccessful_envelope_when_blocked() {
 
     assert_eq!(output.status.code(), Some(3));
     let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_published_envelope(&envelope);
     assert_eq!(envelope["schema"], "command/v2");
     assert_eq!(envelope["ok"], false);
     assert_eq!(envelope["result"]["state"], "blocked");

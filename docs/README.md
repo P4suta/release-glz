@@ -297,11 +297,32 @@ The detailed table is in [recovery.md](recovery.md).
 
 ## Machine-readable contract
 
-JSON output uses the `command/v2` envelope with `ok`, `command`, `result`, `diagnostics`, and `next_actions`.
+JSON output uses the `command/v2` envelope with `ok`, `command`, `result`, `diagnostics`, and `next_actions`, which [command-envelope.schema.json](command-envelope.schema.json) describes.
+`ok` is `false` exactly when a diagnostic has the `error` level, and a successful command always carries a result.
+A failed command carries `null` for its result, except that `doctor`, `init --check`, and `migrate --check` also report the result that failed.
 Executable next actions contain canonical `argv`; non-portable human guidance uses an empty array.
 The `command` field is always display-only and must never be reparsed or sent to a shell.
-Domain schemas evolve independently: `plan/v3`, `candidate/v1`, `state/v1`, and `hook/v1`.
-Published schemas are in [`docs/`](./).
+
+Every result names its format in its own `schema` field, and each format has a published schema:
+
+| `schema` | Printed by | Schema |
+|---|---|---|
+| `plan/v3` | `plan`, `release-pr` without `--candidate`, `status` without `--candidate`, `set-version`, `prerelease` | [release-plan.schema.json](release-plan.schema.json) |
+| `candidate/v1` | `rehearse` | [candidate.schema.json](candidate.schema.json) |
+| `verify/v1` | `verify` without `--online` | [candidate-verification.schema.json](candidate-verification.schema.json) |
+| `status/v1` | `status --candidate` without `--online` | [candidate-status.schema.json](candidate-status.schema.json) |
+| `release/v1` | `release`, `verify --online`, `status --candidate --online` | [release-report.schema.json](release-report.schema.json) |
+| `release-pr-intent/v1` | `release-pr --candidate` | [release-pr-intent.schema.json](release-pr-intent.schema.json) |
+| `doctor/v1` | `doctor` | [doctor-report.schema.json](doctor-report.schema.json) |
+| `init/v1` | `init` | [init-outcome.schema.json](init-outcome.schema.json) |
+| `migration/v1` | `migrate` | [migration-outcome.schema.json](migration-outcome.schema.json) |
+| `completion/v1` | `completion` | [completion.schema.json](completion.schema.json) |
+
+Formats evolve independently, and a format's identifier changes only when its meaning does.
+A hook prints `hook/v1` evidence, which [hook.schema.json](hook.schema.json) describes and a Candidate records.
+`state/v1`, which [release-state.schema.json](release-state.schema.json) describes, is the external state that `release` compares, and no command prints it.
+`init` reports the manifest path relative to the repository, wherever it runs.
+`migrate` does the same for the manifest and its backup, and outside any repository it reports them relative to the package directory.
 
 States are `up_to_date`, `planned`, `candidate_ready`, `awaiting_approval`, `partially_released`, `released`, `conflict`, and `blocked`.
 

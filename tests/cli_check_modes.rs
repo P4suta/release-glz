@@ -1,5 +1,6 @@
 use std::process::Command;
 
+use release_glz_test_support::schema::assert_published_envelope;
 use release_glz_test_support::{init_repository, isolated_command};
 
 #[cfg(unix)]
@@ -37,6 +38,7 @@ fn init_check_is_non_mutating_and_fails_when_the_managed_workflow_is_stale() {
             .exists()
     );
     let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_published_envelope(&envelope);
     assert_eq!(envelope["ok"], false);
     assert_eq!(envelope["result"]["changed"], true);
     assert_eq!(envelope["result"]["written"], false);
@@ -65,6 +67,7 @@ fn migrate_check_is_non_mutating_and_fails_when_schema_two_is_required() {
     assert_eq!(std::fs::read_to_string(&manifest).unwrap(), legacy);
     assert!(!temp.path().join(".release-glz/legacy-gleam.toml").exists());
     let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_published_envelope(&envelope);
     assert_eq!(envelope["ok"], false);
     assert_eq!(envelope["result"]["changed"], true);
     assert_eq!(envelope["result"]["written"], false);
@@ -108,6 +111,7 @@ fn init_diff_update_and_check_form_a_non_destructive_managed_file_lifecycle() {
         .unwrap();
     assert!(json_diff.status.success());
     let json_diff: serde_json::Value = serde_json::from_slice(&json_diff.stdout).unwrap();
+    assert_published_envelope(&json_diff);
     assert_eq!(
         json_diff["result"]["manifest_diff"],
         serde_json::Value::Null
@@ -125,6 +129,7 @@ fn init_diff_update_and_check_form_a_non_destructive_managed_file_lifecycle() {
         .output()
         .unwrap();
     assert_eq!(unsupported_global_dry_run.status.code(), Some(2));
+    assert_published_envelope(&serde_json::from_slice(&unsupported_global_dry_run.stdout).unwrap());
     assert!(!workflow.exists());
 
     let update = binary()
@@ -145,6 +150,7 @@ fn init_diff_update_and_check_form_a_non_destructive_managed_file_lifecycle() {
         String::from_utf8_lossy(&update.stderr)
     );
     let update: serde_json::Value = serde_json::from_slice(&update.stdout).unwrap();
+    assert_published_envelope(&update);
     assert_eq!(update["result"]["changed"], true);
     assert_eq!(update["result"]["written"], true);
     assert!(workflow.exists());
@@ -163,6 +169,7 @@ fn init_diff_update_and_check_form_a_non_destructive_managed_file_lifecycle() {
         .unwrap();
     assert!(check.status.success());
     let check: serde_json::Value = serde_json::from_slice(&check.stdout).unwrap();
+    assert_published_envelope(&check);
     assert_eq!(check["ok"], true);
     assert_eq!(check["result"]["changed"], false);
     assert_eq!(check["result"]["written"], false);
@@ -182,6 +189,7 @@ fn init_diff_update_and_check_form_a_non_destructive_managed_file_lifecycle() {
         .unwrap();
     assert_eq!(conflicting.status.code(), Some(2));
     let conflicting: serde_json::Value = serde_json::from_slice(&conflicting.stdout).unwrap();
+    assert_published_envelope(&conflicting);
     assert_eq!(conflicting["diagnostics"][0]["code"], "usage_or_config");
 }
 
@@ -232,6 +240,7 @@ allow_version_zero = true
         .unwrap();
     assert!(json_diff.status.success());
     let json_diff: serde_json::Value = serde_json::from_slice(&json_diff.stdout).unwrap();
+    assert_published_envelope(&json_diff);
     assert!(
         json_diff["result"]["diff"]
             .as_str()
@@ -261,6 +270,7 @@ allow_version_zero = true
         String::from_utf8_lossy(&update.stderr)
     );
     let update: serde_json::Value = serde_json::from_slice(&update.stdout).unwrap();
+    assert_published_envelope(&update);
     assert_eq!(update["result"]["changed"], true);
     assert_eq!(update["result"]["written"], true);
     let migrated = std::fs::read_to_string(&manifest).unwrap();
@@ -285,6 +295,7 @@ allow_version_zero = true
         .unwrap();
     assert!(check.status.success());
     let check: serde_json::Value = serde_json::from_slice(&check.stdout).unwrap();
+    assert_published_envelope(&check);
     assert_eq!(check["ok"], true);
     assert_eq!(check["result"]["changed"], false);
 
@@ -296,7 +307,52 @@ allow_version_zero = true
         .unwrap();
     assert_eq!(conflicting.status.code(), Some(2));
     let conflicting: serde_json::Value = serde_json::from_slice(&conflicting.stdout).unwrap();
+    assert_published_envelope(&conflicting);
     assert_eq!(conflicting["diagnostics"][0]["code"], "usage_or_config");
+}
+
+#[test]
+fn migrate_reports_paths_relative_to_the_repository_or_else_the_package() {
+    let temp = tempfile::tempdir().unwrap();
+    let gleam = fake_gleam(temp.path(), "1.17.2");
+    let legacy = "name = \"widget\"\nversion = \"1.0.0\"\n";
+    let repository = temp.path().join("repository");
+    let package = repository.join("packages/widget");
+    std::fs::create_dir_all(&package).unwrap();
+    init_repository(&repository);
+    let unversioned = temp.path().join("unversioned");
+    std::fs::create_dir(&unversioned).unwrap();
+    for (directory, expected) in [(&package, "packages/widget/"), (&unversioned, "")] {
+        std::fs::write(directory.join("gleam.toml"), legacy).unwrap();
+        let output = binary()
+            .current_dir(temp.path())
+            .env("RELEASE_GLZ_GLEAM", &gleam)
+            .arg("--manifest-path")
+            .arg(directory.join("gleam.toml"))
+            .args(["--output", "json", "migrate", "--diff"])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_published_envelope(&envelope);
+        let result = &envelope["result"];
+        assert_eq!(result["manifest_path"], format!("{expected}gleam.toml"));
+        assert_eq!(
+            result["legacy_backup_path"],
+            format!("{expected}.release-glz/legacy-gleam.toml")
+        );
+        assert!(
+            result["diff"]
+                .as_str()
+                .unwrap()
+                .contains(&format!("+++ {expected}gleam.toml")),
+            "{result}"
+        );
+    }
 }
 
 fn fake_gleam(directory: &std::path::Path, version: &str) -> std::path::PathBuf {
