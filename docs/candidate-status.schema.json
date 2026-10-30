@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/P4suta/release-glz/v1.0.0/docs/candidate-status.schema.json",
+  "title": "release-glz Candidate Status v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "state", "candidate_digest"],
+  "properties": {
+    "schema": { "const": "status/v1" },
+    "state": { "const": "candidate_ready" },
+    "candidate_digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+  }
+}

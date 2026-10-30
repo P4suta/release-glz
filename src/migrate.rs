@@ -13,6 +13,7 @@ use toml_edit::{Array, DocumentMut, Item, Table, value};
 
 use crate::config::{ApprovalMode, AuthKind, Manifest, RegistryProvider, SeparationMode};
 use crate::diff::unified_diff;
+use crate::git::GitRepo;
 use crate::gleam::{Gleam, MINIMUM_SUPPORTED_COMPILER};
 
 const LEGACY_BACKUP: &str = ".release-glz/legacy-gleam.toml";
@@ -25,10 +26,46 @@ const LEGACY_NOTE_INDEX_DIGITS: usize = 4;
 pub struct Migration {
     manifest_path: PathBuf,
     backup_path: PathBuf,
+    public_paths: PublicPaths,
     original: String,
     rendered: String,
     legacy: Option<String>,
     legacy_notes: Vec<(PathBuf, String)>,
+}
+
+/// The paths an outcome reports, relative to the git repository that holds the package, or to the package directory outside any repository.
+///
+/// They use `/` separators, so a result reads the same wherever the command ran.
+#[derive(Debug)]
+struct PublicPaths {
+    manifest: String,
+    backup: String,
+}
+
+impl PublicPaths {
+    fn of(manifest: &Manifest) -> Result<Self> {
+        let package = fs::canonicalize(manifest.package_dir())?;
+        // Git gets the directory as the manifest names it, since a canonical Windows path carries a prefix that git doesn't read.
+        let root = match GitRepo::discover(manifest.package_dir()) {
+            Ok(repository) => fs::canonicalize(repository.root())?,
+            Err(_) => package.clone(),
+        };
+        let public = |path: PathBuf| -> Result<String> {
+            Ok(path
+                .strip_prefix(&root)
+                .context("the package lies outside the repository that holds it")?
+                .to_string_lossy()
+                .replace('\\', "/"))
+        };
+        let file_name = manifest
+            .path()
+            .file_name()
+            .context("the manifest path names no file")?;
+        Ok(Self {
+            manifest: public(package.join(file_name))?,
+            backup: public(package.join(LEGACY_BACKUP))?,
+        })
+    }
 }
 
 /// What one migration did.
@@ -40,9 +77,9 @@ pub struct MigrationOutcome {
     pub changed: bool,
     /// Whether the manifest was actually replaced.
     pub written: bool,
-    /// Repository-relative path of the migrated manifest.
+    /// Path of the migrated manifest, relative to its repository or, outside any repository, to its package.
     pub manifest_path: String,
-    /// Where the legacy manifest was preserved, when one was replaced.
+    /// Where the legacy manifest was preserved, when one was replaced, relative to the same directory.
     pub legacy_backup_path: Option<String>,
     /// Unified diff, in diff mode only.
     pub diff: Option<String>,
@@ -85,6 +122,7 @@ impl Migration {
     ) -> Result<Self> {
         let original = manifest.original_source().to_owned();
         let backup_path = manifest.package_dir().join(LEGACY_BACKUP);
+        let public_paths = PublicPaths::of(&manifest)?;
         let legacy_notes_dir = manifest
             .package_dir()
             .join(&manifest.release.changelog.notes_dir);
@@ -92,6 +130,7 @@ impl Migration {
             return Ok(Self {
                 manifest_path: path,
                 backup_path,
+                public_paths,
                 rendered: original.clone(),
                 original,
                 legacy: None,
@@ -143,6 +182,7 @@ impl Migration {
         Ok(Self {
             manifest_path: path,
             backup_path,
+            public_paths,
             original: original.clone(),
             rendered,
             legacy: Some(original),
@@ -167,13 +207,8 @@ impl Migration {
 
     /// Unified diff of the pending change, when there is one.
     pub fn diff(&self) -> Option<String> {
-        self.changed().then(|| {
-            unified_diff(
-                &self.manifest_path.to_string_lossy(),
-                &self.original,
-                &self.rendered,
-            )
-        })
+        self.changed()
+            .then(|| unified_diff(&self.public_paths.manifest, &self.original, &self.rendered))
     }
 
     /// Describe this migration without applying it.
@@ -182,11 +217,11 @@ impl Migration {
             schema: "migration/v1".into(),
             changed: self.changed(),
             written,
-            manifest_path: self.manifest_path.to_string_lossy().replace('\\', "/"),
+            manifest_path: self.public_paths.manifest.clone(),
             legacy_backup_path: self
                 .legacy
                 .as_ref()
-                .map(|_| self.backup_path.to_string_lossy().replace('\\', "/")),
+                .map(|_| self.public_paths.backup.clone()),
             diff: None,
         }
     }

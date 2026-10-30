@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/P4suta/release-glz/v1.0.0/docs/release-pr-intent.schema.json",
+  "title": "release-glz Release PR Intent v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "state", "intent_binding", "version", "intent_digest", "candidate_digest", "pr_url"
+  ],
+  "properties": {
+    "schema": { "const": "release-pr-intent/v1" },
+    "state": { "enum": ["planned", "awaiting_approval", "blocked"] },
+    "intent_binding": { "enum": ["bound", "merged", "superseded", "unbound"] },
+    "version": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$"
+    },
+    "intent_digest": { "$ref": "#/$defs/sha256" },
+    "candidate_digest": { "$ref": "#/$defs/sha256" },
+    "pr_url": { "anyOf": [{ "type": "string", "format": "uri" }, { "type": "null" }] }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "intent_binding": { "const": "bound" },
+        "state": { "const": "planned" },
+        "pr_url": { "type": "string" }
+      }
+    },
+    {
+      "properties": {
+        "intent_binding": { "const": "merged" },
+        "state": { "const": "awaiting_approval" },
+        "pr_url": { "type": "string" }
+      }
+    },
+    {
+      "properties": {
+        "intent_binding": { "const": "superseded" },
+        "state": { "const": "planned" },
+        "pr_url": { "type": "null" }
+      }
+    },
+    {
+      "properties": {
+        "intent_binding": { "const": "unbound" },
+        "state": { "const": "blocked" },
+        "pr_url": { "type": "null" }
+      }
+    }
+  ],
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+  }
+}

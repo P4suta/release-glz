@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/P4suta/release-glz/v1.0.0/docs/init-outcome.schema.json",
+  "title": "release-glz Init Outcome v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "manifest_path", "workflow_path", "action_sha", "manifest_changed",
+    "workflow_changed", "changed", "written", "manifest_diff", "workflow_diff"
+  ],
+  "properties": {
+    "schema": { "const": "init/v1" },
+    "manifest_path": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?![A-Za-z]:)(?!.*(?:^|/)\\.\\.?(?:/|$))(?!.*\\\\).+$"
+    },
+    "workflow_path": { "const": ".github/workflows/release-glz.yml" },
+    "action_sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "manifest_changed": { "type": "boolean" },
+    "workflow_changed": { "type": "boolean" },
+    "changed": { "type": "boolean" },
+    "written": { "type": "boolean" },
+    "manifest_diff": { "type": ["string", "null"] },
+    "workflow_diff": { "type": ["string", "null"] }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "changed": { "const": false } } },
+      "then": {
+        "properties": {
+          "manifest_changed": { "const": false },
+          "workflow_changed": { "const": false },
+          "written": { "const": false }
+        }
+      },
+      "else": {
+        "anyOf": [
+          { "properties": { "manifest_changed": { "const": true } } },
+          { "properties": { "workflow_changed": { "const": true } } }
+        ]
+      }
+    },
+    {
+      "if": { "properties": { "manifest_changed": { "const": false } } },
+      "then": { "properties": { "manifest_diff": { "type": "null" } } }
+    },
+    {
+      "if": { "properties": { "workflow_changed": { "const": false } } },
+      "then": { "properties": { "workflow_diff": { "type": "null" } } }
+    },
+    {
+      "if": { "properties": { "written": { "const": true } } },
+      "then": { "properties": { "manifest_diff": { "type": "null" }, "workflow_diff": { "type": "null" } } }
+    }
+  ]
+}
