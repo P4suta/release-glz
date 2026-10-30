@@ -46,7 +46,7 @@ const fn control(
 }
 
 /// Every harness of the proof packages, with its cover count.
-pub const HARNESSES: [Harness; 80] = [
+pub const HARNESSES: [Harness; 84] = [
     harness(
         "proofs::a_proof_run_is_admitted_only_when_every_expected_harness_verified",
         2,
@@ -291,6 +291,22 @@ pub const HARNESSES: [Harness; 80] = [
         2,
     ),
     harness(
+        "archive_path::proofs::a_path_passes_exactly_when_each_component_does",
+        1,
+    ),
+    harness(
+        "archive_path::proofs::an_archive_path_is_its_text_without_trailing_slashes",
+        1,
+    ),
+    harness(
+        "archive_path::proofs::the_directories_above_a_path_are_its_prefixes_before_each_slash",
+        1,
+    ),
+    harness(
+        "archive_path::proofs::claiming_records_each_entry_and_names_the_earlier_one",
+        1,
+    ),
+    harness(
         "oidc::proofs::a_token_is_valid_exactly_while_its_window_holds_now",
         2,
     ),
@@ -325,7 +341,7 @@ const CORE: &str = "release-glz-core";
 const ASSURANCE: &str = "assurance-core";
 
 /// Every negative control, each of which has to fail exactly its harness's assertion.
-pub const CONTROLS: [Control; 86] = [
+pub const CONTROLS: [Control; 91] = [
     control(
         ASSURANCE,
         "negative-control-incomplete-run",
@@ -775,6 +791,36 @@ pub const CONTROLS: [Control; 86] = [
         "negative-control-case-collision",
         "archive_path::proofs::entries_two_directories_deep_never_collide_once_case_no_longer_counts",
         "two accepted entries must not collide once letter case no longer counts",
+    ),
+    control(
+        CORE,
+        "negative-control-first-component",
+        "archive_path::proofs::a_path_passes_exactly_when_each_component_does",
+        "a path must pass exactly when each component does",
+    ),
+    control(
+        CORE,
+        "negative-control-keep-trailing-slashes",
+        "archive_path::proofs::an_archive_path_is_its_text_without_trailing_slashes",
+        "an archive path must be its text without the trailing slashes",
+    ),
+    control(
+        CORE,
+        "negative-control-directory-at-every-byte",
+        "archive_path::proofs::the_directories_above_a_path_are_its_prefixes_before_each_slash",
+        "the directories above a path must be its prefixes before each slash",
+    ),
+    control(
+        CORE,
+        "negative-control-forget-files",
+        "archive_path::proofs::claiming_records_each_entry_and_names_the_earlier_one",
+        "claiming must record each entry and name the earlier one",
+    ),
+    control(
+        CORE,
+        "negative-control-overwrite-directory",
+        "archive_path::proofs::claiming_records_each_entry_and_names_the_earlier_one",
+        "claiming must record each entry and name the earlier one",
     ),
     control(
         CORE,
