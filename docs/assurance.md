@@ -63,6 +63,56 @@ The Quint model covers three objects and two runs.
 - Test: `tests/oidc_authorization.rs::every_security_boundary_is_fail_closed`
 - Test: `tests/oidc_authorization.rs::signed_compact_token_is_verified_before_github_claims_are_returned`
 
+### Approval trusts only a token that's valid now and that GitHub's own hosts serve
+
+A token counts only before it expires, and only while neither its issue time nor the start of its validity lies more than thirty seconds ahead.
+That check can't overflow at any time.
+A run ID is one or more ASCII digits, and a run attempt is a positive decimal number in ASCII digits, so `+3` isn't attempt 3.
+The verifier reads the discovery document and the key set only from `token.actions.githubusercontent.com` over HTTPS.
+It requests a runner token only from `actions.githubusercontent.com` or a host inside it.
+Kani proves the window for every pair of times, and the run numbers for texts of up to three bytes and the two 20-digit texts around 2^64.
+It proves the hosts for every host whose length reaches a boundary of the rule, because the rule reads only the last 30 bytes of a longer host.
+The adapter parses each URL, decides whether a host is a loopback address, and verifies the token's signature before the core decides.
+
+- Kani: `oidc::proofs::a_token_is_valid_exactly_while_its_window_holds_now`
+- Kani: `oidc::proofs::run_numbers_are_exactly_decimal_digits`
+- Kani: `oidc::proofs::an_oidc_url_trusts_no_host_but_githubs_own`
+- Test: `tests/oidc_authorization.rs::every_security_boundary_is_fail_closed`
+- Test: `tests/oidc_authorization.rs::claim_values_that_match_textually_still_require_canonical_safe_shapes`
+- Test: `src/authorization.rs::oidc_urls_are_origin_pinned_and_test_http_is_numeric_loopback_only`
+
+### A publish job consumes only the Candidate that its trigger permits
+
+A push consumes only the Candidate of its own run while that run is in progress.
+A manual promotion consumes only the Candidate of another run that completed with success.
+Kani proves it for every event name of up to 18 bytes, status of up to 12 bytes, and conclusion of up to 8 bytes.
+
+- Kani: `candidate_choice::proofs::a_push_consumes_only_its_own_run_and_a_promotion_only_another_successful_one`
+- Test: `tests/github_release_contract.rs::a_push_publishes_only_its_own_candidate_and_a_promotion_only_an_earlier_one`
+- Test: `tests/github_release_contract.rs::a_candidate_from_the_current_run_requires_that_run_to_be_in_progress`
+- Test: `tests/github_release_contract.rs::actions_artifact_run_requires_the_managed_successful_repository_source`
+
+### Every request and every wait for a release ends within a stated time
+
+A request to the registry or to GitHub waits only when another attempt follows.
+A busy response never makes it wait longer than a minute for the registry or thirty seconds for GitHub.
+In all, a registry request waits at most two minutes between its attempts, and a GitHub read at most one minute.
+A wait for a published release sleeps only between two polls, and it ends at the first poll that lists the version with the docs it needs.
+Kani proves each wait for every policy, attempt, and answer, and it pins the wait after a transport failure for the first nine attempts.
+It proves the whole wait of the two shipped policies for every sequence of answers.
+The time that each attempt itself takes falls under the client's request timeouts, which no proof covers.
+
+- Kani: `wait::proofs::a_request_waits_only_before_another_attempt_and_only_as_long_as_its_answer_allows`
+- Kani: `wait::proofs::the_shipped_policies_bound_the_whole_wait_of_a_request`
+- Kani: `wait::proofs::a_wait_sleeps_only_before_another_poll_and_ends_at_the_first_visible_one`
+- Test: `tests/registry_contract.rs::get_and_credential_audit_retries_are_bounded_and_never_change_method`
+- Test: `tests/registry_contract.rs::transport_failures_and_redirect_loops_exhaust_a_fixed_read_budget`
+- Test: `tests/registry_contract.rs::wait_for_reports_its_timeout_without_sleeping_after_the_last_poll`
+- Test: `tests/registry_contract.rs::wait_for_stops_after_its_attempts`
+- Test: `tests/github_release_contract.rs::github_get_retries_retry_after_without_reposting_and_bounds_json_bodies`
+- Test: `tests/github_release_contract.rs::github_get_retries_a_transport_failure_without_reposting`
+- Test: `src/registry.rs::retry_after_and_checksums_validate_all_boundaries`
+
 ### A release publishes in order
 
 The tag, the draft Release, the package, the documentation, the assets, the final Release, and the notifications follow publication order.

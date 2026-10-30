@@ -723,6 +723,29 @@ async fn wait_for_stops_after_its_attempts() {
     server.join().unwrap();
 }
 
+/// A registry request waits a quarter of a second after a busy response that names no wait, at most a minute after one that names a wait, and one step more after each transport failure.
+#[test]
+fn registry_requests_follow_their_retry_schedule() {
+    use release_glz_core::{Answer, Next, REGISTRY_RETRIES};
+    assert_eq!(
+        REGISTRY_RETRIES.after(0, Answer::Busy(None)),
+        Next::Retry(250)
+    );
+    assert_eq!(
+        REGISTRY_RETRIES.after(1, Answer::Busy(Some(90))),
+        Next::Retry(60_000)
+    );
+    assert_eq!(
+        REGISTRY_RETRIES.after(0, Answer::Unreachable),
+        Next::Retry(100)
+    );
+    assert_eq!(
+        REGISTRY_RETRIES.after(1, Answer::Unreachable),
+        Next::Retry(200)
+    );
+    assert_eq!(REGISTRY_RETRIES.after(2, Answer::Busy(None)), Next::Stop);
+}
+
 #[test]
 fn visibility_polling_waits_a_minute_unless_a_caller_sets_it() {
     assert_eq!(

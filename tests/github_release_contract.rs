@@ -2696,6 +2696,26 @@ async fn github_get_retries_retry_after_without_reposting_and_bounds_json_bodies
     assert!(error.to_string().contains("size limit"));
 }
 
+/// A GitHub read waits one second and then two after busy responses that name no wait, at most thirty seconds after one that names a wait, and gives up after its third attempt.
+#[test]
+fn github_reads_double_their_wait_and_stop_after_three_attempts() {
+    use release_glz_core::{Answer, GITHUB_READS, Next};
+    assert_eq!(
+        GITHUB_READS.after(0, Answer::Busy(None)),
+        Next::Retry(1_000)
+    );
+    assert_eq!(
+        GITHUB_READS.after(1, Answer::Busy(None)),
+        Next::Retry(2_000)
+    );
+    assert_eq!(
+        GITHUB_READS.after(0, Answer::Busy(Some(45))),
+        Next::Retry(30_000)
+    );
+    assert_eq!(GITHUB_READS.after(1, Answer::Unreachable), Next::Retry(200));
+    assert_eq!(GITHUB_READS.after(2, Answer::Busy(None)), Next::Stop);
+}
+
 #[tokio::test]
 async fn github_get_retries_a_transport_failure_without_reposting() {
     let server = FakeServer::start(vec![

@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
+use release_glz_core::{AfterPoll, Answer, Next, REGISTRY_RETRIES, RetryPolicy};
 use reqwest::{StatusCode, Url};
 use semver::Version;
 use serde::Deserialize;
@@ -23,7 +24,7 @@ const JSON_LIMIT: u64 = 4 * MIB;
 const ARCHIVE_LIMIT: u64 = 128 * MIB;
 
 /// Attempts made for one request before its failure is reported.
-const DEFAULT_RETRIES: usize = 3;
+const DEFAULT_RETRIES: usize = REGISTRY_RETRIES.attempts;
 
 /// Seconds a single registry request may take before it is abandoned.
 const REQUEST_TIMEOUT_SECONDS: u64 = 60;
@@ -55,17 +56,8 @@ impl Default for VisibilityPoll {
     }
 }
 
-/// Milliseconds to wait when a response asks to retry without saying when.
-const DEFAULT_RETRY_AFTER_MS: u64 = 250;
-
-/// Longest wait that a `Retry-After` header can ask for, so a registry response can't stall a run.
-const MAX_RETRY_AFTER: Duration = Duration::from_secs(60);
-
 /// Redirects one request may follow on the configured origin.
 const MAX_REDIRECTS: usize = 5;
-
-/// Milliseconds that each transport retry waits longer than the one before it.
-const TRANSPORT_RETRY_STEP_MS: u64 = 100;
 
 /// One release as the registry reports it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -333,28 +325,39 @@ impl HexRegistry {
             }
         }
 
+        let policy = self.retry_policy();
         let mut last_error = None;
         for attempt in 0..self.retries {
             match self.audit_permission_once(url.clone()).await {
                 Ok(AuditRequest::Result(result)) => return Ok(result),
-                Ok(AuditRequest::Retry(delay)) => {
-                    if !retry_available(attempt, self.retries) {
-                        bail!("registry credential audit remained temporarily unavailable");
+                Ok(AuditRequest::Retry(asked)) => {
+                    match policy.after(attempt, Answer::Busy(asked)) {
+                        Next::Retry(wait) => tokio::time::sleep(Duration::from_millis(wait)).await,
+                        Next::Stop => {
+                            bail!("registry credential audit remained temporarily unavailable")
+                        }
                     }
-                    tokio::time::sleep(delay).await;
                 }
                 Err(error) => {
                     if error.downcast_ref::<reqwest::Error>().is_none() {
                         return Err(error);
                     }
                     last_error = Some(error);
-                    if retry_available(attempt, self.retries) {
-                        tokio::time::sleep(transport_retry_delay(attempt)).await;
+                    if let Next::Retry(wait) = policy.after(attempt, Answer::Unreachable) {
+                        tokio::time::sleep(Duration::from_millis(wait)).await;
                     }
                 }
             }
         }
         Err(last_error.unwrap_or_else(|| anyhow::anyhow!("registry credential audit failed")))
+    }
+
+    /// How often this client attempts one request, and how long it waits before it repeats.
+    fn retry_policy(&self) -> RetryPolicy {
+        RetryPolicy {
+            attempts: self.retries,
+            ..REGISTRY_RETRIES
+        }
     }
 
     async fn audit_permission_once(&self, url: Url) -> Result<AuditRequest> {
@@ -386,23 +389,22 @@ impl HexRegistry {
     }
 
     async fn get_bytes(&self, url: Url, optional: bool, limit: u64) -> Result<Option<Vec<u8>>> {
+        let policy = self.retry_policy();
         let mut last_error = None;
         for attempt in 0..self.retries {
             match self.get_once(url.clone(), optional, limit).await {
                 Ok(GetResult::Value(value)) => return Ok(value),
-                Ok(GetResult::Retry(delay)) => {
-                    if !retry_available(attempt, self.retries) {
-                        bail!("registry GET {url} remained temporarily unavailable");
-                    }
-                    tokio::time::sleep(delay).await;
-                }
+                Ok(GetResult::Retry(asked)) => match policy.after(attempt, Answer::Busy(asked)) {
+                    Next::Retry(wait) => tokio::time::sleep(Duration::from_millis(wait)).await,
+                    Next::Stop => bail!("registry GET {url} remained temporarily unavailable"),
+                },
                 Err(error) => {
                     if error.downcast_ref::<reqwest::Error>().is_none() {
                         return Err(error);
                     }
                     last_error = Some(error);
-                    if retry_available(attempt, self.retries) {
-                        tokio::time::sleep(transport_retry_delay(attempt)).await;
+                    if let Next::Retry(wait) = policy.after(attempt, Answer::Unreachable) {
+                        tokio::time::sleep(Duration::from_millis(wait)).await;
                     }
                 }
             }
@@ -525,13 +527,16 @@ impl HexRegistry {
         version: &Version,
         require_docs: bool,
     ) -> Result<PackageState> {
-        for attempt in 0..self.visibility_poll.attempts {
-            if attempt > 0 {
-                tokio::time::sleep(self.visibility_poll.interval).await;
-            }
+        let attempts = self.visibility_poll.attempts;
+        for poll in 0..attempts {
             let state = self.package(package).await?;
-            if release_ready(state.as_ref(), version, require_docs) {
-                return state.context("ready registry state unexpectedly disappeared");
+            let ready = release_ready(state.as_ref(), version, require_docs);
+            match release_glz_core::after_poll(poll, attempts, ready) {
+                AfterPoll::Visible => {
+                    return state.context("ready registry state unexpectedly disappeared");
+                }
+                AfterPoll::PollAgain => tokio::time::sleep(self.visibility_poll.interval).await,
+                AfterPoll::TimedOut => break,
             }
         }
         bail!("timed out waiting for {package} {version} to appear on the registry")
@@ -540,12 +545,14 @@ impl HexRegistry {
 
 enum GetResult {
     Value(Option<Vec<u8>>),
-    Retry(Duration),
+    /// The registry asked to repeat the request, after the seconds that it named, if any.
+    Retry(Option<u64>),
 }
 
 enum AuditRequest {
     Result(PermissionAudit),
-    Retry(Duration),
+    /// The registry asked to repeat the audit, after the seconds that it named, if any.
+    Retry(Option<u64>),
 }
 
 enum PermissionAudit {
@@ -554,29 +561,22 @@ enum PermissionAudit {
     Denied,
 }
 
-fn retry_available(attempt: usize, attempts: usize) -> bool {
-    attempt < attempts.saturating_sub(1)
-}
-
-fn transport_retry_delay(attempt: usize) -> Duration {
-    Duration::from_millis((attempt as u64 + 1) * TRANSPORT_RETRY_STEP_MS)
-}
-
-fn classify_audit_status(status: StatusCode, delay: Duration) -> Result<AuditRequest> {
+fn classify_audit_status(status: StatusCode, asked: Option<u64>) -> Result<AuditRequest> {
     match status {
         status if status.is_success() => Ok(AuditRequest::Result(PermissionAudit::Allowed)),
         StatusCode::UNAUTHORIZED => Ok(AuditRequest::Result(PermissionAudit::Invalid)),
         StatusCode::FORBIDDEN => Ok(AuditRequest::Result(PermissionAudit::Denied)),
-        StatusCode::TOO_MANY_REQUESTS => Ok(AuditRequest::Retry(delay)),
-        status if status.is_server_error() => Ok(AuditRequest::Retry(delay)),
+        StatusCode::TOO_MANY_REQUESTS => Ok(AuditRequest::Retry(asked)),
+        status if status.is_server_error() => Ok(AuditRequest::Retry(asked)),
         status => bail!("registry credential audit failed with {status}"),
     }
 }
 
 fn release_ready(state: Option<&PackageState>, version: &Version, require_docs: bool) -> bool {
-    state
+    let listed = state
         .and_then(|state| state.release(version))
-        .is_some_and(|release| !require_docs || release.has_docs)
+        .map(|release| release.has_docs);
+    release_glz_core::release_ready(listed, require_docs)
 }
 
 #[derive(Debug, Deserialize)]
@@ -718,13 +718,12 @@ fn same_origin(left: &Url, right: &Url) -> bool {
         && left.port_or_known_default() == right.port_or_known_default()
 }
 
-fn retry_after(headers: &reqwest::header::HeaderMap) -> Duration {
+/// The seconds that a `Retry-After` header names, when it names a number.
+fn retry_after(headers: &reqwest::header::HeaderMap) -> Option<u64> {
     headers
         .get(reqwest::header::RETRY_AFTER)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.parse::<u64>().ok())
-        .map(|seconds| Duration::from_secs(seconds).min(MAX_RETRY_AFTER))
-        .unwrap_or_else(|| Duration::from_millis(DEFAULT_RETRY_AFTER_MS))
 }
 
 fn validate_checksum(value: &str) -> Result<()> {
@@ -861,6 +860,9 @@ mod tests {
         assert_eq!(ARCHIVE_LIMIT, 134_217_728);
         assert_eq!(DEFAULT_RETRIES, 3);
 
+        let retry_available = release_glz_core::another_attempt_follows;
+        let transport_retry_delay =
+            |attempt| Duration::from_millis(REGISTRY_RETRIES.transport_wait(attempt));
         assert!(retry_available(0, 3));
         assert!(retry_available(1, 3));
         assert!(!retry_available(2, 3));
@@ -901,7 +903,7 @@ mod tests {
 
     #[test]
     fn audit_statuses_distinguish_results_retries_and_permanent_failures() {
-        let delay = Duration::from_millis(17);
+        let delay = Some(17);
         assert!(matches!(
             classify_audit_status(StatusCode::NO_CONTENT, delay).unwrap(),
             AuditRequest::Result(PermissionAudit::Allowed)
@@ -961,6 +963,9 @@ mod tests {
 
     #[test]
     fn retry_after_and_checksums_validate_all_boundaries() {
+        let retry_after = |headers: &reqwest::header::HeaderMap| {
+            Duration::from_millis(REGISTRY_RETRIES.busy_wait(0, super::retry_after(headers)))
+        };
         let mut headers = reqwest::header::HeaderMap::new();
         assert_eq!(retry_after(&headers), Duration::from_millis(250));
         headers.insert(reqwest::header::RETRY_AFTER, "2".parse().unwrap());

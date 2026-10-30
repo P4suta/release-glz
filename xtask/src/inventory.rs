@@ -46,7 +46,7 @@ const fn control(
 }
 
 /// Every harness of the proof packages, with its cover count.
-pub const HARNESSES: [Harness; 63] = [
+pub const HARNESSES: [Harness; 70] = [
     harness(
         "proofs::a_proof_run_is_admitted_only_when_every_expected_harness_verified",
         2,
@@ -257,13 +257,38 @@ pub const HARNESSES: [Harness; 63] = [
         "archive_path::proofs::entries_two_directories_deep_never_collide_once_case_no_longer_counts",
         2,
     ),
+    harness(
+        "oidc::proofs::a_token_is_valid_exactly_while_its_window_holds_now",
+        2,
+    ),
+    harness("oidc::proofs::run_numbers_are_exactly_decimal_digits", 2),
+    harness(
+        "oidc::proofs::an_oidc_url_trusts_no_host_but_githubs_own",
+        2,
+    ),
+    harness(
+        "candidate_choice::proofs::a_push_consumes_only_its_own_run_and_a_promotion_only_another_successful_one",
+        2,
+    ),
+    harness(
+        "wait::proofs::a_request_waits_only_before_another_attempt_and_only_as_long_as_its_answer_allows",
+        2,
+    ),
+    harness(
+        "wait::proofs::the_shipped_policies_bound_the_whole_wait_of_a_request",
+        2,
+    ),
+    harness(
+        "wait::proofs::a_wait_sleeps_only_before_another_poll_and_ends_at_the_first_visible_one",
+        2,
+    ),
 ];
 
 const CORE: &str = "release-glz-core";
 const ASSURANCE: &str = "assurance-core";
 
 /// Every negative control, each of which has to fail exactly its harness's assertion.
-pub const CONTROLS: [Control; 66] = [
+pub const CONTROLS: [Control; 76] = [
     control(
         ASSURANCE,
         "negative-control-incomplete-run",
@@ -659,6 +684,66 @@ pub const CONTROLS: [Control; 66] = [
         "negative-control-case-collision",
         "archive_path::proofs::entries_two_directories_deep_never_collide_once_case_no_longer_counts",
         "two accepted entries must not collide once letter case no longer counts",
+    ),
+    control(
+        CORE,
+        "negative-control-token-expiry",
+        "oidc::proofs::a_token_is_valid_exactly_while_its_window_holds_now",
+        "a token must be valid exactly while its window holds now",
+    ),
+    control(
+        CORE,
+        "negative-control-token-skew-wrap",
+        "oidc::proofs::a_token_is_valid_exactly_while_its_window_holds_now",
+        "a token must be valid exactly while its window holds now",
+    ),
+    control(
+        CORE,
+        "negative-control-signed-attempt",
+        "oidc::proofs::run_numbers_are_exactly_decimal_digits",
+        "a run number must be decimal digits",
+    ),
+    control(
+        CORE,
+        "negative-control-zone-without-dot",
+        "oidc::proofs::an_oidc_url_trusts_no_host_but_githubs_own",
+        "an OIDC URL must name GitHub's own host for its kind",
+    ),
+    control(
+        CORE,
+        "negative-control-push-from-another-run",
+        "candidate_choice::proofs::a_push_consumes_only_its_own_run_and_a_promotion_only_another_successful_one",
+        "a publish job must consume only its own push run or another successful run",
+    ),
+    control(
+        CORE,
+        "negative-control-retry-after-last-attempt",
+        "wait::proofs::a_request_waits_only_before_another_attempt_and_only_as_long_as_its_answer_allows",
+        "a request must wait only before another attempt",
+    ),
+    control(
+        CORE,
+        "negative-control-uncapped-busy-wait",
+        "wait::proofs::a_request_waits_only_before_another_attempt_and_only_as_long_as_its_answer_allows",
+        "a wait must be as long as its answer allows",
+    ),
+    control(
+        CORE,
+        "negative-control-uncapped-busy-wait",
+        "wait::proofs::the_shipped_policies_bound_the_whole_wait_of_a_request",
+        "a request must wait at most two minutes for the registry and one for GitHub",
+    ),
+    control(
+        CORE,
+        "negative-control-sleep-after-last-poll",
+        "wait::proofs::a_wait_sleeps_only_before_another_poll_and_ends_at_the_first_visible_one",
+        "a wait must sleep only before another poll",
+    ),
+    control(
+        CORE,
+        "negative-control-ready-without-docs",
+        "wait::proofs::a_wait_sleeps_only_before_another_poll_and_ends_at_the_first_visible_one",
+        "a release must count as visible exactly when the registry lists it with the docs it needs",
     ),
 ];
 

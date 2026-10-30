@@ -11,21 +11,25 @@ extern crate alloc;
 
 mod approval;
 mod archive_path;
+mod candidate_choice;
 mod commit;
 mod framing;
 mod hex;
 mod key_order;
 mod lifecycle;
 mod marker;
+mod oidc;
 mod precedence;
 mod publication;
 mod redaction;
 mod run;
 mod selection;
 mod version;
+mod wait;
 
 pub use approval::{Approval, RunIdentity, Trigger};
 pub use archive_path::{Collision, FoldedPaths, PathRefusal, archive_path};
+pub use candidate_choice::{CandidateRun, RunRefusal, candidate_run};
 pub use commit::conventional_bump;
 pub use framing::{FILES_DOMAIN, NOTIFICATION_DOMAIN, frame_file, notification_frame};
 pub use hex::{
@@ -37,6 +41,10 @@ pub use marker::{
     MARKER_KEYS, MARKER_PREFIX, MARKER_SUFFIX, marker_start, marker_values, write_inert,
     write_marker,
 };
+pub use oidc::{
+    CLOCK_SKEW_SECONDS, OIDC_ISSUER_HOST, OidcUrlKind, OriginRefusal, RUNNER_TOKEN_ZONE,
+    TokenTimes, WindowRefusal, is_run_id, oidc_origin, run_attempt, token_window,
+};
 pub use precedence::{Channel, Pre, Version, compare};
 pub use publication::{Decision, Effects, Object, Outcome, Presence, reconcile};
 pub use redaction::{Segment, redaction_segments};
@@ -46,3 +54,7 @@ pub use selection::{
     next_prerelease, select_version, version_zero_refused,
 };
 pub use version::{Bump, VersionCore, increment};
+pub use wait::{
+    AfterPoll, Answer, BusyDefault, GITHUB_READS, Next, REGISTRY_RETRIES, RetryPolicy, after_poll,
+    another_attempt_follows, release_ready,
+};

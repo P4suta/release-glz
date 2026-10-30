@@ -88,6 +88,36 @@ fn every_security_boundary_is_fail_closed() {
     }
 }
 
+/// The fail-closed test refuses a token issued or starting 31 seconds ahead, so together they pin the 30-second clock skew.
+#[test]
+fn a_token_may_be_issued_or_start_exactly_the_clock_skew_ahead() {
+    let mut candidate = claims();
+    candidate.issued_at = NOW + 30;
+    candidate.not_before = Some(NOW + 30);
+    verify(candidate, &expectation()).unwrap();
+}
+
+/// A runner token URL has to name `actions.githubusercontent.com` or a host that a dot separates from it.
+#[tokio::test]
+async fn a_runner_token_url_outside_githubs_zone_is_refused_before_any_request() {
+    let verifier = GithubOidcVerifier::github().unwrap();
+    for url in [
+        "https://evilactions.githubusercontent.com/token",
+        "https://actions.githubusercontent.com.evil.example/token",
+        "https://evil.example/token",
+    ] {
+        let error = verifier
+            .verify_actions_token(url, "request-token", &expectation(), NOW)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "GitHub OIDC URL origin is not trusted",
+            "{url}"
+        );
+    }
+}
+
 #[test]
 fn audience_arrays_are_supported_but_must_contain_release_glz() {
     let mut candidate = claims();
