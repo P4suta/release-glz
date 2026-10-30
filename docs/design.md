@@ -68,6 +68,8 @@ If an existing package checksum, docs checksum, tag target, release Candidate di
 The decisions about each object and about approval live in `release-glz-core`, where Kani proves them, as [decide publication from object presence](adr/decide-publication-from-object-presence.md) records.
 The release gate admits those proofs only from audited reports, as [admit proofs only from audited reports](adr/admit-proofs-only-from-audited-reports.md) records.
 Each step of a run also lives there, as [decide each run step in the core](adr/decide-each-run-step-in-the-core.md) records.
+A Quint model checks the protocol together with its world, as [model-check the release protocol with its world](adr/model-check-the-release-protocol-with-its-world.md) records.
+That world shows commits late, commits failed calls, races another publisher, and refuses to replace an object.
 Kani proves which effect comes next, when a failed call counts as applied, and when the run stops.
 
 An unknown package POST result transitions into observation/polling.

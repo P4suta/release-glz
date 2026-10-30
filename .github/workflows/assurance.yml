@@ -258,6 +258,23 @@ jobs:
           fi
           grep -F "'ReleaseGlz.Refinement.decision_refines_rust' depends on axioms: [sorryAx]" negative-control.log
 
+  quint:
+    name: Quint model of the release protocol
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal --no-self-update
+          rustup default 1.88.0
+      - name: Check every state of the model, fail its probe, and write the replayed traces again
+        run: cargo xtask quint
+
   fuzz:
     name: Bounded parser fuzz smoke
     runs-on: ubuntu-24.04
