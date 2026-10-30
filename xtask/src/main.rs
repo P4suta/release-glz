@@ -1,6 +1,6 @@
 //! Repository tasks that drive the pinned verification images.
 //!
-//! `cargo xtask proofs` proves every Kani harness and negative control and audits each run.
+//! `cargo xtask proofs` proves every Kani harness, one module at a time, and every negative control, and audits each run.
 //! `cargo xtask proof-mutants` runs every mutant of the core crates through the harnesses, and `check` checks its committed receipt.
 //! `cargo xtask lean` proves the Lean model of publication and its refinement of the core crate.
 //! `cargo xtask quint` model-checks the release protocol and writes the traces that the replay test reads.
