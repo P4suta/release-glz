@@ -6,6 +6,8 @@ runtime:
   - 'crates/**'
   - 'tests/**'
   - 'fuzz/**'
+  - 'verification/**'
+  - 'xtask/**'
   - 'action.yml'
   - 'action/**'
   - 'scripts/**'

@@ -1,0 +1,15 @@
+[package]
+name = "xtask"
+description = "Repository tasks of release-glz that drive pinned verification images"
+version = "0.0.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+rust-version = "1.88"
+
+[features]
+# Builds the refinement vectors from a core that republishes matching objects, so the Lean gate can show that it rejects them.
+negative-control-republish = ["release-glz-core/negative-control-republish"]
+
+[dependencies]
+release-glz-core = { path = "../crates/release-glz-core", version = "0.0.0" }
