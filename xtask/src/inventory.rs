@@ -46,7 +46,7 @@ const fn control(
 }
 
 /// Every harness of the proof packages, with its cover count.
-pub const HARNESSES: [Harness; 62] = [
+pub const HARNESSES: [Harness; 63] = [
     harness(
         "proofs::a_proof_run_is_admitted_only_when_every_expected_harness_verified",
         2,
@@ -213,6 +213,7 @@ pub const HARNESSES: [Harness; 62] = [
         "run::proofs::a_run_never_reports_less_than_partially_released_once_the_release_started",
         2,
     ),
+    harness("run::proofs::a_run_reports_states_in_lifecycle_order", 1),
     harness(
         "run::proofs::a_run_stops_only_when_nothing_but_attempted_optional_effects_remains",
         1,
@@ -262,7 +263,7 @@ const CORE: &str = "release-glz-core";
 const ASSURANCE: &str = "assurance-core";
 
 /// Every negative control, each of which has to fail exactly its harness's assertion.
-pub const CONTROLS: [Control; 65] = [
+pub const CONTROLS: [Control; 66] = [
     control(
         ASSURANCE,
         "negative-control-incomplete-run",
@@ -574,6 +575,12 @@ pub const CONTROLS: [Control; 65] = [
         "negative-control-unfloored",
         "run::proofs::a_run_never_reports_less_than_partially_released_once_the_release_started",
         "a run must never report less than partially released once it knows the release started",
+    ),
+    control(
+        CORE,
+        "negative-control-lower-released",
+        "run::proofs::a_run_reports_states_in_lifecycle_order",
+        "every state a run reports must follow the state of its first plan",
     ),
     control(
         CORE,

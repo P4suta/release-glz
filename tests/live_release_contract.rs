@@ -298,7 +298,7 @@ fn every_asset_name_that_a_candidate_seals_keeps_its_name_on_github() {
                 "a".repeat(40),
                 &[(name.as_str(), "application/json")],
                 hex_package(),
-                tar_gz(&[("index.html", b"sealed docs")]),
+                Some(tar_gz(&[("index.html", b"sealed docs")])),
             );
             let directory = temp.path().join(format!("{index}-{position}"));
             if Candidate::seal(&directory, input).is_ok() {
@@ -308,6 +308,31 @@ fn every_asset_name_that_a_candidate_seals_keeps_its_name_on_github() {
         }
     }
     assert!(sealed > 0, "no name sealed at all");
+}
+
+/// Docs that the registry holds for a Candidate without docs contradict the Candidate, so the release stops in a conflict before any effect.
+#[tokio::test]
+async fn docs_for_a_candidate_without_docs_stop_the_release_in_a_conflict() {
+    let registry = FakeRegistry::start().await;
+    let github = FakeGitHub::start().await;
+    let fixture = live_fixture_without_docs(&registry.base_url());
+    registry.hold(
+        fixture.package.clone(),
+        b"another publisher's docs".to_vec(),
+    );
+
+    let error = live_runner(&fixture, &registry, &github)
+        .run(&fixture.candidate, &approved(&fixture.manifest))
+        .await
+        .unwrap_err();
+    assert_eq!(error.state(), ReleaseState::Conflict);
+    assert_eq!(
+        error.failure_class(),
+        release_glz::failure::FailureClass::ImmutableStateConflict
+    );
+    assert_eq!(github.mutation_count(), 0);
+    assert_eq!(registry.state().package_posts, 0);
+    assert_eq!(registry.state().docs_posts, 0);
 }
 
 /// Two drafts with the tag leave the run unable to tell which one the Candidate owns, so it stops before any effect.
@@ -482,6 +507,16 @@ fn live_fixture(registry_base: &str) -> LiveFixture {
 
 /// A Candidate whose `sbom` hook produced one public asset for each name and media type in `assets`.
 fn live_fixture_with(registry_base: &str, assets: &[(&str, &str)]) -> LiveFixture {
+    sealed_fixture(registry_base, assets, true)
+}
+
+/// A Candidate without docs and without GitHub Release assets.
+fn live_fixture_without_docs(registry_base: &str) -> LiveFixture {
+    sealed_fixture(registry_base, &[], false)
+}
+
+/// A Candidate with the `sbom` assets in `assets`, which seals docs when `with_docs` holds.
+fn sealed_fixture(registry_base: &str, assets: &[(&str, &str)], with_docs: bool) -> LiveFixture {
     let temp = tempfile::tempdir().unwrap();
     let repository = temp.path().join("repo");
     std::fs::create_dir_all(repository.join("src")).unwrap();
@@ -518,7 +553,7 @@ fn live_fixture_with(registry_base: &str, assets: &[(&str, &str)]) -> LiveFixtur
             source_sha,
             assets,
             package.clone(),
-            docs.clone(),
+            with_docs.then(|| docs.clone()),
         ),
     )
     .unwrap();
@@ -547,7 +582,7 @@ fn candidate_input(
     source_sha: String,
     assets: &[(&str, &str)],
     package: Vec<u8>,
-    docs: Vec<u8>,
+    docs: Option<Vec<u8>>,
 ) -> CandidateInput {
     CandidateInput {
         package: "widget".into(),
@@ -574,13 +609,14 @@ fn candidate_input(
         release_notes: "Sealed release notes.".into(),
         approval: release_glz::config::ApprovalConfig::default(),
         outputs: OutputConfig {
+            docs: docs.is_some(),
             sbom: false,
             provenance: false,
             allow_private_evidence_upload: true,
             ..OutputConfig::default()
         },
         package_tarball: package,
-        docs_tarball: Some(docs),
+        docs_tarball: docs,
         package_interface: br#"{"modules":{}}"#.to_vec(),
         verify_hook_definitions: vec![],
         sidecar_hook_definitions: vec![HookConfig {
@@ -812,6 +848,13 @@ impl FakeRegistry {
 
     fn state(&self) -> RegistryState {
         self.state.lock().unwrap().clone()
+    }
+
+    /// Hold a published `package` with `docs`, as another publisher could have left them.
+    fn hold(&self, package: Vec<u8>, docs: Vec<u8>) {
+        let mut state = self.state.lock().unwrap();
+        state.package = Some(package);
+        state.docs = Some(docs);
     }
 
     fn stop(self) {

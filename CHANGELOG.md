@@ -112,6 +112,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A release of a Candidate without docs stops in a conflict when the registry already holds docs for its version.
+  The live observation used to skip docs for such a Candidate, so it published the tag and the GitHub Release over a world that contradicted the Candidate.
 - Once a run knows the release started, every failure it reports is `partially_released` and exits with code 7.
   Before, a failed observation after a published package reported `blocked` with code 5, and a run that didn't converge reported `blocked` with code 1.
   A required notification whose observation failed after finalization reported `blocked` with code 6.

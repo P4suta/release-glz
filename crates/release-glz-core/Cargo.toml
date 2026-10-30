@@ -54,6 +54,8 @@ negative-control-reshape = []
 negative-control-forget-success = []
 # Reporting the state of the newest plan even below what the run already published.
 negative-control-unfloored = []
+# Lowering released to partially released once the run started.
+negative-control-lower-released = []
 # Accepting uppercase hexadecimal digits in a digest or an object id.
 negative-control-hex-case = []
 # Accepting a digest or an object id when any one byte is a digit.
