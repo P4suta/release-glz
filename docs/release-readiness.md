@@ -22,6 +22,7 @@ Do not create a GitHub Release, move a tag, or publish any package while an item
   The distribution workflow deliberately rejects a tag commit whose parent diff contains any other file.
   Because the binary no longer embeds its Action commit, this checksum-only commit cannot change the compiled program.
   The tag run must nevertheless reproduce all six prepared archive checksums byte-for-byte.
+  `scripts/package-unix.js` and `scripts/package-windows.js` write archives whose bytes depend only on the binary inside, so a checksum that differs in the tag run points at the build itself.
 
 ## 2. Review and tag
 
