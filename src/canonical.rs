@@ -1,10 +1,6 @@
 //! Canonical JSON bytes, and the digests taken over them.
 //!
-//! Every digest in the public contract is produced here rather than from
-//! serde's default output, so two runs on different platforms and two
-//! independent implementations agree byte for byte.
-
-use std::cmp::Ordering;
+//! Every digest in the public contract is produced here rather than from serde's default output, so two runs on different platforms and two independent implementations agree byte for byte.
 
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
@@ -24,8 +20,7 @@ pub fn canonical_json_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>> {
 
 /// Hash the canonical JSON bytes of a value with SHA-256.
 ///
-/// The lowercase hexadecimal result is what the public contract calls an
-/// intent or candidate digest.
+/// The lowercase hexadecimal result is what the public contract calls an intent or candidate digest.
 pub fn canonical_sha256<T: Serialize>(value: &T) -> Result<String> {
     Ok(crate::hex::lower(&Sha256::digest(canonical_json_bytes(
         value,
@@ -61,7 +56,7 @@ fn write_value(value: &Value, output: &mut Vec<u8>) -> Result<()> {
         }
         Value::Object(values) => {
             let mut entries: Vec<_> = values.iter().collect();
-            entries.sort_by(|(left, _), (right, _)| utf16_cmp(left, right));
+            entries.sort_by(|(left, _), (right, _)| release_glz_core::utf16_cmp(left, right));
             output.push(b'{');
             for (index, (key, value)) in entries.into_iter().enumerate() {
                 if index != 0 {
@@ -75,10 +70,6 @@ fn write_value(value: &Value, output: &mut Vec<u8>) -> Result<()> {
         }
     }
     Ok(())
-}
-
-fn utf16_cmp(left: &str, right: &str) -> Ordering {
-    left.encode_utf16().cmp(right.encode_utf16())
 }
 
 fn ecmascript_number(value: f64) -> Result<String> {

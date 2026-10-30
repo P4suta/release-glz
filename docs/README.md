@@ -237,6 +237,8 @@ For a private dependency, replace/vendor it, use a public dependency source, or 
 release-glz does not implement a private dependency resolver.
 For hooks, each entry contains an ID, an argv array, timeout, required flag, and an allowlist of environment names; shell command strings are not accepted.
 The registry publication credential, GitHub/OIDC authorization tokens, and GitHub environment/output control files are never forwardable to hooks, even when named in that allowlist.
+That keeps them out of a hook's own environment, but a notification hook runs as the runner's user in the publishing job, so it can still read them from the processes that started it.
+Configure only hooks that you trust as much as the release workflow.
 Notification hooks use a separate least-privilege service credential.
 
 Legacy flat configuration remains readable during v1.x but cannot produce a Candidate.

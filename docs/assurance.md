@@ -194,6 +194,32 @@ The commit proofs cover three symbolic ASCII bytes around each marker and unknow
 - Test: `tests/v1_candidate.rs::candidate_verification_rejects_every_manifest_identity_and_digest_tamper`
 - Test: `tests/registry_contract.rs::organization_registry_uses_repos_prefix_and_publishes_exact_bytes`
 
+### Two different file sets or notifications never feed SHA-256 the same bytes
+
+The files digest and the notification key frame their inputs injectively, so only a SHA-256 collision could give two of them one digest, and collision resistance is an assumption.
+Kani proves the framing of one file and of one notification for parts of a few bytes, and Lean proves both framings for every length.
+
+- Kani: `framing::proofs::the_files_framing_is_injective`
+- Kani: `framing::proofs::the_notification_framing_is_injective`
+- Lean: `ReleaseGlz.Framing.fromBe8_be8`
+- Lean: `ReleaseGlz.Framing.the_files_framing_is_injective`
+- Lean: `ReleaseGlz.Framing.the_notification_framing_is_injective`
+- Lean: `ReleaseGlz.Refinement.files_framing_refines_rust`
+- Lean: `ReleaseGlz.Refinement.notification_framing_refines_rust`
+- Test: `tests/github_release_contract.rs::different_file_sets_never_share_a_files_digest`
+- Test: `tests/github_release_contract.rs::the_files_digest_format_is_pinned`
+- Test: `tests/v1_reconciler.rs::notification_key_is_a_domain_separated_binding_of_candidate_and_hook`
+
+### Canonical JSON sorts member names by their 16-bit code units
+
+The order equals the order of UTF-16 code units and is a strict total order, so a digest over canonical JSON doesn't depend on insertion order.
+Kani proves it for names of at most one character, and longer names compare by the first character in which they differ.
+
+- Kani: `key_order::proofs::member_names_sort_by_utf16_code_units`
+- Kani: `key_order::proofs::member_names_have_a_strict_total_order`
+- Test: `tests/v1_canonical.rs::canonical_json_follows_utf16_property_order`
+- Test: `tests/v1_canonical.rs::canonical_digest_is_independent_of_object_insertion_order`
+
 ### Unpacking an archive writes only portable relative paths
 
 - Fuzz: `archive`
@@ -209,6 +235,26 @@ The commit proofs cover three symbolic ASCII bytes around each marker and unknow
 - Fuzz: `pr_marker`
 - Fuzz: `prerelease`
 - Test: `tests/fuzz_corpus.rs::every_fuzz_target_runs_shared_invariants_that_this_suite_replays`
+
+### Redaction removes every byte that a secret covers, and nothing else
+
+Redaction covers a byte exactly when an occurrence of a non-empty secret spans it, replaces each maximal covered run once, and never splits a UTF-8 character.
+Kani proves it for texts of at most three bytes with two secrets of at most two bytes, and Lean proves the coverage and the runs for every length.
+
+- Kani: `redaction::proofs::each_step_reaches_exactly_the_occurrences_that_start_there`
+- Kani: `redaction::proofs::redaction_covers_exactly_the_bytes_of_secret_occurrences`
+- Kani: `redaction::proofs::redaction_replaces_each_maximal_covered_run_once`
+- Kani: `redaction::proofs::redaction_never_splits_a_character`
+- Lean: `ReleaseGlz.Redaction.reach_decides_coverage`
+- Lean: `ReleaseGlz.Redaction.coverage_is_the_definition`
+- Lean: `ReleaseGlz.Redaction.segments_cover_every_byte_once`
+- Lean: `ReleaseGlz.Redaction.segments_are_nonempty`
+- Lean: `ReleaseGlz.Redaction.neighboring_segments_differ`
+- Lean: `ReleaseGlz.Refinement.redaction_refines_rust`
+- Test: `src/secrets.rs::every_short_text_loses_exactly_the_characters_its_secrets_cover`
+- Test: `src/secrets.rs::secrets_that_overlap_in_the_text_become_one_redaction`
+- Test: `src/secrets.rs::redaction_keeps_multibyte_characters_whole`
+- Test: `tests/standard_secret_redaction.rs::every_standard_credential_in_the_environment_is_redacted`
 
 ### No job that compiles dependencies holds a write token
 
