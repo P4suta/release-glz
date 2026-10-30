@@ -8,7 +8,7 @@ use std::path::Path;
 
 use crate::container::Failure;
 use crate::inventory::HARNESSES;
-use crate::lean::{MODEL_THEOREMS, REFINEMENT_THEOREMS};
+use crate::lean::{MODELS, REFINEMENT_THEOREMS};
 
 /// The map, relative to the repository.
 const MAP: &str = "docs/assurance.md";
@@ -176,8 +176,9 @@ fn verify(
         .iter()
         .map(|harness| harness.name.to_owned())
         .collect::<BTreeSet<_>>();
-    let lean = MODEL_THEOREMS
+    let lean = MODELS
         .iter()
+        .flat_map(|(_, theorems)| theorems.iter())
         .chain(REFINEMENT_THEOREMS.iter())
         .map(|theorem| (*theorem).to_owned())
         .collect::<BTreeSet<_>>();

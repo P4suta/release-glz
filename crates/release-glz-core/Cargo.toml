@@ -94,6 +94,22 @@ negative-control-version-zero = []
 negative-control-breaking-footer = []
 # Matching commit types in lowercase only.
 negative-control-commit-type-case = []
+# Leaving the last byte of each secret occurrence unredacted.
+negative-control-redaction-partial = []
+# Redacting the byte after each secret occurrence too.
+negative-control-redaction-overreach = []
+# Ending a redacted segment after one byte, so one covered run becomes several.
+negative-control-redaction-split = []
+# Redacting only the first byte of each secret occurrence, which can end inside a character.
+negative-control-redaction-midchar = []
+# Framing each file without the lengths of its path and contents.
+negative-control-unframed-files = []
+# Framing a notification without the byte that ends its Candidate digest.
+negative-control-unframed-notification = []
+# Sorting member names by UTF-8 bytes instead of UTF-16 code units.
+negative-control-utf8-key-order = []
+# Comparing member names by their first UTF-16 code unit only.
+negative-control-first-unit-key-order = []
 
 [dependencies]
 serde = { version = "1.0.228", default-features = false, features = [

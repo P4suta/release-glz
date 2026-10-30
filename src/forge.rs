@@ -49,8 +49,6 @@ const MAX_GITHUB_JSON_BYTES: usize = 4 * 1024 * 1024;
 const MAX_GITHUB_ERROR_BYTES: usize = 64 * 1024;
 const GITHUB_GET_ATTEMPTS: usize = 3;
 const OPEN_PULL_REQUEST_PAGE_SIZE: usize = 100;
-/// The tag that starts every files digest, so no other SHA-256 input that release-glz hashes can match one.
-const FILES_DIGEST_DOMAIN: &[u8] = b"release-glz release-pr-files\0";
 
 /// Files a generated commit changes at most, which bounds the blobs that recognizing one reads.
 const MAX_GENERATED_FILES: usize = 2;
@@ -189,7 +187,9 @@ pub struct PullRequest {
     pub base: Option<PullBase>,
 }
 
-/// A managed Release PR that merged, whose head GitHub verified as the commit that release-glz generated.
+/// A managed Release PR that merged, whose head has the shape of the commit that release-glz generates.
+///
+/// Anyone who can push to the repository can make a commit of that shape, so the review of the merge and the Environment approval stay the controls.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MergedReleasePr {
     /// Page for humans.
@@ -227,7 +227,7 @@ pub struct DefaultBranch {
     pub repository_id: String,
 }
 
-/// A server-verified commit that this tool created on top of one parent.
+/// A server-verified commit on top of one parent with the shape of the commit that this tool generates.
 struct GeneratedCommit {
     digest: String,
     parent: String,
@@ -1117,7 +1117,8 @@ impl GitHubClient {
 
     /// The managed Release PR for `version` whose merge produced `sha`, and the intent its marker recorded.
     ///
-    /// The pull request counts only when it came from this repository and its head is the server-verified commit that release-glz generated.
+    /// The pull request counts only when it came from this repository and its head has the shape of the commit that release-glz generates.
+    /// A writer could push such a commit too, which the review of the merge has to catch.
     /// The marker's intent digest is reported rather than compared, so the caller decides what the merge approved.
     pub async fn merged_release_pr(
         &self,
@@ -1448,6 +1449,40 @@ impl GitHubClient {
         Ok(uploaded)
     }
 
+    /// Delete the asset `name` that a failed upload left unfinished on the draft `release`, which the caller has just read.
+    ///
+    /// GitHub keeps the name of such an asset, so no upload can take the name until this call removes the asset.
+    /// The call refuses an asset that GitHub reports as uploaded and every asset of a published Release.
+    pub async fn delete_unfinished_release_asset(
+        &self,
+        release: &GitHubRelease,
+        name: &str,
+    ) -> Result<()> {
+        self.require_token()?;
+        if !release.draft {
+            bail!(
+                "GitHub Release asset `{name}` belongs to a published Release, which stays as it is"
+            );
+        }
+        let mut found = release.assets.iter().filter(|asset| asset.name == name);
+        let asset = match (found.next(), found.next()) {
+            (Some(asset), None) => asset,
+            (Some(_), Some(_)) => bail!("GitHub Release contains duplicate asset `{name}`"),
+            (None, _) => bail!("GitHub Release has no asset `{name}` to delete"),
+        };
+        if asset.state == "uploaded" {
+            bail!(
+                "GitHub Release asset `{name}` is uploaded, and a release never deletes an uploaded asset"
+            );
+        }
+        if asset.id == 0 {
+            bail!("GitHub Release asset `{name}` has no id");
+        }
+        let url = self.url(&format!("releases/assets/{}", asset.id));
+        checked(self.request(Method::DELETE, &url).send().await?, &url).await?;
+        Ok(())
+    }
+
     async fn create_ref(&self, branch: &str, sha: &str) -> Result<()> {
         self.post_empty(
             "git/refs",
@@ -1591,7 +1626,7 @@ impl GitHubClient {
         response.data.context("GitHub GraphQL response had no data")
     }
 
-    /// The files digest of a commit that release-glz created, or `None` for any other commit.
+    /// The files digest of a commit with the shape that release-glz generates, or `None` for any other commit.
     async fn generated_commit_digest(&self, sha: &str) -> Result<Option<String>> {
         Ok(self
             .generated_commit(sha)
@@ -1599,8 +1634,9 @@ impl GitHubClient {
             .map(|commit| commit.digest))
     }
 
-    /// The digest and parent of a commit that release-glz created, or `None` for any other commit.
+    /// The digest and parent of a commit with the shape that release-glz generates, or `None` for any other commit.
     ///
+    /// The check can't tell who made the commit, since anyone who can push can make one of this shape.
     /// A generated commit is server-verified and has exactly one parent, since a merge commit could bring in other work.
     /// It only adds or modifies files, and the files digest of their contents equals the digest its message records, so an amended commit that keeps the message doesn't count.
     /// A failure to read a file is an error rather than `None`, because `None` leads a caller to close the Release PR.
@@ -1924,12 +1960,9 @@ fn commit_change(commit: &Commit) -> ChangeEntry {
 /// A domain tag starts the input, and a length precedes every path and every content, so two different file sets never hash the same bytes.
 pub fn files_digest(files: &BTreeMap<String, Vec<u8>>) -> String {
     let mut digest = Sha256::new();
-    digest.update(FILES_DIGEST_DOMAIN);
+    digest.update(release_glz_core::FILES_DOMAIN);
     for (path, contents) in files {
-        for part in [path.as_bytes(), contents.as_slice()] {
-            digest.update((part.len() as u64).to_be_bytes());
-            digest.update(part);
-        }
+        release_glz_core::frame_file(path.as_bytes(), contents, |part| digest.update(part));
     }
     crate::hex::lower(&digest.finalize())
 }

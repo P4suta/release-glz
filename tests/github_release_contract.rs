@@ -3,8 +3,8 @@ use std::sync::{Arc, Mutex};
 
 use base64::Engine as _;
 use release_glz::forge::{
-    CandidateRun, DefaultBranch, GitHubClient, GitHubRelease, GitHubRepository, IntentBinding,
-    MAX_ATTRIBUTED_COMMITS, files_digest,
+    CandidateRun, DefaultBranch, GitHubClient, GitHubRelease, GitHubReleaseAsset, GitHubRepository,
+    IntentBinding, MAX_ATTRIBUTED_COMMITS, files_digest,
 };
 use release_glz::git::Commit;
 use release_glz::model::{ApiDiff, Baseline, BaselineSource, Bump, ReleasePlan, ReleaseState};
@@ -2544,6 +2544,107 @@ async fn release_asset_response_must_match_every_uploaded_byte_identity() {
         );
     }
     assert_eq!(server.requests().len(), 5);
+}
+
+/// A delete reaches GitHub only for an unfinished asset of a draft, by that asset's id, and GitHub's empty 204 answer counts as success.
+#[tokio::test]
+async fn only_an_unfinished_asset_of_a_draft_is_deleted() {
+    let asset = |id: u64, name: &str, state: &str| GitHubReleaseAsset {
+        id,
+        name: name.into(),
+        state: state.into(),
+        media_type: "application/json".into(),
+        size: 2,
+        sha256: None,
+    };
+    let release = |draft: bool, assets: Vec<GitHubReleaseAsset>| GitHubRelease {
+        assets,
+        ..upload_release(
+            "https://api.github.com/repos/o/r/releases/42/assets{?name,label}",
+            draft,
+        )
+    };
+    let unfinished = release(true, vec![asset(77, "evidence.json", "starter")]);
+
+    let server = FakeServer::start(vec![
+        response(204, ""),
+        response(404, r#"{"message":"Not Found"}"#),
+    ])
+    .await;
+    let client = test_client(&server, Some("token"));
+    client
+        .delete_unfinished_release_asset(&unfinished, "evidence.json")
+        .await
+        .unwrap();
+    let error = client
+        .delete_unfinished_release_asset(&unfinished, "evidence.json")
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("404"), "{error}");
+    let requests = server.requests();
+    assert_eq!(requests.len(), 2);
+    assert!(
+        requests
+            .iter()
+            .all(|request| request.starts_with("DELETE /repos/o/r/releases/assets/77 ")),
+        "{requests:?}"
+    );
+
+    let untouched = FakeServer::start(vec![response(204, "")]).await;
+    let client = test_client(&untouched, Some("token"));
+    for (case, refused, name, expected) in [
+        (
+            "published",
+            release(false, vec![asset(77, "evidence.json", "starter")]),
+            "evidence.json",
+            "published",
+        ),
+        (
+            "uploaded",
+            release(true, vec![asset(77, "evidence.json", "uploaded")]),
+            "evidence.json",
+            "never deletes an uploaded asset",
+        ),
+        (
+            "missing",
+            release(true, vec![asset(77, "evidence.json", "starter")]),
+            "other.json",
+            "has no asset `other.json`",
+        ),
+        (
+            "duplicate",
+            release(
+                true,
+                vec![
+                    asset(77, "evidence.json", "starter"),
+                    asset(78, "evidence.json", "starter"),
+                ],
+            ),
+            "evidence.json",
+            "duplicate asset",
+        ),
+        (
+            "anonymous",
+            release(true, vec![asset(0, "evidence.json", "starter")]),
+            "evidence.json",
+            "no id",
+        ),
+    ] {
+        let error = client
+            .delete_unfinished_release_asset(&refused, name)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(expected), "{case}: {error}");
+    }
+    let error = test_client(&untouched, None)
+        .delete_unfinished_release_asset(&unfinished, "evidence.json")
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("GITHUB_TOKEN"), "{error}");
+    assert!(untouched.requests().is_empty());
 }
 
 #[tokio::test]
