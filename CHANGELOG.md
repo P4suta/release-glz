@@ -112,6 +112,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A release completes a GitHub Release asset that a broken upload left unfinished, and it refuses an asset name that GitHub would rename before anything publishes.
+  Both used to stop every later run after Hex already held the package.
+  An upload that failed with a 502 could leave the asset in GitHub's `starter` state, and every run then failed as temporary until someone deleted it by hand.
+  The next run now deletes such an asset on the Candidate's own draft and uploads the sealed bytes again.
+  It never deletes an uploaded asset or changes a published Release.
+  An unfinished asset outside the Candidate, or on its published Release, stops the release with code 4 and the steps for a person.
+  GitHub renamed a name with a space, a `+`, or a leading or trailing `.`, and every later run stopped in a conflict.
+  `rehearse` and `verify` now admit only ASCII letters, digits, `.`, `-`, and `_` in an asset name, without a `.` at either end.
+  A version with build metadata can no longer carry the built-in SBOM and provenance, because their names hold its `+`.
 - A release finds its draft GitHub Release in the repository's release list, because GitHub's tag endpoint answers only with a published Release.
   Before, every run created another draft, ran out of attempts, and never published the package once GitHub Releases were on, which is the default.
   Two Releases with the tag now stop the release as a conflict, and the distribution workflow finds its draft by identifier.

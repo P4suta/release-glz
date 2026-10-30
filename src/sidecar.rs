@@ -1,5 +1,3 @@
-use std::path::Path;
-
 use anyhow::{Result, bail};
 
 use crate::units::MIB;
@@ -32,16 +30,22 @@ pub(crate) fn validate_hook_id(hook_id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Refuse a name that GitHub would change when it receives the asset.
+///
+/// GitHub renames an asset whose name has special characters or a leading or trailing `.`, and the upload then fails after the package is public.
+/// The rule also keeps the name a single filename in the Candidate directory.
 pub(crate) fn validate_name(name: &str) -> Result<()> {
-    if name.is_empty()
-        || name.len() > MAX_NAME_LEN
-        || name.contains(['/', '\\', '\n', '\r', '\0'])
-        || Path::new(name).is_absolute()
-        || Path::new(name)
-            .components()
-            .any(|component| !matches!(component, std::path::Component::Normal(_)))
-    {
-        bail!("sidecar artifact name `{name}` is not a safe asset name");
+    let kept = !name.is_empty()
+        && name.len() <= MAX_NAME_LEN
+        && !name.starts_with('.')
+        && !name.ends_with('.')
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'));
+    if !kept {
+        bail!(
+            "sidecar artifact name {name:?} is not a safe asset name, which GitHub keeps as it is: use 1 to {MAX_NAME_LEN} ASCII letters, digits, `.`, `-`, and `_`, with no `.` at either end"
+        );
     }
     Ok(())
 }
@@ -74,5 +78,84 @@ mod tests {
 
         assert!(validate_media_type(&format!("application/{}", "x".repeat(128))).is_err());
         assert!(validate_media_type("application/\u{7f}json").is_err());
+    }
+
+    /// GitHub keeps these names, so an upload comes back under the name the Candidate seals.
+    #[test]
+    fn an_asset_name_github_keeps_is_admitted() {
+        let longest = "x".repeat(MAX_NAME_LEN);
+        for name in [
+            "sbom.cdx.json",
+            "release-glz.intoto.jsonl",
+            "widget-1.2.3-rc.1.cdx.json",
+            "Widget_1.2.3.tar.gz",
+            "SHA256SUMS",
+            "a",
+            "a..b",
+            longest.as_str(),
+        ] {
+            assert!(validate_name(name).is_ok(), "refused {name:?}");
+        }
+    }
+
+    /// Each class of name that GitHub would rename, or that names no single file, fails with the rule it breaks.
+    #[test]
+    fn an_asset_name_github_would_rename_is_refused() {
+        let too_long = "x".repeat(MAX_NAME_LEN + 1);
+        for name in [
+            "",
+            too_long.as_str(),
+            ".",
+            "..",
+            ".sbom.json",
+            "sbom.json.",
+            "my sbom.json",
+            "widget-1.0.0+build.1.cdx.json",
+            "widget~1.json",
+            "widget(1).json",
+            "widget:1.json",
+            "widget@1.json",
+            "nested/evidence.json",
+            "nested\\evidence.json",
+            "/absolute",
+            "bad\nname",
+            "bad\0name",
+            "sböm.json",
+        ] {
+            let error = validate_name(name).unwrap_err().to_string();
+            assert!(error.contains("safe asset name"), "{name:?}: {error}");
+            assert!(
+                error.contains("ASCII letters, digits, `.`, `-`, and `_`"),
+                "{name:?}: {error}"
+            );
+        }
+    }
+
+    /// The rule refuses every character outside ASCII letters, digits, `.`, `-`, and `_` in every position, and `.` at either end.
+    #[test]
+    fn every_character_github_renames_is_refused_in_every_position() {
+        let samples =
+            (0..=0x2ff_u32)
+                .filter_map(char::from_u32)
+                .chain(['€', '日', '\u{feff}', '\u{10ffff}']);
+        for character in samples {
+            let kept = character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_');
+            let kept_at_an_end = kept && character != '.';
+            assert_eq!(
+                validate_name(&format!("a{character}b")).is_ok(),
+                kept,
+                "{character:?} inside a name"
+            );
+            assert_eq!(
+                validate_name(&format!("{character}b")).is_ok(),
+                kept_at_an_end,
+                "{character:?} at the start of a name"
+            );
+            assert_eq!(
+                validate_name(&format!("a{character}")).is_ok(),
+                kept_at_an_end,
+                "{character:?} at the end of a name"
+            );
+        }
     }
 }
