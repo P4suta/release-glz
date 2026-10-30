@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use release_glz::authorization::{
     GithubOidcClaims, JwkSet, OidcAudience, OidcExpectation, RsaJwk, VerifiedGithubOidc,
@@ -101,6 +101,104 @@ fn release_assets_upload_to_the_draft_once_and_conflict_instead_of_replacing() {
             .state(),
         ReleaseState::Conflict
     );
+}
+
+/// The released world of `target` except its assets, with the GitHub Release still a draft when `draft` holds.
+fn released_but_assets(target: &ReleaseIntent, draft: bool) -> ExternalReleaseState {
+    ExternalReleaseState {
+        package: Some(ObservedArtifact {
+            sha256: target.package_sha256.clone(),
+        }),
+        docs: Some(ObservedArtifact {
+            sha256: target.docs_sha256.clone().unwrap(),
+        }),
+        tag: Some(ObservedTag {
+            target_sha: target.source_sha.clone(),
+            annotated: true,
+        }),
+        github_release: Some(ObservedGithubRelease {
+            target_sha: target.source_sha.clone(),
+            candidate_digest: target.candidate_digest.clone(),
+            draft,
+        }),
+        ..ExternalReleaseState::default()
+    }
+}
+
+/// An asset that a failed upload left unfinished on the Candidate's draft is pending, so the plan uploads it again before it finalizes the Release.
+#[test]
+fn an_unfinished_sealed_asset_on_the_draft_is_uploaded_again_before_finalizing() {
+    let mut target = intent();
+    target.notify_hooks.clear();
+    target.release_assets = vec![ReleaseAsset {
+        hook_id: "sbom".into(),
+        name: "sbom.cdx.json".into(),
+        media_type: "application/vnd.cyclonedx+json".into(),
+        sha256: "5".repeat(64),
+        size: 12,
+    }];
+    let observed = ExternalReleaseState {
+        unfinished_release_assets: BTreeSet::from(["sbom.cdx.json".to_owned()]),
+        ..released_but_assets(&target, true)
+    };
+    let plan = reconcile(&target, &observed, &approved()).unwrap();
+    assert_eq!(plan.state, ReleaseState::PartiallyReleased);
+    assert_eq!(
+        plan.effects,
+        vec![
+            ReconcileEffect::UploadGithubAsset {
+                hook_id: "sbom".into(),
+                name: "sbom.cdx.json".into(),
+                sha256: "5".repeat(64),
+            },
+            ReconcileEffect::FinalizeGithubRelease,
+        ]
+    );
+    assert_eq!(preview(&target, &observed).unwrap(), plan);
+}
+
+/// An unfinished asset that the release can't complete stops it, as an uploaded asset outside the Candidate does.
+#[test]
+fn an_unfinished_asset_the_release_cant_complete_is_a_conflict() {
+    let mut target = intent();
+    target.release_assets = vec![ReleaseAsset {
+        hook_id: "sbom".into(),
+        name: "sbom.cdx.json".into(),
+        media_type: "application/vnd.cyclonedx+json".into(),
+        sha256: "5".repeat(64),
+        size: 12,
+    }];
+    let unfinished = |draft: bool, name: &str| ExternalReleaseState {
+        unfinished_release_assets: BTreeSet::from([name.to_owned()]),
+        ..released_but_assets(&target, draft)
+    };
+    let both = ExternalReleaseState {
+        release_assets: BTreeMap::from([(
+            "sbom.cdx.json".into(),
+            ObservedArtifact {
+                sha256: "5".repeat(64),
+            },
+        )]),
+        ..unfinished(true, "sbom.cdx.json")
+    };
+    for (observed, message) in [
+        (
+            unfinished(true, "stray.json"),
+            "GitHub Release contains unsealed asset `stray.json`",
+        ),
+        (
+            unfinished(false, "sbom.cdx.json"),
+            "GitHub Release asset `sbom.cdx.json` differs from the Candidate",
+        ),
+        (
+            both,
+            "GitHub Release reports asset `sbom.cdx.json` both as uploaded and as unfinished",
+        ),
+    ] {
+        let error = reconcile(&target, &observed, &approved()).unwrap_err();
+        assert_eq!(error.state(), ReleaseState::Conflict, "{message}");
+        assert_eq!(error.to_string(), message);
+    }
 }
 
 fn approved() -> ApprovalEvidence {
@@ -262,6 +360,7 @@ fn matching_partial_state_resumes_and_never_repeats_completed_effects() {
             draft: true,
         }),
         release_assets: BTreeMap::new(),
+        unfinished_release_assets: BTreeSet::new(),
         notifications: BTreeMap::new(),
     };
     let plan = reconcile(&target, &observed, &approved()).unwrap();
@@ -429,6 +528,7 @@ fn completed_notifications_are_keyed_by_candidate_and_hook() {
             draft: false,
         }),
         release_assets: BTreeMap::new(),
+        unfinished_release_assets: BTreeSet::new(),
         notifications: BTreeMap::from([(
             "announce".into(),
             NotifyObservation {
@@ -477,6 +577,11 @@ fn notification_key_is_a_domain_separated_binding_of_candidate_and_hook() {
     );
     assert_ne!(key, notification_key(&"3".repeat(64), "announce"));
     assert_ne!(key, notification_key(&candidate, "audit"));
+    // `printf 'release-glz-notify-v1\0%s\0announce' "$candidate" | shasum -a 256` gives the same value, which changes only when the framing does.
+    assert_eq!(
+        key,
+        "474fda2d6d36b965fe2ef090d334f7e5cf7423feff59281dbb846c0da11ba4df"
+    );
 }
 
 #[test]

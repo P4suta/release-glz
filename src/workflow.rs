@@ -13,7 +13,6 @@ use sha2::{Digest, Sha256};
 
 use crate::config::{validate_git_ref, validate_relative_path, validate_release_branch_prefix};
 use crate::diff::unified_diff;
-use crate::git::OBJECT_HEX_LEN;
 
 /// Repository-relative path of the managed release workflow.
 pub const WORKFLOW_PATH: &str = ".github/workflows/release-glz.yml";
@@ -491,11 +490,7 @@ jobs:
 
 /// Reject a release-glz pin that is not a full lowercase commit SHA.
 pub fn validate_action_sha(action_sha: &str) -> Result<()> {
-    if action_sha.len() != OBJECT_HEX_LEN
-        || !action_sha
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
-    {
+    if !release_glz_core::is_object_id(action_sha.as_bytes()) {
         bail!("release-glz Action must be pinned to a full lowercase commit SHA");
     }
     Ok(())

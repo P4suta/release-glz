@@ -386,7 +386,7 @@ fn required_part<'a>(parts: &mut impl Iterator<Item = &'a str>, name: &str) -> R
 /// A `!` marker or a `BREAKING CHANGE:` trailer is major; `feat` is minor; `fix` and `perf` are patch; anything else requires nothing.
 /// The type matches in any letter case, and the trailer only in uppercase, as Conventional Commits 1.0.0 requires.
 pub fn conventional_bump(subject: &str, body: &str) -> Bump {
-    release_glz_core::conventional_bump(subject, body)
+    release_glz_core::conventional_bump(subject.as_bytes(), body.as_bytes())
 }
 
 #[cfg(test)]

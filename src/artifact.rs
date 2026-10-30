@@ -9,6 +9,8 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 use flate2::{Compression, GzBuilder, read::GzDecoder};
+use icu_normalizer::DecomposingNormalizerBorrowed;
+use release_glz_core::{FoldedPaths, PathRefusal, archive_path};
 use sha2::{Digest, Sha256};
 use tar::Archive;
 use toml_edit::{DocumentMut, value};
@@ -478,7 +480,7 @@ fn read_tar_files<R: Read>(
         if output.contains_key(&path) {
             bail!("archive contains duplicate entry `{path}`");
         }
-        folded.claim(&path)?;
+        claim_folded(&mut folded, &path)?;
         let contents = read_entry_contents(&mut entry, size, &format!("archive entry `{path}`"))?;
         output.insert(path, contents);
     }
@@ -494,88 +496,36 @@ fn safe_archive_path<R: Read>(entry: &tar::Entry<'_, R>) -> Result<String> {
 }
 
 fn safe_archive_path_value(raw: &[u8]) -> Result<String> {
-    let value = std::str::from_utf8(raw)
-        .context("archive path is not UTF-8")?
-        .trim_end_matches('/');
-    if !value.split('/').all(portable_component) {
-        bail!("archive contains unsafe path `{value}`");
+    match archive_path(raw) {
+        Ok(path) => Ok(path.to_owned()),
+        Err(PathRefusal::NotUtf8(error)) => {
+            Err(anyhow::Error::new(error).context("archive path is not UTF-8"))
+        }
+        Err(PathRefusal::Unsafe) => bail!(
+            "archive contains unsafe path `{}`",
+            String::from_utf8_lossy(raw).trim_end_matches('/')
+        ),
     }
-    Ok(value.to_owned())
 }
 
-/// Whether every supported OS stores a path component under exactly this name.
-///
-/// Windows forbids some characters, reads a colon as a stream separator, drops a trailing dot or space, and reserves device names in every directory.
-/// Refusing those names on every host keeps a verdict from depending on where release-glz runs.
-fn portable_component(component: &str) -> bool {
-    !component.is_empty()
-        && !component.ends_with(['.', ' '])
-        && !component.chars().any(|character| {
-            character.is_control()
-                || matches!(character, '\\' | '<' | '>' | ':' | '"' | '|' | '?' | '*')
-        })
-        && !windows_device_name(component)
-}
-
-/// Whether a component names a Windows device, whatever its letter case and extension.
-fn windows_device_name(component: &str) -> bool {
-    let stem = component
-        .split('.')
-        .next()
-        .unwrap_or(component)
-        .trim_end_matches(' ')
-        .to_ascii_uppercase();
-    if matches!(
-        stem.as_str(),
-        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
-    ) {
-        return true;
-    }
-    ["COM", "LPT"].iter().any(|port| {
-        stem.strip_prefix(port).is_some_and(|number| {
-            let mut characters = number.chars();
-            matches!(
-                (characters.next(), characters.next()),
-                (Some('0'..='9' | '\u{b9}' | '\u{b2}' | '\u{b3}'), None)
-            )
-        })
+/// Record a file path of an archive, refusing it when it names the same file or directory as an earlier entry once letter case and Unicode normalization no longer count.
+fn claim_folded(folded: &mut FoldedPaths, path: &str) -> Result<()> {
+    folded.claim(&fold(path), path).map_err(|collision| {
+        anyhow::anyhow!(
+            "archive path `{path}` collides with `{}` once letter case and Unicode normalization no longer count",
+            collision.earlier()
+        )
     })
 }
 
-/// The paths of one archive as a file system that ignores letter case sees them, such as the default ones on macOS and Windows.
-#[derive(Default)]
-struct FoldedPaths {
-    files: BTreeMap<String, String>,
-    directories: BTreeMap<String, String>,
-}
-
-impl FoldedPaths {
-    /// Record a file path, refusing it when it names the same file or directory as an earlier entry once letter case no longer counts.
-    fn claim(&mut self, path: &str) -> Result<()> {
-        let folded = path.to_lowercase();
-        if let Some(other) = self
-            .files
-            .get(&folded)
-            .or_else(|| self.directories.get(&folded))
-        {
-            bail!(
-                "archive path `{path}` collides with `{other}` once letter case no longer counts"
-            );
-        }
-        for (end, _) in folded.match_indices('/') {
-            let directory = &folded[..end];
-            if let Some(other) = self.files.get(directory) {
-                bail!(
-                    "archive path `{path}` collides with `{other}` once letter case no longer counts"
-                );
-            }
-            self.directories
-                .entry(directory.to_owned())
-                .or_insert_with(|| path.to_owned());
-        }
-        self.files.insert(folded, path.to_owned());
-        Ok(())
-    }
+/// The form under which a file system that ignores letter case and Unicode normalization stores `path`, as the default one on macOS does.
+///
+/// Canonical decomposition comes before and after Unicode's lowercase mapping, and neither moves a `/`.
+fn fold(path: &str) -> String {
+    let decompose = DecomposingNormalizerBorrowed::new_nfd();
+    decompose
+        .normalize(&decompose.normalize(path).to_lowercase())
+        .into_owned()
 }
 
 fn read_entry_contents<R: Read>(

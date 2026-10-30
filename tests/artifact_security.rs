@@ -228,6 +228,7 @@ fn archive_paths_reject_names_that_some_supported_os_cannot_represent() {
         "star*",
         "tab\tname",
         "escape\u{1b}name",
+        "next\u{85}line",
     ] {
         let archive = tar_gz(&[(path, b"contents")]);
         let error = format!(
@@ -244,6 +245,8 @@ fn archive_paths_reject_entries_that_collide_once_letter_case_no_longer_counts()
         [("README.md", b"one".as_slice()), ("readme.md", b"two")],
         [("a", b"file"), ("A/b", b"nested")],
         [("A/b", b"nested"), ("a", b"file")],
+        [("a/b", b"file"), ("A/B/c", b"nested")],
+        [("A/B/c", b"nested"), ("a/b", b"directory")],
         [
             ("\u{c4}\u{d6}.txt", b"upper"),
             ("\u{e4}\u{f6}.txt", b"lower"),
@@ -254,8 +257,49 @@ fn archive_paths_reject_entries_that_collide_once_letter_case_no_longer_counts()
             "{:#}",
             validate_docs_tarball(&archive, ArchiveLimits::default()).unwrap_err()
         );
-        assert!(error.contains("collides"), "accepted {files:?}: {error}");
+        let [(earlier, _), (later, _)] = files;
+        assert!(
+            error.contains(&format!("`{later}` collides with `{earlier}`")),
+            "accepted {files:?} or named another entry: {error}"
+        );
     }
+}
+
+/// The default macOS file system ignores Unicode normalization when it looks up a name, so it stores such entries as one.
+#[test]
+fn archive_paths_reject_entries_that_differ_only_in_unicode_normalization() {
+    for files in [
+        [
+            ("caf\u{e9}.txt", b"composed".as_slice()),
+            ("cafe\u{301}.txt", b"decomposed"),
+        ],
+        [("cafe\u{301}/a", b"nested"), ("caf\u{e9}", b"file")],
+        [("CAF\u{c9}.txt", b"upper"), ("cafe\u{301}.txt", b"lower")],
+        [("\u{212b}.txt", b"angstrom sign"), ("\u{e5}.txt", b"ring")],
+    ] {
+        let archive = tar_gz(&files);
+        let error = format!(
+            "{:#}",
+            validate_docs_tarball(&archive, ArchiveLimits::default()).unwrap_err()
+        );
+        let [(earlier, _), (later, _)] = files;
+        assert!(
+            error.contains(&format!("`{later}` collides with `{earlier}`")),
+            "accepted {files:?} or named another entry: {error}"
+        );
+    }
+}
+
+#[test]
+fn names_that_differ_beyond_normalization_still_pass() {
+    let archive = tar_gz(&[
+        ("cafe.txt", b"plain".as_slice()),
+        ("caf\u{e9}.txt", b"acute"),
+        ("caf\u{e8}.txt", b"grave"),
+        ("e\u{301}\u{323}", b"acute then dot"),
+        ("e\u{302}", b"circumflex"),
+    ]);
+    validate_docs_tarball(&archive, ArchiveLimits::default()).unwrap();
 }
 
 #[test]
@@ -271,6 +315,11 @@ fn portable_names_that_resemble_refused_ones_still_pass() {
         ("Docs/a.html", b"eight"),
         ("docs/b.html", b"nine"),
         ("caf\u{e9}.txt", b"ten"),
+        ("doc1.html", b"eleven"),
+        ("COMA.txt", b"twelve"),
+        ("lpt\u{b4}", b"thirteen"),
+        ("conin", b"fourteen"),
+        ("conout.log", b"fifteen"),
     ]);
     validate_docs_tarball(&archive, ArchiveLimits::default()).unwrap();
 }

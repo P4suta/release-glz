@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use anyhow::{Context, Result, bail};
 use base64::Engine;
 use chrono::Utc;
+use release_glz_core::{Answer, GITHUB_READS, MARKER_PREFIX, MARKER_SUFFIX, Next, RunRefusal};
 use reqwest::{
     Method, StatusCode,
     header::{CONTENT_TYPE, RETRY_AFTER},
@@ -15,10 +16,9 @@ use semver::Version;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 
-use crate::canonical::SHA256_HEX_LEN;
 use crate::changelog::default_category;
 use crate::config::url_is_http_loopback;
-use crate::git::{Commit, OBJECT_HEX_LEN};
+use crate::git::Commit;
 use crate::model::{ChangeEntry, ReleasePlan, bump_name};
 use crate::units::GIB;
 
@@ -27,9 +27,6 @@ const GITHUB_API_VERSION: &str = "2026-03-10";
 
 /// Seconds a single GitHub request may take before it is abandoned.
 const REQUEST_TIMEOUT_SECONDS: u64 = 60;
-
-/// Seconds a `Retry-After` header may ask this client to wait.
-const MAX_RETRY_AFTER_SECONDS: u64 = 30;
 
 /// Size an Actions artifact may reach before it is refused.
 const MAX_ACTIONS_ARTIFACT_BYTES: u64 = GIB;
@@ -48,10 +45,7 @@ const HTTPS_PORT: u16 = 443;
 
 const MAX_GITHUB_JSON_BYTES: usize = 4 * 1024 * 1024;
 const MAX_GITHUB_ERROR_BYTES: usize = 64 * 1024;
-const GITHUB_GET_ATTEMPTS: usize = 3;
 const OPEN_PULL_REQUEST_PAGE_SIZE: usize = 100;
-/// The tag that starts every files digest, so no other SHA-256 input that release-glz hashes can match one.
-const FILES_DIGEST_DOMAIN: &[u8] = b"release-glz release-pr-files\0";
 
 /// Files a generated commit changes at most, which bounds the blobs that recognizing one reads.
 const MAX_GENERATED_FILES: usize = 2;
@@ -80,23 +74,11 @@ const MAX_NAME_LEN: usize = 100;
 /// Seconds a GitHub connection may take to open.
 const CONNECT_TIMEOUT_SECONDS: u64 = 10;
 
-/// Milliseconds added to the wait before each repeated GET.
-const GET_RETRY_STEP_MS: u64 = 100;
-
 /// The public GitHub REST API, when `GITHUB_API_URL` names none.
 const DEFAULT_GITHUB_API_URL: &str = "https://api.github.com";
 
 /// The public GitHub GraphQL endpoint, when `GITHUB_GRAPHQL_URL` names none.
 const DEFAULT_GITHUB_GRAPHQL_URL: &str = "https://api.github.com/graphql";
-
-/// The opening of the HTML comment that ends a managed Release PR body.
-const MARKER_PREFIX: &str = "<!-- release-glz:managed ";
-
-/// The closing of the managed marker comment.
-const MARKER_SUFFIX: &str = " -->";
-
-/// Every key of a managed marker, in the order the marker writes them.
-const MARKER_KEYS: [&str; 6] = ["package", "branch", "head", "digest", "version", "intent"];
 
 /// The `intent` of a managed marker before a Candidate binds one.
 const PENDING_INTENT: &str = "pending";
@@ -503,27 +485,45 @@ impl CandidateRun {
         current_run_id: &str,
         candidate_run_id: &str,
     ) -> Result<Self> {
-        match (event_name, current_run_id == candidate_run_id) {
-            ("push", true) => Ok(Self::Current),
-            ("push", false) => {
+        match release_glz_core::candidate_run(
+            event_name.as_bytes(),
+            current_run_id == candidate_run_id,
+        ) {
+            Ok(run) => Ok(run.into()),
+            Err(RunRefusal::PushFromAnotherRun) => {
                 bail!("a push publishes only the Candidate that its own run prepared")
             }
-            ("workflow_dispatch", false) => Ok(Self::Completed),
-            ("workflow_dispatch", true) => {
+            Err(RunRefusal::PromotionOfItsOwnRun) => {
                 bail!(
                     "manual promotion must consume a Candidate from a completed prior prepare run"
                 )
             }
-            (other, _) => {
-                bail!("only a push or a manual promotion publishes a Candidate, not `{other}`")
+            Err(RunRefusal::OtherEvent) => {
+                bail!("only a push or a manual promotion publishes a Candidate, not `{event_name}`")
             }
         }
     }
 
     fn admits(self, status: &str, conclusion: Option<&str>) -> bool {
-        match self {
-            Self::Current => status == "in_progress",
-            Self::Completed => status == "completed" && conclusion == Some("success"),
+        release_glz_core::CandidateRun::from(self)
+            .admits(status.as_bytes(), conclusion.map(str::as_bytes))
+    }
+}
+
+impl From<release_glz_core::CandidateRun> for CandidateRun {
+    fn from(run: release_glz_core::CandidateRun) -> Self {
+        match run {
+            release_glz_core::CandidateRun::Current => Self::Current,
+            release_glz_core::CandidateRun::Completed => Self::Completed,
+        }
+    }
+}
+
+impl From<CandidateRun> for release_glz_core::CandidateRun {
+    fn from(run: CandidateRun) -> Self {
+        match run {
+            CandidateRun::Current => Self::Current,
+            CandidateRun::Completed => Self::Completed,
         }
     }
 }
@@ -621,12 +621,7 @@ impl From<ReleaseAssetResponse> for GitHubReleaseAsset {
         let sha256 = value.digest.and_then(|digest| {
             digest
                 .strip_prefix("sha256:")
-                .filter(|digest| {
-                    digest.len() == SHA256_HEX_LEN
-                        && digest
-                            .bytes()
-                            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
-                })
+                .filter(|digest| valid_sha256(digest))
                 .map(str::to_owned)
         });
         Self {
@@ -1457,6 +1452,40 @@ impl GitHubClient {
         Ok(uploaded)
     }
 
+    /// Delete the asset `name` that a failed upload left unfinished on the draft `release`, which the caller has just read.
+    ///
+    /// GitHub keeps the name of such an asset, so no upload can take the name until this call removes the asset.
+    /// The call refuses an asset that GitHub reports as uploaded and every asset of a published Release.
+    pub async fn delete_unfinished_release_asset(
+        &self,
+        release: &GitHubRelease,
+        name: &str,
+    ) -> Result<()> {
+        self.require_token()?;
+        if !release.draft {
+            bail!(
+                "GitHub Release asset `{name}` belongs to a published Release, which stays as it is"
+            );
+        }
+        let mut found = release.assets.iter().filter(|asset| asset.name == name);
+        let asset = match (found.next(), found.next()) {
+            (Some(asset), None) => asset,
+            (Some(_), Some(_)) => bail!("GitHub Release contains duplicate asset `{name}`"),
+            (None, _) => bail!("GitHub Release has no asset `{name}` to delete"),
+        };
+        if asset.state == "uploaded" {
+            bail!(
+                "GitHub Release asset `{name}` is uploaded, and a release never deletes an uploaded asset"
+            );
+        }
+        if asset.id == 0 {
+            bail!("GitHub Release asset `{name}` has no id");
+        }
+        let url = self.url(&format!("releases/assets/{}", asset.id));
+        checked(self.request(Method::DELETE, &url).send().await?, &url).await?;
+        Ok(())
+    }
+
     async fn create_ref(&self, branch: &str, sha: &str) -> Result<()> {
         self.post_empty(
             "git/refs",
@@ -1701,32 +1730,30 @@ impl GitHubClient {
     }
 
     async fn get_response(&self, url: &str) -> Result<reqwest::Response> {
-        for attempt in 0..GITHUB_GET_ATTEMPTS {
-            let response = match self.request(Method::GET, url).send().await {
-                Ok(response) => response,
-                Err(_) if attempt + 1 < GITHUB_GET_ATTEMPTS => {
-                    tokio::time::sleep(std::time::Duration::from_millis(
-                        GET_RETRY_STEP_MS * (attempt as u64 + 1),
-                    ))
-                    .await;
-                    continue;
+        let mut attempt = 0;
+        loop {
+            let (answer, got) = match self.request(Method::GET, url).send().await {
+                Ok(response) if !retryable_status(response.status()) => return Ok(response),
+                Ok(response) => {
+                    let asked = response
+                        .headers()
+                        .get(RETRY_AFTER)
+                        .and_then(|value| value.to_str().ok())
+                        .and_then(|value| value.parse::<u64>().ok());
+                    (Answer::Busy(asked), Ok(response))
                 }
-                Err(error) => return Err(error.into()),
+                Err(error) => (Answer::Unreachable, Err(error)),
             };
-            if !retryable_status(response.status()) || attempt + 1 == GITHUB_GET_ATTEMPTS {
-                return Ok(response);
+            // The core waits only while another attempt follows, so the loop ends within the policy's attempts.
+            match GITHUB_READS.after(attempt, answer) {
+                Next::Stop => return got.map_err(Into::into),
+                Next::Retry(wait) => {
+                    drop(got);
+                    tokio::time::sleep(std::time::Duration::from_millis(wait)).await;
+                    attempt += 1;
+                }
             }
-            let delay = response
-                .headers()
-                .get(RETRY_AFTER)
-                .and_then(|value| value.to_str().ok())
-                .and_then(|value| value.parse::<u64>().ok())
-                .unwrap_or(1_u64 << attempt)
-                .min(MAX_RETRY_AFTER_SECONDS);
-            drop(response);
-            tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
         }
-        unreachable!("GitHub GET retry loop always returns")
     }
 
     async fn post<B: Serialize + ?Sized, T: DeserializeOwned>(
@@ -1934,19 +1961,19 @@ fn commit_change(commit: &Commit) -> ChangeEntry {
 /// A domain tag starts the input, and a length precedes every path and every content, so two different file sets never hash the same bytes.
 pub fn files_digest(files: &BTreeMap<String, Vec<u8>>) -> String {
     let mut digest = Sha256::new();
-    digest.update(FILES_DIGEST_DOMAIN);
+    digest.update(release_glz_core::FILES_DOMAIN);
     for (path, contents) in files {
-        for part in [path.as_bytes(), contents.as_slice()] {
-            digest.update((part.len() as u64).to_be_bytes());
-            digest.update(part);
-        }
+        release_glz_core::frame_file(path.as_bytes(), contents, |part| digest.update(part));
     }
     crate::hex::lower(&digest.finalize())
 }
 
 /// Text from a commit or a package interface, made unable to open an HTML comment or tag.
 fn inert_text(text: &str) -> String {
-    text.replace('<', "&lt;")
+    let mut inert = Vec::with_capacity(text.len());
+    release_glz_core::write_inert(text.as_bytes(), |part| inert.extend_from_slice(part));
+    // The core splits the text only at `<`, so the bytes stay UTF-8.
+    String::from_utf8_lossy(&inert).into_owned()
 }
 
 fn pull_body(plan: &ReleasePlan, marker: &ManagedMarker) -> Result<String> {
@@ -1984,37 +2011,35 @@ fn pull_body(plan: &ReleasePlan, marker: &ManagedMarker) -> Result<String> {
 }
 
 fn format_marker(marker: &ManagedMarker) -> String {
-    format!(
-        "{MARKER_PREFIX}package={} branch={} head={} digest={} version={} intent={}{MARKER_SUFFIX}",
-        marker.package,
-        marker.branch,
-        marker.head,
-        marker.digest,
-        marker.version,
-        marker.intent_digest.as_deref().unwrap_or(PENDING_INTENT)
-    )
+    let intent = marker.intent_digest.as_deref().unwrap_or(PENDING_INTENT);
+    let mut bytes = Vec::new();
+    release_glz_core::write_marker(
+        [
+            marker.package.as_bytes(),
+            marker.branch.as_bytes(),
+            marker.head.as_bytes(),
+            marker.digest.as_bytes(),
+            marker.version.as_bytes(),
+            intent.as_bytes(),
+        ],
+        |part| bytes.extend_from_slice(part),
+    );
+    String::from_utf8_lossy(&bytes).into_owned()
 }
 
 /// Byte offset of the one marker that ends a body, if the body has exactly one there.
+///
+/// Trailing whitespace counts for nothing, so the core searches the trimmed body.
 fn trailing_marker_start(body: &str) -> Option<usize> {
-    let body = body.trim_end();
-    let start = body.rfind(MARKER_PREFIX)?;
-    let marker_end = body[start..].find(MARKER_SUFFIX)? + start + MARKER_SUFFIX.len();
-    (!body[..start].contains(MARKER_PREFIX) && marker_end == body.len()).then_some(start)
+    release_glz_core::marker_start(body.trim_end().as_bytes())
 }
 
 fn parse_marker(body: &str) -> Option<ManagedMarker> {
     let start = trailing_marker_start(body)? + MARKER_PREFIX.len();
     let fields = body.trim_end()[start..].strip_suffix(MARKER_SUFFIX)?;
-    let mut values = BTreeMap::new();
-    for field in fields.split_whitespace() {
-        let (key, value) = field.split_once('=')?;
-        if !MARKER_KEYS.contains(&key) || values.insert(key, value).is_some() {
-            return None;
-        }
-    }
+    let values = release_glz_core::marker_values(fields.split_whitespace().map(str::as_bytes))?;
     let [package, branch, head, digest, version, intent] =
-        MARKER_KEYS.map(|key| values.get(key).copied());
+        values.map(|value| std::str::from_utf8(value).ok());
     let (package, branch, head, digest, version, intent) =
         (package?, branch?, head?, digest?, version?, intent?);
     let valid = crate::config::validate_package_name(package).is_ok()
@@ -2043,11 +2068,7 @@ pub fn is_managed_release_pr(body: &str) -> bool {
 fn parse_candidate_digest(body: &str) -> Option<String> {
     body.lines().find_map(|line| {
         let digest = line.trim().strip_prefix("release-glz-candidate-digest: ")?;
-        (digest.len() == SHA256_HEX_LEN
-            && digest
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f')))
-        .then(|| digest.to_owned())
+        valid_sha256(digest).then(|| digest.to_owned())
     })
 }
 
@@ -2061,19 +2082,12 @@ fn replace_managed_marker(body: &str, marker: &ManagedMarker) -> Result<String> 
     Ok(output)
 }
 
-fn lowercase_hex(value: &str, length: usize) -> bool {
-    value.len() == length
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
-}
-
 fn valid_sha256(value: &str) -> bool {
-    lowercase_hex(value, SHA256_HEX_LEN)
+    release_glz_core::is_sha256_hex(value.as_bytes())
 }
 
 fn valid_object_id(value: &str) -> bool {
-    lowercase_hex(value, OBJECT_HEX_LEN)
+    release_glz_core::is_object_id(value.as_bytes())
 }
 
 fn encode_segment(value: &str) -> String {
@@ -2113,6 +2127,15 @@ mod tests {
             let marker = marker(intent);
             assert_eq!(parse_marker(&format_marker(&marker)), Some(marker));
         }
+        // Bodies that earlier releases wrote carry this exact text, so the format can't drift unnoticed.
+        assert_eq!(
+            format_marker(&marker(None)),
+            format!(
+                "<!-- release-glz:managed package=widget branch=release-glz/widget head={} digest={} version=2.0.0 intent=pending -->",
+                "b".repeat(40),
+                "c".repeat(64)
+            )
+        );
     }
 
     #[test]
@@ -2181,6 +2204,7 @@ mod tests {
         assert!(body.contains("intent_digest"));
         assert!(body.contains("Environment"));
         assert!(!body.contains("approval to publish to Hex"));
+        assert_eq!(body.matches("removed widget.old").count(), 2);
 
         let injected = format_marker(&marker(Some("e".repeat(64))));
         let mut hostile = plan.clone();
@@ -2189,5 +2213,8 @@ mod tests {
         let body = pull_body(&hostile, &marker(None)).unwrap();
         assert_eq!(parse_marker(&body), Some(marker(None)));
         assert_eq!(body.matches(MARKER_PREFIX).count(), 1);
+        // The commit text stays in the body, with each `<` written as `&lt;`.
+        assert!(body.contains("feat: &lt;!-- release-glz:managed package="));
+        assert_eq!(body.matches("&lt;!-- release-glz:managed ").count(), 2);
     }
 }

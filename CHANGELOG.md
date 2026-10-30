@@ -112,6 +112,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- An archive whose entries differ only in Unicode normalization, such as `café.txt` with a precomposed and a decomposed `é`, is refused before extraction.
+  The default macOS file system stores such entries under one name, so the later one could replace the earlier one there.
+- A release of a Candidate without docs stops in a conflict when the registry already holds docs for its version.
+  The live observation used to skip docs for such a Candidate, so it published the tag and the GitHub Release over a world that contradicted the Candidate.
+- Once a run knows the release started, every failure it reports is `partially_released` and exits with code 7.
+  Before, a failed observation after a published package reported `blocked` with code 5, and a run that didn't converge reported `blocked` with code 1.
+  A required notification whose observation failed after finalization reported `blocked` with code 6.
+- The OIDC run attempt admits only ASCII digits, as the run ID does, so `+3` no longer reads as attempt 3.
+  The registry wait also reports its timeout right after its last poll instead of sleeping once more first.
+- A release completes a GitHub Release asset that a broken upload left unfinished, and it refuses an asset name that GitHub would rename before anything publishes.
+  Both used to stop every later run after Hex already held the package.
+  An upload that failed with a 502 could leave the asset in GitHub's `starter` state, and every run then failed as temporary until someone deleted it by hand.
+  The next run now deletes such an asset on the Candidate's own draft and uploads the sealed bytes again.
+  It never deletes an uploaded asset or changes a published Release.
+  An unfinished asset outside the Candidate, or on its published Release, stops the release with code 4 and the steps for a person.
+  GitHub renamed a name with a space, a `+`, or a leading or trailing `.`, and every later run stopped in a conflict.
+  `rehearse` and `verify` now admit only ASCII letters, digits, `.`, `-`, and `_` in an asset name, without a `.` at either end.
+  A version with build metadata can no longer carry the built-in SBOM and provenance, because their names hold its `+`.
 - A release finds its draft GitHub Release in the repository's release list, because GitHub's tag endpoint answers only with a published Release.
   Before, every run created another draft, ran out of attempts, and never published the package once GitHub Releases were on, which is the default.
   Two Releases with the tag now stop the release as a conflict, and the distribution workflow finds its draft by identifier.

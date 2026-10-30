@@ -2,7 +2,7 @@
 //!
 //! The runner verifies a sealed Candidate, asks the reconciler what is still missing, and applies only those effects, using bytes loaded from the Candidate itself.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
@@ -13,7 +13,7 @@ use crate::candidate::{Candidate, CandidateManifest, SealedPolicy};
 use crate::canonical::SHA256_HEX_LEN;
 use crate::config::{Manifest, RegistryConfig};
 use crate::failure::{FailureClass, classified};
-use crate::forge::{GitHubClient, GitHubRepository};
+use crate::forge::{GitHubClient, GitHubRelease, GitHubReleaseAsset, GitHubRepository};
 use crate::git::GitRepo;
 use crate::gleam::Gleam;
 use crate::hooks::{HookContext, HookRunner};
@@ -272,11 +272,8 @@ impl LiveReleaseTarget {
 impl ReleaseTarget for LiveReleaseTarget {
     async fn observe(&self, intent: &ReleaseIntent) -> Result<ExternalReleaseState> {
         let package = self.exact_package_observation(intent).await?;
-        let docs = if intent.docs_sha256.is_some() {
-            self.exact_docs_observation(intent).await?
-        } else {
-            None
-        };
+        // Docs for a Candidate without docs contradict it, so the observation looks for docs either way.
+        let docs = self.exact_docs_observation(intent).await?;
         let tag = self
             .github
             .tag_state(&intent.tag)
@@ -287,13 +284,20 @@ impl ReleaseTarget for LiveReleaseTarget {
             });
         let github = self.github.release_details_for_tag(&intent.tag).await?;
         let mut release_assets = BTreeMap::new();
+        let mut unfinished_release_assets = BTreeSet::new();
         if let Some(release) = &github {
             for asset in &release.assets {
+                if release_assets.contains_key(&asset.name)
+                    || unfinished_release_assets.contains(&asset.name)
+                {
+                    bail!("GitHub Release contains duplicate asset `{}`", asset.name);
+                }
                 if asset.state != "uploaded" {
-                    bail!(
-                        "GitHub Release asset `{}` is not fully uploaded",
-                        asset.name
-                    );
+                    if let Some(refusal) = unfinished_asset_refusal(release, asset, intent) {
+                        return Err(classified(FailureClass::ImmutableStateConflict, refusal));
+                    }
+                    unfinished_release_assets.insert(asset.name.clone());
+                    continue;
                 }
                 let sha256 = asset.sha256.clone().with_context(|| {
                     format!(
@@ -301,12 +305,7 @@ impl ReleaseTarget for LiveReleaseTarget {
                         asset.name
                     )
                 })?;
-                if release_assets
-                    .insert(asset.name.clone(), ObservedArtifact { sha256 })
-                    .is_some()
-                {
-                    bail!("GitHub Release contains duplicate asset `{}`", asset.name);
-                }
+                release_assets.insert(asset.name.clone(), ObservedArtifact { sha256 });
             }
         }
         let github_release = github.map(|release| ObservedGithubRelease {
@@ -356,6 +355,7 @@ impl ReleaseTarget for LiveReleaseTarget {
             tag,
             github_release,
             release_assets,
+            unfinished_release_assets,
             notifications,
         })
     }
@@ -454,12 +454,26 @@ impl ReleaseTarget for LiveReleaseTarget {
                     .await?
                     .context("GitHub draft Release disappeared before asset upload")?;
                 if let Some(existing) = release.assets.iter().find(|asset| asset.name == *name) {
-                    if existing.state == "uploaded"
-                        && existing.sha256.as_deref() == Some(expected_digest.as_str())
-                    {
-                        return Ok(());
+                    if existing.state == "uploaded" {
+                        if existing.sha256.as_deref() == Some(expected_digest.as_str()) {
+                            return Ok(());
+                        }
+                        bail!(
+                            "GitHub Release asset `{name}` already exists with different content"
+                        );
                     }
-                    bail!("GitHub Release asset `{name}` already exists with different content");
+                    if !candidate_release(&release, intent) {
+                        return Err(classified(
+                            FailureClass::ImmutableStateConflict,
+                            format!(
+                                "GitHub Release asset `{name}` is unfinished on a Release that the Candidate didn't draft"
+                            ),
+                        ));
+                    }
+                    // The preceding read is the newest, so the delete happens only while it shows a draft and an unfinished asset.
+                    self.github
+                        .delete_unfinished_release_asset(&release, name)
+                        .await?;
                 }
                 self.github
                     .upload_release_asset(&release, name, &expected.media_type, payload.bytes)
@@ -512,6 +526,41 @@ fn sha256(bytes: &[u8]) -> String {
 
 fn is_sha256(value: &str) -> bool {
     value.len() == SHA256_HEX_LEN && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+/// Whether `release` is the Release that the Candidate of `intent` drafted, as its target and its recorded digest show.
+fn candidate_release(release: &GitHubRelease, intent: &ReleaseIntent) -> bool {
+    release.target_commitish == intent.source_sha
+        && release.candidate_digest.as_deref() == Some(intent.candidate_digest.as_str())
+}
+
+/// What a person has to do about `asset`, which GitHub reports as unfinished, or `None` when the release completes it.
+///
+/// A release completes only an asset that the Candidate seals, on the Candidate's own draft, and it never changes a published Release.
+/// The reconciler reports a Release of another Candidate before any of its assets, so this leaves that Release to it.
+fn unfinished_asset_refusal(
+    release: &GitHubRelease,
+    asset: &GitHubReleaseAsset,
+    intent: &ReleaseIntent,
+) -> Option<String> {
+    if !candidate_release(release, intent) {
+        return None;
+    }
+    let name = &asset.name;
+    match intent
+        .release_assets
+        .iter()
+        .find(|sealed| &sealed.name == name)
+    {
+        None => Some(format!(
+            "GitHub Release asset `{name}` is unfinished, and the Candidate doesn't seal it; delete it from the Release on GitHub, then run the release again"
+        )),
+        Some(sealed) if !release.draft => Some(format!(
+            "GitHub Release asset `{name}` is unfinished on the published Release, which a release never changes; delete the asset on GitHub, upload `sidecars/{}/{name}` from the Candidate directory under the same name, then run the release again",
+            sealed.hook_id
+        )),
+        Some(_) => None,
+    }
 }
 
 /// A failed release run, carrying the state it stopped in.
@@ -710,18 +759,18 @@ where
                         }),
                     ));
                 }
-                Step::Diverged => {
+                Step::Diverged(state) => {
                     return Err(run_error(
-                        ReleaseState::Blocked,
+                        state,
                         crate::failure::classified(
                             crate::failure::FailureClass::Internal,
                             "release reconciliation did not converge",
                         ),
                     ));
                 }
-                Step::Reshaped => {
+                Step::Reshaped(state) => {
                     return Err(run_error(
-                        ReleaseState::Blocked,
+                        state,
                         crate::failure::classified(
                             crate::failure::FailureClass::Internal,
                             "the release's objects changed in number during the run",

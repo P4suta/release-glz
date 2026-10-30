@@ -96,8 +96,18 @@ async fn live_reconciler_recovers_ambiguous_publish_and_second_run_is_a_no_op() 
     );
     assert!(!github_state.draft);
     assert_eq!(
-        github_state.asset.as_deref(),
-        Some(fixture.sidecar.as_slice())
+        github_state
+            .assets
+            .iter()
+            .map(|asset| (asset.name.clone(), asset.bytes.clone()))
+            .collect::<BTreeMap<_, _>>(),
+        fixture.assets
+    );
+    assert!(
+        github_state
+            .assets
+            .iter()
+            .all(|asset| asset.state == "uploaded")
     );
     assert!(github_state.requests.iter().all(|request| {
         request.headers.get("authorization").map(String::as_str) == Some("Bearer github-secret")
@@ -109,6 +119,220 @@ async fn live_reconciler_recovers_ambiguous_publish_and_second_run_is_a_no_op() 
 
     registry.stop();
     github.stop();
+}
+
+/// A failed upload that leaves an unfinished asset stops the run, and the next run deletes only that asset on the draft, uploads the sealed bytes, and finalizes the Release.
+#[tokio::test]
+async fn a_resumed_run_completes_an_asset_that_a_failed_upload_left_unfinished() {
+    let registry = FakeRegistry::start().await;
+    let github = FakeGitHub::start().await;
+    let fixture = live_fixture_with(
+        &registry.base_url(),
+        &[
+            ("sbom.cdx.json", "application/vnd.cyclonedx+json"),
+            ("widget.intoto.jsonl", "application/vnd.in-toto+json"),
+        ],
+    );
+    github.leave_unfinished("widget.intoto.jsonl");
+    let runner = live_runner(&fixture, &registry, &github);
+
+    let error = runner
+        .run(&fixture.candidate, &approved(&fixture.manifest))
+        .await
+        .unwrap_err();
+    assert_eq!(error.state(), ReleaseState::PartiallyReleased, "{error}");
+    assert_eq!(
+        error.failure_class(),
+        release_glz::failure::FailureClass::PartialRelease
+    );
+    assert!(error.to_string().contains("failed with 502"), "{error}");
+    let stopped = github.state();
+    assert!(stopped.deletions.is_empty());
+    assert!(stopped.draft);
+    let sbom = github.asset("sbom.cdx.json");
+    let unfinished = github.asset("widget.intoto.jsonl");
+    assert_eq!(sbom.state, "uploaded");
+    assert_eq!(unfinished.state, "starter");
+
+    let report = runner
+        .run(&fixture.candidate, &approved(&fixture.manifest))
+        .await
+        .unwrap();
+    assert_eq!(report.state, ReleaseState::Released);
+    let sealed = fixture
+        .manifest
+        .sidecars
+        .iter()
+        .find(|sidecar| sidecar.name == "widget.intoto.jsonl")
+        .unwrap();
+    assert_eq!(
+        report.applied,
+        vec![
+            ReconcileEffect::UploadGithubAsset {
+                hook_id: "sbom".into(),
+                name: "widget.intoto.jsonl".into(),
+                sha256: sealed.sha256.clone(),
+            },
+            ReconcileEffect::FinalizeGithubRelease,
+        ]
+    );
+    assert!(report.remaining.is_empty());
+
+    let finished = github.state();
+    let deletes = finished
+        .requests
+        .iter()
+        .enumerate()
+        .filter(|(_, request)| request.method == "DELETE")
+        .collect::<Vec<_>>();
+    assert_eq!(deletes.len(), 1, "{deletes:?}");
+    let (position, delete) = deletes[0];
+    assert_eq!(
+        delete.path,
+        format!("/repos/owner/widget/releases/assets/{}", unfinished.id)
+    );
+    let reread = &finished.requests[position - 1];
+    assert_eq!(reread.method, "GET");
+    assert!(
+        reread.path.starts_with("/repos/owner/widget/releases?"),
+        "the Release must be read again right before the delete, not {}",
+        reread.path
+    );
+    assert_eq!(finished.deletions.len(), 1);
+    assert_eq!(finished.deletions[0].id, unfinished.id);
+    assert_eq!(finished.deletions[0].state, "starter");
+    assert!(finished.deletions[0].draft);
+
+    assert!(!finished.draft);
+    let kept = github.asset("sbom.cdx.json");
+    assert_eq!(kept.id, sbom.id);
+    assert_eq!(kept.state, "uploaded");
+    let completed = github.asset("widget.intoto.jsonl");
+    assert_ne!(completed.id, unfinished.id);
+    assert_eq!(completed.state, "uploaded");
+    assert_eq!(
+        Some(&completed.bytes),
+        fixture.assets.get("widget.intoto.jsonl")
+    );
+    assert_eq!(registry.state().package_posts, 1);
+    assert_eq!(registry.state().docs_posts, 1);
+    registry.stop();
+    github.stop();
+}
+
+/// An unfinished asset on the published Release stops the release as a conflict that says what a person has to do, and the run changes nothing.
+#[tokio::test]
+async fn an_unfinished_asset_on_a_published_release_is_left_to_a_person() {
+    let registry = FakeRegistry::start().await;
+    let github = FakeGitHub::start().await;
+    let fixture = live_fixture(&registry.base_url());
+    github.hold_release_with_unfinished_asset(&fixture.manifest, false, "sbom.cdx.json");
+
+    let error = live_runner(&fixture, &registry, &github)
+        .run(&fixture.candidate, &approved(&fixture.manifest))
+        .await
+        .unwrap_err();
+    assert_eq!(error.state(), ReleaseState::Conflict, "{error}");
+    assert_eq!(
+        error.failure_class(),
+        release_glz::failure::FailureClass::ImmutableStateConflict
+    );
+    let message = error.to_string();
+    assert!(message.contains("published Release"), "{message}");
+    assert!(
+        message.contains("upload `sidecars/sbom/sbom.cdx.json` from the Candidate"),
+        "{message}"
+    );
+    assert_eq!(github.mutation_count(), 0);
+    assert_eq!(github.asset("sbom.cdx.json").state, "starter");
+    assert_eq!(registry.state().package_posts, 0);
+    registry.stop();
+    github.stop();
+}
+
+/// An unfinished asset that the Candidate doesn't seal stops the release as a conflict, and the run deletes nothing.
+#[tokio::test]
+async fn an_unfinished_asset_outside_the_candidate_is_left_to_a_person() {
+    let registry = FakeRegistry::start().await;
+    let github = FakeGitHub::start().await;
+    let fixture = live_fixture(&registry.base_url());
+    github.hold_release_with_unfinished_asset(&fixture.manifest, true, "stray.json");
+
+    let error = live_runner(&fixture, &registry, &github)
+        .run(&fixture.candidate, &approved(&fixture.manifest))
+        .await
+        .unwrap_err();
+    assert_eq!(error.state(), ReleaseState::Conflict, "{error}");
+    assert_eq!(
+        error.failure_class(),
+        release_glz::failure::FailureClass::ImmutableStateConflict
+    );
+    let message = error.to_string();
+    assert!(
+        message.contains("`stray.json` is unfinished, and the Candidate doesn't seal it"),
+        "{message}"
+    );
+    assert_eq!(github.mutation_count(), 0);
+    assert_eq!(registry.state().package_posts, 0);
+    registry.stop();
+    github.stop();
+}
+
+/// GitHub keeps the name of every asset that a Candidate seals, so an upload never comes back under another name.
+///
+/// GitHub keeps some names that the Candidate refuses, so the check runs one way only.
+#[test]
+fn every_asset_name_that_a_candidate_seals_keeps_its_name_on_github() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut sealed = 0;
+    let characters = (0..=0x7f_u8).map(char::from).chain(['é', '€', '日']);
+    for (index, character) in characters.enumerate() {
+        let names = [
+            format!("{character}x.json"),
+            format!("x{character}x.json"),
+            format!("x.json{character}"),
+        ];
+        for (position, name) in names.iter().enumerate() {
+            let input = candidate_input(
+                "http://127.0.0.1:9",
+                "a".repeat(40),
+                &[(name.as_str(), "application/json")],
+                hex_package(),
+                Some(tar_gz(&[("index.html", b"sealed docs")])),
+            );
+            let directory = temp.path().join(format!("{index}-{position}"));
+            if Candidate::seal(&directory, input).is_ok() {
+                sealed += 1;
+                assert_eq!(github_asset_name(name), *name, "GitHub renames {name:?}");
+            }
+        }
+    }
+    assert!(sealed > 0, "no name sealed at all");
+}
+
+/// Docs that the registry holds for a Candidate without docs contradict the Candidate, so the release stops in a conflict before any effect.
+#[tokio::test]
+async fn docs_for_a_candidate_without_docs_stop_the_release_in_a_conflict() {
+    let registry = FakeRegistry::start().await;
+    let github = FakeGitHub::start().await;
+    let fixture = live_fixture_without_docs(&registry.base_url());
+    registry.hold(
+        fixture.package.clone(),
+        b"another publisher's docs".to_vec(),
+    );
+
+    let error = live_runner(&fixture, &registry, &github)
+        .run(&fixture.candidate, &approved(&fixture.manifest))
+        .await
+        .unwrap_err();
+    assert_eq!(error.state(), ReleaseState::Conflict);
+    assert_eq!(
+        error.failure_class(),
+        release_glz::failure::FailureClass::ImmutableStateConflict
+    );
+    assert_eq!(github.mutation_count(), 0);
+    assert_eq!(registry.state().package_posts, 0);
+    assert_eq!(registry.state().docs_posts, 0);
 }
 
 /// Two drafts with the tag leave the run unable to tell which one the Candidate owns, so it stops before any effect.
@@ -270,10 +494,29 @@ struct LiveFixture {
     manifest: release_glz::candidate::CandidateManifest,
     package: Vec<u8>,
     docs: Vec<u8>,
-    sidecar: Vec<u8>,
+    /// The sealed bytes of each GitHub Release asset, by name.
+    assets: BTreeMap<String, Vec<u8>>,
 }
 
 fn live_fixture(registry_base: &str) -> LiveFixture {
+    live_fixture_with(
+        registry_base,
+        &[("sbom.cdx.json", "application/vnd.cyclonedx+json")],
+    )
+}
+
+/// A Candidate whose `sbom` hook produced one public asset for each name and media type in `assets`.
+fn live_fixture_with(registry_base: &str, assets: &[(&str, &str)]) -> LiveFixture {
+    sealed_fixture(registry_base, assets, true)
+}
+
+/// A Candidate without docs and without GitHub Release assets.
+fn live_fixture_without_docs(registry_base: &str) -> LiveFixture {
+    sealed_fixture(registry_base, &[], false)
+}
+
+/// A Candidate with the `sbom` assets in `assets`, which seals docs when `with_docs` holds.
+fn sealed_fixture(registry_base: &str, assets: &[(&str, &str)], with_docs: bool) -> LiveFixture {
     let temp = tempfile::tempdir().unwrap();
     let repository = temp.path().join("repo");
     std::fs::create_dir_all(repository.join("src")).unwrap();
@@ -302,69 +545,16 @@ fn live_fixture(registry_base: &str) -> LiveFixture {
 
     let package = hex_package();
     let docs = tar_gz(&[("index.html", b"sealed docs")]);
-    let sidecar = br#"{"bomFormat":"CycloneDX","serialNumber":"sealed"}"#.to_vec();
     let candidate = temp.path().join("candidate");
     let manifest = Candidate::seal(
         &candidate,
-        CandidateInput {
-            package: "widget".into(),
-            version: Version::new(1, 2, 3),
-            tag: "v1.2.3".into(),
-            source: CandidateSource {
-                commit_sha: source_sha,
-                manifest_path: "gleam.toml".into(),
-            },
-            compiler: Version::new(1, 18, 1),
-            registry: RegistryIdentity {
-                provider: RegistryProvider::HexCompatible,
-                repository: None,
-                api_url: format!("{registry_base}/api"),
-                repository_url: format!("{registry_base}/repo"),
-                docs_url: format!("{registry_base}/repo/docs"),
-                credential_env: "TEST_REGISTRY_TOKEN".into(),
-                auth: AuthKind::Bearer,
-                allow_http_loopback: true,
-            },
-            private: true,
-            github_repository: "owner/widget".into(),
-            release_branch_prefix: "release-glz/".into(),
-            release_notes: "Sealed release notes.".into(),
-            approval: release_glz::config::ApprovalConfig::default(),
-            outputs: OutputConfig {
-                sbom: false,
-                provenance: false,
-                allow_private_evidence_upload: true,
-                ..OutputConfig::default()
-            },
-            package_tarball: package.clone(),
-            docs_tarball: Some(docs.clone()),
-            package_interface: br#"{"modules":{}}"#.to_vec(),
-            verify_hook_definitions: vec![],
-            sidecar_hook_definitions: vec![HookConfig {
-                id: "sbom".into(),
-                argv: vec!["sidecar-tool".into()],
-                timeout_seconds: 10,
-                required: true,
-                env: vec![],
-            }],
-            hook_evidence: vec![HookEvidence {
-                schema: "hook/v1".into(),
-                id: "sbom".into(),
-                kind: HookKind::Sidecar,
-                required: true,
-                success: true,
-                output_sha256: "9".repeat(64),
-            }],
-            sidecars: vec![SidecarArtifact {
-                hook_id: "sbom".into(),
-                name: "sbom.cdx.json".into(),
-                media_type: "application/vnd.cyclonedx+json".into(),
-                bytes: sidecar.clone(),
-                public: true,
-            }],
-            notify_hooks: vec![],
-            notify_hook_definitions: vec![],
-        },
+        candidate_input(
+            registry_base,
+            source_sha,
+            assets,
+            package.clone(),
+            with_docs.then(|| docs.clone()),
+        ),
     )
     .unwrap();
     LiveFixture {
@@ -374,7 +564,88 @@ fn live_fixture(registry_base: &str) -> LiveFixture {
         manifest,
         package,
         docs,
-        sidecar,
+        assets: assets
+            .iter()
+            .map(|(name, _)| ((*name).to_owned(), asset_bytes(name)))
+            .collect(),
+    }
+}
+
+/// The bytes that the `sbom` hook produced for the asset `name`.
+fn asset_bytes(name: &str) -> Vec<u8> {
+    format!(r#"{{"bomFormat":"CycloneDX","serialNumber":"{name}"}}"#).into_bytes()
+}
+
+/// The input of a widget 1.2.3 Candidate at `source_sha` whose `sbom` hook produced one public asset for each name and media type in `assets`.
+fn candidate_input(
+    registry_base: &str,
+    source_sha: String,
+    assets: &[(&str, &str)],
+    package: Vec<u8>,
+    docs: Option<Vec<u8>>,
+) -> CandidateInput {
+    CandidateInput {
+        package: "widget".into(),
+        version: Version::new(1, 2, 3),
+        tag: "v1.2.3".into(),
+        source: CandidateSource {
+            commit_sha: source_sha,
+            manifest_path: "gleam.toml".into(),
+        },
+        compiler: Version::new(1, 18, 1),
+        registry: RegistryIdentity {
+            provider: RegistryProvider::HexCompatible,
+            repository: None,
+            api_url: format!("{registry_base}/api"),
+            repository_url: format!("{registry_base}/repo"),
+            docs_url: format!("{registry_base}/repo/docs"),
+            credential_env: "TEST_REGISTRY_TOKEN".into(),
+            auth: AuthKind::Bearer,
+            allow_http_loopback: true,
+        },
+        private: true,
+        github_repository: "owner/widget".into(),
+        release_branch_prefix: "release-glz/".into(),
+        release_notes: "Sealed release notes.".into(),
+        approval: release_glz::config::ApprovalConfig::default(),
+        outputs: OutputConfig {
+            docs: docs.is_some(),
+            sbom: false,
+            provenance: false,
+            allow_private_evidence_upload: true,
+            ..OutputConfig::default()
+        },
+        package_tarball: package,
+        docs_tarball: docs,
+        package_interface: br#"{"modules":{}}"#.to_vec(),
+        verify_hook_definitions: vec![],
+        sidecar_hook_definitions: vec![HookConfig {
+            id: "sbom".into(),
+            argv: vec!["sidecar-tool".into()],
+            timeout_seconds: 10,
+            required: true,
+            env: vec![],
+        }],
+        hook_evidence: vec![HookEvidence {
+            schema: "hook/v1".into(),
+            id: "sbom".into(),
+            kind: HookKind::Sidecar,
+            required: true,
+            success: true,
+            output_sha256: "9".repeat(64),
+        }],
+        sidecars: assets
+            .iter()
+            .map(|(name, media_type)| SidecarArtifact {
+                hook_id: "sbom".into(),
+                name: (*name).to_owned(),
+                media_type: (*media_type).to_owned(),
+                bytes: asset_bytes(name),
+                public: true,
+            })
+            .collect(),
+        notify_hooks: vec![],
+        notify_hook_definitions: vec![],
     }
 }
 
@@ -579,6 +850,13 @@ impl FakeRegistry {
         self.state.lock().unwrap().clone()
     }
 
+    /// Hold a published `package` with `docs`, as another publisher could have left them.
+    fn hold(&self, package: Vec<u8>, docs: Vec<u8>) {
+        let mut state = self.state.lock().unwrap();
+        state.package = Some(package);
+        state.docs = Some(docs);
+    }
+
     fn stop(self) {
         self.task.abort();
     }
@@ -646,13 +924,39 @@ struct GitHubState {
     release_target: Option<String>,
     candidate_digest: Option<String>,
     draft: bool,
-    asset: Option<Vec<u8>>,
-    asset_name: Option<String>,
-    asset_media_type: Option<String>,
+    /// The Release's assets, in upload order.
+    assets: Vec<FakeAsset>,
+    /// The id that the next asset gets.
+    next_asset_id: u64,
+    /// The name whose next upload GitHub stores unfinished before it answers 502.
+    unfinished_upload: Option<String>,
+    /// Every asset that a DELETE removed, with the state of the Release at that moment.
+    deletions: Vec<Deletion>,
     approval: Option<ApprovalAnswers>,
     requests: Vec<HttpRequest>,
     /// Whether the release list holds a second draft with the tag.
     duplicate_draft: bool,
+}
+
+/// One asset of the fake Release.
+#[derive(Clone, Debug)]
+struct FakeAsset {
+    id: u64,
+    name: String,
+    /// `uploaded`, or `starter` for an upload that never finished.
+    state: &'static str,
+    media_type: String,
+    bytes: Vec<u8>,
+}
+
+/// An asset that a DELETE removed.
+#[derive(Clone, Debug)]
+struct Deletion {
+    id: u64,
+    /// The asset's state when the DELETE removed it.
+    state: &'static str,
+    /// Whether the Release was a draft when the DELETE removed the asset.
+    draft: bool,
 }
 
 /// What GitHub answers to the checks that approve a push release.
@@ -676,7 +980,10 @@ impl FakeGitHub {
     async fn start() -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
-        let state = Arc::new(Mutex::new(GitHubState::default()));
+        let state = Arc::new(Mutex::new(GitHubState {
+            next_asset_id: 77,
+            ..GitHubState::default()
+        }));
         let shared = Arc::clone(&state);
         let base_url = format!("http://{address}");
         let task = tokio::spawn(async move {
@@ -718,6 +1025,41 @@ impl FakeGitHub {
         state.release_target = Some("a".repeat(40));
         state.draft = true;
         state.duplicate_draft = true;
+    }
+
+    /// Store the next upload of `name` unfinished and answer it with 502, as GitHub can when an upload breaks off.
+    fn leave_unfinished(&self, name: &str) {
+        self.state.lock().unwrap().unfinished_upload = Some(name.to_owned());
+    }
+
+    /// Hold the Release of the Candidate of `manifest`, a draft when `draft` holds, with an unfinished asset `name`.
+    fn hold_release_with_unfinished_asset(
+        &self,
+        manifest: &release_glz::candidate::CandidateManifest,
+        draft: bool,
+        name: &str,
+    ) {
+        let mut state = self.state.lock().unwrap();
+        state.release_target = Some(manifest.source.commit_sha.clone());
+        state.candidate_digest = Some(manifest.candidate_digest.clone());
+        state.draft = draft;
+        let id = state.next_asset_id;
+        state.next_asset_id += 1;
+        state.assets.push(FakeAsset {
+            id,
+            name: name.to_owned(),
+            state: "starter",
+            media_type: "application/json".into(),
+            bytes: b"{\"partial".to_vec(),
+        });
+    }
+
+    fn asset(&self, name: &str) -> FakeAsset {
+        self.state()
+            .assets
+            .into_iter()
+            .find(|asset| asset.name == name)
+            .unwrap_or_else(|| panic!("the fake Release has no asset `{name}`"))
     }
 
     /// Answer the approval checks of the push run that prepared the Candidate of `manifest`, with a merged Release PR that recorded `intent`.
@@ -842,21 +1184,56 @@ fn github_response(
             release_response(&state, base_url)
         }
         ("POST", "/repos/owner/widget/releases/42/assets") => {
-            state.asset = Some(request.body.clone());
-            state.asset_name = request.path.split("name=").nth(1).map(str::to_owned);
-            state.asset_media_type = request.headers.get("content-type").cloned();
-            let digest = release_glz::hex::lower(&Sha256::digest(&request.body));
-            HttpResponse::json(
-                201,
-                serde_json::json!({
-                    "id": 77,
-                    "name": state.asset_name,
-                    "state": "uploaded",
-                    "content_type": state.asset_media_type,
-                    "size": request.body.len(),
-                    "digest": format!("sha256:{digest}")
-                }),
-            )
+            let name = github_asset_name(request.path.split("name=").nth(1).unwrap_or_default());
+            // GitHub refuses a second asset with a name while the first one still holds it.
+            if state.assets.iter().any(|asset| asset.name == name) {
+                return HttpResponse::json(
+                    422,
+                    serde_json::json!({
+                        "message": "Validation Failed",
+                        "errors": [{"resource": "ReleaseAsset", "code": "already_exists", "field": "name"}]
+                    }),
+                );
+            }
+            let unfinished = state.unfinished_upload.as_deref() == Some(name.as_str());
+            let asset = FakeAsset {
+                id: state.next_asset_id,
+                name,
+                state: if unfinished { "starter" } else { "uploaded" },
+                media_type: request
+                    .headers
+                    .get("content-type")
+                    .cloned()
+                    .unwrap_or_default(),
+                bytes: request.body.clone(),
+            };
+            state.next_asset_id += 1;
+            let answer = asset_json(&asset);
+            state.assets.push(asset);
+            if unfinished {
+                state.unfinished_upload = None;
+                return HttpResponse::json(502, serde_json::json!({"message": "Server Error"}));
+            }
+            HttpResponse::json(201, answer)
+        }
+        ("DELETE", path) if path.starts_with("/repos/owner/widget/releases/assets/") => {
+            let id = path
+                .rsplit('/')
+                .next()
+                .and_then(|id| id.parse::<u64>().ok());
+            match state.assets.iter().position(|asset| Some(asset.id) == id) {
+                Some(index) => {
+                    let removed = state.assets.remove(index);
+                    let draft = state.draft;
+                    state.deletions.push(Deletion {
+                        id: removed.id,
+                        state: removed.state,
+                        draft,
+                    });
+                    HttpResponse::bytes(204, vec![])
+                }
+                None => HttpResponse::json(404, serde_json::json!({"message": "Not Found"})),
+            }
         }
         ("PATCH", "/repos/owner/widget/releases/42") => {
             state.draft = false;
@@ -864,6 +1241,47 @@ fn github_response(
         }
         _ => panic!("unexpected GitHub request: {request:?}"),
     }
+}
+
+/// The name that the fake GitHub gives an asset uploaded as `requested`.
+///
+/// GitHub documents only that it renames a name with special characters or a leading or trailing `.`, so this models that rule.
+/// It replaces every character outside ASCII letters, digits, `.`, `-`, and `_` with `.`, drops a trailing `.`, and puts `default` before a leading `.`.
+fn github_asset_name(requested: &str) -> String {
+    let replaced = requested
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_') {
+                character
+            } else {
+                '.'
+            }
+        })
+        .collect::<String>();
+    let trimmed = replaced.trim_end_matches('.');
+    if trimmed.is_empty() || trimmed.starts_with('.') {
+        format!("default{trimmed}")
+    } else {
+        trimmed.to_owned()
+    }
+}
+
+/// How GitHub lists `asset`, with a digest only once its upload finished, so an observation can't rely on the digest of an unfinished one.
+fn asset_json(asset: &FakeAsset) -> serde_json::Value {
+    let mut value = serde_json::json!({
+        "id": asset.id,
+        "name": asset.name,
+        "state": asset.state,
+        "content_type": asset.media_type,
+        "size": asset.bytes.len()
+    });
+    if asset.state == "uploaded" {
+        value["digest"] = serde_json::json!(format!(
+            "sha256:{}",
+            release_glz::hex::lower(&Sha256::digest(&asset.bytes))
+        ));
+    }
+    value
 }
 
 /// GitHub's answer to one approval check, or `None` for a path that no approval check reads.
@@ -961,17 +1379,7 @@ fn release_response(state: &GitHubState, base_url: &str) -> HttpResponse {
 }
 
 fn release_json(state: &GitHubState, base_url: &str) -> serde_json::Value {
-    let assets = match (&state.asset, &state.asset_name, &state.asset_media_type) {
-        (Some(bytes), Some(name), Some(media_type)) => vec![serde_json::json!({
-            "id": 77,
-            "name": name,
-            "state": "uploaded",
-            "content_type": media_type,
-            "size": bytes.len(),
-            "digest": format!("sha256:{}", release_glz::hex::lower(&Sha256::digest(bytes)))
-        })],
-        _ => vec![],
-    };
+    let assets = state.assets.iter().map(asset_json).collect::<Vec<_>>();
     serde_json::json!({
         "id": 42,
         "html_url": "https://github.test/owner/widget/releases/42",

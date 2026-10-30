@@ -262,8 +262,84 @@ async fn a_target_that_never_records_success_stops_after_the_effects_of_its_firs
         .await
         .unwrap_err();
     assert_eq!(attempts.load(Ordering::SeqCst), first_plan);
-    assert_eq!(error.state(), ReleaseState::Blocked);
+    // Every call succeeded, so the world holds what the run published even though no observation shows it.
+    assert_eq!(error.state(), ReleaseState::PartiallyReleased);
+    assert_eq!(error.failure_class(), FailureClass::PartialRelease);
     assert!(error.to_string().contains("did not converge"));
+}
+
+/// A package that landed is public, so a failed observation after it reports a partial release, which exits with code 7.
+#[tokio::test]
+async fn an_observation_failure_after_a_published_package_is_a_partial_release() {
+    let fixture = candidate_fixture();
+    let target = FailObservationAfter::new(ReconcileEffect::PublishPackage);
+    let error = CandidateReleaseRunner::new(target.clone())
+        .run(&fixture.directory, &approved(&fixture.manifest))
+        .await
+        .unwrap_err();
+    assert_eq!(error.state(), ReleaseState::PartiallyReleased);
+    assert_eq!(error.failure_class(), FailureClass::PartialRelease);
+    assert_eq!(error.failure_class().exit_code(), 7);
+    assert!(
+        error.to_string().contains("registry answered 502"),
+        "{error}"
+    );
+    assert_eq!(
+        target.inner.applied().last(),
+        Some(&ReconcileEffect::PublishPackage)
+    );
+}
+
+/// Once the GitHub Release is final, a required notification whose observation fails still leaves the release partial, not blocked.
+#[tokio::test]
+async fn a_failed_notification_observation_after_finalization_is_a_partial_release() {
+    let fixture = candidate_fixture_with_notify(true);
+    let target = FailObservationAfter::new(ReconcileEffect::FinalizeGithubRelease);
+    let error = CandidateReleaseRunner::new(target.clone())
+        .run(&fixture.directory, &approved(&fixture.manifest))
+        .await
+        .unwrap_err();
+    assert_eq!(error.state(), ReleaseState::PartiallyReleased);
+    assert_eq!(error.failure_class(), FailureClass::PartialRelease);
+    assert_eq!(
+        target.inner.applied().last(),
+        Some(&ReconcileEffect::FinalizeGithubRelease)
+    );
+}
+
+/// A world that answers every observation until an effect lands, and fails every observation after it.
+#[derive(Clone)]
+struct FailObservationAfter {
+    inner: FakeTarget,
+    effect: ReconcileEffect,
+}
+
+impl FailObservationAfter {
+    fn new(effect: ReconcileEffect) -> Self {
+        Self {
+            inner: FakeTarget::default(),
+            effect,
+        }
+    }
+}
+
+#[async_trait]
+impl ReleaseTarget for FailObservationAfter {
+    async fn observe(&self, intent: &ReleaseIntent) -> Result<ExternalReleaseState> {
+        if self.inner.applied().contains(&self.effect) {
+            bail!("registry answered 502 Bad Gateway");
+        }
+        self.inner.observe(intent).await
+    }
+
+    async fn apply(
+        &self,
+        effect: &ReconcileEffect,
+        intent: &ReleaseIntent,
+        payload: ReleasePayload<'_>,
+    ) -> Result<()> {
+        self.inner.apply(effect, intent, payload).await
+    }
 }
 
 #[tokio::test]

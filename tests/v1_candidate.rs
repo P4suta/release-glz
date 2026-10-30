@@ -1283,6 +1283,53 @@ fn candidate_sidecars_require_safe_identity_declared_producer_and_signature_poli
     }
 }
 
+/// GitHub renames an asset whose name it doesn't keep, so sealing and verifying refuse such a name before anything publishes.
+#[test]
+fn sealing_and_verifying_refuse_an_asset_name_that_github_would_rename() {
+    let temp = tempfile::tempdir().unwrap();
+    for name in [
+        "sbom.cdx.json",
+        "release-glz.intoto.jsonl",
+        "widget_1.2.3-rc.1.tar.gz",
+    ] {
+        let mut input = fresh_candidate_input();
+        add_public_sidecar(&mut input, "evidence", name);
+        let sealed = Candidate::seal(&temp.path().join(name), input).unwrap();
+        assert_eq!(sealed.sidecars[0].name, name);
+        Candidate::verify(&temp.path().join(name)).unwrap();
+    }
+
+    for (index, name) in [
+        "my evidence.json",
+        ".evidence.json",
+        "evidence.json.",
+        "evidence+1.json",
+        "evidence~1.json",
+        "évidence.json",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut input = fresh_candidate_input();
+        add_public_sidecar(&mut input, "evidence", name);
+        let error = Candidate::seal(&temp.path().join(format!("renamed-{index}")), input)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("safe asset name"), "{name:?}: {error}");
+
+        let directory = temp.path().join(format!("tampered-{index}"));
+        let mut input = fresh_candidate_input();
+        add_public_sidecar(&mut input, "evidence", "evidence.json");
+        Candidate::seal(&directory, input).unwrap();
+        mutate_candidate_json(&directory, |manifest| {
+            manifest["sidecars"][0]["name"] = name.into();
+            manifest["sidecars"][0]["path"] = format!("sidecars/evidence/{name}").into();
+        });
+        let error = Candidate::verify(&directory).unwrap_err().to_string();
+        assert!(error.contains("safe asset name"), "{name:?}: {error}");
+    }
+}
+
 #[test]
 fn candidate_notify_hooks_are_an_ordered_idempotent_protocol() {
     let temp = tempfile::tempdir().unwrap();

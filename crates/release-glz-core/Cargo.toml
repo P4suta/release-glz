@@ -50,6 +50,28 @@ negative-control-stall = []
 negative-control-forget-failure = []
 # Going on with an observation of another number of objects.
 negative-control-reshape = []
+# Reporting blocked when an observation fails after an effect whose call succeeded.
+negative-control-forget-success = []
+# Reporting the state of the newest plan even below what the run already published.
+negative-control-unfloored = []
+# Lowering released to partially released once the run started.
+negative-control-lower-released = []
+# Accepting uppercase hexadecimal digits in a digest or an object id.
+negative-control-hex-case = []
+# Accepting a digest or an object id when any one byte is a digit.
+negative-control-hex-any-byte = []
+# Accepting a digest or an object id that is longer than its length.
+negative-control-hex-length = []
+# Accepting a `..` path component.
+negative-control-path-traversal = []
+# Accepting a colon in a path component.
+negative-control-path-colon = []
+# Recognizing a Windows device name only in uppercase.
+negative-control-device-case = []
+# Ending the stem of a component at its last dot instead of its first.
+negative-control-device-stem = []
+# Letting a file and a directory of the same folded name both stand.
+negative-control-case-collision = []
 # Ordering two prereleases with the same identifiers as unequal.
 negative-control-equal-prereleases = []
 # Ordering a stable release before the prereleases of its core.
@@ -78,6 +100,50 @@ negative-control-version-zero = []
 negative-control-breaking-footer = []
 # Matching commit types in lowercase only.
 negative-control-commit-type-case = []
+# Taking a breaking-change marker inside a line as a footer.
+negative-control-marker-anywhere = []
+# Leaving the last byte of each secret occurrence unredacted.
+negative-control-redaction-partial = []
+# Redacting the byte after each secret occurrence too.
+negative-control-redaction-overreach = []
+# Ending a redacted segment after one byte, so one covered run becomes several.
+negative-control-redaction-split = []
+# Redacting only the first byte of each secret occurrence, which can end inside a character.
+negative-control-redaction-midchar = []
+# Framing each file without the lengths of its path and contents.
+negative-control-unframed-files = []
+# Framing a notification without the byte that ends its Candidate digest.
+negative-control-unframed-notification = []
+# Sorting member names by UTF-8 bytes instead of UTF-16 code units.
+negative-control-utf8-key-order = []
+# Comparing member names by their first UTF-16 code unit only.
+negative-control-first-unit-key-order = []
+# Writing `<` into inert text as itself.
+negative-control-inert-less-than = []
+# Starting the search for a first occurrence one byte late.
+negative-control-search-skips-start = []
+# Stopping the search for a last occurrence before the last offset.
+negative-control-search-stops-short = []
+# Letting a later marker field replace an earlier one with the same key.
+negative-control-duplicate-keys = []
+# Accepting a token at the second it expires.
+negative-control-token-expiry = []
+# Adding the clock skew with wrapping, so a clock near the largest time refuses every token.
+negative-control-token-skew-wrap = []
+# Reading a leading `+` as part of a run attempt.
+negative-control-signed-attempt = []
+# Trusting a host that ends with the runner token zone without a dot before it.
+negative-control-zone-without-dot = []
+# Letting a push consume the Candidate of another run.
+negative-control-push-from-another-run = []
+# Waiting after the last attempt of a request too.
+negative-control-retry-after-last-attempt = []
+# Waiting as long as a busy response asks, however long that is.
+negative-control-uncapped-busy-wait = []
+# Polling again after the last poll of a wait too.
+negative-control-sleep-after-last-poll = []
+# Counting a listed version as visible without the docs it needs.
+negative-control-ready-without-docs = []
 
 [dependencies]
 serde = { version = "1.0.228", default-features = false, features = [

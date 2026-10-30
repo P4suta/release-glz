@@ -89,8 +89,11 @@ fn sealed_candidate_cli_lifecycle_reuses_one_candidate_without_rebuilding() {
     assert_eq!(status["result"]["state"], "candidate_ready");
     assert_eq!(status["result"]["candidate_digest"], candidate_digest);
 
-    let (registry_requests, registry_server) =
-        serve_recording(registry_listener, vec![http_response(404, b"")]);
+    // No package release, asked once for the package and once for docs.
+    let (registry_requests, registry_server) = serve_recording(
+        registry_listener,
+        vec![http_response(404, b""), http_response(404, b"")],
+    );
     // No tag, and a release list without the Candidate's Release.
     let (github_requests, github_server) = serve_recording(
         github_listener,
@@ -130,7 +133,7 @@ fn sealed_candidate_cli_lifecycle_reuses_one_candidate_without_rebuilding() {
         std::fs::read(candidate.join("artifacts/package.tar")).unwrap(),
         sealed_package
     );
-    assert_eq!(registry_requests.try_iter().count(), 1);
+    assert_eq!(registry_requests.try_iter().count(), 2);
     assert_eq!(github_requests.try_iter().count(), 2);
 }
 
@@ -1117,9 +1120,13 @@ fn an_inspection_of_a_world_that_contradicts_the_candidate_is_an_immutable_confl
         "checksum": "f".repeat(64),
         "has_docs": false
     });
+    // The published release, asked once for the package and once for docs.
     let (_registry_requests, registry_server) = serve_recording(
         registry_listener,
-        vec![http_response(200, published.to_string().as_bytes())],
+        vec![
+            http_response(200, published.to_string().as_bytes()),
+            http_response(200, published.to_string().as_bytes()),
+        ],
     );
     // No tag, and a release list without the Candidate's Release.
     let (_github_requests, github_server) = serve_recording(
