@@ -98,13 +98,18 @@ A request to the registry or to GitHub waits only when another attempt follows.
 A busy response never makes it wait longer than a minute for the registry or thirty seconds for GitHub.
 In all, a registry request waits at most two minutes between its attempts, and a GitHub read at most one minute.
 A wait for a published release sleeps only between two polls, and it ends at the first poll that lists the version with the docs it needs.
+A `Retry-After` header names a wait only in digits, so a sign or a date leaves the policy's default wait, and both clients use exactly the shipped policies.
 Kani proves each wait for every policy, attempt, and answer, and it pins the wait after a transport failure for the first nine attempts.
 It proves the whole wait of the two shipped policies for every sequence of answers.
+It proves the reading of `Retry-After` for every text of up to three bytes and for the 20-digit texts on both sides of 2^64.
 The time that each attempt itself takes falls under the client's request timeouts, which no proof covers.
 
 - Kani: `wait::proofs::a_request_waits_only_before_another_attempt_and_only_as_long_as_its_answer_allows`
 - Kani: `wait::proofs::the_shipped_policies_bound_the_whole_wait_of_a_request`
 - Kani: `wait::proofs::a_wait_sleeps_only_before_another_poll_and_ends_at_the_first_visible_one`
+- Kani: `wait::proofs::a_retry_after_header_names_a_delay_only_in_digits`
+- Test: `src/forge.rs::a_busy_read_waits_only_as_long_as_digits_ask`
+- Test: `src/registry.rs::retry_after_and_checksums_validate_all_boundaries`
 - Test: `tests/registry_contract.rs::get_and_credential_audit_retries_are_bounded_and_never_change_method`
 - Test: `tests/registry_contract.rs::transport_failures_and_redirect_loops_exhaust_a_fixed_read_budget`
 - Test: `tests/registry_contract.rs::wait_for_reports_its_timeout_without_sleeping_after_the_last_poll`
@@ -238,9 +243,13 @@ Kani proves it for every core and train number over versions that are stable or 
 ### A release train only moves forward
 
 A train counts up within its channel or moves on to a later channel, a move back needs an explicitly higher core, and a first release joins the configured train.
+A refused move back names the missing explicit core whenever the required step alone raises the core.
+On a train, the selection takes an explicit version on the train as written and starts the train at the core of a stable explicit version.
+It refuses any other explicit version as off the train.
 Kani proves it for every core, channel, and train number over versions that are stable or on a train.
 
 - Kani: `selection::proofs::a_train_moves_forward_or_counts_up_within_its_channel`
+- Kani: `selection::proofs::an_explicit_version_decides_the_selection_on_a_train`
 - Kani: `selection::proofs::the_first_release_joins_the_configured_train`
 - Kani: `precedence::proofs::a_train_counts_up_and_moves_through_its_channels_in_precedence`
 - Test: `src/version.rs::backward_channel_moves_require_an_explicitly_higher_core`
@@ -250,12 +259,20 @@ Kani proves it for every core, channel, and train number over versions that are 
 ### Versions compare by semantic version precedence
 
 The core decides before the prerelease, a stable release follows every prerelease of its core, and build metadata never changes precedence.
+A train compares, parses, and names its channel exactly as the text `<label>.<number>` that spells it, and the prerelease grammar is the one semantic versioning states.
 Kani covers prerelease text of at most three bytes for one version and two bytes for each of a pair.
+It compares trains with one-digit numbers to any valid text of at most two bytes.
+It compares a train with any number to its own label and any valid one-byte identifier, which reaches the comparison of the number.
+It parses any text of at most eight bytes, and it checks the grammar of any text of at most four bytes.
 The differential tests and the fuzz target compare the core with the `semver` crate on longer text.
 
 - Kani: `precedence::proofs::a_version_equals_itself_and_order_flips_with_its_operands`
 - Kani: `precedence::proofs::a_stable_release_follows_every_prerelease_of_its_core`
 - Kani: `precedence::proofs::the_core_decides_before_the_prerelease`
+- Kani: `precedence::proofs::a_train_compares_like_the_text_that_spells_it`
+- Kani: `precedence::proofs::a_train_meets_its_own_label_by_its_number`
+- Kani: `precedence::proofs::text_parses_as_a_train_exactly_when_it_spells_one`
+- Kani: `precedence::proofs::the_prerelease_grammar_is_the_one_semantic_versioning_states`
 - Fuzz: `prerelease`
 - Test: `tests/version_precedence.rs::core_precedence_agrees_with_semver_on_every_pair`
 - Test: `tests/version_precedence.rs::a_train_compares_like_the_prerelease_that_spells_it`

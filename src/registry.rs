@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
-use release_glz_core::{AfterPoll, Answer, Next, REGISTRY_RETRIES, RetryPolicy};
+use release_glz_core::{AfterPoll, Answer, Next, REGISTRY_RETRIES};
 use reqwest::{StatusCode, Url};
 use semver::Version;
 use serde::Deserialize;
@@ -22,9 +22,6 @@ const JSON_LIMIT: u64 = 4 * MIB;
 
 /// Size an archive response may reach before it is refused.
 const ARCHIVE_LIMIT: u64 = 128 * MIB;
-
-/// Attempts made for one request before its failure is reported.
-const DEFAULT_RETRIES: usize = REGISTRY_RETRIES.attempts;
 
 /// Seconds a single registry request may take before it is abandoned.
 const REQUEST_TIMEOUT_SECONDS: u64 = 60;
@@ -213,7 +210,6 @@ pub struct HexRegistry {
     repository: Option<String>,
     credential: Option<Credential>,
     auth: AuthKind,
-    retries: usize,
     visibility_poll: VisibilityPoll,
 }
 
@@ -263,7 +259,6 @@ impl HexRegistry {
                 .filter(|value| !value.is_empty())
                 .map(|value| Credential(value.to_owned())),
             auth: config.auth,
-            retries: DEFAULT_RETRIES,
             visibility_poll: VisibilityPoll::default(),
         })
     }
@@ -325,9 +320,9 @@ impl HexRegistry {
             }
         }
 
-        let policy = self.retry_policy();
+        let policy = REGISTRY_RETRIES;
         let mut last_error = None;
-        for attempt in 0..self.retries {
+        for attempt in 0..policy.attempts {
             match self.audit_permission_once(url.clone()).await {
                 Ok(AuditRequest::Result(result)) => return Ok(result),
                 Ok(AuditRequest::Retry(asked)) => {
@@ -350,14 +345,6 @@ impl HexRegistry {
             }
         }
         Err(last_error.unwrap_or_else(|| anyhow::anyhow!("registry credential audit failed")))
-    }
-
-    /// How often this client attempts one request, and how long it waits before it repeats.
-    fn retry_policy(&self) -> RetryPolicy {
-        RetryPolicy {
-            attempts: self.retries,
-            ..REGISTRY_RETRIES
-        }
     }
 
     async fn audit_permission_once(&self, url: Url) -> Result<AuditRequest> {
@@ -389,9 +376,9 @@ impl HexRegistry {
     }
 
     async fn get_bytes(&self, url: Url, optional: bool, limit: u64) -> Result<Option<Vec<u8>>> {
-        let policy = self.retry_policy();
+        let policy = REGISTRY_RETRIES;
         let mut last_error = None;
-        for attempt in 0..self.retries {
+        for attempt in 0..policy.attempts {
             match self.get_once(url.clone(), optional, limit).await {
                 Ok(GetResult::Value(value)) => return Ok(value),
                 Ok(GetResult::Retry(asked)) => match policy.after(attempt, Answer::Busy(asked)) {
@@ -722,8 +709,7 @@ fn same_origin(left: &Url, right: &Url) -> bool {
 fn retry_after(headers: &reqwest::header::HeaderMap) -> Option<u64> {
     headers
         .get(reqwest::header::RETRY_AFTER)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.parse::<u64>().ok())
+        .and_then(|value| release_glz_core::delay_seconds(value.as_bytes()))
 }
 
 fn validate_checksum(value: &str) -> Result<()> {
@@ -858,7 +844,7 @@ mod tests {
     fn registry_limits_and_retry_policy_are_exact() {
         assert_eq!(JSON_LIMIT, 4_194_304);
         assert_eq!(ARCHIVE_LIMIT, 134_217_728);
-        assert_eq!(DEFAULT_RETRIES, 3);
+        assert_eq!(REGISTRY_RETRIES.attempts, 3);
 
         let retry_available = release_glz_core::another_attempt_follows;
         let transport_retry_delay =
@@ -898,7 +884,6 @@ mod tests {
         );
         assert_eq!(registry.repository.as_deref(), Some("private-org"));
         assert_eq!(registry.auth, AuthKind::Bearer);
-        assert_eq!(registry.retries, 3);
     }
 
     #[test]
@@ -970,8 +955,14 @@ mod tests {
         assert_eq!(retry_after(&headers), Duration::from_millis(250));
         headers.insert(reqwest::header::RETRY_AFTER, "2".parse().unwrap());
         assert_eq!(retry_after(&headers), Duration::from_secs(2));
-        headers.insert(reqwest::header::RETRY_AFTER, "invalid".parse().unwrap());
-        assert_eq!(retry_after(&headers), Duration::from_millis(250));
+        for unnamed in ["invalid", "+5", "-5", "Wed, 21 Oct 2015 07:28:00 GMT"] {
+            headers.insert(reqwest::header::RETRY_AFTER, unnamed.parse().unwrap());
+            assert_eq!(
+                retry_after(&headers),
+                Duration::from_millis(250),
+                "{unnamed}"
+            );
+        }
         headers.insert(reqwest::header::RETRY_AFTER, "60".parse().unwrap());
         assert_eq!(retry_after(&headers), Duration::from_secs(60));
         for excessive in ["61", "99999999", "18446744073709551615"] {
@@ -1019,9 +1010,7 @@ mod tests {
 
     #[tokio::test]
     async fn byte_downloads_never_fabricate_a_value_after_a_transport_error() {
-        let mut registry =
-            HexRegistry::new("http://127.0.0.1:9/api", "http://127.0.0.1:9/repository");
-        registry.retries = 1;
+        let registry = HexRegistry::new("http://127.0.0.1:9/api", "http://127.0.0.1:9/repository");
         let unsupported = Url::parse("file:///release-glz-must-not-be-read").unwrap();
         assert!(registry.get_bytes(unsupported, false, 16).await.is_err());
     }

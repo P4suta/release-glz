@@ -1735,11 +1735,7 @@ impl GitHubClient {
             let (answer, got) = match self.request(Method::GET, url).send().await {
                 Ok(response) if !retryable_status(response.status()) => return Ok(response),
                 Ok(response) => {
-                    let asked = response
-                        .headers()
-                        .get(RETRY_AFTER)
-                        .and_then(|value| value.to_str().ok())
-                        .and_then(|value| value.parse::<u64>().ok());
+                    let asked = retry_after(response.headers());
                     (Answer::Busy(asked), Ok(response))
                 }
                 Err(error) => (Answer::Unreachable, Err(error)),
@@ -1932,6 +1928,13 @@ async fn read_limited(mut response: reqwest::Response, limit: usize) -> Result<V
     Ok(bytes)
 }
 
+/// The seconds that a busy response's `Retry-After` header asks the read to wait, when it names them in digits.
+fn retry_after(headers: &reqwest::header::HeaderMap) -> Option<u64> {
+    headers
+        .get(RETRY_AFTER)
+        .and_then(|value| release_glz_core::delay_seconds(value.as_bytes()))
+}
+
 fn retryable_status(status: StatusCode) -> bool {
     matches!(
         status,
@@ -2118,6 +2121,23 @@ mod tests {
             digest: "c".repeat(64),
             version: "2.0.0".into(),
             intent_digest,
+        }
+    }
+
+    /// A `Retry-After` header names a wait only in digits, so a sign or a date leaves the read's default wait.
+    #[test]
+    fn a_busy_read_waits_only_as_long_as_digits_ask() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        assert_eq!(retry_after(&headers), None);
+        for (value, asked) in [
+            ("5", Some(5)),
+            ("0", Some(0)),
+            ("+5", None),
+            ("-5", None),
+            ("Wed, 21 Oct 2015 07:28:00 GMT", None),
+        ] {
+            headers.insert(RETRY_AFTER, value.parse().unwrap());
+            assert_eq!(retry_after(&headers), asked, "{value}");
         }
     }
 

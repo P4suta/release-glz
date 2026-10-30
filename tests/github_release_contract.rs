@@ -2716,6 +2716,26 @@ fn github_reads_double_their_wait_and_stop_after_three_attempts() {
     assert_eq!(GITHUB_READS.after(2, Answer::Busy(None)), Next::Stop);
 }
 
+/// A GitHub error body of up to 64 KiB reaches the error message, and a longer one is left out.
+#[tokio::test]
+async fn a_github_error_body_reaches_the_message_up_to_64_kib() {
+    for (length, kept) in [(64 * 1024, true), (64 * 1024 + 1, false)] {
+        let body = "x".repeat(length);
+        let server = FakeServer::start(vec![response(403, &body)]).await;
+        let error = test_client(&server, Some("token"))
+            .release_details_for_tag("v1.2.3")
+            .await
+            .unwrap_err()
+            .to_string();
+        assert_eq!(error.contains(&body), kept, "a body of {length} bytes");
+        assert_eq!(
+            error.contains("[response omitted: size limit exceeded]"),
+            !kept,
+            "a body of {length} bytes"
+        );
+    }
+}
+
 #[tokio::test]
 async fn github_get_retries_a_transport_failure_without_reposting() {
     let server = FakeServer::start(vec![

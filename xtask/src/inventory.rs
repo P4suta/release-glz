@@ -46,7 +46,7 @@ const fn control(
 }
 
 /// Every harness of the proof packages, with its cover count.
-pub const HARNESSES: [Harness; 70] = [
+pub const HARNESSES: [Harness; 76] = [
     harness(
         "proofs::a_proof_run_is_admitted_only_when_every_expected_harness_verified",
         2,
@@ -120,6 +120,22 @@ pub const HARNESSES: [Harness; 70] = [
         1,
     ),
     harness(
+        "precedence::proofs::a_train_compares_like_the_text_that_spells_it",
+        2,
+    ),
+    harness(
+        "precedence::proofs::a_train_meets_its_own_label_by_its_number",
+        2,
+    ),
+    harness(
+        "precedence::proofs::text_parses_as_a_train_exactly_when_it_spells_one",
+        2,
+    ),
+    harness(
+        "precedence::proofs::the_prerelease_grammar_is_the_one_semantic_versioning_states",
+        2,
+    ),
+    harness(
         "publication::proofs::an_effect_concerns_only_an_object_the_world_lacks",
         2,
     ),
@@ -163,6 +179,10 @@ pub const HARNESSES: [Harness; 70] = [
     ),
     harness(
         "selection::proofs::a_train_moves_forward_or_counts_up_within_its_channel",
+        2,
+    ),
+    harness(
+        "selection::proofs::an_explicit_version_decides_the_selection_on_a_train",
         2,
     ),
     harness(
@@ -282,13 +302,17 @@ pub const HARNESSES: [Harness; 70] = [
         "wait::proofs::a_wait_sleeps_only_before_another_poll_and_ends_at_the_first_visible_one",
         2,
     ),
+    harness(
+        "wait::proofs::a_retry_after_header_names_a_delay_only_in_digits",
+        2,
+    ),
 ];
 
 const CORE: &str = "release-glz-core";
 const ASSURANCE: &str = "assurance-core";
 
 /// Every negative control, each of which has to fail exactly its harness's assertion.
-pub const CONTROLS: [Control; 76] = [
+pub const CONTROLS: [Control; 82] = [
     control(
         ASSURANCE,
         "negative-control-incomplete-run",
@@ -435,6 +459,30 @@ pub const CONTROLS: [Control; 76] = [
     ),
     control(
         CORE,
+        "negative-control-reverse-numbers",
+        "precedence::proofs::a_train_meets_its_own_label_by_its_number",
+        "a train must meet its own label by its number",
+    ),
+    control(
+        CORE,
+        "negative-control-one-label",
+        "precedence::proofs::a_train_compares_like_the_text_that_spells_it",
+        "a train must compare like the text that spells it",
+    ),
+    control(
+        CORE,
+        "negative-control-unchecked-train",
+        "precedence::proofs::text_parses_as_a_train_exactly_when_it_spells_one",
+        "text must parse as a train exactly when it spells one",
+    ),
+    control(
+        CORE,
+        "negative-control-leading-zero",
+        "precedence::proofs::the_prerelease_grammar_is_the_one_semantic_versioning_states",
+        "the prerelease grammar must be the one semantic versioning states",
+    ),
+    control(
+        CORE,
         "negative-control-republish",
         "publication::proofs::an_effect_concerns_only_an_object_the_world_lacks",
         "an effect must concern an object the world lacks",
@@ -510,6 +558,12 @@ pub const CONTROLS: [Control; 76] = [
         "negative-control-backward-train",
         "selection::proofs::a_train_moves_forward_or_counts_up_within_its_channel",
         "a train must not move back without an explicitly higher core",
+    ),
+    control(
+        CORE,
+        "negative-control-explicit-retrain",
+        "selection::proofs::an_explicit_version_decides_the_selection_on_a_train",
+        "an explicit version must decide the selection on a train",
     ),
     control(
         CORE,
@@ -744,6 +798,12 @@ pub const CONTROLS: [Control; 76] = [
         "negative-control-ready-without-docs",
         "wait::proofs::a_wait_sleeps_only_before_another_poll_and_ends_at_the_first_visible_one",
         "a release must count as visible exactly when the registry lists it with the docs it needs",
+    ),
+    control(
+        CORE,
+        "negative-control-signed-delay",
+        "wait::proofs::a_retry_after_header_names_a_delay_only_in_digits",
+        "a Retry-After header must name a delay only in digits",
     ),
 ];
 

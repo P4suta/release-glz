@@ -112,6 +112,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A `Retry-After` header counts only in its delay form of digits, so `+5` no longer makes the registry or GitHub client wait five seconds.
 - An archive whose entries differ only in Unicode normalization, such as `café.txt` with a precomposed and a decomposed `é`, is refused before extraction.
   The default macOS file system stores such entries under one name, so the later one could replace the earlier one there.
 - A release of a Candidate without docs stops in a conflict when the registry already holds docs for its version.
