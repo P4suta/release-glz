@@ -7,8 +7,8 @@ date: 2026-10-30
 ## Status
 
 Proposed.
-[Prove each module in its own bounded run](prove-each-module-in-its-own-bounded-run.md) partly supersedes it.
-The gate proves each module's harnesses in their own run, and each run meets the conditions below for its module.
+[Prove each harness in its own bounded run](prove-each-harness-in-its-own-bounded-run.md) partly supersedes it, after [prove each module in its own bounded run](prove-each-module-in-its-own-bounded-run.md) did.
+The gate proves each harness in its own run, and each run meets the conditions below for its harness.
 
 ## Context
 
