@@ -11,7 +11,6 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 use crate::config::host_is_loopback_ip;
-use crate::git::OBJECT_HEX_LEN;
 use crate::units::{KIB, MIB};
 
 /// The only issuer whose GitHub Actions tokens are accepted.
@@ -508,10 +507,7 @@ pub fn verify_github_oidc_token(
 }
 
 fn is_full_sha(value: &str) -> bool {
-    value.len() == OBJECT_HEX_LEN
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+    release_glz_core::is_object_id(value.as_bytes())
 }
 
 fn verify_rs256_signature(

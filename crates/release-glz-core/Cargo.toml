@@ -50,6 +50,22 @@ negative-control-stall = []
 negative-control-forget-failure = []
 # Going on with an observation of another number of objects.
 negative-control-reshape = []
+# Accepting uppercase hexadecimal digits in a digest or an object id.
+negative-control-hex-case = []
+# Accepting a digest or an object id when any one byte is a digit.
+negative-control-hex-any-byte = []
+# Accepting a digest or an object id that is longer than its length.
+negative-control-hex-length = []
+# Accepting a `..` path component.
+negative-control-path-traversal = []
+# Accepting a colon in a path component.
+negative-control-path-colon = []
+# Recognizing a Windows device name only in uppercase.
+negative-control-device-case = []
+# Ending the stem of a component at its last dot instead of its first.
+negative-control-device-stem = []
+# Letting a file and a directory of the same folded name both stand.
+negative-control-case-collision = []
 # Ordering two prereleases with the same identifiers as unequal.
 negative-control-equal-prereleases = []
 # Ordering a stable release before the prereleases of its core.
