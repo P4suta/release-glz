@@ -46,7 +46,7 @@ const fn control(
 }
 
 /// Every harness of the proof packages, with its cover count.
-pub const HARNESSES: [Harness; 65] = [
+pub const HARNESSES: [Harness; 66] = [
     harness(
         "proofs::a_proof_run_is_admitted_only_when_every_expected_harness_verified",
         2,
@@ -121,6 +121,10 @@ pub const HARNESSES: [Harness; 65] = [
     ),
     harness(
         "precedence::proofs::a_train_compares_like_the_text_that_spells_it",
+        2,
+    ),
+    harness(
+        "precedence::proofs::a_train_meets_its_own_label_by_its_number",
         2,
     ),
     harness(
@@ -274,7 +278,7 @@ const CORE: &str = "release-glz-core";
 const ASSURANCE: &str = "assurance-core";
 
 /// Every negative control, each of which has to fail exactly its harness's assertion.
-pub const CONTROLS: [Control; 68] = [
+pub const CONTROLS: [Control; 69] = [
     control(
         ASSURANCE,
         "negative-control-incomplete-run",
@@ -418,6 +422,12 @@ pub const CONTROLS: [Control; 68] = [
         "negative-control-reverse-numbers",
         "precedence::proofs::a_train_counts_up_and_moves_through_its_channels_in_precedence",
         "a train's next number must follow it",
+    ),
+    control(
+        CORE,
+        "negative-control-reverse-numbers",
+        "precedence::proofs::a_train_meets_its_own_label_by_its_number",
+        "a train must meet its own label by its number",
     ),
     control(
         CORE,

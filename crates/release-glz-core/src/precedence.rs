@@ -713,6 +713,54 @@ mod proofs {
         kani::cover!(ordering == Ordering::Less);
     }
 
+    /// Against text with its own label and one more identifier, a train compares by its number when that identifier is numeric, and ranks below it otherwise.
+    ///
+    /// The core, the channel, and the train number are symbolic, and the second identifier is any valid one-byte identifier.
+    #[kani::proof]
+    #[kani::unwind(8)]
+    fn a_train_meets_its_own_label_by_its_number() {
+        let channel: Channel = kani::any();
+        let number: u64 = kani::any();
+        let second: u8 = kani::any();
+        kani::assume(second.is_ascii_alphanumeric() || second == b'-');
+        let (mut alpha, mut beta, mut rc) = (*b"alpha.0", *b"beta.0", *b"rc.0");
+        let text: &[u8] = match channel {
+            Channel::Alpha => {
+                alpha[6] = second;
+                &alpha
+            }
+            Channel::Beta => {
+                beta[5] = second;
+                &beta
+            }
+            Channel::Rc => {
+                rc[3] = second;
+                &rc
+            }
+        };
+        let core = kani::any();
+        let train = Version {
+            core,
+            pre: Pre::Train(channel, number),
+        };
+        let against = Version {
+            core,
+            pre: Pre::Other(text),
+        };
+        let expected = if second.is_ascii_digit() {
+            number.cmp(&u64::from(second - b'0'))
+        } else {
+            Ordering::Less
+        };
+        let ordering = compare(&train, &against);
+        kani::assert(
+            ordering == expected,
+            "a train must meet its own label by its number",
+        );
+        kani::cover!(ordering == Ordering::Greater);
+        kani::cover!(ordering == Ordering::Less && !second.is_ascii_digit());
+    }
+
     /// Text parses as a train exactly when it spells `<label>.<number>` with a number that has no leading zero, any other text keeps its bytes, and its first identifier decides the channel it names.
     ///
     /// The text is any eight bytes or fewer.

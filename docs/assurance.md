@@ -178,6 +178,7 @@ The core decides before the prerelease, a stable release follows every prereleas
 A train compares, parses, and names its channel exactly as the text `<label>.<number>` that spells it, and the prerelease grammar is the one semantic versioning states.
 Kani covers prerelease text of at most three bytes for one version and two bytes for each of a pair.
 It compares trains with one-digit numbers to any valid text of at most two bytes.
+It compares a train with any number to its own label and any valid one-byte identifier, which reaches the comparison of the number.
 It parses any text of at most eight bytes, and it checks the grammar of any text of at most four bytes.
 The differential tests and the fuzz target compare the core with the `semver` crate on longer text.
 
@@ -185,6 +186,7 @@ The differential tests and the fuzz target compare the core with the `semver` cr
 - Kani: `precedence::proofs::a_stable_release_follows_every_prerelease_of_its_core`
 - Kani: `precedence::proofs::the_core_decides_before_the_prerelease`
 - Kani: `precedence::proofs::a_train_compares_like_the_text_that_spells_it`
+- Kani: `precedence::proofs::a_train_meets_its_own_label_by_its_number`
 - Kani: `precedence::proofs::text_parses_as_a_train_exactly_when_it_spells_one`
 - Kani: `precedence::proofs::the_prerelease_grammar_is_the_one_semantic_versioning_states`
 - Fuzz: `prerelease`
