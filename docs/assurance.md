@@ -143,10 +143,13 @@ The run harnesses cover releases of at most three objects and four observations,
 
 ### Release states move forward, and a terminal state never changes
 
-Within one run, every state that the run reports may follow the state of its first plan in the release lifecycle, for worlds that never lose an object they showed.
+Within one approved run, every state that the run reports may follow the state of its first plan in the release lifecycle.
+The proof assumes a world that never loses an object it showed and never shows one that differs from the Candidate.
+A world that replaces an object, or shows one that differs, can end the run in `conflict` after any plan, which the conflict property covers.
 Kani proves the lifecycle's rules for every pair of states, and it proves the run's reports for releases of at most three objects over four observations.
 A new run starts from a fresh observation, so `blocked` ends a run but not a release, and a later run can still end `released`.
 
+- Kani: `run::proofs::a_run_reports_states_in_lifecycle_order`
 - Kani: `lifecycle::proofs::every_state_may_repeat`
 - Kani: `lifecycle::proofs::a_terminal_state_never_changes`
 - Kani: `lifecycle::proofs::normal_states_form_one_forward_chain`
@@ -156,6 +159,9 @@ A new run starts from a fresh observation, so `blocked` ends a run but not a rel
 - Test: `tests/v1_domain.rs::release_state_property_covers_every_pair_in_the_monotonic_lattice`
 
 ### Version arithmetic never wraps, and the larger bump wins
+
+An increment adds exactly one or reports the largest value, and a bump raises the component it names, resets the smaller ones, or reports an overflow.
+Kani proves these rules for every bump and every version core, with each component any `u64`.
 
 - Kani: `version::proofs::the_join_of_two_bumps_is_the_larger_one`
 - Kani: `version::proofs::an_increment_adds_one_or_reports_the_largest_value`
@@ -180,6 +186,7 @@ Kani proves it for every core and train number over versions that are stable or 
 ### A release train only moves forward
 
 A train counts up within its channel or moves on to a later channel, a move back needs an explicitly higher core, and a first release joins the configured train.
+Kani proves it for every core, channel, and train number over versions that are stable or on a train.
 
 - Kani: `selection::proofs::a_train_moves_forward_or_counts_up_within_its_channel`
 - Kani: `selection::proofs::the_first_release_joins_the_configured_train`
@@ -260,10 +267,12 @@ Kani proves it for names of at most one character, and longer names compare by t
 
 ### Unpacking an archive writes only portable relative paths
 
-An accepted path is relative, and none of its components is empty, `.`, `..`, a name that Windows reserves for a device, or a name with a character that some supported OS forbids.
+An accepted path is relative, and none of its components is empty, `.`, or `..`.
+No component is a name that Windows reserves for a device or holds a character that some supported OS forbids.
 Two entries whose paths fold to the same file or directory once letter case no longer counts never both stand.
 Kani proves the character rules for every byte and every byte pair, and the device names for every stem of up to eight bytes.
-It proves where a stem ends for components of up to six bytes, what an accepted component may hold for components of up to eight bytes, and the collision rule for pairs of folded paths of up to five bytes, which nest two directories deep.
+It proves where a stem ends for components of up to six bytes and what an accepted component may hold for components of up to eight bytes.
+It proves the collision rule for pairs of folded paths of up to five bytes, which nest two directories deep.
 
 - Kani: `archive_path::proofs::a_component_refuses_exactly_the_characters_windows_forbids`
 - Kani: `archive_path::proofs::a_stem_names_a_device_exactly_when_it_is_reserved`
@@ -278,6 +287,9 @@ It proves where a stem ends for components of up to six bytes, what an accepted 
 
 ### Parsers refuse malformed input without panicking
 
+No proof covers these parsers.
+Fuzzing checks them, and every pull request replays the committed corpus of each fuzz target.
+
 - Fuzz: `api_interface`
 - Fuzz: `config`
 - Fuzz: `identifiers`
@@ -288,7 +300,8 @@ It proves where a stem ends for components of up to six bytes, what an accepted 
 ### A Release PR body carries exactly the marker that release-glz wrote
 
 A rendered marker after inert text is the one marker that ends the body, its fields give back every value, and a body with an earlier marker has no marker.
-Kani proves inert text, the byte search, and reading one field on small complete domains, and Lean proves the marker for bodies of every length.
+Kani proves inert text for texts of at most three bytes and the byte search for haystacks of at most four bytes with needles of at most two.
+It proves reading one field for fields of at most nine bytes, and Lean proves the marker for bodies of every length.
 The adapter trims trailing whitespace and splits the fields at Unicode whitespace before the core reads them.
 That split agrees with the model's split at spaces, because no value that release-glz writes holds whitespace.
 
@@ -333,6 +346,7 @@ Kani proves it for texts of at most three bytes with two secrets of at most two 
 ### No job that compiles dependencies holds a write token
 
 Dependency builds may run code, so the jobs that compile hold read permissions only, and hooks receive only the environment they declare.
+Tests check the generated workflows and the hook environment, and no proof covers them.
 
 - Test: `tests/workflow_permissions.rs::no_job_that_compiles_holds_a_write_permission`
 - Test: `tests/workflow_permissions.rs::the_check_finds_a_write_job_that_would_compile`
@@ -341,6 +355,7 @@ Dependency builds may run code, so the jobs that compile hold read permissions o
 ### Proof evidence counts only from an audited run
 
 The proof gate admits a run only when every listed harness verified and no other ran, and a negative control only when it failed exactly its expected assertion.
+Kani proves both rules for every exit code and every combination of the counts and flags in a run's report.
 
 - Kani: `proofs::a_proof_run_is_admitted_only_when_every_expected_harness_verified`
 - Kani: `proofs::a_control_run_is_admitted_only_when_exactly_its_assertion_failed`

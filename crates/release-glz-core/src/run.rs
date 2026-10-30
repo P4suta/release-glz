@@ -151,6 +151,10 @@ impl<'a> Run<'a> {
         if let Some(state) = negative_control_unfloored(state) {
             return state;
         }
+        #[cfg(feature = "negative-control-lower-released")]
+        if let Some(state) = negative_control_lower_released(self, state) {
+            return state;
+        }
         match state {
             ReleaseState::Released | ReleaseState::Conflict => state,
             _ if self.started => ReleaseState::PartiallyReleased,
@@ -279,6 +283,12 @@ fn negative_control_forget_success(run: &Run<'_>) -> Option<ReleaseState> {
 #[cfg(feature = "negative-control-unfloored")]
 fn negative_control_unfloored(state: ReleaseState) -> Option<ReleaseState> {
     Some(state)
+}
+
+/// Lowers released to partially released once the run started, as a floor that forgot the states above it would.
+#[cfg(feature = "negative-control-lower-released")]
+fn negative_control_lower_released(run: &Run<'_>, state: ReleaseState) -> Option<ReleaseState> {
+    (run.started && state == ReleaseState::Released).then_some(ReleaseState::PartiallyReleased)
 }
 
 /// Goes on with an observation of another number of objects.
@@ -531,6 +541,75 @@ mod proofs {
         }
         kani::cover!(lagged);
         kani::cover!(stopped);
+    }
+
+    /// How far an object has come in a world that never loses one it showed: absent, then pending, then matching.
+    fn shown_rank(presence: Presence) -> u8 {
+        match presence {
+            Presence::Absent => 0,
+            Presence::Pending => 1,
+            Presence::Matches | Presence::Differs => 2,
+        }
+    }
+
+    /// For any world that never loses an object it showed and never shows one that differs from the Candidate, every state that an approved run reports may follow the state of its first plan in the release lifecycle.
+    ///
+    /// A run reports when it stops and when an observation fails, and `ReleaseState::can_advance_to` states which state may follow which.
+    /// The search through the six normal states of the lifecycle needs the larger unwinding bound.
+    #[kani::proof]
+    #[kani::unwind(7)]
+    fn a_run_reports_states_in_lifecycle_order() {
+        let wanted: [bool; OBJECTS] = kani::any();
+        let blocking: [bool; OBJECTS] = kani::any();
+        let mut marks = [false; OBJECTS];
+        let mut run = Run::new(&mut marks, true);
+        let mut shown = [Presence::Absent; OBJECTS];
+        let mut first: Option<ReleaseState> = None;
+        let mut advanced = false;
+        for _ in 0..OBSERVATIONS {
+            if let Some(first) = first {
+                kani::assert(
+                    first.can_advance_to(run.unobserved()),
+                    "every state a run reports must follow the state of its first plan",
+                );
+            }
+            let objects: [Object; OBJECTS] = core::array::from_fn(|index| {
+                let presence: Presence = kani::any();
+                kani::assume(presence != Presence::Differs);
+                kani::assume(shown_rank(presence) >= shown_rank(shown[index]));
+                kani::assume(wanted[index] || presence == Presence::Absent);
+                Object {
+                    wanted: wanted[index],
+                    presence,
+                    blocking: blocking[index],
+                }
+            });
+            shown = core::array::from_fn(|index| objects[index].presence);
+            let state = plan_state(&objects, true);
+            if first.is_none() {
+                first = state;
+            }
+            let reported = match run.observed(&objects) {
+                Step::Apply(_) => {
+                    run.applied(kani::any());
+                    continue;
+                }
+                Step::Finish(state)
+                | Step::Failed { state, .. }
+                | Step::Diverged(state)
+                | Step::Reshaped(state) => state,
+                Step::Conflict(_) => ReleaseState::Conflict,
+            };
+            if let Some(first) = first {
+                kani::assert(
+                    first.can_advance_to(reported),
+                    "every state a run reports must follow the state of its first plan",
+                );
+                advanced |= first != reported;
+            }
+            break;
+        }
+        kani::cover!(advanced);
     }
 
     /// For any world, a run stops only when nothing but optional effects it already attempted remains, and it reports released exactly when no blocking effect remains.
