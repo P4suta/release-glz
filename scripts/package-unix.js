@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// @ts-check
 "use strict";
 
 const fs = require("node:fs");
@@ -62,20 +63,33 @@ const STORED_NLEN_AT = 3;
 const STORED_BLOCK = 0;
 const FINAL_STORED_BLOCK = 1;
 
+/**
+ * @param {number} value
+ * @param {number} unit
+ * @returns {number}
+ */
 function roundUp(value, unit) {
   return Math.ceil(value / unit) * unit;
 }
 
+/**
+ * @param {string} output
+ * @returns {void}
+ */
 function outputMustNotExist(output) {
   try {
     fs.lstatSync(output);
   } catch (error) {
-    if (error.code === "ENOENT") return;
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") return;
     throw error;
   }
   throw new Error("output already exists");
 }
 
+/**
+ * @param {string} binary
+ * @returns {Buffer}
+ */
 function readBinary(binary) {
   const metadata = fs.lstatSync(binary);
   if (
@@ -91,6 +105,10 @@ function readBinary(binary) {
   return contents;
 }
 
+/**
+ * @param {number} size
+ * @returns {Buffer}
+ */
 function ustarHeader(size) {
   const header = Buffer.alloc(BLOCK_BYTES);
   header.write(ENTRY_NAME, HEADER.NAME_AT, "ascii");
@@ -114,6 +132,10 @@ function ustarHeader(size) {
   return header;
 }
 
+/**
+ * @param {Buffer} contents
+ * @returns {Buffer}
+ */
 function ustarArchive(contents) {
   const entryBytes = BLOCK_BYTES + roundUp(contents.length, BLOCK_BYTES);
   const archive = Buffer.alloc(roundUp(entryBytes + END_OF_ARCHIVE_BYTES, RECORD_BYTES));
@@ -122,7 +144,12 @@ function ustarArchive(contents) {
   return archive;
 }
 
+/**
+ * @param {Buffer} data
+ * @returns {Buffer}
+ */
 function storedGzip(data) {
+  /** @type {Buffer[]} */
   const parts = [Buffer.from(GZIP_HEADER)];
   for (let offset = 0; offset < data.length; offset += MAX_STORED_BLOCK_BYTES) {
     const block = data.subarray(offset, offset + MAX_STORED_BLOCK_BYTES);
@@ -139,22 +166,42 @@ function storedGzip(data) {
   return Buffer.concat(parts);
 }
 
+/**
+ * @param {string} binary
+ * @param {string} output
+ * @returns {void}
+ */
 function createTarGz(binary, output) {
   const contents = readBinary(binary);
   outputMustNotExist(output);
   fs.writeFileSync(output, storedGzip(ustarArchive(contents)), { flag: "wx", mode: 0o600 });
 }
 
+/**
+ * @param {string[]} argv
+ * @returns {{binary: string, output: string}}
+ */
 function argumentsFrom(argv) {
-  if (argv.length !== 4 || argv[0] !== "--binary" || argv[2] !== "--out" || !argv[1] || !argv[3]) {
+  const [binaryFlag, binary, outputFlag, output] = argv;
+  if (
+    argv.length !== 4 ||
+    binaryFlag !== "--binary" ||
+    outputFlag !== "--out" ||
+    !binary ||
+    !output
+  ) {
     throw new Error("usage: --binary FILE --out FILE");
   }
-  if (path.resolve(argv[1]) === path.resolve(argv[3])) {
+  if (path.resolve(binary) === path.resolve(output)) {
     throw new Error("binary and output must be different paths");
   }
-  return { binary: argv[1], output: argv[3] };
+  return { binary, output };
 }
 
+/**
+ * @param {string[]} argv
+ * @returns {void}
+ */
 function main(argv = process.argv.slice(2)) {
   const options = argumentsFrom(argv);
   createTarGz(options.binary, options.output);
@@ -164,7 +211,8 @@ if (require.main === module) {
   try {
     main();
   } catch (error) {
-    process.stderr.write(`Unix package generation failed: ${error.message}\n`);
+    const message = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`Unix package generation failed: ${message}\n`);
     process.exitCode = 1;
   }
 }

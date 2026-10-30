@@ -1,3 +1,4 @@
+// @ts-check
 "use strict";
 
 const assert = require("node:assert/strict");
@@ -7,6 +8,7 @@ const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const test = require("node:test");
 
+/** @type {Array<[string, string]>} */
 const targets = [
   ["x86_64-unknown-linux-musl", "tar.gz"],
   ["aarch64-unknown-linux-musl", "tar.gz"],
@@ -40,6 +42,10 @@ test("generates and checks the complete action checksum manifest", () => {
   assert.match(mismatch.stderr, /does not match/);
 });
 
+/**
+ * @param {string[]} args
+ * @returns {{status: number | null, stdout: string, stderr: string}}
+ */
 function run(args) {
   const result = spawnSync(
     process.execPath,

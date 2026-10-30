@@ -1,3 +1,4 @@
+// @ts-check
 "use strict";
 
 const childProcess = require("node:child_process");
@@ -20,16 +21,143 @@ const SHIPPED_TARGETS = Object.freeze([
   "aarch64-pc-windows-msvc",
 ]);
 
+/**
+ * The fields of one `cargo metadata` package that the evidence reads.
+ * @typedef {object} CargoPackage
+ * @property {string} id
+ * @property {string} name
+ * @property {string} version
+ * @property {string | null} [license]
+ * @property {string | null} [repository]
+ * @property {string | null} [source]
+ */
+
+/**
+ * One node of the `cargo metadata` resolve graph, whose dependencies the graph walk checks itself.
+ * @typedef {{id: string, deps?: unknown}} CargoNode
+ */
+
+/**
+ * The fields of one `cargo metadata` snapshot that the evidence reads.
+ * @typedef {object} CargoMetadata
+ * @property {CargoPackage[]} packages
+ * @property {string[]} workspace_members
+ * @property {{nodes: CargoNode[]}} resolve
+ */
+
+/**
+ * @typedef {object} LibraryFields
+ * @property {"library"} type
+ * @property {string} name
+ * @property {string} version
+ * @property {string} purl
+ * @property {Array<{expression: string}>} licenses
+ * @property {Array<{alg: "SHA-256", content: string}>} [hashes]
+ * @property {Array<{type: "vcs", url: string}>} [externalReferences]
+ * @property {Array<{name: string, value: string}>} [properties]
+ */
+
+/** @typedef {LibraryFields & {"bom-ref": string}} CycloneDxComponent */
+
+/**
+ * @typedef {object} ApplicationFields
+ * @property {"application"} type
+ * @property {string} name
+ * @property {string} version
+ * @property {Array<{expression: string}>} licenses
+ */
+
+/**
+ * @typedef {object} CycloneDxDocument
+ * @property {"CycloneDX"} bomFormat
+ * @property {"1.6"} specVersion
+ * @property {1} version
+ * @property {{component: ApplicationFields & {"bom-ref": string}}} metadata
+ * @property {CycloneDxComponent[]} components
+ */
+
+/**
+ * @typedef {{name: string, version: string, license: string, source: string | null, repository: string | null}} LicenseEntry
+ */
+
+/**
+ * @typedef {{schema: "third-party-licenses/v1", package: string, version: string, packages: LicenseEntry[]}} LicenseInventory
+ */
+
+/**
+ * @param {unknown} value
+ * @returns {value is Record<string, unknown>}
+ */
+function isRecord(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+/**
+ * @param {unknown} value
+ * @returns {value is string | null | undefined}
+ */
+function isOptionalText(value) {
+  return value === undefined || value === null || typeof value === "string";
+}
+
+/**
+ * @param {unknown} value
+ * @returns {value is CargoPackage}
+ */
+function isCargoPackage(value) {
+  return (
+    isRecord(value) &&
+    typeof value.id === "string" &&
+    typeof value.name === "string" &&
+    typeof value.version === "string" &&
+    isOptionalText(value.license) &&
+    isOptionalText(value.repository) &&
+    isOptionalText(value.source)
+  );
+}
+
+/**
+ * @param {unknown} value
+ * @returns {value is CargoMetadata}
+ */
+function isCargoMetadata(value) {
+  return (
+    isRecord(value) &&
+    Array.isArray(value.packages) &&
+    value.packages.every(isCargoPackage) &&
+    Array.isArray(value.workspace_members) &&
+    value.workspace_members.every((member) => typeof member === "string") &&
+    isRecord(value.resolve) &&
+    Array.isArray(value.resolve.nodes) &&
+    value.resolve.nodes.every((node) => isRecord(node) && typeof node.id === "string")
+  );
+}
+
+/**
+ * @param {string} name
+ * @param {string} version
+ * @returns {string}
+ */
 function packageKey(name, version) {
   return `${name}\0${version}`;
 }
 
+/**
+ * The registry checksum of every locked package, keyed by name and version.
+ * @param {string} source
+ * @returns {Map<string, string>}
+ */
 function parseLockChecksums(source) {
   if (Buffer.byteLength(source, "utf8") > MAX_LOCK_BYTES) {
     throw new Error(`Cargo.lock exceeds the ${MAX_LOCK_BYTES / MIB} MiB evidence limit`);
   }
+  /** @type {Map<string, string>} */
   const checksums = new Map();
   for (const block of source.split(/^\[\[package\]\]\s*$/m).slice(1)) {
+    /**
+     * @param {string} field
+     * @returns {string | undefined}
+     */
     const value = (field) => {
       const match = block.match(new RegExp(`^${field}\\s*=\\s*"([^"]+)"\\s*$`, "m"));
       return match?.[1];
@@ -50,8 +178,14 @@ function parseLockChecksums(source) {
   return checksums;
 }
 
+/**
+ * @param {CargoPackage} pkg
+ * @param {string | undefined} checksum
+ * @returns {CycloneDxComponent}
+ */
 function componentFor(pkg, checksum) {
   const purl = `pkg:cargo/${encodeURIComponent(pkg.name)}@${encodeURIComponent(pkg.version)}`;
+  /** @type {CycloneDxComponent} */
   const component = {
     type: "library",
     "bom-ref": purl,
@@ -70,29 +204,35 @@ function componentFor(pkg, checksum) {
   return component;
 }
 
+/**
+ * The SBOM and license inventory of the runtime dependencies that any shipped target links.
+ * @param {unknown} metadataInput One `cargo metadata` snapshot, or one per shipped target.
+ * @param {Map<string, string>} lockChecksums
+ * @returns {{sbom: CycloneDxDocument, licenses: LicenseInventory}}
+ */
 function generateDocuments(metadataInput, lockChecksums) {
-  const snapshots = Array.isArray(metadataInput) ? metadataInput : [metadataInput];
-  if (snapshots.length === 0) throw new Error("cargo metadata has no target snapshots");
-  for (const metadata of snapshots) {
-    if (
-      !metadata ||
-      !Array.isArray(metadata.packages) ||
-      !Array.isArray(metadata.workspace_members) ||
-      !metadata.resolve ||
-      !Array.isArray(metadata.resolve.nodes)
-    ) {
-      throw new Error("cargo metadata has an unsupported shape");
-    }
-  }
-  const first = snapshots[0];
+  /** @type {unknown[]} */
+  const inputs = Array.isArray(metadataInput) ? metadataInput : [metadataInput];
+  const snapshots = inputs.map((metadata) => {
+    if (!isCargoMetadata(metadata)) throw new Error("cargo metadata has an unsupported shape");
+    return metadata;
+  });
+  const [first] = snapshots;
+  if (first === undefined) throw new Error("cargo metadata has no target snapshots");
   const workspace = new Set(first.workspace_members);
   const root = first.packages
     .filter((pkg) => workspace.has(pkg.id))
     .sort((left, right) => left.name.localeCompare(right.name))[0];
   if (!root) throw new Error("cargo metadata has no workspace package");
 
+  /** @type {Map<string, CargoPackage>} */
   const packages = new Map();
+  /** @type {Set<string>} */
   const runtime = new Set();
+  /**
+   * @param {string[]} members
+   * @returns {string}
+   */
   const workspaceIdentity = (members) => [...members].sort().join("\0");
   const expectedWorkspace = workspaceIdentity(first.workspace_members);
   for (const metadata of snapshots) {
@@ -145,19 +285,29 @@ function generateDocuments(metadataInput, lockChecksums) {
   };
 }
 
+/**
+ * The packages that `rootId` reaches through normal dependencies, without the root itself.
+ * @param {CargoMetadata} metadata
+ * @param {string} rootId
+ * @returns {Set<string>}
+ */
 function runtimeDependencyIds(metadata, rootId) {
   const nodes = new Map(metadata.resolve.nodes.map((node) => [node.id, node]));
   if (!nodes.has(rootId)) throw new Error("cargo metadata resolve graph has no root package");
   const visited = new Set([rootId]);
   const pending = [rootId];
-  while (pending.length > 0) {
-    const id = pending.pop();
+  for (let id = pending.pop(); id !== undefined; id = pending.pop()) {
     const node = nodes.get(id);
     if (!node || !Array.isArray(node.deps)) {
       throw new Error(`cargo metadata resolve graph is incomplete at ${id}`);
     }
     for (const dependency of node.deps) {
-      if (typeof dependency.pkg !== "string" || !Array.isArray(dependency.dep_kinds)) {
+      if (
+        !isRecord(dependency) ||
+        typeof dependency.pkg !== "string" ||
+        !Array.isArray(dependency.dep_kinds) ||
+        !dependency.dep_kinds.every(isRecord)
+      ) {
         throw new Error("cargo metadata dependency has an unsupported shape");
       }
       const runtime = dependency.dep_kinds.some(({ kind }) => kind === null || kind === "normal");
@@ -171,10 +321,18 @@ function runtimeDependencyIds(metadata, rootId) {
   return visited;
 }
 
+/**
+ * @param {string} id
+ * @returns {never}
+ */
 function missingPackage(id) {
   throw new Error(`cargo metadata has no package record for runtime dependency ${id}`);
 }
 
+/**
+ * @param {string} outputDirectory
+ * @returns {void}
+ */
 function main(outputDirectory = process.argv[2] || "dist") {
   const metadata = SHIPPED_TARGETS.map((target) => {
     const metadataBytes = childProcess.execFileSync(
@@ -182,7 +340,9 @@ function main(outputDirectory = process.argv[2] || "dist") {
       ["metadata", "--format-version", "1", "--locked", "--filter-platform", target],
       { encoding: "utf8", maxBuffer: MAX_METADATA_BYTES },
     );
-    return JSON.parse(metadataBytes);
+    /** @type {unknown} */
+    const snapshot = JSON.parse(metadataBytes);
+    return snapshot;
   });
   const lock = fs.readFileSync("Cargo.lock", "utf8");
   const documents = generateDocuments(metadata, parseLockChecksums(lock));
@@ -203,7 +363,8 @@ if (require.main === module) {
   try {
     main();
   } catch (error) {
-    process.stderr.write(`evidence generation failed: ${error.message}\n`);
+    const message = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`evidence generation failed: ${message}\n`);
     process.exitCode = 1;
   }
 }

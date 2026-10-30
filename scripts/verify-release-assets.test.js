@@ -1,3 +1,4 @@
+// @ts-check
 "use strict";
 
 const assert = require("node:assert/strict");
@@ -11,6 +12,10 @@ const test = require("node:test");
 const script = path.join(__dirname, "verify-release-assets.js");
 const { validateInventory } = require("./verify-release-assets.js");
 
+/**
+ * @param {string} contents
+ * @returns {string}
+ */
 const digest = (contents) => `sha256:${crypto.createHash("sha256").update(contents).digest("hex")}`;
 
 test("accepts only unique existing assets drawn from the expected inventory", () => {
@@ -91,6 +96,11 @@ test("CLI derives the expected flat regular-file inventory and digests from dist
   const archive = { name: "release-glz.tar.gz", digest: digest("archive") };
   const sums = { name: "SHA256SUMS", digest: digest("sum") };
 
+  /**
+   * @param {unknown} body
+   * @param {...string} flags
+   * @returns {import("node:child_process").SpawnSyncReturns<string>}
+   */
   const run = (body, ...flags) =>
     childProcess.spawnSync(process.execPath, [script, "--artifacts", root, ...flags], {
       encoding: "utf8",
