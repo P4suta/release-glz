@@ -3,6 +3,7 @@
 //! `cargo xtask proofs` proves every Kani harness and negative control and audits each run.
 //! `cargo xtask lean` proves the Lean model of publication and its refinement of the core crate.
 //! `cargo xtask quint` model-checks the release protocol and writes the traces that the replay test reads.
+//! `cargo xtask trace` checks that `docs/assurance.md` maps every property to evidence that exists, and every check to a property.
 
 mod container;
 mod inventory;
@@ -11,6 +12,7 @@ mod proof_report;
 mod proofs;
 mod quint;
 mod source_snapshot;
+mod trace;
 
 use std::path::Path;
 use std::process::ExitCode;
@@ -25,8 +27,9 @@ fn main() -> ExitCode {
         ["proofs"] => proofs::run(root),
         ["lean"] => lean::run(root),
         ["quint"] => quint::run(root),
+        ["trace"] => trace::run(root),
         _ => {
-            eprintln!("usage: cargo xtask proofs|lean|quint");
+            eprintln!("usage: cargo xtask proofs|lean|quint|trace");
             return ExitCode::from(2);
         }
     };
