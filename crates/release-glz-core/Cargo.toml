@@ -144,6 +144,8 @@ negative-control-uncapped-busy-wait = []
 negative-control-sleep-after-last-poll = []
 # Counting a listed version as visible without the docs it needs.
 negative-control-ready-without-docs = []
+# Reading a signed Retry-After header as a delay.
+negative-control-signed-delay = []
 
 [dependencies]
 serde = { version = "1.0.228", default-features = false, features = [

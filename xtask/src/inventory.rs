@@ -46,7 +46,7 @@ const fn control(
 }
 
 /// Every harness of the proof packages, with its cover count.
-pub const HARNESSES: [Harness; 70] = [
+pub const HARNESSES: [Harness; 71] = [
     harness(
         "proofs::a_proof_run_is_admitted_only_when_every_expected_harness_verified",
         2,
@@ -282,13 +282,17 @@ pub const HARNESSES: [Harness; 70] = [
         "wait::proofs::a_wait_sleeps_only_before_another_poll_and_ends_at_the_first_visible_one",
         2,
     ),
+    harness(
+        "wait::proofs::a_retry_after_header_names_a_delay_only_in_digits",
+        2,
+    ),
 ];
 
 const CORE: &str = "release-glz-core";
 const ASSURANCE: &str = "assurance-core";
 
 /// Every negative control, each of which has to fail exactly its harness's assertion.
-pub const CONTROLS: [Control; 76] = [
+pub const CONTROLS: [Control; 77] = [
     control(
         ASSURANCE,
         "negative-control-incomplete-run",
@@ -744,6 +748,12 @@ pub const CONTROLS: [Control; 76] = [
         "negative-control-ready-without-docs",
         "wait::proofs::a_wait_sleeps_only_before_another_poll_and_ends_at_the_first_visible_one",
         "a release must count as visible exactly when the registry lists it with the docs it needs",
+    ),
+    control(
+        CORE,
+        "negative-control-signed-delay",
+        "wait::proofs::a_retry_after_header_names_a_delay_only_in_digits",
+        "a Retry-After header must name a delay only in digits",
     ),
 ];
 

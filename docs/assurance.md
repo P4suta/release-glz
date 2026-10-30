@@ -98,13 +98,18 @@ A request to the registry or to GitHub waits only when another attempt follows.
 A busy response never makes it wait longer than a minute for the registry or thirty seconds for GitHub.
 In all, a registry request waits at most two minutes between its attempts, and a GitHub read at most one minute.
 A wait for a published release sleeps only between two polls, and it ends at the first poll that lists the version with the docs it needs.
+A `Retry-After` header names a wait only in digits, so a sign or a date leaves the policy's default wait, and both clients use exactly the shipped policies.
 Kani proves each wait for every policy, attempt, and answer, and it pins the wait after a transport failure for the first nine attempts.
 It proves the whole wait of the two shipped policies for every sequence of answers.
+It proves the reading of `Retry-After` for every text of up to three bytes and for the 20-digit texts on both sides of 2^64.
 The time that each attempt itself takes falls under the client's request timeouts, which no proof covers.
 
 - Kani: `wait::proofs::a_request_waits_only_before_another_attempt_and_only_as_long_as_its_answer_allows`
 - Kani: `wait::proofs::the_shipped_policies_bound_the_whole_wait_of_a_request`
 - Kani: `wait::proofs::a_wait_sleeps_only_before_another_poll_and_ends_at_the_first_visible_one`
+- Kani: `wait::proofs::a_retry_after_header_names_a_delay_only_in_digits`
+- Test: `src/forge.rs::a_busy_read_waits_only_as_long_as_digits_ask`
+- Test: `src/registry.rs::retry_after_and_checksums_validate_all_boundaries`
 - Test: `tests/registry_contract.rs::get_and_credential_audit_retries_are_bounded_and_never_change_method`
 - Test: `tests/registry_contract.rs::transport_failures_and_redirect_loops_exhaust_a_fixed_read_budget`
 - Test: `tests/registry_contract.rs::wait_for_reports_its_timeout_without_sleeping_after_the_last_poll`

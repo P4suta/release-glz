@@ -56,5 +56,5 @@ pub use selection::{
 pub use version::{Bump, VersionCore, increment};
 pub use wait::{
     AfterPoll, Answer, BusyDefault, GITHUB_READS, Next, REGISTRY_RETRIES, RetryPolicy, after_poll,
-    another_attempt_follows, release_ready,
+    another_attempt_follows, delay_seconds, release_ready,
 };
