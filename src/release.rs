@@ -272,11 +272,8 @@ impl LiveReleaseTarget {
 impl ReleaseTarget for LiveReleaseTarget {
     async fn observe(&self, intent: &ReleaseIntent) -> Result<ExternalReleaseState> {
         let package = self.exact_package_observation(intent).await?;
-        let docs = if intent.docs_sha256.is_some() {
-            self.exact_docs_observation(intent).await?
-        } else {
-            None
-        };
+        // Docs for a Candidate without docs contradict it, so the observation looks for docs either way.
+        let docs = self.exact_docs_observation(intent).await?;
         let tag = self
             .github
             .tag_state(&intent.tag)
@@ -762,18 +759,18 @@ where
                         }),
                     ));
                 }
-                Step::Diverged => {
+                Step::Diverged(state) => {
                     return Err(run_error(
-                        ReleaseState::Blocked,
+                        state,
                         crate::failure::classified(
                             crate::failure::FailureClass::Internal,
                             "release reconciliation did not converge",
                         ),
                     ));
                 }
-                Step::Reshaped => {
+                Step::Reshaped(state) => {
                     return Err(run_error(
-                        ReleaseState::Blocked,
+                        state,
                         crate::failure::classified(
                             crate::failure::FailureClass::Internal,
                             "the release's objects changed in number during the run",

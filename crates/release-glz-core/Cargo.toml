@@ -50,6 +50,12 @@ negative-control-stall = []
 negative-control-forget-failure = []
 # Going on with an observation of another number of objects.
 negative-control-reshape = []
+# Reporting blocked when an observation fails after an effect whose call succeeded.
+negative-control-forget-success = []
+# Reporting the state of the newest plan even below what the run already published.
+negative-control-unfloored = []
+# Lowering released to partially released once the run started.
+negative-control-lower-released = []
 # Accepting uppercase hexadecimal digits in a digest or an object id.
 negative-control-hex-case = []
 # Accepting a digest or an object id when any one byte is a digit.
@@ -94,6 +100,8 @@ negative-control-version-zero = []
 negative-control-breaking-footer = []
 # Matching commit types in lowercase only.
 negative-control-commit-type-case = []
+# Taking a breaking-change marker inside a line as a footer.
+negative-control-marker-anywhere = []
 # Leaving the last byte of each secret occurrence unredacted.
 negative-control-redaction-partial = []
 # Redacting the byte after each secret occurrence too.

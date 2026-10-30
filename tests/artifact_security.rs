@@ -265,6 +265,43 @@ fn archive_paths_reject_entries_that_collide_once_letter_case_no_longer_counts()
     }
 }
 
+/// The default macOS file system ignores Unicode normalization when it looks up a name, so it stores such entries as one.
+#[test]
+fn archive_paths_reject_entries_that_differ_only_in_unicode_normalization() {
+    for files in [
+        [
+            ("caf\u{e9}.txt", b"composed".as_slice()),
+            ("cafe\u{301}.txt", b"decomposed"),
+        ],
+        [("cafe\u{301}/a", b"nested"), ("caf\u{e9}", b"file")],
+        [("CAF\u{c9}.txt", b"upper"), ("cafe\u{301}.txt", b"lower")],
+        [("\u{212b}.txt", b"angstrom sign"), ("\u{e5}.txt", b"ring")],
+    ] {
+        let archive = tar_gz(&files);
+        let error = format!(
+            "{:#}",
+            validate_docs_tarball(&archive, ArchiveLimits::default()).unwrap_err()
+        );
+        let [(earlier, _), (later, _)] = files;
+        assert!(
+            error.contains(&format!("`{later}` collides with `{earlier}`")),
+            "accepted {files:?} or named another entry: {error}"
+        );
+    }
+}
+
+#[test]
+fn names_that_differ_beyond_normalization_still_pass() {
+    let archive = tar_gz(&[
+        ("cafe.txt", b"plain".as_slice()),
+        ("caf\u{e9}.txt", b"acute"),
+        ("caf\u{e8}.txt", b"grave"),
+        ("e\u{301}\u{323}", b"acute then dot"),
+        ("e\u{302}", b"circumflex"),
+    ]);
+    validate_docs_tarball(&archive, ArchiveLimits::default()).unwrap();
+}
+
 #[test]
 fn portable_names_that_resemble_refused_ones_still_pass() {
     let archive = tar_gz(&[

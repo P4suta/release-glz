@@ -112,6 +112,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- An archive whose entries differ only in Unicode normalization, such as `café.txt` with a precomposed and a decomposed `é`, is refused before extraction.
+  The default macOS file system stores such entries under one name, so the later one could replace the earlier one there.
+- A release of a Candidate without docs stops in a conflict when the registry already holds docs for its version.
+  The live observation used to skip docs for such a Candidate, so it published the tag and the GitHub Release over a world that contradicted the Candidate.
+- Once a run knows the release started, every failure it reports is `partially_released` and exits with code 7.
+  Before, a failed observation after a published package reported `blocked` with code 5, and a run that didn't converge reported `blocked` with code 1.
+  A required notification whose observation failed after finalization reported `blocked` with code 6.
 - The OIDC run attempt admits only ASCII digits, as the run ID does, so `+3` no longer reads as attempt 3.
   The registry wait also reports its timeout right after its last poll instead of sleeping once more first.
 - A release completes a GitHub Release asset that a broken upload left unfinished, and it refuses an asset name that GitHub would rename before anything publishes.

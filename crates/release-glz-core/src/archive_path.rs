@@ -145,14 +145,14 @@ fn same_name(stem: &[u8], name: &[u8]) -> bool {
     stem.eq_ignore_ascii_case(name)
 }
 
-/// The paths of one archive as a file system that ignores letter case sees them, such as the default ones on macOS and Windows.
+/// The paths of one archive as a file system that folds names sees them, such as the default ones on macOS and Windows, which ignore letter case.
 #[derive(Debug, Default)]
 pub struct FoldedPaths {
     files: BTreeMap<Vec<u8>, String>,
     directories: BTreeMap<Vec<u8>, String>,
 }
 
-/// An earlier entry that names the same file or directory as a new one once letter case no longer counts.
+/// An earlier entry that names the same file or directory as a new one once both paths are folded.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Collision {
     earlier: String,
@@ -166,13 +166,13 @@ impl Collision {
 }
 
 impl FoldedPaths {
-    /// Record a file path, or refuse it with the earlier entry that names the same file or directory once letter case no longer counts.
+    /// Record a file path under its folded form, or refuse it with the earlier entry whose folded path names the same file or directory.
     ///
-    /// Letter case stops counting through Unicode's lowercase mapping of the whole path, which keeps every `/` where it is.
-    pub fn claim(&mut self, path: &str) -> Result<(), Collision> {
-        let folded = path.to_lowercase().into_bytes();
+    /// The shell folds the path, and the fold has to keep every `/` where it is, so the prefixes of the folded path name its directories.
+    pub fn claim(&mut self, folded: &str, path: &str) -> Result<(), Collision> {
+        let folded = folded.as_bytes();
         if let Some(earlier) = collision(
-            &folded,
+            folded,
             |key| self.files.get(key),
             |key| self.directories.get(key),
         ) {
@@ -187,7 +187,7 @@ impl FoldedPaths {
                     .or_insert_with(|| path.to_owned());
             }
         }
-        self.files.insert(folded, path.to_owned());
+        self.files.insert(folded.to_vec(), path.to_owned());
         Ok(())
     }
 }

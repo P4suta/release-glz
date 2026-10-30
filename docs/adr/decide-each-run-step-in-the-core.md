@@ -28,7 +28,7 @@ The shell observes the world, applies the effect that `Run` chooses, and reports
 - The shell sizes the record of attempted effects from the first observation, and the run stops on an observation with another number of objects.
   Only an unsealed asset changes that number, and it conflicts first.
 
-Kani proves six properties for every sequence of observations over releases of at most three objects.
+Kani proves seven properties for every sequence of observations over releases of at most three objects.
 
 - A run applies only an approved effect that the world lacks, in publication order.
 - It attempts each optional effect at most once and stops within the attempts that its first plan listed.
@@ -36,8 +36,9 @@ Kani proves six properties for every sequence of observations over releases of a
 - A run stops only when nothing but optional effects it attempted remains, and it reports released exactly when no blocking effect remains.
 - A run whose effects land ends released.
 - An observation of another number of objects stops the run.
+- Once a run knows the release started, it never reports a state before `partially_released`, even when a later observation lags behind.
 
-A seventh harness proves one step from any record that a run can hold, over releases of at most five objects.
+An eighth harness proves one step from any record that a run can hold, over releases of at most five objects.
 The step applies only the first owed effect that the run doesn't pass over, spends exactly one attempt, and records exactly that attempt.
 A new run starts with an empty record and no budget.
 By induction on its steps, the order, the single attempt at each optional effect, and the attempt bound then hold for runs of any length.
