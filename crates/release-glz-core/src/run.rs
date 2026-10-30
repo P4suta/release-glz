@@ -19,13 +19,13 @@ pub enum Step {
     Failed {
         /// The object whose effect failed.
         index: usize,
-        /// The state of the plan that still lists the effect.
+        /// The state of the plan that still lists the effect, never before partially released once the run knows the release started.
         state: ReleaseState,
     },
-    /// Stop, because the run would need more attempts than its first plan listed effects.
-    Diverged,
-    /// Stop, because the observation holds another number of objects than the first one, so the run's record of attempted effects no longer applies.
-    Reshaped,
+    /// Stop in this state, because the run would need more attempts than its first plan listed effects.
+    Diverged(ReleaseState),
+    /// Stop in this state, because the observation holds another number of objects than the first one, so the run's record of attempted effects no longer applies.
+    Reshaped(ReleaseState),
 }
 
 /// The decisions of one release run.
@@ -44,10 +44,12 @@ pub struct Run<'a> {
     applying: Option<usize>,
     /// The effect whose call failed, until the next observation shows whether it landed.
     failed: Option<usize>,
-    /// The state of the plan that chose the last effect.
+    /// The state of the plan that chose the last effect, or blocked before the first one.
     planned: ReleaseState,
     /// The failed effect that the newest observation no longer lists.
     landed: Option<usize>,
+    /// Whether the run knows that the world holds something of the release, because an observation showed a started release or one of its effects landed, whatever a later observation shows.
+    started: bool,
 }
 
 impl<'a> Run<'a> {
@@ -62,6 +64,7 @@ impl<'a> Run<'a> {
             failed: None,
             planned: ReleaseState::Blocked,
             landed: None,
+            started: false,
         }
     }
 
@@ -72,14 +75,21 @@ impl<'a> Run<'a> {
         let state = match reconcile(objects, self.approved) {
             Outcome::Conflict(index) => return Step::Conflict(index),
             Outcome::AwaitingApproval => return Step::Finish(ReleaseState::AwaitingApproval),
-            Outcome::Proceed { state, .. } => state,
+            Outcome::Proceed { state, .. } => {
+                self.started |= matches!(
+                    state,
+                    ReleaseState::PartiallyReleased | ReleaseState::Released
+                );
+                self.vouched(state)
+            }
         };
-        if let Some(step) = reshaped(objects.len(), self.attempted.len()) {
+        if let Some(step) = reshaped(objects.len(), self.attempted.len(), state) {
             return step;
         }
         if let Some(index) = failed {
             if !owes(objects, index) {
                 self.landed = Some(index);
+                self.started = true;
             } else if let Some(step) = stop_after_failure(objects, index, state) {
                 return step;
             }
@@ -93,7 +103,7 @@ impl<'a> Run<'a> {
         };
         let budget = self.budget.get_or_insert_with(|| planned(objects));
         let Some(left) = spend(*budget) else {
-            return Step::Diverged;
+            return Step::Diverged(state);
         };
         *budget = left;
         if let Some(attempted) = self.attempted.get_mut(index) {
@@ -107,7 +117,9 @@ impl<'a> Run<'a> {
     /// Record how the call of the last [`Step::Apply`] ended.
     pub fn applied(&mut self, succeeded: bool) {
         let applying = self.applying.take();
-        if !succeeded {
+        if succeeded {
+            self.started |= applying.is_some();
+        } else {
             self.failed = applying;
         }
     }
@@ -119,16 +131,30 @@ impl<'a> Run<'a> {
 
     /// The state to report when an observation fails.
     ///
-    /// After a failed effect, the world may already hold it, so the run reports the state of the plan that chose the effect, and otherwise it reports blocked.
+    /// The run reports the state of the plan that chose its last effect, or blocked before its first effect, since a failed effect may have landed.
+    /// Once the run knows the release started, it never reports less than partially released.
     pub fn unobserved(&self) -> ReleaseState {
         #[cfg(feature = "negative-control-forget-failure")]
         if let Some(state) = negative_control_forget_failure() {
             return state;
         }
-        if self.failed.is_some() {
-            self.planned
-        } else {
-            ReleaseState::Blocked
+        #[cfg(feature = "negative-control-forget-success")]
+        if let Some(state) = negative_control_forget_success(self) {
+            return state;
+        }
+        self.vouched(self.planned)
+    }
+
+    /// The state to report instead of `state`: never before partially released once the run knows the release started, since the world then holds something of it even when an observation lags behind.
+    fn vouched(&self, state: ReleaseState) -> ReleaseState {
+        #[cfg(feature = "negative-control-unfloored")]
+        if let Some(state) = negative_control_unfloored(state) {
+            return state;
+        }
+        match state {
+            ReleaseState::Released | ReleaseState::Conflict => state,
+            _ if self.started => ReleaseState::PartiallyReleased,
+            _ => state,
         }
     }
 
@@ -176,13 +202,13 @@ fn planned(objects: &[Object]) -> usize {
         .count()
 }
 
-/// The stop for an observation of `observed` objects in a run that recorded `recorded`, if the counts differ.
-fn reshaped(observed: usize, recorded: usize) -> Option<Step> {
+/// The stop in `state` for an observation of `observed` objects in a run that recorded `recorded`, if the counts differ.
+fn reshaped(observed: usize, recorded: usize, state: ReleaseState) -> Option<Step> {
     #[cfg(feature = "negative-control-reshape")]
     if let Some(step) = negative_control_reshape() {
         return step;
     }
-    (observed != recorded).then_some(Step::Reshaped)
+    (observed != recorded).then_some(Step::Reshaped(state))
 }
 
 /// The stop for a failed effect of the object at `index` that the world still lacks, which only a blocking effect causes.
@@ -243,6 +269,18 @@ fn negative_control_forget_failure() -> Option<ReleaseState> {
     Some(ReleaseState::Blocked)
 }
 
+/// Reports blocked after an effect whose call succeeded, as runs did before the floor.
+#[cfg(feature = "negative-control-forget-success")]
+fn negative_control_forget_success(run: &Run<'_>) -> Option<ReleaseState> {
+    run.failed.is_none().then_some(ReleaseState::Blocked)
+}
+
+/// Reports the state that the newest plan shows, even below what the run already published.
+#[cfg(feature = "negative-control-unfloored")]
+fn negative_control_unfloored(state: ReleaseState) -> Option<ReleaseState> {
+    Some(state)
+}
+
 /// Goes on with an observation of another number of objects.
 #[cfg(feature = "negative-control-reshape")]
 fn negative_control_reshape() -> Option<Option<Step>> {
@@ -283,6 +321,23 @@ mod proofs {
             Outcome::Proceed { state, .. } => Some(state),
             Outcome::Conflict(_) | Outcome::AwaitingApproval => None,
         }
+    }
+
+    /// The state a run reports for a plan in `state`, once `started` tells whether one of its effects landed.
+    fn floor(started: bool, state: ReleaseState) -> ReleaseState {
+        match state {
+            ReleaseState::Released | ReleaseState::Conflict => state,
+            _ if started => ReleaseState::PartiallyReleased,
+            _ => state,
+        }
+    }
+
+    /// Whether `state` shows that a release has started.
+    fn started_state(state: ReleaseState) -> bool {
+        matches!(
+            state,
+            ReleaseState::PartiallyReleased | ReleaseState::Released
+        )
     }
 
     /// For any world, a run applies only an approved effect that the newest observation lacks, and only once no earlier object needs an effect, apart from optional effects it already attempted.
@@ -352,7 +407,7 @@ mod proofs {
                     attempted[index] = true;
                     run.applied(kani::any());
                 }
-                Step::Diverged => {
+                Step::Diverged(_) => {
                     diverged = true;
                     break;
                 }
@@ -371,54 +426,110 @@ mod proofs {
         let blocking: [bool; OBJECTS] = kani::any();
         let mut marks = [false; OBJECTS];
         let mut run = Run::new(&mut marks, true);
-        let mut failed: Option<(usize, ReleaseState)> = None;
+        let mut failed: Option<usize> = None;
+        let mut planned = ReleaseState::Blocked;
+        let mut started = false;
         let mut landed = false;
         let mut stopped = false;
         for _ in 0..OBSERVATIONS {
             kani::assert(
-                run.unobserved() == failed.map_or(ReleaseState::Blocked, |(_, state)| state),
-                "a run that can't observe must report the state of the plan that chose its failed effect",
+                run.unobserved() == floor(started, planned),
+                "a run that can't observe must report the state that its last plan vouches for",
             );
             let objects = observation(wanted, blocking);
             let state = plan_state(&objects, true);
+            started |= state.is_some_and(started_state);
             let step = run.observed(&objects);
             match (failed, state) {
-                (Some((index, _)), Some(state)) if owed(&objects[index]) => {
+                (Some(index), Some(state)) if owed(&objects[index]) => {
                     kani::assert(
                         run.landed().is_none(),
                         "an effect must count as applied only when its call succeeded or the world holds it",
                     );
                     if blocking[index] {
                         kani::assert(
-                            step == Step::Failed { index, state },
+                            step == Step::Failed {
+                                index,
+                                state: floor(started, state),
+                            },
                             "a failed blocking effect that the world lacks must stop the run",
                         );
                         stopped = true;
                     }
                 }
-                (Some((index, _)), Some(_)) => {
+                (Some(index), Some(_)) => {
                     kani::assert(
                         run.landed() == Some(index),
                         "a failed effect that the world holds must count as applied",
                     );
                     landed = true;
+                    started = true;
                 }
                 _ => kani::assert(
                     run.landed().is_none(),
                     "an effect must count as applied only when its call succeeded or the world holds it",
                 ),
             }
-            let Step::Apply(index) = step else {
+            let (Step::Apply(index), Some(state)) = (step, state) else {
                 break;
             };
             let succeeded: bool = kani::any();
             run.applied(succeeded);
-            failed = match (succeeded, state) {
-                (false, Some(state)) => Some((index, state)),
-                _ => None,
-            };
+            started |= succeeded;
+            planned = state;
+            failed = (!succeeded).then_some(index);
         }
         kani::cover!(landed);
+        kani::cover!(stopped);
+    }
+
+    /// For any world, once a run knows the release started, because an observation showed it started or one of its effects landed, the run never reports a state before partially released, whether it stops or can't observe, even when a later observation lags behind.
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn a_run_never_reports_less_than_partially_released_once_the_release_started() {
+        let wanted: [bool; OBJECTS] = kani::any();
+        let blocking: [bool; OBJECTS] = kani::any();
+        let mut marks = [false; OBJECTS];
+        let mut run = Run::new(&mut marks, true);
+        let mut started = false;
+        let mut lagged = false;
+        let mut stopped = false;
+        for _ in 0..OBSERVATIONS {
+            if started {
+                kani::assert(
+                    started_state(run.unobserved()),
+                    "a run must never report less than partially released once it knows the release started",
+                );
+            }
+            let objects = observation(wanted, blocking);
+            let state = plan_state(&objects, true);
+            lagged |= started && state == Some(ReleaseState::CandidateReady);
+            started |= state.is_some_and(started_state);
+            let step = run.observed(&objects);
+            started |= run.landed().is_some();
+            let reported = match step {
+                Step::Apply(_) => {
+                    let succeeded: bool = kani::any();
+                    run.applied(succeeded);
+                    started |= succeeded;
+                    continue;
+                }
+                Step::Conflict(_) => break,
+                Step::Finish(state)
+                | Step::Failed { state, .. }
+                | Step::Diverged(state)
+                | Step::Reshaped(state) => state,
+            };
+            if started {
+                kani::assert(
+                    started_state(reported),
+                    "a run must never report less than partially released once it knows the release started",
+                );
+                stopped = true;
+            }
+            break;
+        }
+        kani::cover!(lagged);
         kani::cover!(stopped);
     }
 
@@ -519,6 +630,7 @@ mod proofs {
             failed,
             planned: kani::any(),
             landed: None,
+            started: kani::any(),
         };
         let step = run.observed(&objects);
         let spent = run.budget;
@@ -570,10 +682,12 @@ mod proofs {
         kani::assert(
             matches!(
                 step,
-                Step::Conflict(_) | Step::Finish(ReleaseState::AwaitingApproval) | Step::Reshaped
+                Step::Conflict(_)
+                    | Step::Finish(ReleaseState::AwaitingApproval)
+                    | Step::Reshaped(_)
             ),
             "a run must stop when the number of objects changes",
         );
-        kani::cover!(step == Step::Reshaped);
+        kani::cover!(matches!(step, Step::Reshaped(_)));
     }
 }

@@ -26,14 +26,16 @@ It must never publish an object before an earlier blocking one, never report a r
   A call may commit and report either result, and another publisher may create one object with other content.
 - The runner's state is the record that `Run` keeps, and its step functions follow `Run::observed`, `Run::applied`, and `Run::unobserved`.
   An observation may fail once, and the release may start a second run after a stop or a crash between calls.
-- The invariant combines three properties.
+- The invariant combines four properties.
   The runner commits an object only when every earlier blocking object holds the Candidate's content.
   A run reports released only when every blocking object holds it, and nothing commits without approval.
+  Once a run knows the release started, it never stops in a state before `partially_released`.
 
 `cargo xtask quint` checks the model in the image that [`verification/quint.Dockerfile`](../../verification/quint.Dockerfile) pins.
 
 - An explicit-state model checker visits every state of releases of up to three objects and two runs, and the task requires the recorded number of distinct states.
 - A probe module whose runner applies the last effect first has to break the order, so the check can fail.
+  A second probe, whose runner reports the newest plan's state below what it already published, has to break the floor.
 - The task writes the traces of the scenario tests and of a seeded simulation again and requires them to equal [`verification/quint/traces`](../../verification/quint/traces).
 
 [`tests/run_replay.rs`](../../tests/run_replay.rs) replays every committed trace through `Run` on each pull request.
