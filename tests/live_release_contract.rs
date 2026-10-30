@@ -2,16 +2,18 @@ use std::collections::BTreeMap;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 
+use base64::Engine as _;
 use flate2::{Compression, write::GzEncoder};
+use release_glz::approval::{ApprovalRequest, verify_approval};
 use release_glz::authorization::{
-    GithubOidcClaims, JwkSet, OidcAudience, OidcExpectation, RsaJwk, VerifiedGithubOidc,
-    verify_github_oidc_token,
+    GithubOidcClaims, GithubOidcVerifier, JwkSet, OidcAudience, OidcExpectation, RsaJwk,
+    VerifiedGithubOidc, verify_github_oidc_token,
 };
 use release_glz::candidate::{
     Candidate, CandidateInput, CandidateSource, HookEvidence, HookKind, RegistryIdentity,
 };
 use release_glz::config::{AuthKind, HookConfig, OutputConfig, RegistryConfig, RegistryProvider};
-use release_glz::forge::{GitHubClient, GitHubRepository};
+use release_glz::forge::{GitHubClient, GitHubRepository, files_digest};
 use release_glz::git::GitRepo;
 use release_glz::hooks::SidecarArtifact;
 use release_glz::model::ReleaseState;
@@ -30,35 +32,7 @@ async fn live_reconciler_recovers_ambiguous_publish_and_second_run_is_a_no_op() 
     let registry = FakeRegistry::start().await;
     let github = FakeGitHub::start().await;
     let fixture = live_fixture(&registry.base_url());
-
-    let registry_config = RegistryConfig {
-        provider: RegistryProvider::HexCompatible,
-        repository: None,
-        api_url: format!("{}/api", registry.base_url()),
-        repository_url: format!("{}/repo", registry.base_url()),
-        docs_url: format!("{}/repo/docs", registry.base_url()),
-        credential_env: "TEST_REGISTRY_TOKEN".into(),
-        auth: AuthKind::Bearer,
-        allow_http_loopback: true,
-    };
-    let registry_adapter =
-        HexRegistry::from_config(&registry_config, Some("registry-secret")).unwrap();
-    let github_adapter = GitHubClient::new(
-        GitHubRepository::parse("owner/widget").unwrap(),
-        github.base_url(),
-        format!("{}/graphql", github.base_url()),
-        Some("github-secret".into()),
-    )
-    .unwrap();
-    let repo = GitRepo::discover(&fixture.repository).unwrap();
-    let target = LiveReleaseTarget::with_adapters(
-        fixture.manifest.clone(),
-        repo,
-        registry_adapter,
-        github_adapter,
-    )
-    .unwrap();
-    let runner = CandidateReleaseRunner::new(target);
+    let runner = live_runner(&fixture, &registry, &github);
 
     let first = runner
         .run(&fixture.candidate, &approved(&fixture.manifest))
@@ -135,6 +109,133 @@ async fn live_reconciler_recovers_ambiguous_publish_and_second_run_is_a_no_op() 
 
     registry.stop();
     github.stop();
+}
+
+/// Evidence that `verify_approval` gathered from GitHub publishes the whole release, as no hand-built evidence can show.
+#[tokio::test]
+async fn evidence_from_verification_publishes_the_whole_release() {
+    let registry = FakeRegistry::start().await;
+    let github = FakeGitHub::start().await;
+    let fixture = live_fixture(&registry.base_url());
+    github.answer_approval(&fixture.manifest, &fixture.manifest.intent_digest);
+
+    let evidence = verify(&fixture.manifest, &github).await.unwrap();
+    let report = live_runner(&fixture, &registry, &github)
+        .run(&fixture.candidate, &evidence)
+        .await
+        .unwrap();
+
+    assert_eq!(report.state, ReleaseState::Released);
+    assert_eq!(report.applied.len(), 6, "{:?}", report.applied);
+    assert!(report.remaining.is_empty());
+    assert_eq!(registry.state().package_posts, 1);
+    assert_eq!(registry.state().docs_posts, 1);
+    assert!(!github.state().draft);
+    registry.stop();
+    github.stop();
+}
+
+/// When the merged Release PR recorded another intent, the evidence that verification gathers publishes nothing.
+#[tokio::test]
+async fn evidence_for_another_intent_publishes_nothing() {
+    let registry = FakeRegistry::start().await;
+    let github = FakeGitHub::start().await;
+    let fixture = live_fixture(&registry.base_url());
+    github.answer_approval(&fixture.manifest, &"e".repeat(64));
+
+    let evidence = verify(&fixture.manifest, &github).await.unwrap();
+    let report = live_runner(&fixture, &registry, &github)
+        .run(&fixture.candidate, &evidence)
+        .await
+        .unwrap();
+
+    assert_eq!(report.state, ReleaseState::AwaitingApproval);
+    assert!(report.applied.is_empty());
+    assert_eq!(github.mutation_count(), 0);
+    assert_eq!(registry.state().package_posts, 0);
+    assert_eq!(registry.state().docs_posts, 0);
+    registry.stop();
+    github.stop();
+}
+
+/// A runner that publishes the fixture's Candidate to the fake registry and GitHub.
+fn live_runner(
+    fixture: &LiveFixture,
+    registry: &FakeRegistry,
+    github: &FakeGitHub,
+) -> CandidateReleaseRunner<LiveReleaseTarget> {
+    let registry_config = RegistryConfig {
+        provider: RegistryProvider::HexCompatible,
+        repository: None,
+        api_url: format!("{}/api", registry.base_url()),
+        repository_url: format!("{}/repo", registry.base_url()),
+        docs_url: format!("{}/repo/docs", registry.base_url()),
+        credential_env: "TEST_REGISTRY_TOKEN".into(),
+        auth: AuthKind::Bearer,
+        allow_http_loopback: true,
+    };
+    let registry_adapter =
+        HexRegistry::from_config(&registry_config, Some("registry-secret")).unwrap();
+    let repo = GitRepo::discover(&fixture.repository).unwrap();
+    let target = LiveReleaseTarget::with_adapters(
+        fixture.manifest.clone(),
+        repo,
+        registry_adapter,
+        github_client(github),
+    )
+    .unwrap();
+    CandidateReleaseRunner::new(target)
+}
+
+fn github_client(github: &FakeGitHub) -> GitHubClient {
+    GitHubClient::new(
+        GitHubRepository::parse("owner/widget").unwrap(),
+        github.base_url(),
+        format!("{}/graphql", github.base_url()),
+        Some("github-secret".into()),
+    )
+    .unwrap()
+}
+
+/// The evidence that `verify_approval` gathers for the publish job of the push run that prepared the fixture's Candidate.
+async fn verify(
+    manifest: &release_glz::candidate::CandidateManifest,
+    github: &FakeGitHub,
+) -> anyhow::Result<ApprovalEvidence> {
+    let request = ApprovalRequest {
+        oidc_request_url: format!("{}/token", github.base_url()),
+        oidc_request_token: "runner-secret".into(),
+        run_id: RUN.to_string(),
+        artifact_id: ARTIFACT,
+        artifact_digest: format!("sha256:{}", artifact_digest()),
+        artifact_run_id: RUN.to_string(),
+        approved_candidate_digest: Some(manifest.candidate_digest.clone()),
+        manual_source_sha: None,
+        manual_reason: None,
+    };
+    let verifier = GithubOidcVerifier::new(&format!("{}/discovery", github.base_url()), true)?;
+    verify_approval(manifest, &request, &verifier, &github_client(github), NOW).await
+}
+
+const NOW: i64 = 1_800_000_000;
+const RUN: u64 = 42;
+const ARTIFACT: u64 = 7;
+
+fn artifact_digest() -> String {
+    "3".repeat(64)
+}
+
+/// The head of the merged Release PR, which release-glz generated.
+fn release_pr_head() -> String {
+    "c".repeat(40)
+}
+
+/// The files that the Release PR commit wrote.
+fn release_pr_files() -> BTreeMap<String, Vec<u8>> {
+    BTreeMap::from([(
+        "CHANGELOG.md".to_owned(),
+        b"# Changelog\n\n## [1.2.3]\n".to_vec(),
+    )])
 }
 
 struct LiveFixture {
@@ -523,7 +624,19 @@ struct GitHubState {
     asset: Option<Vec<u8>>,
     asset_name: Option<String>,
     asset_media_type: Option<String>,
+    approval: Option<ApprovalAnswers>,
     requests: Vec<HttpRequest>,
+}
+
+/// What GitHub answers to the checks that approve a push release.
+#[derive(Clone, Debug)]
+struct ApprovalAnswers {
+    /// The signed OIDC token of the publish job.
+    token: String,
+    /// The commit the release publishes, which the Release PR merged as.
+    source_sha: String,
+    /// The intent that the merged Release PR's marker recorded.
+    intent: String,
 }
 
 struct FakeGitHub {
@@ -572,6 +685,37 @@ impl FakeGitHub {
             .count()
     }
 
+    /// Answer the approval checks of the push run that prepared the Candidate of `manifest`, with a merged Release PR that recorded `intent`.
+    fn answer_approval(&self, manifest: &release_glz::candidate::CandidateManifest, intent: &str) {
+        let claims = GithubOidcClaims {
+            issuer: "https://token.actions.githubusercontent.com".into(),
+            audience: OidcAudience::One("release-glz".into()),
+            subject: format!(
+                "repo:{}:environment:{}",
+                manifest.github_repository, manifest.approval.environment
+            ),
+            repository: manifest.github_repository.clone(),
+            environment: Some(manifest.approval.environment.clone()),
+            workflow_ref: format!(
+                "{}/.github/workflows/release-glz.yml@refs/heads/main",
+                manifest.github_repository
+            ),
+            git_ref: "refs/heads/main".into(),
+            source_sha: manifest.source.commit_sha.clone(),
+            run_id: RUN.to_string(),
+            run_attempt: "1".into(),
+            event_name: "push".into(),
+            issued_at: NOW - 1,
+            not_before: Some(NOW - 1),
+            expires_at: NOW + 60,
+        };
+        self.state.lock().unwrap().approval = Some(ApprovalAnswers {
+            token: oidc::sign_rs256(&claims),
+            source_sha: manifest.source.commit_sha.clone(),
+            intent: intent.to_owned(),
+        });
+    }
+
     fn stop(self) {
         self.task.abort();
     }
@@ -585,6 +729,12 @@ fn github_response(
     let mut state = shared.lock().unwrap();
     state.requests.push(request.clone());
     let path = request.path.split('?').next().unwrap();
+    if request.method == "GET"
+        && let Some(approval) = &state.approval
+        && let Some(response) = approval_response(approval, path, base_url)
+    {
+        return response;
+    }
     match (request.method.as_str(), path) {
         ("GET", "/repos/owner/widget/git/ref/tags/v1.2.3") => match &state.tag_target {
             Some(_) => HttpResponse::json(
@@ -665,6 +815,93 @@ fn github_response(
         }
         _ => panic!("unexpected GitHub request: {request:?}"),
     }
+}
+
+/// GitHub's answer to one approval check, or `None` for a path that no approval check reads.
+fn approval_response(
+    approval: &ApprovalAnswers,
+    path: &str,
+    base_url: &str,
+) -> Option<HttpResponse> {
+    let files = release_pr_files();
+    let digest = files_digest(&files);
+    let head = release_pr_head();
+    let value = match path {
+        "/token" => serde_json::json!({"value": approval.token}),
+        "/discovery" => serde_json::json!({
+            "issuer": "https://token.actions.githubusercontent.com",
+            "jwks_uri": format!("{base_url}/jwks")
+        }),
+        "/jwks" => serde_json::json!({"keys": [{
+            "kty": "RSA",
+            "kid": oidc::KEY_ID,
+            "alg": "RS256",
+            "use": "sig",
+            "n": oidc::MODULUS,
+            "e": oidc::EXPONENT
+        }]}),
+        "/repos/owner/widget/actions/artifacts/7" => serde_json::json!({
+            "id": ARTIFACT,
+            "name": format!("release-glz-candidate-{RUN}"),
+            "size_in_bytes": 100,
+            "expired": false,
+            "digest": format!("sha256:{}", artifact_digest()),
+            "workflow_run": {"id": RUN, "head_sha": approval.source_sha}
+        }),
+        "/repos/owner/widget/actions/runs/42" => serde_json::json!({
+            "id": RUN,
+            "path": ".github/workflows/release-glz.yml",
+            "head_sha": approval.source_sha,
+            "status": "in_progress",
+            "conclusion": null,
+            "repository": {"full_name": "owner/widget"}
+        }),
+        "/repos/owner/widget/git/blobs/0000000000000000000000000000000000000001" => {
+            serde_json::json!({
+                "content": base64::engine::general_purpose::STANDARD.encode(&files["CHANGELOG.md"]),
+                "encoding": "base64",
+                "size": files["CHANGELOG.md"].len()
+            })
+        }
+        _ if path == format!("/repos/owner/widget/commits/{}/pulls", approval.source_sha) => {
+            serde_json::json!([{
+                "number": 7,
+                "title": "chore(release): widget 1.2.3",
+                "body": format!(
+                    "<!-- release-glz:managed package=widget branch=release-glz/widget head={head} digest={digest} version=1.2.3 intent={} -->",
+                    approval.intent
+                ),
+                "html_url": "https://github.test/owner/widget/pull/7",
+                "merge_commit_sha": approval.source_sha,
+                "merged_at": "2026-01-01T00:00:00Z",
+                "user": {"login": "release-glz"},
+                "labels": [],
+                "head": {
+                    "ref": "release-glz/widget",
+                    "sha": head,
+                    "repo": {"full_name": "owner/widget", "default_branch": "main"}
+                },
+                "base": {
+                    "ref": "main",
+                    "repo": {"full_name": "owner/widget", "default_branch": "main"}
+                }
+            }])
+        }
+        _ if path == format!("/repos/owner/widget/commits/{head}") => serde_json::json!({
+            "commit": {
+                "message": format!("chore(release): widget 1.2.3\n\nrelease-glz-digest: {digest}"),
+                "verification": {"verified": true}
+            },
+            "parents": [{"sha": "0".repeat(40)}],
+            "files": [{
+                "filename": "CHANGELOG.md",
+                "status": "modified",
+                "sha": "0000000000000000000000000000000000000001"
+            }]
+        }),
+        _ => return None,
+    };
+    Some(HttpResponse::json(200, value))
 }
 
 fn release_response(state: &GitHubState, base_url: &str) -> HttpResponse {
