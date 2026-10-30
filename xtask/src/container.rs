@@ -53,10 +53,29 @@ pub fn evidence_directory(root: &Path, kind: &str) -> Result<PathBuf, Failure> {
     Ok(directory)
 }
 
+/// What a command in the container printed and how it ended.
+pub struct Exit {
+    /// The exit status, or `None` when a signal ended it.
+    pub code: Option<i32>,
+    /// Standard output.
+    pub stdout: String,
+    /// Standard error.
+    pub stderr: String,
+}
+
+/// The directories a command sees and whether it may reach the network.
+pub struct Mounts<'a> {
+    /// Mounted read-only at `/workspace`, which is also the working directory.
+    pub workspace: &'a Path,
+    /// Mounted writable at `/evidence`.
+    pub evidence: &'a Path,
+    /// Whether the command may reach the network.
+    pub network: bool,
+}
+
 /// An image that Docker built from a pinned Dockerfile, named by its content digest.
 pub struct Container {
     image: String,
-    root: PathBuf,
 }
 
 impl Container {
@@ -91,51 +110,88 @@ impl Container {
                 "Docker returned no immutable image identity: {image}"
             )));
         }
-        Ok(Self {
-            image,
-            root: root.to_owned(),
-        })
+        Ok(Self { image })
     }
 
-    /// Run `command` with the repository mounted read-only at `/workspace` and `evidence` writable at `/evidence`, and return its standard output.
-    pub fn output(&self, evidence: &Path, command: &[&str]) -> Result<String, Failure> {
-        let output = Command::new("docker")
-            .args([
-                "run",
-                "--rm",
-                "--platform",
-                PLATFORM,
-                "--network",
-                "none",
-                "--memory",
-                MEMORY,
-                "--memory-swap",
-                MEMORY,
-                "--cpus",
-                CPUS,
-                "--pids-limit",
-                PROCESSES,
-                "--volume",
-            ])
-            .arg(format!("{}:/workspace:ro", self.root.display()))
+    /// The digest of the image.
+    pub fn image(&self) -> &str {
+        &self.image
+    }
+
+    /// Run `command` with the bounded runner's limits, and report how it ended.
+    ///
+    /// A command that runs out of time is inconclusive, so it is a failure rather than an exit to judge.
+    pub fn run(
+        &self,
+        mounts: &Mounts<'_>,
+        environment: &[(&str, &str)],
+        command: &[&str],
+    ) -> Result<Exit, Failure> {
+        let mut docker = Command::new("docker");
+        docker.args([
+            "run",
+            "--rm",
+            "--platform",
+            PLATFORM,
+            "--memory",
+            MEMORY,
+            "--memory-swap",
+            MEMORY,
+            "--cpus",
+            CPUS,
+            "--pids-limit",
+            PROCESSES,
+            "--workdir",
+            "/workspace",
+        ]);
+        if !mounts.network {
+            docker.args(["--network", "none"]);
+        }
+        for (name, value) in environment {
+            docker.arg("--env").arg(format!("{name}={value}"));
+        }
+        let output = docker
             .arg("--volume")
-            .arg(format!("{}:/evidence", evidence.display()))
+            .arg(format!("{}:/workspace:ro", mounts.workspace.display()))
+            .arg("--volume")
+            .arg(format!("{}:/evidence", mounts.evidence.display()))
             .args([&self.image, "timeout", SECONDS])
             .args(command)
             .output()
             .map_err(|error| Failure::new(format!("Docker could not start: {error}")))?;
-        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-        match output.status.code() {
-            Some(0) => Ok(stdout),
-            Some(TIMED_OUT) => Err(Failure::new(format!(
+        if output.status.code() == Some(TIMED_OUT) {
+            return Err(Failure::new(format!(
                 "`{}` reached its {SECONDS} second limit, so the check is inconclusive",
                 command.join(" ")
-            ))),
-            _ => Err(Failure::new(format!(
-                "`{}` failed with {}:\n{stdout}{}",
+            )));
+        }
+        Ok(Exit {
+            code: output.status.code(),
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        })
+    }
+
+    /// Run `command` without the network and return its standard output, or fail unless it exits with status 0.
+    pub fn output(
+        &self,
+        workspace: &Path,
+        evidence: &Path,
+        command: &[&str],
+    ) -> Result<String, Failure> {
+        let mounts = Mounts {
+            workspace,
+            evidence,
+            network: false,
+        };
+        let exit = self.run(&mounts, &[], command)?;
+        match exit.code {
+            Some(0) => Ok(exit.stdout),
+            code => Err(Failure::new(format!(
+                "`{}` failed with exit status {code:?}:\n{}{}",
                 command.join(" "),
-                output.status,
-                String::from_utf8_lossy(&output.stderr)
+                exit.stdout,
+                exit.stderr
             ))),
         }
     }

@@ -35,6 +35,18 @@ impl ReleaseState {
     ///
     /// A state may always repeat itself, which is what makes resuming a partial release safe.
     pub fn can_advance_to(self, next: Self) -> bool {
+        #[cfg(feature = "negative-control-no-repeat")]
+        if let Some(advances) = negative_control_no_repeat(self, next) {
+            return advances;
+        }
+        #[cfg(feature = "negative-control-reopen")]
+        if let Some(advances) = negative_control_reopen(self, next) {
+            return advances;
+        }
+        #[cfg(feature = "negative-control-unstoppable")]
+        if let Some(advances) = negative_control_unstoppable(self, next) {
+            return advances;
+        }
         if self == next {
             return true;
         }
@@ -42,7 +54,7 @@ impl ReleaseState {
             return false;
         }
         match (position(self), position(next)) {
-            (Some(from), Some(to)) => to > from,
+            (Some(from), Some(to)) => forward(from, to),
             _ => true,
         }
     }
@@ -68,6 +80,50 @@ fn position(state: ReleaseState) -> Option<usize> {
     LIFECYCLE.iter().position(|normal| *normal == state)
 }
 
+/// Whether moving from the normal state at `from` to the one at `to` goes forward.
+fn forward(from: usize, to: usize) -> bool {
+    #[cfg(feature = "negative-control-backward")]
+    if let Some(forward) = negative_control_backward(from, to) {
+        return forward;
+    }
+    #[cfg(feature = "negative-control-no-skip")]
+    if let Some(forward) = negative_control_no_skip(from, to) {
+        return forward;
+    }
+    to > from
+}
+
+/// Refuses to let a state repeat itself.
+#[cfg(feature = "negative-control-no-repeat")]
+fn negative_control_no_repeat(state: ReleaseState, next: ReleaseState) -> Option<bool> {
+    (state == next).then_some(false)
+}
+
+/// Lets a terminal state change again.
+#[cfg(feature = "negative-control-reopen")]
+fn negative_control_reopen(state: ReleaseState, next: ReleaseState) -> Option<bool> {
+    (state.is_terminal() && state != next).then_some(true)
+}
+
+/// Refuses to let an unfinished release stop in conflict or blocked.
+#[cfg(feature = "negative-control-unstoppable")]
+fn negative_control_unstoppable(state: ReleaseState, next: ReleaseState) -> Option<bool> {
+    let stops = matches!(next, ReleaseState::Conflict | ReleaseState::Blocked);
+    (!state.is_terminal() && state != next && stops).then_some(false)
+}
+
+/// Lets a normal state move backward.
+#[cfg(feature = "negative-control-backward")]
+fn negative_control_backward(from: usize, to: usize) -> Option<bool> {
+    Some(to != from)
+}
+
+/// Moves only to the next normal state, never past it.
+#[cfg(feature = "negative-control-no-skip")]
+fn negative_control_no_skip(from: usize, to: usize) -> Option<bool> {
+    Some(from.checked_add(1) == Some(to))
+}
+
 #[cfg(kani)]
 mod proofs {
     use super::ReleaseState;
@@ -79,7 +135,10 @@ mod proofs {
     #[kani::proof]
     fn every_state_may_repeat() {
         let state: ReleaseState = kani::any();
-        assert!(state.can_advance_to(state));
+        kani::assert(
+            state.can_advance_to(state),
+            "every state must be able to repeat",
+        );
         kani::cover!(state.is_terminal());
     }
 
@@ -88,7 +147,10 @@ mod proofs {
         let from: ReleaseState = kani::any();
         let to: ReleaseState = kani::any();
         kani::assume(from.is_terminal() && from != to);
-        assert!(!from.can_advance_to(to));
+        kani::assert(
+            !from.can_advance_to(to),
+            "a terminal state must never change",
+        );
         kani::cover!(from == ReleaseState::Released);
         kani::cover!(from == ReleaseState::Conflict);
     }
@@ -99,7 +161,10 @@ mod proofs {
         let a: ReleaseState = kani::any();
         let b: ReleaseState = kani::any();
         kani::assume(normal(a) && normal(b) && a != b);
-        assert!(a.can_advance_to(b) != b.can_advance_to(a));
+        kani::assert(
+            a.can_advance_to(b) != b.can_advance_to(a),
+            "distinct normal states must be ordered one way only",
+        );
         kani::cover!(a.can_advance_to(b));
         kani::cover!(b.can_advance_to(a));
     }
@@ -110,7 +175,7 @@ mod proofs {
         let b: ReleaseState = kani::any();
         let c: ReleaseState = kani::any();
         kani::assume(a.can_advance_to(b) && b.can_advance_to(c));
-        assert!(a.can_advance_to(c));
+        kani::assert(a.can_advance_to(c), "advancing must be transitive");
         kani::cover!(a != b && b != c && a != c);
     }
 
@@ -118,9 +183,15 @@ mod proofs {
     fn an_unfinished_release_can_always_end_in_conflict_or_blocked() {
         let state: ReleaseState = kani::any();
         kani::assume(!state.is_terminal());
-        assert!(state.can_advance_to(ReleaseState::Conflict));
-        assert!(state.can_advance_to(ReleaseState::Blocked));
-        assert!(state.can_advance_to(ReleaseState::Released));
+        kani::assert(
+            state.can_advance_to(ReleaseState::Conflict)
+                && state.can_advance_to(ReleaseState::Blocked),
+            "an unfinished release must be able to stop",
+        );
+        kani::assert(
+            state.can_advance_to(ReleaseState::Released),
+            "an unfinished release must be able to finish",
+        );
         kani::cover!(state == ReleaseState::UpToDate);
         kani::cover!(state == ReleaseState::PartiallyReleased);
     }
