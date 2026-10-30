@@ -9,9 +9,8 @@ use anyhow::{Context, Result, bail};
 use crate::candidate::{
     Candidate, CandidateInput, CandidateManifest, CandidateSource, SealedPolicy,
 };
-use crate::canonical::SHA256_HEX_LEN;
 use crate::config::Manifest;
-use crate::git::{GitRepo, OBJECT_HEX_LEN};
+use crate::git::GitRepo;
 use crate::gleam::Gleam;
 use crate::hooks::{HookContext, HookRunner};
 
@@ -202,12 +201,30 @@ fn absolute(path: &Path) -> Result<PathBuf> {
 }
 
 fn validate_full_sha(value: &str) -> Result<()> {
-    if !matches!(value.len(), OBJECT_HEX_LEN | SHA256_HEX_LEN)
-        || !value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
-    {
+    if !release_glz_core::is_commit_id(value.as_bytes()) {
         bail!("--ref must be a full lowercase commit SHA");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_full_sha;
+
+    #[test]
+    fn a_source_ref_is_a_full_lowercase_commit_id_of_either_object_format() {
+        for accepted in ["a".repeat(40), "0".repeat(64)] {
+            validate_full_sha(&accepted).unwrap();
+        }
+        for refused in [
+            "a".repeat(39),
+            "a".repeat(41),
+            "A".repeat(40),
+            "g".repeat(64),
+            "HEAD".to_owned(),
+        ] {
+            let error = validate_full_sha(&refused).unwrap_err().to_string();
+            assert_eq!(error, "--ref must be a full lowercase commit SHA");
+        }
+    }
 }

@@ -46,7 +46,7 @@ const fn control(
 }
 
 /// Every harness of the proof packages, with its cover count.
-pub const HARNESSES: [Harness; 50] = [
+pub const HARNESSES: [Harness; 65] = [
     harness(
         "proofs::a_proof_run_is_admitted_only_when_every_expected_harness_verified",
         2,
@@ -71,6 +71,10 @@ pub const HARNESSES: [Harness; 50] = [
         "commit::proofs::the_commit_type_decides_the_step_without_a_breaking_marker",
         1,
     ),
+    harness(
+        "commit::proofs::only_a_marker_that_starts_a_line_breaks_the_release",
+        1,
+    ),
     harness("framing::proofs::the_files_framing_is_injective", 1),
     harness("framing::proofs::the_notification_framing_is_injective", 1),
     harness(
@@ -88,6 +92,16 @@ pub const HARNESSES: [Harness; 50] = [
     harness(
         "lifecycle::proofs::an_unfinished_release_can_always_end_in_conflict_or_blocked",
         2,
+    ),
+    harness("marker::proofs::inert_text_replaces_each_less_than_sign", 1),
+    harness(
+        "marker::proofs::the_first_occurrence_is_the_earliest_match",
+        1,
+    ),
+    harness("marker::proofs::the_last_occurrence_is_the_latest_match", 1),
+    harness(
+        "marker::proofs::a_field_is_recorded_only_under_a_new_known_key",
+        1,
     ),
     harness(
         "precedence::proofs::a_version_equals_itself_and_order_flips_with_its_operands",
@@ -208,6 +222,10 @@ pub const HARNESSES: [Harness; 50] = [
         2,
     ),
     harness(
+        "run::proofs::a_run_never_reports_less_than_partially_released_once_the_release_started",
+        2,
+    ),
+    harness(
         "run::proofs::a_run_stops_only_when_nothing_but_attempted_optional_effects_remains",
         1,
     ),
@@ -220,13 +238,43 @@ pub const HARNESSES: [Harness; 50] = [
         "run::proofs::a_run_stops_when_the_number_of_objects_changes",
         1,
     ),
+    harness(
+        "hex::proofs::a_hex_digit_is_exactly_a_lowercase_hexadecimal_digit",
+        2,
+    ),
+    harness("hex::proofs::hex_identities_check_every_byte", 2),
+    harness("hex::proofs::hex_identities_refuse_every_other_length", 2),
+    harness(
+        "archive_path::proofs::a_component_refuses_exactly_the_characters_windows_forbids",
+        2,
+    ),
+    harness(
+        "archive_path::proofs::a_stem_names_a_device_exactly_when_it_is_reserved",
+        4,
+    ),
+    harness(
+        "archive_path::proofs::a_stem_ends_at_the_first_dot_without_trailing_spaces",
+        1,
+    ),
+    harness(
+        "archive_path::proofs::an_accepted_archive_path_stays_inside_its_destination",
+        2,
+    ),
+    harness(
+        "archive_path::proofs::two_accepted_entries_never_collide_once_case_no_longer_counts",
+        2,
+    ),
+    harness(
+        "archive_path::proofs::entries_two_directories_deep_never_collide_once_case_no_longer_counts",
+        2,
+    ),
 ];
 
 const CORE: &str = "release-glz-core";
 const ASSURANCE: &str = "assurance-core";
 
 /// Every negative control, each of which has to fail exactly its harness's assertion.
-pub const CONTROLS: [Control; 52] = [
+pub const CONTROLS: [Control; 68] = [
     control(
         ASSURANCE,
         "negative-control-incomplete-run",
@@ -262,6 +310,12 @@ pub const CONTROLS: [Control; 52] = [
         "negative-control-commit-type-case",
         "commit::proofs::the_commit_type_decides_the_step_without_a_breaking_marker",
         "a commit type must decide the step in any letter case",
+    ),
+    control(
+        CORE,
+        "negative-control-marker-anywhere",
+        "commit::proofs::only_a_marker_that_starts_a_line_breaks_the_release",
+        "a body without a marker at the start of a line must leave the step to the commit type",
     ),
     control(
         CORE,
@@ -316,6 +370,30 @@ pub const CONTROLS: [Control; 52] = [
         "negative-control-unstoppable",
         "lifecycle::proofs::an_unfinished_release_can_always_end_in_conflict_or_blocked",
         "an unfinished release must be able to stop",
+    ),
+    control(
+        CORE,
+        "negative-control-inert-less-than",
+        "marker::proofs::inert_text_replaces_each_less_than_sign",
+        "inert text must replace each less-than sign and keep every other byte",
+    ),
+    control(
+        CORE,
+        "negative-control-search-skips-start",
+        "marker::proofs::the_first_occurrence_is_the_earliest_match",
+        "the first occurrence must be the earliest match",
+    ),
+    control(
+        CORE,
+        "negative-control-search-stops-short",
+        "marker::proofs::the_last_occurrence_is_the_latest_match",
+        "the last occurrence must be the latest match",
+    ),
+    control(
+        CORE,
+        "negative-control-duplicate-keys",
+        "marker::proofs::a_field_is_recorded_only_under_a_new_known_key",
+        "a field must be recorded only under a new known key",
     ),
     control(
         CORE,
@@ -513,7 +591,19 @@ pub const CONTROLS: [Control; 52] = [
         CORE,
         "negative-control-forget-failure",
         "run::proofs::a_failed_effect_counts_only_once_the_world_holds_it",
-        "a run that can't observe must report the state of the plan that chose its failed effect",
+        "a run that can't observe must report the state that its last plan vouches for",
+    ),
+    control(
+        CORE,
+        "negative-control-forget-success",
+        "run::proofs::a_run_never_reports_less_than_partially_released_once_the_release_started",
+        "a run must never report less than partially released once it knows the release started",
+    ),
+    control(
+        CORE,
+        "negative-control-unfloored",
+        "run::proofs::a_run_never_reports_less_than_partially_released_once_the_release_started",
+        "a run must never report less than partially released once it knows the release started",
     ),
     control(
         CORE,
@@ -538,6 +628,60 @@ pub const CONTROLS: [Control; 52] = [
         "negative-control-reshape",
         "run::proofs::a_run_stops_when_the_number_of_objects_changes",
         "a run must stop when the number of objects changes",
+    ),
+    control(
+        CORE,
+        "negative-control-hex-case",
+        "hex::proofs::a_hex_digit_is_exactly_a_lowercase_hexadecimal_digit",
+        "a hex digit must be a lowercase hexadecimal digit",
+    ),
+    control(
+        CORE,
+        "negative-control-hex-any-byte",
+        "hex::proofs::hex_identities_check_every_byte",
+        "a hex identity must check every byte",
+    ),
+    control(
+        CORE,
+        "negative-control-hex-length",
+        "hex::proofs::hex_identities_refuse_every_other_length",
+        "a hex identity must refuse every other length",
+    ),
+    control(
+        CORE,
+        "negative-control-path-colon",
+        "archive_path::proofs::a_component_refuses_exactly_the_characters_windows_forbids",
+        "a component must refuse every character that Windows forbids",
+    ),
+    control(
+        CORE,
+        "negative-control-device-case",
+        "archive_path::proofs::a_stem_names_a_device_exactly_when_it_is_reserved",
+        "a stem must name a device exactly when it is reserved",
+    ),
+    control(
+        CORE,
+        "negative-control-device-stem",
+        "archive_path::proofs::a_stem_ends_at_the_first_dot_without_trailing_spaces",
+        "the stem of a component must end at its first dot",
+    ),
+    control(
+        CORE,
+        "negative-control-path-traversal",
+        "archive_path::proofs::an_accepted_archive_path_stays_inside_its_destination",
+        "an accepted path must stay inside its destination",
+    ),
+    control(
+        CORE,
+        "negative-control-case-collision",
+        "archive_path::proofs::two_accepted_entries_never_collide_once_case_no_longer_counts",
+        "two accepted entries must not collide once letter case no longer counts",
+    ),
+    control(
+        CORE,
+        "negative-control-case-collision",
+        "archive_path::proofs::entries_two_directories_deep_never_collide_once_case_no_longer_counts",
+        "two accepted entries must not collide once letter case no longer counts",
     ),
 ];
 
