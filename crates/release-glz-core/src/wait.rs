@@ -3,6 +3,9 @@
 /// The milliseconds in one second.
 const MILLISECONDS_PER_SECOND: u64 = 1000;
 
+/// The base of the decimal digits that a delay is written in.
+const DECIMAL_BASE: u64 = 10;
+
 /// What an attempt of a request got that may let the request repeat.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(kani, derive(kani::Arbitrary))]
@@ -151,6 +154,26 @@ pub fn after_poll(poll: usize, attempts: usize, visible: bool) -> AfterPoll {
     }
 }
 
+/// The seconds that a `Retry-After` header names in its delay form, which is one or more ASCII digits for a number that fits in 64 bits.
+///
+/// A date, a sign, or any other text names no delay, so the request waits as its policy's default says.
+pub fn delay_seconds(text: &[u8]) -> Option<u64> {
+    #[cfg(feature = "negative-control-signed-delay")]
+    if let Some(seconds) = negative_control_signed_delay(text) {
+        return seconds;
+    }
+    if text.is_empty() || !text.iter().all(u8::is_ascii_digit) {
+        return None;
+    }
+    let mut seconds: u64 = 0;
+    for &byte in text {
+        seconds = seconds
+            .checked_mul(DECIMAL_BASE)?
+            .checked_add(u64::from(byte - b'0'))?;
+    }
+    Some(seconds)
+}
+
 /// Whether a poll shows a release as visible: the registry lists its version, with docs when `require_docs` asks for them.
 ///
 /// `listed` holds whether the registry has docs for the version, when it lists the version at all.
@@ -190,12 +213,55 @@ fn negative_control_ready_without_docs(listed: Option<bool>) -> Option<bool> {
     Some(listed.is_some())
 }
 
+/// Reads a leading `+` as part of the delay, as `u64::from_str` does.
+#[cfg(feature = "negative-control-signed-delay")]
+fn negative_control_signed_delay(text: &[u8]) -> Option<Option<u64>> {
+    let digits = text.strip_prefix(b"+")?;
+    Some(
+        if digits.is_empty() || !digits.iter().all(u8::is_ascii_digit) {
+            None
+        } else {
+            digits.iter().try_fold(0_u64, |seconds, &byte| {
+                seconds
+                    .checked_mul(DECIMAL_BASE)?
+                    .checked_add(u64::from(byte - b'0'))
+            })
+        },
+    )
+}
+
 #[cfg(kani)]
 mod proofs {
     use super::{
         AfterPoll, Answer, BusyDefault, GITHUB_READS, Next, REGISTRY_RETRIES, RetryPolicy,
-        after_poll, release_ready,
+        after_poll, delay_seconds, release_ready,
     };
+
+    /// A `Retry-After` header names a delay exactly when it is one or more ASCII digits for a number that fits in 64 bits, and the delay is that number.
+    ///
+    /// Every text of at most three bytes, and the 20-digit texts on both sides of 2^64.
+    #[kani::proof]
+    #[kani::unwind(22)]
+    fn a_retry_after_header_names_a_delay_only_in_digits() {
+        let bytes: [u8; 3] = kani::any();
+        let length: usize = kani::any_where(|length| *length <= bytes.len());
+        let text = &bytes[..length];
+        let digits = length > 0 && text.iter().all(u8::is_ascii_digit);
+        let mut value: u64 = 0;
+        if digits {
+            for &byte in text {
+                value = value * 10 + u64::from(byte - b'0');
+            }
+        }
+        kani::assert(
+            delay_seconds(text) == digits.then_some(value)
+                && delay_seconds(b"18446744073709551615") == Some(u64::MAX)
+                && delay_seconds(b"18446744073709551616").is_none(),
+            "a Retry-After header must name a delay only in digits",
+        );
+        kani::cover!(length == 3 && digits);
+        kani::cover!(text.first() == Some(&b'+') && length == 2);
+    }
 
     /// A request waits only when another attempt follows, after a busy response as long as it asks or its default says but never beyond the cap, and after a transport failure one step for each attempt so far.
     ///
