@@ -35,7 +35,17 @@ The audit also refuses a source that changed during the run, and `crates/assuran
 Each `negative-control-*` feature breaks one decision, such as the checked increment or the conflict for an object that differs, inside a `negative_control_*` function that production code calls only under that feature.
 The task builds each negative control on its own and requires its harness to fail on exactly the expected assertion and on nothing else.
 Every harness has a negative control, and a test without the solver keeps the inventory equal to the harnesses, covers, and features in the sources.
-`.cargo/mutants.toml` keeps cargo-mutants out of the harnesses and negative controls, which no test build compiles.
+`.cargo/mutants.toml` keeps cargo-mutants away from the functions of the negative controls, which no test build compiles.
+cargo-mutants names a mutant without its module path, so the configuration can't name the harnesses.
+The proof campaign leaves the harnesses out by their place in the source instead.
+
+`cargo xtask proof-mutants` shows that the harnesses pin down the core decisions, and it runs on an owner machine, never on Actions.
+It proves the unmutated core first, then applies each mutant of the core crates to a frozen copy and runs the harnesses of its module.
+Before it calls a mutant a survivor, it runs every harness of the mutant's package.
+Each outcome comes from Kani's audited report: detected, unviable when the mutant doesn't compile, or inconclusive, which fails the campaign.
+A survivor has to appear in `verification/equivalent-mutants.json` with the reason no harness can detect it, and the campaign refuses an entry that no longer survives.
+The campaign writes a receipt with the digest of the core sources and the outcome of every mutant, and the owner commits it as `verification/proof-mutants.json`.
+The release gate runs `cargo xtask proof-mutants check`, which refuses a receipt for other core sources, so a change to the core needs a new campaign before a release.
 The harnesses over lists of objects and over runs cover releases of at most three objects, and the decisions for single objects and approvals cover every input.
 A run harness lets the world answer each observation with any presence of each object, so its properties hold for every way the world changes between observations.
 

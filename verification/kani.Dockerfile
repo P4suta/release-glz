@@ -4,4 +4,6 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && CARGO_BUILD_JOBS=2 cargo install --locked kani-verifier --version 0.68.0 \
     && cargo kani setup
+# cargo-mutants lists the mutants of the core crates that `cargo xtask proof-mutants` runs through the harnesses.
+RUN CARGO_BUILD_JOBS=2 cargo install --locked cargo-mutants --version 27.1.0
 WORKDIR /workspace

@@ -14,7 +14,7 @@ use crate::source_snapshot::{SourceSnapshot, read_bounded};
 const MAX_REPORT_BYTES: usize = 64 * 1024 * 1024;
 
 /// The target directory inside the container, which lives in the evidence so it never shares the host's.
-const TARGET_DIRECTORY: &str = "/evidence/kani-target";
+pub const TARGET_DIRECTORY: &str = "/evidence/kani-target";
 
 /// Run every harness and every negative control, and refuse unless each run is admitted.
 pub fn run(root: &Path) -> Result<(), Failure> {
@@ -36,29 +36,7 @@ pub fn run(root: &Path) -> Result<(), Failure> {
     };
     let environment = [("CARGO_TARGET_DIR", TARGET_DIRECTORY)];
 
-    let mut command = vec!["cargo", "kani"];
-    for package in PACKAGES {
-        command.extend(["--package", package]);
-    }
-    command.extend([
-        "-Z",
-        "unstable-options",
-        "--export-json",
-        "/evidence/proofs.json",
-    ]);
-    let exit = container.run(&mounts, &environment, &command)?;
-    keep_logs(&evidence, "proofs", &exit.stdout, &exit.stderr)?;
-    let report = read_report(&evidence, "proofs")?;
-    let mut audit = report.audit_proofs(&HARNESSES);
-    audit.logs_supported = logs_supported(&exit.stdout, &exit.stderr);
-    audit.source_matches = source.matches(root)?;
-    let admission = admit_proofs(exit.code, audit);
-    if admission != Admission::Admit {
-        return Err(Failure::new(format!(
-            "the proof run is refused: {admission:?}; inspect {}",
-            evidence.display()
-        )));
-    }
+    admit_every_harness(&container, &mounts, &source, root, "proofs")?;
     println!("verified all {} harnesses", HARNESSES.len());
 
     for (index, control) in CONTROLS.iter().enumerate() {
@@ -114,6 +92,36 @@ pub fn run(root: &Path) -> Result<(), Failure> {
     Ok(())
 }
 
+/// Run every harness of the proof packages from `source` as the run `name`, and refuse unless the audit admits it.
+pub fn admit_every_harness(
+    container: &Container,
+    mounts: &Mounts<'_>,
+    source: &SourceSnapshot,
+    root: &Path,
+    name: &str,
+) -> Result<(), Failure> {
+    let export = format!("/evidence/{name}.json");
+    let mut command = vec!["cargo", "kani"];
+    for package in PACKAGES {
+        command.extend(["--package", package]);
+    }
+    command.extend(["-Z", "unstable-options", "--export-json", &export]);
+    let exit = container.run(mounts, &[("CARGO_TARGET_DIR", TARGET_DIRECTORY)], &command)?;
+    keep_logs(mounts.evidence, name, &exit.stdout, &exit.stderr)?;
+    let report = read_report(mounts.evidence, name)?;
+    let mut audit = report.audit_proofs(&HARNESSES);
+    audit.logs_supported = logs_supported(&exit.stdout, &exit.stderr);
+    audit.source_matches = source.matches(root)?;
+    let admission = admit_proofs(exit.code, audit);
+    if admission != Admission::Admit {
+        return Err(Failure::new(format!(
+            "the proof run is refused: {admission:?}; inspect {}",
+            mounts.evidence.display()
+        )));
+    }
+    Ok(())
+}
+
 fn refused(control: &Control, admission: Admission, evidence: &Path) -> Failure {
     Failure::new(format!(
         "the negative control {} of {} is refused: {admission:?}; inspect {}",
@@ -123,13 +131,13 @@ fn refused(control: &Control, admission: Admission, evidence: &Path) -> Failure 
     ))
 }
 
-fn keep_logs(evidence: &Path, name: &str, stdout: &str, stderr: &str) -> Result<(), Failure> {
+pub fn keep_logs(evidence: &Path, name: &str, stdout: &str, stderr: &str) -> Result<(), Failure> {
     fs::write(evidence.join(format!("{name}.stdout.log")), stdout).map_err(Failure::io)?;
     fs::write(evidence.join(format!("{name}.stderr.log")), stderr).map_err(Failure::io)
 }
 
 /// Read the export of the run `name`, and keep the part the audit reads beside it.
-fn read_report(evidence: &Path, name: &str) -> Result<ProofReport, Failure> {
+pub fn read_report(evidence: &Path, name: &str) -> Result<ProofReport, Failure> {
     let bytes = read_bounded(&evidence.join(format!("{name}.json")), MAX_REPORT_BYTES)?;
     let report: ProofReport = serde_json::from_slice(&bytes)
         .map_err(|error| Failure::new(format!("Kani's export of {name} is unreadable: {error}")))?;

@@ -1,6 +1,7 @@
 //! Repository tasks that drive the pinned verification images.
 //!
 //! `cargo xtask proofs` proves every Kani harness and negative control and audits each run.
+//! `cargo xtask proof-mutants` runs every mutant of the core crates through the harnesses, and `check` checks its committed receipt.
 //! `cargo xtask lean` proves the Lean model of publication and its refinement of the core crate.
 //! `cargo xtask quint` model-checks the release protocol and writes the traces that the replay test reads.
 //! `cargo xtask trace` checks that `docs/assurance.md` maps every property to evidence that exists, and every check to a property.
@@ -8,6 +9,7 @@
 mod container;
 mod inventory;
 mod lean;
+mod proof_mutants;
 mod proof_report;
 mod proofs;
 mod quint;
@@ -25,11 +27,13 @@ fn main() -> ExitCode {
     let arguments = std::env::args().skip(1).collect::<Vec<_>>();
     let outcome = match arguments.iter().map(String::as_str).collect::<Vec<_>>()[..] {
         ["proofs"] => proofs::run(root),
+        ["proof-mutants"] => proof_mutants::run(root),
+        ["proof-mutants", "check"] => proof_mutants::check(root),
         ["lean"] => lean::run(root),
         ["quint"] => quint::run(root),
         ["trace"] => trace::run(root),
         _ => {
-            eprintln!("usage: cargo xtask proofs|lean|quint|trace");
+            eprintln!("usage: cargo xtask proofs|proof-mutants [check]|lean|quint|trace");
             return ExitCode::from(2);
         }
     };

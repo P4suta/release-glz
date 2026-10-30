@@ -168,3 +168,12 @@ The proof gate admits a run only when every listed harness verified and no other
 - Test: `xtask/src/proof_report.rs::the_recorded_runs_are_admitted`
 - Test: `xtask/src/proof_report.rs::a_negative_control_must_fail_only_its_expected_assertion`
 - Test: `xtask/src/inventory.rs::every_harness_has_its_own_negative_control`
+
+### The harnesses detect every viable mutant of the core decisions
+
+`cargo xtask proof-mutants` runs each mutant of the core crates through the harnesses on an owner machine, and the release gate checks that its committed receipt covers the current core sources.
+A survivor needs an entry with a reason in `verification/equivalent-mutants.json`.
+
+- Test: `xtask/src/proof_mutants.rs::an_outcome_comes_from_the_report_and_never_from_the_exit_alone`
+- Test: `xtask/src/proof_mutants.rs::the_campaign_leaves_out_harnesses_and_negative_controls`
+- Test: `xtask/src/proof_mutants.rs::the_gate_refuses_a_stale_or_unexplained_receipt`

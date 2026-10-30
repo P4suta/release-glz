@@ -216,6 +216,29 @@ impl ProofReport {
             .find(|error| error.harness_id == name)
     }
 
+    /// The harnesses of this report that the audit wouldn't admit: one that failed, has errors, or doesn't meet its listed covers and owned assertions, and one that `inventory` doesn't list.
+    pub fn unproved(&self, inventory: &[Harness]) -> Vec<String> {
+        self.verification_results
+            .results
+            .iter()
+            .filter(|result| {
+                let listed = inventory
+                    .iter()
+                    .find(|harness| harness.name == result.harness_id);
+                let clean = self
+                    .errors(&result.harness_id)
+                    .is_some_and(|errors| !errors.has_errors);
+                !(clean && listed.is_some_and(|harness| proved(result, harness)))
+            })
+            .map(|result| result.harness_id.clone())
+            .collect()
+    }
+
+    /// The number of harnesses that the run executed.
+    pub fn executed(&self) -> usize {
+        self.verification_results.summary.executed
+    }
+
     /// What this report of a run of every harness shows, before the exit status, logs, and source binding are known.
     pub fn audit_proofs(&self, expected: &[Harness]) -> ProofRun {
         let names = expected
