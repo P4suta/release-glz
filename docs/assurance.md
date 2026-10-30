@@ -27,6 +27,8 @@ They also refuse a Kani harness, Lean theorem, Quint invariant or model test, or
 
 The release creates an object only when the world lacks it or holds it pending, and an object that exists outside the Candidate's description stops the release.
 Kani proves the decision for every object and for lists of up to three objects, and Lean proves the list properties for every length.
+The live observation looks for docs even when the Candidate has none, so docs that contradict the Candidate stop the release too.
+It records each notification under the key that the Candidate derives, so a notification with another key reaches the reconciler only from another `ReleaseTarget`.
 
 - Kani: `publication::proofs::an_effect_concerns_only_an_object_the_world_lacks`
 - Kani: `publication::proofs::an_object_that_differs_ends_in_a_conflict`
@@ -41,10 +43,13 @@ Kani proves the decision for every object and for lists of up to three objects, 
 - Test: `tests/release_executor.rs::crash_after_docs_resumes_without_republishing_candidate_bytes`
 - Test: `tests/release_executor.rs::an_invalid_candidate_and_an_existing_checksum_conflict_keep_their_exact_states`
 - Test: `tests/registry_contract.rs::ambiguous_publish_is_reported_without_reposting`
+- Test: `tests/live_release_contract.rs::docs_for_a_candidate_without_docs_stop_the_release_in_a_conflict`
 
 ### A release publishes nothing without verified approval
 
 An approval has to bind the Candidate digest, the intent digest, and a run identity that GitHub signed, and a push never rests on the inputs of a manual release.
+Kani proves the approval decision for every combination of its conjuncts and the publication decision for lists of up to three objects, and Lean proves it for every length.
+The Quint model covers three objects and two runs.
 
 - Kani: `publication::proofs::no_effect_leaves_without_approval`
 - Kani: `approval::proofs::an_approval_needs_every_conjunct_of_its_path`
@@ -62,6 +67,10 @@ An approval has to bind the Candidate digest, the intent digest, and a run ident
 
 The tag, the draft Release, the package, the documentation, the assets, the final Release, and the notifications follow publication order.
 A run applies an effect only when no earlier object still needs one, apart from optional effects it already attempted, so a Release becomes final only after its assets exist.
+The run harness covers releases of at most three objects over four observations, and the Quint model covers three objects and two runs.
+The step harness covers one step from any record of at most five objects.
+The order thus holds at every step of a run of any length over at most five objects.
+A default release has seven objects, which no proof of this property covers, so for it the order rests on the tests.
 
 - Kani: `run::proofs::a_run_applies_only_owed_effects_in_publication_order`
 - Kani: `run::proofs::every_step_keeps_the_record_that_bounds_a_run`
@@ -73,6 +82,7 @@ A run applies an effect only when no earlier object still needs one, apart from 
 ### A release counts as released exactly when no blocking effect remains
 
 An optional notification that fails leaves the release released, and a required one leaves it in `partially_released`.
+Kani proves it for lists and runs of at most three objects, and Lean proves the plan's rule for every length.
 
 - Kani: `publication::proofs::the_release_is_released_once_no_blocking_effect_remains`
 - Kani: `run::proofs::a_run_stops_only_when_nothing_but_attempted_optional_effects_remains`
@@ -84,6 +94,9 @@ An optional notification that fails leaves the release released, and a required 
 ### Every run stops, and a run whose effects land ends released
 
 The first plan that lists an effect fixes how many attempts a run may make, and publishing an effect removes exactly that effect from the plan.
+The run harnesses cover releases of at most three objects over four observations.
+The step harness carries the attempt bound to runs of any length over at most five objects.
+Lean proves the plan's rules for every length.
 
 - Kani: `publication::proofs::publishing_an_effect_removes_exactly_that_effect`
 - Kani: `run::proofs::a_run_attempts_each_optional_effect_once_within_its_first_plan`
@@ -99,6 +112,7 @@ The first plan that lists an effect fixes how many attempts a run may make, and 
 ### A failed call counts as published only once the world holds it
 
 A failed blocking effect that the world still lacks stops the run, and an observation that fails after it reports the state that the run can vouch for.
+The run harnesses cover releases of at most three objects over four observations, and the Quint model covers three objects and two runs.
 
 - Kani: `run::proofs::a_failed_effect_counts_only_once_the_world_holds_it`
 - Kani: `run::proofs::a_run_stops_when_the_number_of_objects_changes`
@@ -131,6 +145,13 @@ The run harnesses cover releases of at most three objects and four observations,
 
 ### Release states move forward, and a terminal state never changes
 
+Within one approved run, every state that the run reports may follow the state of its first plan in the release lifecycle.
+The proof assumes a world that never loses an object it showed and never shows one that differs from the Candidate.
+A world that replaces an object, or shows one that differs, can end the run in `conflict` after any plan, which the conflict property covers.
+Kani proves the lifecycle's rules for every pair of states, and it proves the run's reports for releases of at most three objects over four observations.
+A new run starts from a fresh observation, so `blocked` ends a run but not a release, and a later run can still end `released`.
+
+- Kani: `run::proofs::a_run_reports_states_in_lifecycle_order`
 - Kani: `lifecycle::proofs::every_state_may_repeat`
 - Kani: `lifecycle::proofs::a_terminal_state_never_changes`
 - Kani: `lifecycle::proofs::normal_states_form_one_forward_chain`
@@ -140,6 +161,9 @@ The run harnesses cover releases of at most three objects and four observations,
 - Test: `tests/v1_domain.rs::release_state_property_covers_every_pair_in_the_monotonic_lattice`
 
 ### Version arithmetic never wraps, and the larger bump wins
+
+An increment adds exactly one or reports the largest value, and a bump raises the component it names, resets the smaller ones, or reports an overflow.
+Kani proves these rules for every bump and every version core, with each component any `u64`.
 
 - Kani: `version::proofs::the_join_of_two_bumps_is_the_larger_one`
 - Kani: `version::proofs::an_increment_adds_one_or_reports_the_largest_value`
@@ -164,6 +188,7 @@ Kani proves it for every core and train number over versions that are stable or 
 ### A release train only moves forward
 
 A train counts up within its channel or moves on to a later channel, a move back needs an explicitly higher core, and a first release joins the configured train.
+Kani proves it for every core, channel, and train number over versions that are stable or on a train.
 
 - Kani: `selection::proofs::a_train_moves_forward_or_counts_up_within_its_channel`
 - Kani: `selection::proofs::the_first_release_joins_the_configured_train`
@@ -195,6 +220,8 @@ A breaking marker asks for a major release, and otherwise the commit type decide
 Only a marker that starts a body line counts, so a marker inside a line leaves the step to the type.
 Below 1.0 a breaking change is a minor release, a release needs its acknowledgement, and the step between two versions names the highest component that changed.
 The commit proofs cover three symbolic ASCII bytes around each marker and unknown types of at most four bytes.
+Kani proves the rules below 1.0 for every major number and step.
+It proves the step between versions for every core and train number over versions that are stable or on a train.
 
 - Kani: `commit::proofs::a_breaking_marker_always_asks_for_a_major_release`
 - Kani: `commit::proofs::the_commit_type_decides_the_step_without_a_breaking_marker`
@@ -271,6 +298,9 @@ That fold rests on `icu_normalizer` and the tests, and it approximates the defau
 
 ### Parsers refuse malformed input without panicking
 
+No proof covers these parsers.
+Fuzzing checks them, and every pull request replays the committed corpus of each fuzz target.
+
 - Fuzz: `api_interface`
 - Fuzz: `config`
 - Fuzz: `identifiers`
@@ -281,7 +311,8 @@ That fold rests on `icu_normalizer` and the tests, and it approximates the defau
 ### A Release PR body carries exactly the marker that release-glz wrote
 
 A rendered marker after inert text is the one marker that ends the body, its fields give back every value, and a body with an earlier marker has no marker.
-Kani proves inert text, the byte search, and reading one field on small complete domains, and Lean proves the marker for bodies of every length.
+Kani proves inert text for texts of at most three bytes and the byte search for haystacks of at most four bytes with needles of at most two.
+It proves reading one field for fields of at most nine bytes, and Lean proves the marker for bodies of every length.
 The adapter trims trailing whitespace and splits the fields at Unicode whitespace before the core reads them.
 That split agrees with the model's split at spaces, because no value that release-glz writes holds whitespace.
 
@@ -326,6 +357,7 @@ Kani proves it for texts of at most three bytes with two secrets of at most two 
 ### No job that compiles dependencies holds a write token
 
 Dependency builds may run code, so the jobs that compile hold read permissions only, and hooks receive only the environment they declare.
+Tests check the generated workflows and the hook environment, and no proof covers them.
 
 - Test: `tests/workflow_permissions.rs::no_job_that_compiles_holds_a_write_permission`
 - Test: `tests/workflow_permissions.rs::the_check_finds_a_write_job_that_would_compile`
@@ -334,6 +366,7 @@ Dependency builds may run code, so the jobs that compile hold read permissions o
 ### Proof evidence counts only from an audited run
 
 The proof gate admits a run only when every listed harness verified and no other ran, and a negative control only when it failed exactly its expected assertion.
+Kani proves both rules for every exit code and every combination of the counts and flags in a run's report.
 
 - Kani: `proofs::a_proof_run_is_admitted_only_when_every_expected_harness_verified`
 - Kani: `proofs::a_control_run_is_admitted_only_when_exactly_its_assertion_failed`
