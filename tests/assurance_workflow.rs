@@ -53,6 +53,7 @@ fn assurance_workflow_has_fixed_fail_closed_shipping_gates() {
         "run: cargo xtask proofs",
         "run: cargo xtask lean",
         "run: cargo xtask quint",
+        "run: cargo xtask trace",
         "--features negative-control-republish -- lean",
         "'ReleaseGlz.Refinement.decision_refines_rust' depends on axioms: [sorryAx]",
         "cargo deny check -D warnings",

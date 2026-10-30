@@ -228,6 +228,8 @@ jobs:
         run: |
           rustup toolchain install 1.88.0 --profile minimal --no-self-update
           rustup default 1.88.0
+      - name: Require the assurance map to cite every check and only checks that exist
+        run: cargo xtask trace
       - name: Prove every harness and fail every negative control, each run audited with the committed inventory
         run: cargo xtask proofs
 

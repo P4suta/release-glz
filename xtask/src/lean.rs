@@ -12,7 +12,7 @@ use crate::container::{Container, Failure};
 const LEAN_VERSION: &str = "4.35.0";
 
 /// The theorems of the publication model, which the axiom audit expects in this order.
-const MODEL_THEOREMS: [&str; 9] = [
+pub(crate) const MODEL_THEOREMS: [&str; 9] = [
     "ReleaseGlz.create_means_missing",
     "ReleaseGlz.conflict_iff_differs",
     "ReleaseGlz.effect_concerns_missing_object",
@@ -25,7 +25,7 @@ const MODEL_THEOREMS: [&str; 9] = [
 ];
 
 /// The refinement theorems, which compare the model with the core crate on every listed input.
-const REFINEMENT_THEOREMS: [&str; 2] = [
+pub(crate) const REFINEMENT_THEOREMS: [&str; 2] = [
     "ReleaseGlz.Refinement.decision_refines_rust",
     "ReleaseGlz.Refinement.reconcile_refines_rust",
 ];

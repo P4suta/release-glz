@@ -51,6 +51,10 @@ The runner may fail to observe the world, and it may crash and start again.
 It requires the recorded number of distinct states and requires the probe module, whose runner applies effects out of order, to break the invariant.
 It also writes the traces of the model's scenario tests and of a seeded simulation again and requires them to equal `verification/quint/traces`.
 `tests/run_replay.rs` replays those traces through `release_glz_core::Run` on every pull request and requires each decision of a trace to be the production decision.
+
+`docs/assurance.md` maps each release and security property to the harnesses, theorems, model invariants and tests, fuzz targets, and tests that check it.
+`cargo xtask trace`, and a test that the fast gate runs, refuse a citation that names nothing and a property without evidence.
+They also refuse a harness, theorem, invariant, model test, or fuzz target that no property cites, so a new check needs a property before it merges.
 The theorems for longer lists concern the model, so they bind the core only through the refinement on the short lists and the shared structure of the two definitions.
 Building the xtask with `--features negative-control-republish` generates the vectors from a broken core, and shipping assurance requires the refinement to fail then.
 
