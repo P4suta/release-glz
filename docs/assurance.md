@@ -335,6 +335,12 @@ Two entries whose paths fold to the same file or directory once letter case and 
 Kani proves the character rules for every byte and every byte pair, and the device names for every stem of up to eight bytes.
 It proves where a stem ends for components of up to six bytes and what an accepted component may hold for components of up to eight bytes.
 It proves the collision rule for pairs of folded paths of up to five bytes, which nest two directories deep.
+It proves that a path passes exactly when each of its components does for every path of three bytes over `a`, `.`, and `/`.
+It proves the trimming of trailing slashes for every path of up to two bytes over those bytes.
+It proves which directories hold a folded path for every folded path of up to four bytes, and it pins reading a path from its text on fixed paths.
+Symbolic bytes across a whole path exhaust the solver.
+The shell decodes each path as UTF-8 before the core reads it.
+The shell also keeps the folded paths of the entries so far in its maps, which no proof covers, and the tests check that bookkeeping.
 The shell folds a path through canonical decomposition, Unicode's lowercase mapping, and canonical decomposition again.
 That fold rests on `icu_normalizer` and the tests, and it approximates the default macOS file system's own folding.
 
@@ -344,6 +350,9 @@ That fold rests on `icu_normalizer` and the tests, and it approximates the defau
 - Kani: `archive_path::proofs::an_accepted_archive_path_stays_inside_its_destination`
 - Kani: `archive_path::proofs::two_accepted_entries_never_collide_once_case_no_longer_counts`
 - Kani: `archive_path::proofs::entries_two_directories_deep_never_collide_once_case_no_longer_counts`
+- Kani: `archive_path::proofs::a_path_passes_exactly_when_each_component_does`
+- Kani: `archive_path::proofs::an_archive_path_is_its_text_without_trailing_slashes`
+- Kani: `archive_path::proofs::the_directories_above_a_path_are_its_prefixes_before_each_slash`
 - Fuzz: `archive`
 - Test: `tests/artifact_security.rs::archive_paths_reject_every_ambiguous_or_traversing_form`
 - Test: `tests/artifact_security.rs::archive_paths_reject_entries_that_collide_once_letter_case_no_longer_counts`

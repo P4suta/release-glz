@@ -10,7 +10,7 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 use flate2::{Compression, GzBuilder, read::GzDecoder};
 use icu_normalizer::DecomposingNormalizerBorrowed;
-use release_glz_core::{FoldedPaths, PathRefusal, archive_path};
+use release_glz_core::{archive_path, collision, directories_above};
 use sha2::{Digest, Sha256};
 use tar::Archive;
 use toml_edit::{DocumentMut, value};
@@ -496,24 +496,50 @@ fn safe_archive_path<R: Read>(entry: &tar::Entry<'_, R>) -> Result<String> {
 }
 
 fn safe_archive_path_value(raw: &[u8]) -> Result<String> {
-    match archive_path(raw) {
-        Ok(path) => Ok(path.to_owned()),
-        Err(PathRefusal::NotUtf8(error)) => {
-            Err(anyhow::Error::new(error).context("archive path is not UTF-8"))
-        }
-        Err(PathRefusal::Unsafe) => bail!(
+    let value = std::str::from_utf8(raw)
+        .map_err(|error| anyhow::Error::new(error).context("archive path is not UTF-8"))?;
+    match archive_path(value) {
+        Some(path) => Ok(path.to_owned()),
+        None => bail!(
             "archive contains unsafe path `{}`",
-            String::from_utf8_lossy(raw).trim_end_matches('/')
+            value.trim_end_matches('/')
         ),
+    }
+}
+
+/// The entries of one archive under their folded paths, as a file system that folds names sees them.
+#[derive(Debug, Default)]
+struct FoldedPaths {
+    files: BTreeMap<Vec<u8>, String>,
+    directories: BTreeMap<Vec<u8>, String>,
+}
+
+impl FoldedPaths {
+    /// Record a file path under its folded form, or give back the earlier entry whose folded path names the same file or directory.
+    fn claim(&mut self, folded: &str, path: &str) -> std::result::Result<(), String> {
+        let folded = folded.as_bytes();
+        if let Some(earlier) = collision(
+            folded,
+            |key| self.files.get(key),
+            |key| self.directories.get(key),
+        ) {
+            return Err(earlier.clone());
+        }
+        for directory in directories_above(folded) {
+            self.directories
+                .entry(directory.to_vec())
+                .or_insert_with(|| path.to_owned());
+        }
+        self.files.insert(folded.to_vec(), path.to_owned());
+        Ok(())
     }
 }
 
 /// Record a file path of an archive, refusing it when it names the same file or directory as an earlier entry once letter case and Unicode normalization no longer count.
 fn claim_folded(folded: &mut FoldedPaths, path: &str) -> Result<()> {
-    folded.claim(&fold(path), path).map_err(|collision| {
+    folded.claim(&fold(path), path).map_err(|earlier| {
         anyhow::anyhow!(
-            "archive path `{path}` collides with `{}` once letter case and Unicode normalization no longer count",
-            collision.earlier()
+            "archive path `{path}` collides with `{earlier}` once letter case and Unicode normalization no longer count"
         )
     })
 }

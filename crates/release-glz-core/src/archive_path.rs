@@ -3,37 +3,50 @@
 //! The rules hold on every supported OS at once, so a verdict never depends on the host that reaches it.
 //! They read the bytes of a path: every byte they look for is ASCII, and UTF-8 never uses an ASCII byte inside a longer character, so on UTF-8 they decide what the same rules on characters would.
 
-use alloc::borrow::ToOwned;
-use alloc::collections::BTreeMap;
-use alloc::string::String;
-use alloc::vec::Vec;
 use core::ops::RangeInclusive;
-use core::str::Utf8Error;
-
-/// Why an archive entry path is refused.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PathRefusal {
-    /// The path isn't UTF-8.
-    NotUtf8(Utf8Error),
-    /// A component is empty, relative to its parent, or not stored under the same name on every supported OS.
-    Unsafe,
-}
 
 /// The path that an archive entry names, without its trailing slashes, when every component is portable.
-pub fn archive_path(raw: &[u8]) -> Result<&str, PathRefusal> {
-    let value = core::str::from_utf8(raw)
-        .map_err(PathRefusal::NotUtf8)?
-        .trim_end_matches('/');
-    if portable_path(value.as_bytes()) {
-        Ok(value)
-    } else {
-        Err(PathRefusal::Unsafe)
+///
+/// The shell decodes the entry's path as UTF-8 first, and a slash is ASCII, so the path without its trailing slashes is UTF-8 too.
+pub fn archive_path(value: &str) -> Option<&str> {
+    let path = value.get(..without_trailing_slashes(value.as_bytes()))?;
+    portable_path(path.as_bytes()).then_some(path)
+}
+
+/// The length of `path` without its trailing slashes.
+fn without_trailing_slashes(path: &[u8]) -> usize {
+    #[cfg(feature = "negative-control-keep-trailing-slashes")]
+    if let Some(length) = negative_control_keep_trailing_slashes(path) {
+        return length;
     }
+    path.iter()
+        .rposition(|byte| *byte != b'/')
+        .map_or(0, |last| last + 1)
 }
 
 /// Whether every `/`-separated component of `path` is portable.
 pub fn portable_path(path: &[u8]) -> bool {
+    #[cfg(feature = "negative-control-first-component")]
+    if let Some(portable) = negative_control_first_component(path) {
+        return portable;
+    }
     path.split(|byte| *byte == b'/').all(portable_component)
+}
+
+/// Keeps the trailing slashes of a path, so a directory entry reads as a path with an empty last component.
+#[cfg(feature = "negative-control-keep-trailing-slashes")]
+fn negative_control_keep_trailing_slashes(path: &[u8]) -> Option<usize> {
+    Some(path.len())
+}
+
+/// Checks only the first component of a path, so a later `..` passes.
+#[cfg(feature = "negative-control-first-component")]
+fn negative_control_first_component(path: &[u8]) -> Option<bool> {
+    Some(
+        path.split(|byte| *byte == b'/')
+            .next()
+            .is_some_and(portable_component),
+    )
 }
 
 /// Whether every supported OS stores a path component under exactly this name.
@@ -145,57 +158,35 @@ fn same_name(stem: &[u8], name: &[u8]) -> bool {
     stem.eq_ignore_ascii_case(name)
 }
 
-/// The paths of one archive as a file system that folds names sees them, such as the default ones on macOS and Windows, which ignore letter case.
-#[derive(Debug, Default)]
-pub struct FoldedPaths {
-    files: BTreeMap<Vec<u8>, String>,
-    directories: BTreeMap<Vec<u8>, String>,
+/// The folded paths of the directories that hold `folded`: its prefixes before each `/`.
+///
+/// The shell records an entry's path under each of them, and under `folded` itself, once [`collision`] finds no earlier entry.
+pub fn directories_above(folded: &[u8]) -> impl Iterator<Item = &[u8]> {
+    (0..folded.len())
+        .filter(move |&end| ends_directory(folded, end))
+        .map(move |end| &folded[..end])
 }
 
-/// An earlier entry that names the same file or directory as a new one once both paths are folded.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Collision {
-    earlier: String,
-}
-
-impl Collision {
-    /// The path of the earlier entry.
-    pub fn earlier(&self) -> &str {
-        &self.earlier
+/// Whether the prefix of `folded` before `end` names a directory, which it does when a `/` follows it.
+fn ends_directory(folded: &[u8], end: usize) -> bool {
+    #[cfg(feature = "negative-control-directory-at-every-byte")]
+    if let Some(ends) = negative_control_directory_at_every_byte() {
+        return ends;
     }
+    folded.get(end) == Some(&b'/')
 }
 
-impl FoldedPaths {
-    /// Record a file path under its folded form, or refuse it with the earlier entry whose folded path names the same file or directory.
-    ///
-    /// The shell folds the path, and the fold has to keep every `/` where it is, so the prefixes of the folded path name its directories.
-    pub fn claim(&mut self, folded: &str, path: &str) -> Result<(), Collision> {
-        let folded = folded.as_bytes();
-        if let Some(earlier) = collision(
-            folded,
-            |key| self.files.get(key),
-            |key| self.directories.get(key),
-        ) {
-            return Err(Collision {
-                earlier: earlier.clone(),
-            });
-        }
-        for end in 0..folded.len() {
-            if folded[end] == b'/' {
-                self.directories
-                    .entry(folded[..end].to_vec())
-                    .or_insert_with(|| path.to_owned());
-            }
-        }
-        self.files.insert(folded.to_vec(), path.to_owned());
-        Ok(())
-    }
+/// Takes the prefix before every byte for a directory.
+#[cfg(feature = "negative-control-directory-at-every-byte")]
+fn negative_control_directory_at_every_byte() -> Option<bool> {
+    Some(true)
 }
 
 /// The earlier entry that a folded path collides with: a file or a directory of the same folded path, or a file that the path lies inside.
 ///
 /// `file` and `directory` find the entry that recorded a folded file, or a directory as one of its prefixes before a `/`.
-fn collision<'a, T: ?Sized>(
+/// The shell folds each path, and the fold has to keep every `/` where it is.
+pub fn collision<'a, T: ?Sized>(
     folded: &[u8],
     file: impl Fn(&[u8]) -> Option<&'a T>,
     directory: impl Fn(&[u8]) -> Option<&'a T>,
@@ -254,7 +245,10 @@ fn negative_control_case_collision<'a, T: ?Sized>(
 
 #[cfg(kani)]
 mod proofs {
-    use super::{c1_control, collision, device_stem, forbidden_byte, portable_component, stem};
+    use super::{
+        archive_path, c1_control, collision, device_stem, directories_above, forbidden_byte,
+        portable_component, portable_path, stem, without_trailing_slashes,
+    };
 
     /// Every stem that Windows reserves for a device, in uppercase, written out rather than parsed.
     const DEVICE_STEMS: [&[u8]; 32] = [
@@ -465,6 +459,107 @@ mod proofs {
             held: !passed || (N > 0 && !parent_or_self && !separator),
             notable: passed,
         }
+    }
+
+    /// The bytes that the path proofs build paths from: a portable component, a dot, and a slash, which meet a portable component, `.`, `..`, and an empty one in every place.
+    const ALPHABET: [u8; 3] = *b"a./";
+
+    /// A path passes exactly when every `/`-separated component of it is portable.
+    ///
+    /// Every path of three bytes over `a`, `.`, and `/`, split at its slashes by hand, which holds one to three components.
+    /// The component harnesses decide what a portable component is for every byte, and symbolic bytes across a whole path exhaust the solver.
+    #[kani::proof]
+    #[kani::unwind(10)]
+    fn a_path_passes_exactly_when_each_component_does() {
+        let mut held = true;
+        let mut notable = false;
+        for first in ALPHABET {
+            for second in ALPHABET {
+                for third in ALPHABET {
+                    check_path(&[first, second, third], &mut held, &mut notable);
+                }
+            }
+        }
+        kani::assert(held, "a path must pass exactly when each component does");
+        kani::cover!(notable);
+    }
+
+    /// An archive entry names its path without the trailing slashes, when every component of that path is portable.
+    ///
+    /// Every path of up to two bytes over `a`, `.`, and `/`, trimmed by hand, and `archive_path` on fixed texts, a two-byte character among them.
+    #[kani::proof]
+    #[kani::unwind(10)]
+    fn an_archive_path_is_its_text_without_trailing_slashes() {
+        let mut held = true;
+        let mut notable = false;
+        check_path(&[], &mut held, &mut notable);
+        for first in ALPHABET {
+            check_path(&[first], &mut held, &mut notable);
+            for second in ALPHABET {
+                check_path(&[first, second], &mut held, &mut notable);
+            }
+        }
+        held &= archive_path("a/b") == Some("a/b")
+            && archive_path("a/b//") == Some("a/b")
+            && archive_path("\u{e9}/") == Some("\u{e9}")
+            && archive_path("a//b").is_none()
+            && archive_path("a/../b").is_none()
+            && archive_path("//").is_none()
+            && archive_path("").is_none();
+        kani::assert(
+            held,
+            "an archive path must be its text without the trailing slashes",
+        );
+        kani::cover!(archive_path("a/").is_some());
+    }
+
+    /// Whether `portable_path` decides `path` as splitting it at its slashes by hand does, and whether trimming finds where its trailing slashes start, which is notable when a path of two components or more passes.
+    fn check_path(path: &[u8], held: &mut bool, notable: &mut bool) {
+        let mut portable = true;
+        let mut components = 0;
+        let mut start = 0;
+        for index in 0..=path.len() {
+            if index == path.len() || path[index] == b'/' {
+                portable &= portable_component(&path[start..index]);
+                components += 1;
+                start = index + 1;
+            }
+        }
+        let mut end = path.len();
+        while end > 0 && path[end - 1] == b'/' {
+            end -= 1;
+        }
+        let passed = portable_path(path);
+        *held &= passed == portable && without_trailing_slashes(path) == end;
+        *notable |= passed && components > 1;
+    }
+
+    /// The directories that hold a folded path are exactly its prefixes before each `/`, in order.
+    ///
+    /// Every folded path of up to four arbitrary bytes.
+    #[kani::proof]
+    #[kani::unwind(6)]
+    fn the_directories_above_a_path_are_its_prefixes_before_each_slash() {
+        let bytes: [u8; 4] = kani::any();
+        let length: usize = kani::any_where(|length| *length <= bytes.len());
+        let folded = &bytes[..length];
+        let mut found = directories_above(folded);
+        let mut held = true;
+        let mut directories = 0;
+        for end in 0..length {
+            if folded[end] == b'/' {
+                held &= found
+                    .next()
+                    .is_some_and(|directory| directory == &folded[..end]);
+                directories += 1;
+            }
+        }
+        held &= found.next().is_none();
+        kani::assert(
+            held,
+            "the directories above a path must be its prefixes before each slash",
+        );
+        kani::cover!(directories == 2);
     }
 
     /// What claiming a second folded path after a first one found.
