@@ -380,6 +380,10 @@ Fuzzing checks them, and every pull request replays the committed corpus of each
 A rendered marker after inert text is the one marker that ends the body, its fields give back every value, and a body with an earlier marker has no marker.
 Kani proves inert text for texts of at most three bytes and the byte search for haystacks of at most four bytes with needles of at most two.
 It proves reading one field for fields of at most nine bytes, and Lean proves the marker for bodies of every length.
+Kani also pins writing a marker for values of one byte each and for empty values.
+It proves finding the block that ends a body for every body of up to five bytes with one-byte opening and closing texts.
+It pins finding the marker itself on an empty body and on the shortest marker.
+It pins reading the fields of a marker in two orders and with a key missing.
 The adapter trims trailing whitespace and splits the fields at Unicode whitespace before the core reads them.
 That split agrees with the model's split at spaces, because no value that release-glz writes holds whitespace.
 
@@ -387,6 +391,10 @@ That split agrees with the model's split at spaces, because no value that releas
 - Kani: `marker::proofs::the_first_occurrence_is_the_earliest_match`
 - Kani: `marker::proofs::the_last_occurrence_is_the_latest_match`
 - Kani: `marker::proofs::a_field_is_recorded_only_under_a_new_known_key`
+- Kani: `marker::proofs::a_marker_writes_each_key_and_value_in_order`
+- Kani: `marker::proofs::the_marker_that_ends_a_body_is_found_after_inert_text`
+- Kani: `marker::proofs::the_marker_is_found_with_its_own_texts`
+- Kani: `marker::proofs::the_fields_of_a_marker_give_back_each_value`
 - Lean: `ReleaseGlz.Marker.inert_holds_no_less_than`
 - Lean: `ReleaseGlz.Marker.a_rendered_marker_ends_the_body`
 - Lean: `ReleaseGlz.Marker.an_earlier_marker_is_refused`
