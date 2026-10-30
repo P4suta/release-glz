@@ -51,6 +51,10 @@ jobs:
       - run: jq -L .github -n -e -f .github/check-required.jq
       - run: node scripts/verify-workflows.js .github/workflows
       - run: node scripts/de-shell.js .github/workflows
+      - name: Type-check the Action and the release scripts
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm run typecheck
       - name: Action and distribution evidence tests
         run: |
           npm test --prefix action

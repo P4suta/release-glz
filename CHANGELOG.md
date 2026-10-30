@@ -23,6 +23,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Tests check the real output of every command with these schemas and assert every `format`.
 - `completion --output json` names its result format as `completion/v1`, like every other command result.
 
+### Changed
+
+- When the observed world contradicts the Candidate in more than one object, the conflict names the first object in publication order, so a tag conflict outranks a package conflict.
+- A notification record for a hook that the Candidate doesn't have no longer makes a release count as `partially_released`.
+
 ### Security
 
 - A verified approval identity comes only from signature verification of the GitHub OIDC token.
@@ -103,6 +108,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A failure's diagnostic lists every cause beneath its message, as an unclassified failure's already did.
+  A refused release approval used to say only that OIDC verification failed, without the check that refused it.
 - The `init` and `migrate` results and their diffs give the manifest path relative to the repository, as every other result does.
   They used to repeat the `--manifest-path` value, which names the file from the repository root only when the command runs there with a relative path.
   `migrate` also put `./` before the backup path, and outside any repository it now reports both paths relative to the package directory.
@@ -114,6 +121,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Offline `verify --candidate` and `status --candidate` no longer need a manifest in the working directory, and the exit code table describes partial releases and inspection commands.
 - The Action installs release-glz on Windows.
   Its archive scripts used `[IO.Compression.ZipFile]` without loading the assembly that Windows PowerShell 5.1 needs, and the extraction passed an argument that only .NET Core accepts.
+- The Action and the release evidence scripts check the type of every JSON field they read.
+  The Action refuses a `command/v2` diagnostic without a code or a message, and a bundled checksum that isn't a string.
+  It used to print `undefined` for a missing field, and a checksum stored as a list failed later with an unrelated error.
+  The SBOM generator refuses `cargo metadata` whose package fields have another type.
 - A Unix release archive depends only on the binary inside it, as the Windows ZIP already did.
   `scripts/package-unix.js` writes one ustar entry with a fixed mode, owner, group, and time.
   It stores the binary uncompressed, so no compressor version or CPU feature changes the bytes.

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// @ts-check
 "use strict";
 
 const crypto = require("node:crypto");
@@ -14,6 +15,18 @@ const MAX_ASSET_COUNT = 1024;
 // Characters a Release asset name may use.
 const MAX_ASSET_NAME_LEN = 256;
 
+/**
+ * @param {unknown} value
+ * @returns {value is Record<string, unknown>}
+ */
+function isRecord(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+/**
+ * @param {unknown} name
+ * @returns {name is string}
+ */
 function safeAssetName(name) {
   return (
     typeof name === "string" &&
@@ -28,10 +41,21 @@ function safeAssetName(name) {
 // The form GitHub reports in a Release asset's `digest`.
 const SHA256_DIGEST = /^sha256:[0-9a-f]{64}$/;
 
+/**
+ * @param {string} file
+ * @returns {string}
+ */
 function sha256Digest(file) {
   return `sha256:${crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex")}`;
 }
 
+/**
+ * Refuse a GitHub Release whose assets aren't a subset of the sealed inventory with the same digests, or all of it when `requireComplete` is set.
+ * @param {Map<string, string>} expected
+ * @param {unknown} release
+ * @param {boolean} [requireComplete]
+ * @returns {void}
+ */
 function validateInventory(expected, release, requireComplete = false) {
   if (!(expected instanceof Map) || expected.size === 0 || expected.size > MAX_ASSET_COUNT) {
     throw new Error("expected release inventory is empty or excessive");
@@ -41,13 +65,16 @@ function validateInventory(expected, release, requireComplete = false) {
       throw new Error("expected release inventory has an unsafe name or digest");
     }
   }
-  if (!release || !Array.isArray(release.assets) || release.assets.length > MAX_ASSET_COUNT) {
+  /** @type {unknown} */
+  const assets = isRecord(release) ? release.assets : undefined;
+  if (!Array.isArray(assets) || assets.length > MAX_ASSET_COUNT) {
     throw new Error("GitHub Release response has no bounded assets array");
   }
+  /** @type {Set<string>} */
   const existing = new Set();
-  for (const asset of release.assets) {
-    const name = asset?.name;
-    if (!safeAssetName(name)) {
+  for (const asset of /** @type {unknown[]} */ (assets)) {
+    const name = isRecord(asset) ? asset.name : undefined;
+    if (!isRecord(asset) || !safeAssetName(name)) {
       throw new Error("GitHub Release contains an unsafe asset name");
     }
     if (existing.has(name)) {
@@ -68,6 +95,11 @@ function validateInventory(expected, release, requireComplete = false) {
   }
 }
 
+/**
+ * The digest of every file in `directory`, keyed by file name.
+ * @param {string} directory
+ * @returns {Map<string, string>}
+ */
 function expectedInventory(directory) {
   const metadata = fs.lstatSync(directory);
   if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
@@ -89,12 +121,17 @@ function expectedInventory(directory) {
   );
 }
 
+/**
+ * @param {NodeJS.ReadableStream} stream
+ * @returns {Promise<string>}
+ */
 function readBoundedStdin(stream = process.stdin) {
   return new Promise((resolve, reject) => {
+    /** @type {Buffer[]} */
     const chunks = [];
     let size = 0;
     let settled = false;
-    stream.on("data", (chunk) => {
+    stream.on("data", (/** @type {Buffer} */ chunk) => {
       if (settled) return;
       size += chunk.length;
       if (size > MAX_RELEASE_JSON_BYTES) {
@@ -108,27 +145,37 @@ function readBoundedStdin(stream = process.stdin) {
     stream.on("end", () => {
       if (!settled) resolve(Buffer.concat(chunks).toString("utf8"));
     });
-    stream.on("error", (error) => {
+    stream.on("error", (/** @type {Error} */ error) => {
       if (!settled) reject(error);
     });
   });
 }
 
+/**
+ * @param {string[]} argv
+ * @returns {string}
+ */
 function artifactsArgument(argv) {
+  const [flag, directory, complete] = argv;
   if (
     (argv.length !== 2 && argv.length !== 3) ||
-    argv[0] !== "--artifacts" ||
-    !argv[1] ||
-    (argv.length === 3 && argv[2] !== "--complete")
+    flag !== "--artifacts" ||
+    !directory ||
+    (argv.length === 3 && complete !== "--complete")
   ) {
     throw new Error("usage: verify-release-assets.js --artifacts DIR [--complete]");
   }
-  return argv[1];
+  return directory;
 }
 
+/**
+ * @param {string[]} argv
+ * @returns {Promise<void>}
+ */
 async function main(argv = process.argv.slice(2)) {
   const directory = artifactsArgument(argv);
   const source = await readBoundedStdin();
+  /** @type {unknown} */
   let release;
   try {
     release = JSON.parse(source);
@@ -144,7 +191,8 @@ async function main(argv = process.argv.slice(2)) {
 
 if (require.main === module) {
   main().catch((error) => {
-    process.stderr.write(`release asset inventory verification failed: ${error.message}\n`);
+    const message = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`release asset inventory verification failed: ${message}\n`);
     process.exitCode = 1;
   });
 }

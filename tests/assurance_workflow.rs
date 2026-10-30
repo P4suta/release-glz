@@ -52,8 +52,8 @@ fn assurance_workflow_has_fixed_fail_closed_shipping_gates() {
         "cargo-fuzz --version 0.13.2",
         "kani-verifier --version 0.68.0",
         "cargo kani --package release-glz-core",
-        "--features negative-control",
-        "a bump must raise the version core",
+        "--features \"$feature\"",
+        "grep -F \"Failed Checks: $message\"",
         "cover properties satisfied",
         "cargo deny check -D warnings",
         "cargo audit -D warnings",
@@ -67,6 +67,9 @@ fn assurance_workflow_has_fixed_fail_closed_shipping_gates() {
         "src/registry.rs",
         "src/artifact.rs",
         "src/reconciler.rs",
+        "--test-workspace=true",
+        "crates/release-glz-core/src/publication.rs",
+        "crates/release-glz-core/src/approval.rs",
         "actionlint",
         "zizmor",
         "rustup toolchain install 1.97.0 --profile minimal",
@@ -118,6 +121,74 @@ fn assurance_workflow_has_fixed_fail_closed_shipping_gates() {
             .unwrap();
         assert_eq!(reference.len(), 40, "mutable action reference: {line}");
         assert!(reference.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    }
+}
+
+/// Every negative control of the core crate runs at the release gate, against a harness that exists and a failure message that the harness asserts.
+#[test]
+fn every_negative_control_breaks_a_named_harness() {
+    let yaml = fs::read_to_string(".github/workflows/assurance.yml").unwrap();
+    let controls = yaml
+        .split_once("<<'CONTROLS'")
+        .expect("the proof gate lists its negative controls")
+        .1
+        .split_once("CONTROLS")
+        .unwrap()
+        .0;
+    let rows = controls
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(|line| {
+            let [feature, harness, message] = line
+                .splitn(3, '|')
+                .collect::<Vec<_>>()
+                .try_into()
+                .unwrap_or_else(|_| panic!("malformed negative control: {line}"));
+            (feature, harness, message)
+        })
+        .collect::<Vec<_>>();
+
+    let manifest = fs::read_to_string("crates/release-glz-core/Cargo.toml")
+        .unwrap()
+        .parse::<toml_edit::DocumentMut>()
+        .unwrap();
+    let declared = manifest["features"]
+        .as_table()
+        .unwrap()
+        .iter()
+        .map(|(name, _)| name)
+        .filter(|name| name.starts_with("negative-control-"))
+        .collect::<std::collections::BTreeSet<_>>();
+    let run = rows
+        .iter()
+        .map(|(feature, _, _)| *feature)
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(declared, run, "every declared negative control must run");
+
+    let sources = fs::read_dir("crates/release-glz-core/src")
+        .unwrap()
+        .map(|entry| fs::read_to_string(entry.unwrap().path()).unwrap())
+        .collect::<String>();
+    for (feature, harness, message) in rows {
+        assert!(
+            sources.contains(&format!("feature = \"{feature}\"")),
+            "{feature} breaks nothing"
+        );
+        let position = sources
+            .find(&format!("fn {harness}() {{"))
+            .unwrap_or_else(|| panic!("{feature} names no function {harness}"));
+        let attributes = sources[..position]
+            .rsplit_once("\n\n")
+            .map_or(&sources[..position], |(_, item)| item);
+        assert!(
+            attributes.contains("#[kani::proof]"),
+            "{feature} names {harness}, which is no harness"
+        );
+        assert!(
+            sources.contains(&format!("\"{message}\"")),
+            "{harness} asserts no message {message:?}"
+        );
     }
 }
 
@@ -470,6 +541,27 @@ fn local_tool_pins_match_the_versions_ci_installs() {
             pin("aqua:zizmorcore/zizmor")
         )),
         "shipping assurance must install the pinned zizmor"
+    );
+}
+
+#[test]
+fn the_fast_gate_type_checks_the_action_and_the_release_scripts() {
+    let ci: serde_norway::Value =
+        serde_norway::from_str(&fs::read_to_string(".github/workflows/ci.yml").unwrap()).unwrap();
+    let runs = ci["jobs"]["changes"]["steps"]
+        .as_sequence()
+        .unwrap()
+        .iter()
+        .filter_map(|step| step["run"].as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        runs.contains("npm ci --ignore-scripts"),
+        "the fast gate must install the locked compiler without running package scripts"
+    );
+    assert!(
+        runs.contains("npm run typecheck"),
+        "the fast gate must type-check the Action and the release scripts"
     );
 }
 

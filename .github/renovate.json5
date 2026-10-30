@@ -13,5 +13,10 @@
       "matchCurrentVersion": "/^1\\.88(?:\\.0)?$/",
       "allowedVersions": ">=1.88 <1.89",
     },
+    {
+      "description": "Keep the Node type definitions on Node 24, which the Action and CI run.",
+      "matchPackageNames": ["@types/node"],
+      "allowedVersions": "<25",
+    },
   ],
 }

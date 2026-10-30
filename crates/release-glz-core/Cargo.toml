@@ -9,8 +9,21 @@ rust-version = "1.88"
 
 [features]
 serde = ["dep:serde"]
-# Replaces checked increments with wrapping ones, so the proof gate can show that it rejects a broken implementation.
-negative-control = []
+# Each negative control breaks one decision, so the proof gate can show that the harness for it rejects a broken implementation.
+# Wrapping increments instead of checked ones.
+negative-control-increment = []
+# Keeping an object that differs from the Candidate.
+negative-control-overwrite = []
+# Publishing an object that already matches the Candidate again.
+negative-control-republish = []
+# Proceeding without approval.
+negative-control-unapproved = []
+# Letting an optional effect keep a release from counting as released.
+negative-control-optional-blocks = []
+# Approving without the Candidate digest.
+negative-control-approval = []
+# Approving a push from the inputs of a manual release.
+negative-control-substitution = []
 
 [dependencies]
 serde = { version = "1.0.228", default-features = false, features = [

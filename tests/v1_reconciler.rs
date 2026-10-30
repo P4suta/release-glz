@@ -637,26 +637,48 @@ fn github_release_output_policy_removes_draft_and_finalize_effects() {
 
 #[test]
 fn every_immutable_external_identity_mismatch_is_a_hard_conflict() {
-    let target = intent();
+    let mut target = intent();
+    target.release_assets = vec![ReleaseAsset {
+        hook_id: "sbom".into(),
+        name: "sbom.cdx.json".into(),
+        media_type: "application/vnd.cyclonedx+json".into(),
+        sha256: "5".repeat(64),
+        size: 12,
+    }];
+    let release = |target_sha: String, candidate_digest: String| {
+        Some(ObservedGithubRelease {
+            target_sha,
+            candidate_digest,
+            draft: true,
+        })
+    };
     let cases = [
         (
-            "unsupported schema",
             ExternalReleaseState {
                 schema: "state/v2".into(),
                 ..ExternalReleaseState::default()
             },
+            "unsupported external state schema `state/v2`",
         ),
         (
-            "documentation checksum",
+            ExternalReleaseState {
+                package: Some(ObservedArtifact {
+                    sha256: "f".repeat(64),
+                }),
+                ..ExternalReleaseState::default()
+            },
+            "the published package checksum differs from the Candidate",
+        ),
+        (
             ExternalReleaseState {
                 docs: Some(ObservedArtifact {
                     sha256: "f".repeat(64),
                 }),
                 ..ExternalReleaseState::default()
             },
+            "the published documentation checksum differs from the Candidate",
         ),
         (
-            "lightweight tag",
             ExternalReleaseState {
                 tag: Some(ObservedTag {
                     target_sha: target.source_sha.clone(),
@@ -664,20 +686,23 @@ fn every_immutable_external_identity_mismatch_is_a_hard_conflict() {
                 }),
                 ..ExternalReleaseState::default()
             },
+            "the existing git tag has a different immutable identity",
         ),
         (
-            "release target",
             ExternalReleaseState {
-                github_release: Some(ObservedGithubRelease {
-                    target_sha: "b".repeat(40),
-                    candidate_digest: target.candidate_digest.clone(),
-                    draft: true,
-                }),
+                github_release: release("b".repeat(40), target.candidate_digest.clone()),
                 ..ExternalReleaseState::default()
             },
+            "the existing GitHub Release differs from the Candidate",
         ),
         (
-            "unsealed asset",
+            ExternalReleaseState {
+                github_release: release(target.source_sha.clone(), "e".repeat(64)),
+                ..ExternalReleaseState::default()
+            },
+            "the existing GitHub Release differs from the Candidate",
+        ),
+        (
             ExternalReleaseState {
                 release_assets: BTreeMap::from([(
                     "surprise.bin".into(),
@@ -687,9 +712,21 @@ fn every_immutable_external_identity_mismatch_is_a_hard_conflict() {
                 )]),
                 ..ExternalReleaseState::default()
             },
+            "GitHub Release contains unsealed asset `surprise.bin`",
         ),
         (
-            "notification key",
+            ExternalReleaseState {
+                release_assets: BTreeMap::from([(
+                    "sbom.cdx.json".into(),
+                    ObservedArtifact {
+                        sha256: "f".repeat(64),
+                    },
+                )]),
+                ..ExternalReleaseState::default()
+            },
+            "GitHub Release asset `sbom.cdx.json` differs from the Candidate",
+        ),
+        (
             ExternalReleaseState {
                 notifications: BTreeMap::from([(
                     "announce".into(),
@@ -700,13 +737,59 @@ fn every_immutable_external_identity_mismatch_is_a_hard_conflict() {
                 )]),
                 ..ExternalReleaseState::default()
             },
+            "notify hook `announce` completed under a different idempotency key",
         ),
     ];
-    for (name, observed) in cases {
+    for (observed, message) in cases {
         let error = reconcile(&target, &observed, &approved()).unwrap_err();
-        assert_eq!(error.state(), ReleaseState::Conflict, "{name}");
-        assert!(!error.to_string().is_empty(), "{name}");
+        assert_eq!(error.state(), ReleaseState::Conflict, "{message}");
+        assert_eq!(error.to_string(), message);
+        assert_eq!(
+            preview(&target, &observed).unwrap_err().to_string(),
+            message,
+            "an inspection must refuse the same world"
+        );
     }
+}
+
+/// When the world contradicts the Candidate in more than one object, the first object in publication order names the conflict.
+#[test]
+fn the_first_object_in_publication_order_names_the_conflict() {
+    let target = intent();
+    let observed = ExternalReleaseState {
+        package: Some(ObservedArtifact {
+            sha256: "f".repeat(64),
+        }),
+        tag: Some(ObservedTag {
+            target_sha: "b".repeat(40),
+            annotated: true,
+        }),
+        ..ExternalReleaseState::default()
+    };
+    assert_eq!(
+        reconcile(&target, &observed, &approved())
+            .unwrap_err()
+            .to_string(),
+        "the existing git tag has a different immutable identity"
+    );
+}
+
+/// A notification record for a hook that the Candidate doesn't have is no object of this release.
+#[test]
+fn a_record_for_a_hook_outside_the_candidate_neither_conflicts_nor_starts_the_release() {
+    let target = intent();
+    let observed = ExternalReleaseState {
+        notifications: BTreeMap::from([(
+            "retired".into(),
+            NotifyObservation {
+                idempotency_key: "any".into(),
+                complete: true,
+            },
+        )]),
+        ..ExternalReleaseState::default()
+    };
+    let plan = reconcile(&target, &observed, &approved()).unwrap();
+    assert_eq!(plan.state, ReleaseState::CandidateReady);
 }
 
 #[test]
@@ -722,8 +805,25 @@ fn output_policy_and_candidate_asset_identity_fail_closed_before_effects() {
     assert_eq!(
         reconcile(&no_docs, &unexpected_docs, &approved())
             .unwrap_err()
-            .state(),
-        ReleaseState::Conflict
+            .to_string(),
+        "documentation exists but the Candidate contains none"
+    );
+
+    let mut no_release = intent();
+    no_release.github_release = false;
+    let unexpected_release = ExternalReleaseState {
+        github_release: Some(ObservedGithubRelease {
+            target_sha: no_release.source_sha.clone(),
+            candidate_digest: no_release.candidate_digest.clone(),
+            draft: false,
+        }),
+        ..ExternalReleaseState::default()
+    };
+    assert_eq!(
+        reconcile(&no_release, &unexpected_release, &approved())
+            .unwrap_err()
+            .to_string(),
+        "a GitHub Release exists but the Candidate disables it"
     );
 
     let mut disabled = intent();
@@ -738,8 +838,8 @@ fn output_policy_and_candidate_asset_identity_fail_closed_before_effects() {
     assert_eq!(
         reconcile(&disabled, &ExternalReleaseState::default(), &approved())
             .unwrap_err()
-            .state(),
-        ReleaseState::Conflict
+            .to_string(),
+        "the Candidate requests release assets while GitHub Releases are disabled"
     );
 
     let mut duplicate = intent();
@@ -754,8 +854,8 @@ fn output_policy_and_candidate_asset_identity_fail_closed_before_effects() {
     assert_eq!(
         reconcile(&duplicate, &ExternalReleaseState::default(), &approved())
             .unwrap_err()
-            .state(),
-        ReleaseState::Conflict
+            .to_string(),
+        "duplicate Candidate release asset `same.bin`"
     );
 }
 

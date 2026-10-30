@@ -1,3 +1,4 @@
+// @ts-check
 "use strict";
 
 const assert = require("node:assert/strict");
@@ -46,7 +47,7 @@ test("generates one deterministic SLSA statement for every supported archive", (
     assert.deepEqual(leftBytes, fs.readFileSync(path.join(right, name)));
     assert.equal(leftBytes.toString("utf8").trim().split("\n").length, 1);
 
-    const statement = JSON.parse(leftBytes);
+    const statement = JSON.parse(leftBytes.toString("utf8"));
     const expectedDigest = crypto
       .createHash("sha256")
       .update(fs.readFileSync(path.join(left, archive)))
@@ -73,7 +74,7 @@ test("rejects ambiguous source identity and incomplete archive sets", (context) 
   context.after(() => fs.rmSync(complete, { recursive: true, force: true }));
   populate(root);
   populate(complete);
-  fs.unlinkSync(path.join(root, archives[0]));
+  fs.unlinkSync(path.join(root, "release-glz-x86_64-unknown-linux-musl.tar.gz"));
   const incomplete = run([
     "--artifacts",
     root,
@@ -105,6 +106,10 @@ test("rejects ambiguous source identity and incomplete archive sets", (context) 
   assert.doesNotMatch(unsafe.stderr, /secret/);
 });
 
+/**
+ * @param {string} directory
+ * @returns {void}
+ */
 function populate(directory) {
   fs.mkdirSync(directory, { recursive: true });
   for (const archive of archives) {
@@ -112,6 +117,10 @@ function populate(directory) {
   }
 }
 
+/**
+ * @param {string[]} args
+ * @returns {{status: number | null, stdout: string, stderr: string}}
+ */
 function run(args) {
   const result = spawnSync(
     process.execPath,
