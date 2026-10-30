@@ -560,12 +560,15 @@ pub fn approves(intent: &ReleaseIntent, approval: &ApprovalEvidence) -> bool {
 }
 
 /// The idempotency key for one notification of one Candidate.
+///
+/// The framing is injective for every Candidate digest without a NUL byte, which a verified Candidate's lowercase hexadecimal digest never has.
 pub fn notification_key(candidate_digest: &str, hook_id: &str) -> String {
     let mut digest = Sha256::new();
-    digest.update(b"release-glz-notify-v1\0");
-    digest.update(candidate_digest.as_bytes());
-    digest.update(b"\0");
-    digest.update(hook_id.as_bytes());
+    for part in
+        release_glz_core::notification_frame(candidate_digest.as_bytes(), hook_id.as_bytes())
+    {
+        digest.update(part);
+    }
     crate::hex::lower(&digest.finalize())
 }
 

@@ -38,10 +38,13 @@ Every harness has a negative control, and a test without the solver keeps the in
 `.cargo/mutants.toml` keeps cargo-mutants out of the harnesses and negative controls, which no test build compiles.
 The harnesses over lists of objects and over runs cover releases of at most three objects, and the decisions for single objects and approvals cover every input.
 A run harness lets the world answer each observation with any presence of each object, so its properties hold for every way the world changes between observations.
+The harnesses over text cover a few bytes or characters each, and each one states its bound in its documentation.
 
 `verification/lean/Publication.lean` models the same decisions in Lean 4 and proves the list properties for releases of every length.
+`Redaction.lean` and `Framing.lean` model redaction and the digest framings, and they prove them for texts, secrets, and files of every length.
 `cargo xtask lean` builds the image that `verification/lean.Dockerfile` pins and runs Lean in a container with the same limits as the bounded runner.
 It generates refinement vectors from the core crate, and Lean proves by `decide` that the model decides every object and every list of at most two objects as the core does.
+The redaction vectors cover every text of at most three bytes over `a` and `b` with every pair of secrets of at most two bytes, and the framing vectors cover short paths, contents, digests, and hook ids.
 It refuses a theorem that depends on an axiom outside Lean's standard three, and it replays every module through `leanchecker --fresh`.
 
 `verification/quint/release_run.qnt` models a release run and the world it talks to in Quint 0.33.1.
@@ -57,6 +60,7 @@ It also writes the traces of the model's scenario tests and of a seeded simulati
 They also refuse a harness, theorem, invariant, model test, or fuzz target that no property cites, so a new check needs a property before it merges.
 The theorems for longer lists concern the model, so they bind the core only through the refinement on the short lists and the shared structure of the two definitions.
 The task also generates the decision vectors from a table with the republish defect, and it requires Lean to fail on exactly the decision refinement then.
+It generates the redaction and framing vectors from broken implementations alongside, and it requires each of their refinements to fail too.
 
 Run the fast checks before opening a pull request:
 
