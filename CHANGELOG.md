@@ -112,6 +112,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- An archive whose entries differ only in Unicode normalization, such as `café.txt` with a precomposed and a decomposed `é`, is refused before extraction.
+  The default macOS file system stores such entries under one name, so the later one could replace the earlier one there.
 - A release of a Candidate without docs stops in a conflict when the registry already holds docs for its version.
   The live observation used to skip docs for such a Candidate, so it published the tag and the GitHub Release over a world that contradicted the Candidate.
 - Once a run knows the release started, every failure it reports is `partially_released` and exits with code 7.
