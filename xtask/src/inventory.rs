@@ -46,7 +46,7 @@ const fn control(
 }
 
 /// Every harness of the proof packages, with its cover count.
-pub const HARNESSES: [Harness; 47] = [
+pub const HARNESSES: [Harness; 50] = [
     harness(
         "proofs::a_proof_run_is_admitted_only_when_every_expected_harness_verified",
         2,
@@ -104,6 +104,18 @@ pub const HARNESSES: [Harness; 47] = [
     harness(
         "precedence::proofs::a_train_counts_up_and_moves_through_its_channels_in_precedence",
         1,
+    ),
+    harness(
+        "precedence::proofs::a_train_compares_like_the_text_that_spells_it",
+        2,
+    ),
+    harness(
+        "precedence::proofs::text_parses_as_a_train_exactly_when_it_spells_one",
+        2,
+    ),
+    harness(
+        "precedence::proofs::the_prerelease_grammar_is_the_one_semantic_versioning_states",
+        2,
     ),
     harness(
         "publication::proofs::an_effect_concerns_only_an_object_the_world_lacks",
@@ -214,7 +226,7 @@ const CORE: &str = "release-glz-core";
 const ASSURANCE: &str = "assurance-core";
 
 /// Every negative control, each of which has to fail exactly its harness's assertion.
-pub const CONTROLS: [Control; 49] = [
+pub const CONTROLS: [Control; 52] = [
     control(
         ASSURANCE,
         "negative-control-incomplete-run",
@@ -328,6 +340,24 @@ pub const CONTROLS: [Control; 49] = [
         "negative-control-reverse-numbers",
         "precedence::proofs::a_train_counts_up_and_moves_through_its_channels_in_precedence",
         "a train's next number must follow it",
+    ),
+    control(
+        CORE,
+        "negative-control-one-label",
+        "precedence::proofs::a_train_compares_like_the_text_that_spells_it",
+        "a train must compare like the text that spells it",
+    ),
+    control(
+        CORE,
+        "negative-control-unchecked-train",
+        "precedence::proofs::text_parses_as_a_train_exactly_when_it_spells_one",
+        "text must parse as a train exactly when it spells one",
+    ),
+    control(
+        CORE,
+        "negative-control-leading-zero",
+        "precedence::proofs::the_prerelease_grammar_is_the_one_semantic_versioning_states",
+        "the prerelease grammar must be the one semantic versioning states",
     ),
     control(
         CORE,

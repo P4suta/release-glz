@@ -51,7 +51,7 @@ impl<'a> Pre<'a> {
         }
         let other = Self::Other(text);
         match other.numbered_label() {
-            Some((Label::Channel(channel), number)) if other.is_valid() => {
+            Some((Label::Channel(channel), number)) if spells_a_train(other) => {
                 Self::Train(channel, number)
             }
             _ => other,
@@ -97,6 +97,21 @@ impl<'a> Pre<'a> {
     }
 }
 
+/// Whether `<label>.<number>` text is valid, so that it reads as a train.
+fn spells_a_train(pre: Pre<'_>) -> bool {
+    #[cfg(feature = "negative-control-unchecked-train")]
+    if let Some(valid) = negative_control_unchecked_train() {
+        return valid;
+    }
+    pre.is_valid()
+}
+
+/// Reads `<label>.<number>` text as a train without checking its grammar, so a number with a leading zero passes.
+#[cfg(feature = "negative-control-unchecked-train")]
+fn negative_control_unchecked_train() -> Option<bool> {
+    Some(true)
+}
+
 /// The byte that separates prerelease identifiers.
 const DOT: u8 = b'.';
 
@@ -112,6 +127,10 @@ impl Segment<'_> {
     /// Whether a numeric identifier has no leading zero, or another identifier is a non-empty run of ASCII letters, digits, and hyphens.
     fn is_valid(self) -> bool {
         if self.numeric {
+            #[cfg(feature = "negative-control-leading-zero")]
+            if let Some(valid) = negative_control_leading_zero() {
+                return valid;
+            }
             return self.bytes.len() == 1 || self.bytes.first() != Some(&b'0');
         }
         let mut index = 0;
@@ -123,6 +142,12 @@ impl Segment<'_> {
         }
         index > 0
     }
+}
+
+/// Admits a numeric identifier with a leading zero.
+#[cfg(feature = "negative-control-leading-zero")]
+fn negative_control_leading_zero() -> Option<bool> {
+    Some(true)
 }
 
 /// The dot-separated identifiers of a prerelease's text, in order.
@@ -289,7 +314,7 @@ fn negative_control_unequal() -> Option<Ordering> {
 fn train_against_text(channel: Channel, number: u64, text: &[u8]) -> Ordering {
     let mut segments = segments(text);
     let by_label = match segments.next() {
-        Some(first) if !first.numeric => compare_bytes(channel.label().as_bytes(), first.bytes),
+        Some(first) if !first.numeric => compare_bytes(train_label(channel), first.bytes),
         _ => Ordering::Greater,
     };
     if by_label.is_ne() {
@@ -308,6 +333,21 @@ fn train_against_text(channel: Channel, number: u64, text: &[u8]) -> Ordering {
     } else {
         same_identifiers()
     }
+}
+
+/// The label that spells a train of `channel` when it meets prerelease text.
+fn train_label(channel: Channel) -> &'static [u8] {
+    #[cfg(feature = "negative-control-one-label")]
+    if let Some(label) = negative_control_one_label() {
+        return label;
+    }
+    channel.label().as_bytes()
+}
+
+/// Spells every train with the first channel's label.
+#[cfg(feature = "negative-control-one-label")]
+fn negative_control_one_label() -> Option<&'static [u8]> {
+    Some(Channel::Alpha.label().as_bytes())
 }
 
 /// Two prerelease texts, compared identifier by identifier, where the text that runs out of identifiers first comes first.
@@ -541,5 +581,185 @@ mod proofs {
         }
         assert!(Version::stable(core).follows(&on(channel, number)));
         kani::cover!(later > channel && any_number < number);
+    }
+
+    /// The longest text that the proofs over spelled trains and parsing cover, which holds `alpha.99`.
+    const SPELLED: usize = 8;
+
+    /// The longest text that the proof of the grammar covers.
+    const GRAMMAR: usize = 4;
+
+    /// The label of `channel` as semantic versioning text spells it, written out here instead of read from `Channel::label`.
+    fn spelled_label(channel: Channel) -> &'static [u8] {
+        match channel {
+            Channel::Alpha => b"alpha",
+            Channel::Beta => b"beta",
+            Channel::Rc => b"rc",
+        }
+    }
+
+    /// The train that `text` spells as `<label>.<number>` by the rules of semantic versioning: a channel's label, a dot, and digits without a leading zero.
+    fn spelled_train(text: &[u8]) -> Option<(Channel, u64)> {
+        let channel = if text.starts_with(b"alpha.") {
+            Channel::Alpha
+        } else if text.starts_with(b"beta.") {
+            Channel::Beta
+        } else if text.starts_with(b"rc.") {
+            Channel::Rc
+        } else {
+            return None;
+        };
+        let digits = &text[spelled_label(channel).len() + 1..];
+        if digits.is_empty() || (digits.len() > 1 && digits[0] == b'0') {
+            return None;
+        }
+        let mut value = 0_u64;
+        let mut index = 0;
+        while index < digits.len() {
+            if !digits[index].is_ascii_digit() {
+                return None;
+            }
+            value = value * 10 + u64::from(digits[index] - b'0');
+            index += 1;
+        }
+        Some((channel, value))
+    }
+
+    /// Whether the bytes of `text` before its first dot are `label`.
+    fn first_identifier_is(text: &[u8], label: &[u8]) -> bool {
+        let mut end = 0;
+        while end < text.len() && text[end] != b'.' {
+            end += 1;
+        }
+        &text[..end] == label
+    }
+
+    /// Whether `text` follows the grammar of semantic versioning, stated byte by byte in one pass instead of identifier by identifier.
+    fn valid_by_statement(text: &[u8]) -> bool {
+        let mut length = 0_usize;
+        let mut digits_only = true;
+        let mut leading_zero = false;
+        let mut index = 0;
+        while index < text.len() {
+            let byte = text[index];
+            if byte == b'.' {
+                if length == 0 || (digits_only && leading_zero && length > 1) {
+                    return false;
+                }
+                length = 0;
+                digits_only = true;
+                leading_zero = false;
+            } else if byte.is_ascii_alphanumeric() || byte == b'-' {
+                if length == 0 {
+                    leading_zero = byte == b'0';
+                }
+                digits_only &= byte.is_ascii_digit();
+                length += 1;
+            } else {
+                return false;
+            }
+            index += 1;
+        }
+        length > 0 && !(digits_only && leading_zero && length > 1)
+    }
+
+    /// A train compares with prerelease text exactly as the text `<label>.<number>` that spells it does, which is where a train's label decides its order.
+    ///
+    /// The core and the channel are symbolic, the train number has one digit, and the other prerelease is any valid text of at most two bytes.
+    /// The proof of parsing shows that the same text parses back into the train and names its channel.
+    #[kani::proof]
+    #[kani::unwind(8)]
+    fn a_train_compares_like_the_text_that_spells_it() {
+        let channel: Channel = kani::any();
+        let number: u64 = kani::any();
+        kani::assume(number < 10);
+        let digit = b'0' + number as u8;
+        let (mut alpha, mut beta, mut rc) = (*b"alpha.0", *b"beta.0", *b"rc.0");
+        let text: &[u8] = match channel {
+            Channel::Alpha => {
+                alpha[6] = digit;
+                &alpha
+            }
+            Channel::Beta => {
+                beta[5] = digit;
+                &beta
+            }
+            Channel::Rc => {
+                rc[3] = digit;
+                &rc
+            }
+        };
+        let other_bytes: [u8; PAIRED_TEXT] = kani::any();
+        let other_length: usize = kani::any();
+        kani::assume(other_length >= 1 && other_length <= PAIRED_TEXT);
+        let other = Pre::Other(&other_bytes[..other_length]);
+        kani::assume(other.is_valid());
+        let core = kani::any();
+        let against = Version { core, pre: other };
+        let train = Version {
+            core,
+            pre: Pre::Train(channel, number),
+        };
+        let spelled = Version {
+            core,
+            pre: Pre::Other(text),
+        };
+        let ordering = compare(&train, &against);
+        kani::assert(
+            ordering == compare(&spelled, &against),
+            "a train must compare like the text that spells it",
+        );
+        kani::cover!(ordering == Ordering::Greater);
+        kani::cover!(ordering == Ordering::Less);
+    }
+
+    /// Text parses as a train exactly when it spells `<label>.<number>` with a number that has no leading zero, any other text keeps its bytes, and its first identifier decides the channel it names.
+    ///
+    /// The text is any eight bytes or fewer.
+    #[kani::proof]
+    #[kani::unwind(10)]
+    fn text_parses_as_a_train_exactly_when_it_spells_one() {
+        let bytes: [u8; SPELLED] = kani::any();
+        let length: usize = kani::any();
+        kani::assume(length <= SPELLED);
+        let text = &bytes[..length];
+        let expected = spelled_train(text);
+        kani::assert(
+            match (Pre::parse(text), expected) {
+                (Pre::Train(channel, number), Some((spelled, value))) => {
+                    channel == spelled && number == value
+                }
+                (Pre::Other(kept), None) => !text.is_empty() && kept == text,
+                (Pre::Stable, None) => text.is_empty(),
+                _ => false,
+            },
+            "text must parse as a train exactly when it spells one",
+        );
+        let channel: Channel = kani::any();
+        assert!(
+            Pre::Other(text).starts_with(channel)
+                == first_identifier_is(text, spelled_label(channel))
+        );
+        kani::cover!(expected.is_some());
+        kani::cover!(expected.is_none() && text.starts_with(b"rc.0") && length > 4);
+    }
+
+    /// The prerelease grammar accepts exactly the texts whose identifiers are non-empty runs of ASCII letters, digits, and hyphens, without a leading zero in a numeric identifier.
+    ///
+    /// The text is any four bytes or fewer.
+    #[kani::proof]
+    #[kani::unwind(6)]
+    fn the_prerelease_grammar_is_the_one_semantic_versioning_states() {
+        let bytes: [u8; GRAMMAR] = kani::any();
+        let length: usize = kani::any();
+        kani::assume(length <= GRAMMAR);
+        let text = &bytes[..length];
+        let valid = valid_by_statement(text);
+        kani::assert(
+            Pre::Other(text).is_valid() == valid,
+            "the prerelease grammar must be the one semantic versioning states",
+        );
+        kani::cover!(valid && text.contains(&b'.'));
+        kani::cover!(!valid && text.starts_with(b"01"));
     }
 }
