@@ -525,12 +525,14 @@ impl HexRegistry {
         version: &Version,
         require_docs: bool,
     ) -> Result<PackageState> {
-        for _ in 0..self.visibility_poll.attempts {
+        for attempt in 0..self.visibility_poll.attempts {
+            if attempt > 0 {
+                tokio::time::sleep(self.visibility_poll.interval).await;
+            }
             let state = self.package(package).await?;
             if release_ready(state.as_ref(), version, require_docs) {
                 return state.context("ready registry state unexpectedly disappeared");
             }
-            tokio::time::sleep(self.visibility_poll.interval).await;
         }
         bail!("timed out waiting for {package} {version} to appear on the registry")
     }

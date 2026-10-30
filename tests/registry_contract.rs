@@ -676,6 +676,29 @@ async fn wait_for_keeps_polling_until_the_release_is_visible() {
     server.join().unwrap();
 }
 
+/// The wait reports its timeout right after its last poll instead of sleeping once more first.
+#[tokio::test]
+async fn wait_for_reports_its_timeout_without_sleeping_after_the_last_poll() {
+    let (base, requests, server) =
+        server(vec![response(200, br#"{"releases":[],"retirements":{}}"#)]);
+    let registry = HexRegistry::from_config(&custom_config(&base), None)
+        .unwrap()
+        .with_visibility_poll(VisibilityPoll {
+            attempts: 1,
+            interval: std::time::Duration::from_secs(60),
+        });
+
+    let waited = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        registry.wait_for("widget", &Version::new(1, 2, 3), false),
+    )
+    .await
+    .expect("the wait must not sleep after its last poll");
+    assert!(waited.is_err());
+    assert_eq!(requests.try_iter().count(), 1);
+    server.join().unwrap();
+}
+
 #[tokio::test]
 async fn wait_for_stops_after_its_attempts() {
     let (base, requests, server) = server(vec![
