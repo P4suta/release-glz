@@ -186,6 +186,13 @@ Below 1.0 a breaking change is a minor release, a release needs its acknowledgem
 
 ### A Candidate publishes exactly the bytes it sealed
 
+A digest or a commit id counts only when it has its exact length and nothing but lowercase hexadecimal digits, so one value never has two spellings.
+Kani proves the digit check for every byte and the identity checks for every value of an identity's length.
+It proves the refusal of every other length for values of up to three bytes, and for all-digit values one byte too short or too long.
+
+- Kani: `hex::proofs::a_hex_digit_is_exactly_a_lowercase_hexadecimal_digit`
+- Kani: `hex::proofs::hex_identities_check_every_byte`
+- Kani: `hex::proofs::hex_identities_refuse_every_other_length`
 - Test: `tests/v1_candidate.rs::candidate_seals_and_verifies_the_exact_publish_bytes`
 - Test: `tests/v1_candidate.rs::candidate_verification_detects_any_raw_artifact_change`
 - Test: `tests/v1_candidate.rs::candidate_verification_rejects_every_manifest_identity_and_digest_tamper`
@@ -193,6 +200,17 @@ Below 1.0 a breaking change is a minor release, a release needs its acknowledgem
 
 ### Unpacking an archive writes only portable relative paths
 
+An accepted path is relative, and none of its components is empty, `.`, `..`, a name that Windows reserves for a device, or a name with a character that some supported OS forbids.
+Two entries whose paths fold to the same file or directory once letter case no longer counts never both stand.
+Kani proves the character rules for every byte and every byte pair, and the device names for every stem of up to eight bytes.
+It proves where a stem ends for components of up to six bytes, what an accepted component may hold for components of up to eight bytes, and the collision rule for pairs of folded paths of up to five bytes, which nest two directories deep.
+
+- Kani: `archive_path::proofs::a_component_refuses_exactly_the_characters_windows_forbids`
+- Kani: `archive_path::proofs::a_stem_names_a_device_exactly_when_it_is_reserved`
+- Kani: `archive_path::proofs::a_stem_ends_at_the_first_dot_without_trailing_spaces`
+- Kani: `archive_path::proofs::an_accepted_archive_path_stays_inside_its_destination`
+- Kani: `archive_path::proofs::two_accepted_entries_never_collide_once_case_no_longer_counts`
+- Kani: `archive_path::proofs::entries_two_directories_deep_never_collide_once_case_no_longer_counts`
 - Fuzz: `archive`
 - Test: `tests/artifact_security.rs::archive_paths_reject_every_ambiguous_or_traversing_form`
 - Test: `tests/artifact_security.rs::archive_paths_reject_entries_that_collide_once_letter_case_no_longer_counts`

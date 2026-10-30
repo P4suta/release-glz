@@ -15,10 +15,9 @@ use semver::Version;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 
-use crate::canonical::SHA256_HEX_LEN;
 use crate::changelog::default_category;
 use crate::config::url_is_http_loopback;
-use crate::git::{Commit, OBJECT_HEX_LEN};
+use crate::git::Commit;
 use crate::model::{ChangeEntry, ReleasePlan};
 use crate::units::GIB;
 
@@ -619,12 +618,7 @@ impl From<ReleaseAssetResponse> for GitHubReleaseAsset {
         let sha256 = value.digest.and_then(|digest| {
             digest
                 .strip_prefix("sha256:")
-                .filter(|digest| {
-                    digest.len() == SHA256_HEX_LEN
-                        && digest
-                            .bytes()
-                            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
-                })
+                .filter(|digest| valid_sha256(digest))
                 .map(str::to_owned)
         });
         Self {
@@ -2039,11 +2033,7 @@ pub fn is_managed_release_pr(body: &str) -> bool {
 fn parse_candidate_digest(body: &str) -> Option<String> {
     body.lines().find_map(|line| {
         let digest = line.trim().strip_prefix("release-glz-candidate-digest: ")?;
-        (digest.len() == SHA256_HEX_LEN
-            && digest
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f')))
-        .then(|| digest.to_owned())
+        valid_sha256(digest).then(|| digest.to_owned())
     })
 }
 
@@ -2057,19 +2047,12 @@ fn replace_managed_marker(body: &str, marker: &ManagedMarker) -> Result<String> 
     Ok(output)
 }
 
-fn lowercase_hex(value: &str, length: usize) -> bool {
-    value.len() == length
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
-}
-
 fn valid_sha256(value: &str) -> bool {
-    lowercase_hex(value, SHA256_HEX_LEN)
+    release_glz_core::is_sha256_hex(value.as_bytes())
 }
 
 fn valid_object_id(value: &str) -> bool {
-    lowercase_hex(value, OBJECT_HEX_LEN)
+    release_glz_core::is_object_id(value.as_bytes())
 }
 
 fn encode_segment(value: &str) -> String {
