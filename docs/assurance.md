@@ -350,7 +350,7 @@ It proves the collision rule for pairs of folded paths of up to five bytes, whic
 It proves that a path passes exactly when each of its components does for every path of three bytes over `a`, `.`, and `/`.
 It proves the trimming of trailing slashes for every path of up to two bytes over those bytes.
 It proves which directories hold a folded path for every folded path of up to four bytes, and it pins reading a path from its text on fixed paths.
-It proves what a claim records and which second claim it refuses for every pair of folded paths of up to three bytes.
+It proves what a claim records and which second claim it refuses for every pair of folded paths of one to three bytes with no empty component.
 It pins on fixed paths that a directory keeps its first entry.
 Symbolic bytes across a whole path exhaust the solver.
 The shell decodes each path as UTF-8 before the core reads it.

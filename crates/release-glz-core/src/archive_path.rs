@@ -789,7 +789,7 @@ mod proofs {
     ///
     /// Every pair of folded paths of one to four arbitrary bytes with no empty component, which nests a path one directory deep.
     /// The claimed paths are taken to hold what `claim_path` records for the first entry: its folded path among the files, and each of its prefixes before a `/` among the directories.
-    /// The claim harness above proves that record for every folded path of up to three bytes.
+    /// The claim harness above proves that record for every folded path of one to three bytes with no empty component.
     #[kani::proof]
     #[kani::unwind(17)]
     fn two_accepted_entries_never_collide_once_case_no_longer_counts() {
