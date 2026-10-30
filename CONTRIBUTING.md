@@ -49,6 +49,7 @@ The harnesses over redaction, digest framing, and member names cover a few bytes
 
 `verification/lean/Publication.lean` models the same decisions in Lean 4 and proves the list properties for releases of every length.
 `Redaction.lean` and `Framing.lean` model redaction and the digest framings, and they prove them for texts, secrets, and files of every length.
+`Marker.lean` models the managed Release PR marker and proves its round trip and the refusal of an earlier marker for bodies of every length.
 `cargo xtask lean` builds the image that `verification/lean.Dockerfile` pins and runs Lean in a container with the same limits as the bounded runner.
 It generates refinement vectors from the core crate, and Lean proves by `decide` that the model decides every object and every list of at most two objects as the core does.
 The redaction vectors cover every text of at most three bytes over `a` and `b` with every pair of secrets of at most two bytes, and the framing vectors cover short paths, contents, digests, and hook ids.
@@ -67,7 +68,7 @@ It also writes the traces of the model's scenario tests and of a seeded simulati
 They also refuse a harness, theorem, invariant, model test, or fuzz target that no property cites, so a new check needs a property before it merges.
 The theorems for longer lists concern the model, so they bind the core only through the refinement on the short lists and the shared structure of the two definitions.
 The task also generates the decision vectors from a table with the republish defect, and it requires Lean to fail on exactly the decision refinement then.
-It generates the redaction and framing vectors from broken implementations alongside, and it requires each of their refinements to fail too.
+It generates the redaction, framing, and marker vectors from broken implementations alongside, and it requires each of their refinements to fail too.
 
 Run the fast checks before opening a pull request:
 

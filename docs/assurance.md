@@ -251,6 +251,31 @@ It proves where a stem ends for components of up to six bytes, what an accepted 
 - Fuzz: `prerelease`
 - Test: `tests/fuzz_corpus.rs::every_fuzz_target_runs_shared_invariants_that_this_suite_replays`
 
+### A Release PR body carries exactly the marker that release-glz wrote
+
+A rendered marker after inert text is the one marker that ends the body, its fields give back every value, and a body with an earlier marker has no marker.
+Kani proves inert text, the byte search, and reading one field on small complete domains, and Lean proves the marker for bodies of every length.
+The adapter trims trailing whitespace and splits the fields at Unicode whitespace before the core reads them.
+That split agrees with the model's split at spaces, because no value that release-glz writes holds whitespace.
+
+- Kani: `marker::proofs::inert_text_replaces_each_less_than_sign`
+- Kani: `marker::proofs::the_first_occurrence_is_the_earliest_match`
+- Kani: `marker::proofs::the_last_occurrence_is_the_latest_match`
+- Kani: `marker::proofs::a_field_is_recorded_only_under_a_new_known_key`
+- Lean: `ReleaseGlz.Marker.inert_holds_no_less_than`
+- Lean: `ReleaseGlz.Marker.a_rendered_marker_ends_the_body`
+- Lean: `ReleaseGlz.Marker.an_earlier_marker_is_refused`
+- Lean: `ReleaseGlz.Marker.the_fields_give_back_every_value`
+- Lean: `ReleaseGlz.Marker.the_marker_round_trips`
+- Lean: `ReleaseGlz.Refinement.inert_refines_rust`
+- Lean: `ReleaseGlz.Refinement.render_refines_rust`
+- Lean: `ReleaseGlz.Refinement.marker_start_refines_rust`
+- Lean: `ReleaseGlz.Refinement.marker_values_refines_rust`
+- Test: `src/forge.rs::managed_marker_round_trips`
+- Test: `src/forge.rs::replacing_the_marker_keeps_the_body_and_its_single_marker`
+- Test: `src/forge.rs::release_pr_explains_that_merge_approves_intent_not_publication_bytes`
+- Test: `tests/fuzz_corpus.rs::marker_seeds_reach_managed_and_unmanaged_bodies`
+
 ### Redaction removes every byte that a secret covers, and nothing else
 
 Redaction covers a byte exactly when an occurrence of a non-empty secret spans it, replaces each maximal covered run once, and never splits a UTF-8 character.

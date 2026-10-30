@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use anyhow::{Context, Result, bail};
 use base64::Engine;
 use chrono::Utc;
+use release_glz_core::{MARKER_PREFIX, MARKER_SUFFIX};
 use reqwest::{
     Method, StatusCode,
     header::{CONTENT_TYPE, RETRY_AFTER},
@@ -85,15 +86,6 @@ const DEFAULT_GITHUB_API_URL: &str = "https://api.github.com";
 
 /// The public GitHub GraphQL endpoint, when `GITHUB_GRAPHQL_URL` names none.
 const DEFAULT_GITHUB_GRAPHQL_URL: &str = "https://api.github.com/graphql";
-
-/// The opening of the HTML comment that ends a managed Release PR body.
-const MARKER_PREFIX: &str = "<!-- release-glz:managed ";
-
-/// The closing of the managed marker comment.
-const MARKER_SUFFIX: &str = " -->";
-
-/// Every key of a managed marker, in the order the marker writes them.
-const MARKER_KEYS: [&str; 6] = ["package", "branch", "head", "digest", "version", "intent"];
 
 /// The `intent` of a managed marker before a Candidate binds one.
 const PENDING_INTENT: &str = "pending";
@@ -1969,7 +1961,10 @@ pub fn files_digest(files: &BTreeMap<String, Vec<u8>>) -> String {
 
 /// Text from a commit or a package interface, made unable to open an HTML comment or tag.
 fn inert_text(text: &str) -> String {
-    text.replace('<', "&lt;")
+    let mut inert = Vec::with_capacity(text.len());
+    release_glz_core::write_inert(text.as_bytes(), |part| inert.extend_from_slice(part));
+    // The core splits the text only at `<`, so the bytes stay UTF-8.
+    String::from_utf8_lossy(&inert).into_owned()
 }
 
 fn pull_body(plan: &ReleasePlan, marker: &ManagedMarker) -> Result<String> {
@@ -2007,37 +2002,35 @@ fn pull_body(plan: &ReleasePlan, marker: &ManagedMarker) -> Result<String> {
 }
 
 fn format_marker(marker: &ManagedMarker) -> String {
-    format!(
-        "{MARKER_PREFIX}package={} branch={} head={} digest={} version={} intent={}{MARKER_SUFFIX}",
-        marker.package,
-        marker.branch,
-        marker.head,
-        marker.digest,
-        marker.version,
-        marker.intent_digest.as_deref().unwrap_or(PENDING_INTENT)
-    )
+    let intent = marker.intent_digest.as_deref().unwrap_or(PENDING_INTENT);
+    let mut bytes = Vec::new();
+    release_glz_core::write_marker(
+        [
+            marker.package.as_bytes(),
+            marker.branch.as_bytes(),
+            marker.head.as_bytes(),
+            marker.digest.as_bytes(),
+            marker.version.as_bytes(),
+            intent.as_bytes(),
+        ],
+        |part| bytes.extend_from_slice(part),
+    );
+    String::from_utf8_lossy(&bytes).into_owned()
 }
 
 /// Byte offset of the one marker that ends a body, if the body has exactly one there.
+///
+/// Trailing whitespace counts for nothing, so the core searches the trimmed body.
 fn trailing_marker_start(body: &str) -> Option<usize> {
-    let body = body.trim_end();
-    let start = body.rfind(MARKER_PREFIX)?;
-    let marker_end = body[start..].find(MARKER_SUFFIX)? + start + MARKER_SUFFIX.len();
-    (!body[..start].contains(MARKER_PREFIX) && marker_end == body.len()).then_some(start)
+    release_glz_core::marker_start(body.trim_end().as_bytes())
 }
 
 fn parse_marker(body: &str) -> Option<ManagedMarker> {
     let start = trailing_marker_start(body)? + MARKER_PREFIX.len();
     let fields = body.trim_end()[start..].strip_suffix(MARKER_SUFFIX)?;
-    let mut values = BTreeMap::new();
-    for field in fields.split_whitespace() {
-        let (key, value) = field.split_once('=')?;
-        if !MARKER_KEYS.contains(&key) || values.insert(key, value).is_some() {
-            return None;
-        }
-    }
+    let values = release_glz_core::marker_values(fields.split_whitespace().map(str::as_bytes))?;
     let [package, branch, head, digest, version, intent] =
-        MARKER_KEYS.map(|key| values.get(key).copied());
+        values.map(|value| std::str::from_utf8(value).ok());
     let (package, branch, head, digest, version, intent) =
         (package?, branch?, head?, digest?, version?, intent?);
     let valid = crate::config::validate_package_name(package).is_ok()
@@ -2125,6 +2118,15 @@ mod tests {
             let marker = marker(intent);
             assert_eq!(parse_marker(&format_marker(&marker)), Some(marker));
         }
+        // Bodies that earlier releases wrote carry this exact text, so the format can't drift unnoticed.
+        assert_eq!(
+            format_marker(&marker(None)),
+            format!(
+                "<!-- release-glz:managed package=widget branch=release-glz/widget head={} digest={} version=2.0.0 intent=pending -->",
+                "b".repeat(40),
+                "c".repeat(64)
+            )
+        );
     }
 
     #[test]
@@ -2193,6 +2195,7 @@ mod tests {
         assert!(body.contains("intent_digest"));
         assert!(body.contains("Environment"));
         assert!(!body.contains("approval to publish to Hex"));
+        assert_eq!(body.matches("removed widget.old").count(), 2);
 
         let injected = format_marker(&marker(Some("e".repeat(64))));
         let mut hostile = plan.clone();
@@ -2201,5 +2204,8 @@ mod tests {
         let body = pull_body(&hostile, &marker(None)).unwrap();
         assert_eq!(parse_marker(&body), Some(marker(None)));
         assert_eq!(body.matches(MARKER_PREFIX).count(), 1);
+        // The commit text stays in the body, with each `<` written as `&lt;`.
+        assert!(body.contains("feat: &lt;!-- release-glz:managed package="));
+        assert_eq!(body.matches("&lt;!-- release-glz:managed ").count(), 2);
     }
 }
