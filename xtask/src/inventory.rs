@@ -46,7 +46,7 @@ const fn control(
 }
 
 /// Every harness of the proof packages, with its cover count.
-pub const HARNESSES: [Harness; 61] = [
+pub const HARNESSES: [Harness; 62] = [
     harness(
         "proofs::a_proof_run_is_admitted_only_when_every_expected_harness_verified",
         2,
@@ -69,6 +69,10 @@ pub const HARNESSES: [Harness; 61] = [
     ),
     harness(
         "commit::proofs::the_commit_type_decides_the_step_without_a_breaking_marker",
+        1,
+    ),
+    harness(
+        "commit::proofs::only_a_marker_that_starts_a_line_breaks_the_release",
         1,
     ),
     harness("framing::proofs::the_files_framing_is_injective", 1),
@@ -258,7 +262,7 @@ const CORE: &str = "release-glz-core";
 const ASSURANCE: &str = "assurance-core";
 
 /// Every negative control, each of which has to fail exactly its harness's assertion.
-pub const CONTROLS: [Control; 64] = [
+pub const CONTROLS: [Control; 65] = [
     control(
         ASSURANCE,
         "negative-control-incomplete-run",
@@ -294,6 +298,12 @@ pub const CONTROLS: [Control; 64] = [
         "negative-control-commit-type-case",
         "commit::proofs::the_commit_type_decides_the_step_without_a_breaking_marker",
         "a commit type must decide the step in any letter case",
+    ),
+    control(
+        CORE,
+        "negative-control-marker-anywhere",
+        "commit::proofs::only_a_marker_that_starts_a_line_breaks_the_release",
+        "a body without a marker at the start of a line must leave the step to the commit type",
     ),
     control(
         CORE,
