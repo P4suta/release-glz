@@ -690,7 +690,7 @@ mod proofs {
 
     /// One step from any record a run can hold applies only the first owed effect that the run doesn't pass over, spends exactly one attempt for it, records exactly that attempt, and counts a failed effect as applied exactly when the world holds it.
     ///
-    /// A new run starts with an empty record and no budget, so by induction on its steps these facts carry the bounds of the run proofs to runs of any length.
+    /// A new run starts with an empty record and no budget, so by induction on its steps these facts carry the bounds of the run proofs to runs of any length over at most [`STEP_OBJECTS`] objects.
     #[kani::proof]
     #[kani::unwind(7)]
     fn every_step_keeps_the_record_that_bounds_a_run() {

@@ -68,8 +68,9 @@ The Quint model covers three objects and two runs.
 The tag, the draft Release, the package, the documentation, the assets, the final Release, and the notifications follow publication order.
 A run applies an effect only when no earlier object still needs one, apart from optional effects it already attempted, so a Release becomes final only after its assets exist.
 The run harness covers releases of at most three objects over four observations, and the Quint model covers three objects and two runs.
-The step harness covers one step from any record of at most five objects, which carries the order to runs of any length by induction on their steps.
-A default release has seven objects, so its longer runs rest on that induction and on the tests.
+The step harness covers one step from any record of at most five objects.
+The order thus holds at every step of a run of any length over at most five objects.
+A default release has seven objects, which no proof of this property covers, so for it the order rests on the tests.
 
 - Kani: `run::proofs::a_run_applies_only_owed_effects_in_publication_order`
 - Kani: `run::proofs::every_step_keeps_the_record_that_bounds_a_run`
@@ -93,7 +94,8 @@ Kani proves it for lists and runs of at most three objects, and Lean proves the 
 ### Every run stops, and a run whose effects land ends released
 
 The first plan that lists an effect fixes how many attempts a run may make, and publishing an effect removes exactly that effect from the plan.
-The run harnesses cover releases of at most three objects over four observations, and the step harness carries the attempt bound to runs of any length.
+The run harnesses cover releases of at most three objects over four observations.
+The step harness carries the attempt bound to runs of any length over at most five objects.
 Lean proves the plan's rules for every length.
 
 - Kani: `publication::proofs::publishing_an_effect_removes_exactly_that_effect`
