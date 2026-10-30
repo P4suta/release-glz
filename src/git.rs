@@ -381,25 +381,12 @@ fn required_part<'a>(parts: &mut impl Iterator<Item = &'a str>, name: &str) -> R
         .ok_or_else(|| anyhow::anyhow!("git log record has no {name}"))
 }
 
-/// The release step a Conventional Commit message declares.
+/// The release step a Conventional Commit message declares, which `release-glz-core` decides.
 ///
 /// A `!` marker or a `BREAKING CHANGE:` trailer is major; `feat` is minor; `fix` and `perf` are patch; anything else requires nothing.
 /// The type matches in any letter case, and the trailer only in uppercase, as Conventional Commits 1.0.0 requires.
 pub fn conventional_bump(subject: &str, body: &str) -> Bump {
-    let header = subject.split(':').next().unwrap_or(subject);
-    let breaking = header.ends_with('!')
-        || body.lines().any(|line| {
-            line.starts_with("BREAKING CHANGE:") || line.starts_with("BREAKING-CHANGE:")
-        });
-    if breaking {
-        return Bump::Major;
-    }
-    let kind = header.split('(').next().unwrap_or(header);
-    match kind.to_ascii_lowercase().as_str() {
-        "feat" => Bump::Minor,
-        "fix" | "perf" => Bump::Patch,
-        _ => Bump::None,
-    }
+    release_glz_core::conventional_bump(subject, body)
 }
 
 #[cfg(test)]

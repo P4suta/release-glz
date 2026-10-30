@@ -5,3 +5,4 @@ pub mod archive;
 pub mod config;
 pub mod identifiers;
 pub mod pr_marker;
+pub mod prerelease;
