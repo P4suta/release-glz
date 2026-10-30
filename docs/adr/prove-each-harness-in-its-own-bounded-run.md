@@ -12,13 +12,15 @@ It supersedes [prove each module in its own bounded run](prove-each-module-in-it
 ## Context
 
 The gate proved the harnesses of each module in one bounded run, and the owner's policy gives each container 2 GiB of memory and 900 seconds.
-Kani's driver keeps memory from one harness of a run to the next.
+Memory stays in the container from one harness of a run to the next.
 In a run of the ten archive harnesses, the container held about 650 MB of anonymous memory between harnesses and almost no page cache.
+The image has no process listing, so the run didn't show which process held that memory.
+Kani's driver outlives every harness of the run, which makes it the likely holder.
 The two largest archive harnesses pass alone and as a pair, and both exceeded 2 GiB in the run of their module.
 A run that the limit stops leaves the gate without a verdict.
 A proof-mutation campaign that proves its mutants through the same runs can't classify a mutant of that module either.
 A module that outgrows the limit could move some harnesses to a module of their own.
-Then the layout of the sources would depend on memory that Kani's driver keeps and that no inventory records.
+Then the layout of the sources would depend on memory that a run keeps and that no inventory records.
 
 ## Decision
 
