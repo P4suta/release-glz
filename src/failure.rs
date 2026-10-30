@@ -83,8 +83,10 @@ impl fmt::Display for ClassifiedFailure {
 impl std::error::Error for ClassifiedFailure {}
 
 /// Wrap any displayable error so its class survives conversion to [`anyhow::Error`].
+///
+/// The message keeps every context and cause of an `anyhow::Error`, which its alternate form lists.
 pub fn classified(class: FailureClass, error: impl fmt::Display) -> Error {
-    Error::new(ClassifiedFailure::new(class, error.to_string()))
+    Error::new(ClassifiedFailure::new(class, format!("{error:#}")))
 }
 
 /// Attach a boundary-specific class without replacing a more precise class already carried by the source error.
