@@ -43,6 +43,14 @@ A run harness lets the world answer each observation with any presence of each o
 `cargo xtask lean` builds the image that `verification/lean.Dockerfile` pins and runs Lean in a container with the same limits as the bounded runner.
 It generates refinement vectors from the core crate, and Lean proves by `decide` that the model decides every object and every list of at most two objects as the core does.
 It refuses a theorem that depends on an axiom outside Lean's standard three, and it replays every module through `leanchecker --fresh`.
+
+`verification/quint/release_run.qnt` models a release run and the world it talks to in Quint 0.33.1.
+The world shows commits late, may commit a call that reports failure, races another publisher once, and refuses to replace an object that exists.
+The runner may fail to observe the world, and it may crash and start again.
+`cargo xtask quint` builds the image that `verification/quint.Dockerfile` pins and has the explicit-state model checker `tlc` visit every state of releases of up to three objects.
+It requires the recorded number of distinct states and requires the probe module, whose runner applies effects out of order, to break the invariant.
+It also writes the traces of the model's scenario tests and of a seeded simulation again and requires them to equal `verification/quint/traces`.
+`tests/run_replay.rs` replays those traces through `release_glz_core::Run` on every pull request and requires each decision of a trace to be the production decision.
 The theorems for longer lists concern the model, so they bind the core only through the refinement on the short lists and the shared structure of the two definitions.
 Building the xtask with `--features negative-control-republish` generates the vectors from a broken core, and shipping assurance requires the refinement to fail then.
 
