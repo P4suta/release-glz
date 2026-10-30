@@ -15,13 +15,12 @@ use sha2::{Digest, Sha256};
 use crate::artifact::{
     ArchiveLimits, validate_and_fingerprint_docs_tarball, validate_and_fingerprint_hex_tarball,
 };
-use crate::canonical::{SHA256_HEX_LEN, canonical_json_bytes, canonical_sha256};
+use crate::canonical::{canonical_json_bytes, canonical_sha256};
 use crate::config::{
     ApprovalConfig, AuthKind, BUILT_IN_HOOK_ID, HookConfig, Manifest, OutputConfig,
     RegistryProvider, url_is_http_loopback, valid_env_name, validate_git_ref, validate_hook_config,
     validate_package_name, validate_registry_repository, validate_relative_path,
 };
-use crate::git::OBJECT_HEX_LEN;
 use crate::hooks::SidecarArtifact;
 use crate::sidecar::{
     MAX_ARTIFACT_BYTES as MAX_SIDECAR_BYTES, MAX_COUNT as MAX_SIDECAR_COUNT,
@@ -1220,12 +1219,7 @@ fn validate_descriptor_path(descriptor: &SealedArtifact, expected: &str) -> Resu
 }
 
 fn validate_source(source: &CandidateSource) -> Result<()> {
-    let sha = source.commit_sha.as_bytes();
-    if !matches!(sha.len(), OBJECT_HEX_LEN | SHA256_HEX_LEN)
-        || !sha
-            .iter()
-            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
-    {
+    if !release_glz_core::is_commit_id(source.commit_sha.as_bytes()) {
         bail!("candidate source commit must be a full lowercase SHA");
     }
     validate_relative_path(
@@ -1534,11 +1528,7 @@ fn validate_notify_hook_definitions(ids: &[String], hooks: &[HookConfig]) -> Res
 }
 
 fn validate_sha256(value: &str, field: &str) -> Result<()> {
-    if value.len() != SHA256_HEX_LEN
-        || !value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
-    {
+    if !release_glz_core::is_sha256_hex(value.as_bytes()) {
         bail!("{field} is not a lowercase SHA-256 digest");
     }
     Ok(())

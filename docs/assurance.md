@@ -204,6 +204,13 @@ Below 1.0 a breaking change is a minor release, a release needs its acknowledgem
 
 ### A Candidate publishes exactly the bytes it sealed
 
+A digest or a commit id counts only when it has its exact length and nothing but lowercase hexadecimal digits, so one value never has two spellings.
+Kani proves the digit check for every byte and the identity checks for every value of an identity's length.
+It proves the refusal of every other length for values of up to three bytes, and for all-digit values one byte too short or too long.
+
+- Kani: `hex::proofs::a_hex_digit_is_exactly_a_lowercase_hexadecimal_digit`
+- Kani: `hex::proofs::hex_identities_check_every_byte`
+- Kani: `hex::proofs::hex_identities_refuse_every_other_length`
 - Test: `tests/v1_candidate.rs::candidate_seals_and_verifies_the_exact_publish_bytes`
 - Test: `tests/v1_candidate.rs::candidate_verification_detects_any_raw_artifact_change`
 - Test: `tests/v1_candidate.rs::candidate_verification_rejects_every_manifest_identity_and_digest_tamper`
@@ -237,6 +244,17 @@ Kani proves it for names of at most one character, and longer names compare by t
 
 ### Unpacking an archive writes only portable relative paths
 
+An accepted path is relative, and none of its components is empty, `.`, `..`, a name that Windows reserves for a device, or a name with a character that some supported OS forbids.
+Two entries whose paths fold to the same file or directory once letter case no longer counts never both stand.
+Kani proves the character rules for every byte and every byte pair, and the device names for every stem of up to eight bytes.
+It proves where a stem ends for components of up to six bytes, what an accepted component may hold for components of up to eight bytes, and the collision rule for pairs of folded paths of up to five bytes, which nest two directories deep.
+
+- Kani: `archive_path::proofs::a_component_refuses_exactly_the_characters_windows_forbids`
+- Kani: `archive_path::proofs::a_stem_names_a_device_exactly_when_it_is_reserved`
+- Kani: `archive_path::proofs::a_stem_ends_at_the_first_dot_without_trailing_spaces`
+- Kani: `archive_path::proofs::an_accepted_archive_path_stays_inside_its_destination`
+- Kani: `archive_path::proofs::two_accepted_entries_never_collide_once_case_no_longer_counts`
+- Kani: `archive_path::proofs::entries_two_directories_deep_never_collide_once_case_no_longer_counts`
 - Fuzz: `archive`
 - Test: `tests/artifact_security.rs::archive_paths_reject_every_ambiguous_or_traversing_form`
 - Test: `tests/artifact_security.rs::archive_paths_reject_entries_that_collide_once_letter_case_no_longer_counts`
@@ -250,6 +268,31 @@ Kani proves it for names of at most one character, and longer names compare by t
 - Fuzz: `pr_marker`
 - Fuzz: `prerelease`
 - Test: `tests/fuzz_corpus.rs::every_fuzz_target_runs_shared_invariants_that_this_suite_replays`
+
+### A Release PR body carries exactly the marker that release-glz wrote
+
+A rendered marker after inert text is the one marker that ends the body, its fields give back every value, and a body with an earlier marker has no marker.
+Kani proves inert text, the byte search, and reading one field on small complete domains, and Lean proves the marker for bodies of every length.
+The adapter trims trailing whitespace and splits the fields at Unicode whitespace before the core reads them.
+That split agrees with the model's split at spaces, because no value that release-glz writes holds whitespace.
+
+- Kani: `marker::proofs::inert_text_replaces_each_less_than_sign`
+- Kani: `marker::proofs::the_first_occurrence_is_the_earliest_match`
+- Kani: `marker::proofs::the_last_occurrence_is_the_latest_match`
+- Kani: `marker::proofs::a_field_is_recorded_only_under_a_new_known_key`
+- Lean: `ReleaseGlz.Marker.inert_holds_no_less_than`
+- Lean: `ReleaseGlz.Marker.a_rendered_marker_ends_the_body`
+- Lean: `ReleaseGlz.Marker.an_earlier_marker_is_refused`
+- Lean: `ReleaseGlz.Marker.the_fields_give_back_every_value`
+- Lean: `ReleaseGlz.Marker.the_marker_round_trips`
+- Lean: `ReleaseGlz.Refinement.inert_refines_rust`
+- Lean: `ReleaseGlz.Refinement.render_refines_rust`
+- Lean: `ReleaseGlz.Refinement.marker_start_refines_rust`
+- Lean: `ReleaseGlz.Refinement.marker_values_refines_rust`
+- Test: `src/forge.rs::managed_marker_round_trips`
+- Test: `src/forge.rs::replacing_the_marker_keeps_the_body_and_its_single_marker`
+- Test: `src/forge.rs::release_pr_explains_that_merge_approves_intent_not_publication_bytes`
+- Test: `tests/fuzz_corpus.rs::marker_seeds_reach_managed_and_unmanaged_bodies`
 
 ### Redaction removes every byte that a secret covers, and nothing else
 
