@@ -577,6 +577,11 @@ fn notification_key_is_a_domain_separated_binding_of_candidate_and_hook() {
     );
     assert_ne!(key, notification_key(&"3".repeat(64), "announce"));
     assert_ne!(key, notification_key(&candidate, "audit"));
+    // `printf 'release-glz-notify-v1\0%s\0announce' "$candidate" | shasum -a 256` gives the same value, which changes only when the framing does.
+    assert_eq!(
+        key,
+        "474fda2d6d36b965fe2ef090d334f7e5cf7423feff59281dbb846c0da11ba4df"
+    );
 }
 
 #[test]

@@ -3,6 +3,8 @@
 //! Standard credential environment variables are redacted unconditionally;
 //! a manifest also names its own `credential_env`, which the caller adds.
 
+use release_glz_core::Segment;
+
 const STANDARD_SECRET_ENV_NAMES: [&str; 5] = [
     "HEXPM_API_KEY",
     "GITHUB_TOKEN",
@@ -40,40 +42,26 @@ fn standard_secrets() -> impl Iterator<Item = String> {
 
 /// Replace each run of text that some occurrence of a secret covers with one `[REDACTED]`.
 ///
-/// Every occurrence is found in the original text before anything is replaced, so no secret can hide part of another, whatever their order.
+/// The core decides the runs from every occurrence in the original text, so no secret can hide part of another, whatever their order.
+/// Its runs end on character boundaries, so the kept text stays UTF-8.
 fn redact_values<S>(input: &str, secrets: impl IntoIterator<Item = S>) -> String
 where
     S: AsRef<str>,
 {
-    let mut ranges = Vec::new();
-    for secret in secrets {
-        let secret = secret.as_ref();
-        if secret.is_empty() {
-            continue;
+    let secrets = secrets
+        .into_iter()
+        .map(|secret| secret.as_ref().to_owned())
+        .collect::<Vec<_>>();
+    let secrets = secrets.iter().map(String::as_bytes).collect::<Vec<_>>();
+    let text = input.as_bytes();
+    let mut output = Vec::with_capacity(text.len());
+    for segment in release_glz_core::redaction_segments(text, &secrets) {
+        match segment {
+            Segment::Kept(range) => output.extend_from_slice(&text[range]),
+            Segment::Redacted(_) => output.extend_from_slice(b"[REDACTED]"),
         }
-        // Occurrences of one secret can overlap, so every character position is a candidate start.
-        ranges.extend(
-            input
-                .char_indices()
-                .filter(|(start, _)| input[*start..].starts_with(secret))
-                .map(|(start, _)| start..start + secret.len()),
-        );
     }
-    ranges.sort_unstable_by_key(|range| range.start);
-    let mut output = String::with_capacity(input.len());
-    let mut copied = 0;
-    let mut ranges = ranges.into_iter().peekable();
-    while let Some(range) = ranges.next() {
-        let mut end = range.end;
-        while let Some(next) = ranges.next_if(|next| next.start <= end) {
-            end = end.max(next.end);
-        }
-        output.push_str(&input[copied..range.start]);
-        output.push_str("[REDACTED]");
-        copied = end;
-    }
-    output.push_str(&input[copied..]);
-    output
+    String::from_utf8_lossy(&output).into_owned()
 }
 
 #[cfg(test)]
