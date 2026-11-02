@@ -7,6 +7,16 @@ use serde::{Deserialize, Serialize};
 
 pub use release_glz_core::{Bump, ReleaseState};
 
+/// The name that a plan gives `bump`, for messages and the Release PR body.
+pub fn bump_name(bump: Bump) -> &'static str {
+    match bump {
+        Bump::None => "none",
+        Bump::Patch => "patch",
+        Bump::Minor => "minor",
+        Bump::Major => "major",
+    }
+}
+
 /// Monotonic effects in the order in which v1 permits them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -436,6 +446,13 @@ impl ReleasePlan {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_bump_has_the_name_that_a_plan_gives_it() {
+        for bump in [Bump::None, Bump::Patch, Bump::Minor, Bump::Major] {
+            assert_eq!(serde_json::to_value(bump).unwrap(), bump_name(bump));
+        }
+    }
 
     #[test]
     fn executable_next_actions_quote_empty_and_unsafe_display_arguments() {

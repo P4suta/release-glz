@@ -119,6 +119,21 @@ fn collect(
     Ok((digest, files.len()))
 }
 
+/// The digest of every path and byte under `roots` of the repository at `root`.
+pub fn digest_of(root: &Path, roots: &[&str]) -> Result<String, Failure> {
+    collect(root, roots, None, SOURCE_BUDGET_BYTES).map(|(digest, _)| digest)
+}
+
+/// Copy `roots` of the repository at `root` into `destination`.
+pub fn copy_roots(root: &Path, roots: &[&str], destination: &Path) -> Result<(), Failure> {
+    collect(root, roots, Some(destination), SOURCE_BUDGET_BYTES).map(|_| ())
+}
+
+/// The roots that a snapshot copies, so a copy of a snapshot holds the same sources.
+pub const fn roots() -> [&'static str; 7] {
+    SOURCE_ROOTS
+}
+
 /// The bytes of `path`, refusing a file larger than `limit`.
 pub fn read_bounded(path: &Path, limit: usize) -> Result<Vec<u8>, Failure> {
     let mut bytes = Vec::new();

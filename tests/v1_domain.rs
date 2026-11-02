@@ -198,7 +198,7 @@ fn release_state_property_covers_every_pair_in_the_monotonic_lattice() {
 fn bump_and_prerelease_wire_helpers_cover_every_variant_and_invalid_input() {
     let bumps = [Bump::None, Bump::Patch, Bump::Minor, Bump::Major];
     assert_eq!(
-        bumps.map(|bump| bump.to_string()),
+        bumps.map(release_glz::model::bump_name),
         ["none", "patch", "minor", "major"]
     );
     for left in bumps {

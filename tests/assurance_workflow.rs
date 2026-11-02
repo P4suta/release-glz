@@ -54,6 +54,7 @@ fn assurance_workflow_has_fixed_fail_closed_shipping_gates() {
         "run: cargo xtask lean",
         "run: cargo xtask quint",
         "run: cargo xtask trace",
+        "run: cargo xtask proof-mutants check",
         "cargo deny check -D warnings",
         "cargo audit -D warnings",
         "cargo audit -D warnings --file fuzz/Cargo.lock",

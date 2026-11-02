@@ -37,7 +37,19 @@ The audit also refuses a source that changed during the run, and `crates/assuran
 Each `negative-control-*` feature breaks one decision, such as the checked increment or the conflict for an object that differs, inside a `negative_control_*` function that production code calls only under that feature.
 The task builds each negative control on its own and requires its harness to fail on exactly the expected assertion and on nothing else.
 Every harness has a negative control, and a test without the solver keeps the inventory equal to the harnesses, covers, and features in the sources.
-`.cargo/mutants.toml` keeps cargo-mutants out of the harnesses and negative controls, which no test build compiles.
+`.cargo/mutants.toml` keeps cargo-mutants away from the harnesses, their symbolic inputs, and the negative controls, which no test build compiles.
+A test keeps that list equal to the modules that only Kani compiles, and the proof campaign also leaves those modules out by their place in the source.
+
+`cargo xtask proof-mutants` shows that the harnesses pin down the core decisions, and it runs on an owner machine, never on Actions.
+It proves the unmutated core first, then applies each mutant of the core crates to a frozen copy and runs the harnesses of its module.
+Each harness gets its own bounded run, and before the campaign calls a mutant a survivor, it runs every other harness of the mutant's package the same way.
+It keeps the verdicts so far in its evidence after each mutant, so a campaign that stops early still shows what it found.
+Each outcome comes from Kani's audited report: detected, unviable when the mutant doesn't compile, or inconclusive, which fails the campaign.
+A survivor has to appear in `verification/equivalent-mutants.json` with the reason no harness can detect it, and the campaign refuses an entry that no longer survives.
+The campaign writes a receipt with the digest of the core sources and the outcome of every mutant, and the owner commits it as `verification/proof-mutants.json`.
+`cargo xtask proof-mutants --shard K --of N` runs only the mutants whose place in the listing leaves `K` after division by `N`, so `N` shards can run side by side in their own containers.
+`cargo xtask proof-mutants merge` then joins the receipts of the shards, and it refuses them unless they come from the same sources, tools, and listing and try every mutant exactly once.
+The release gate runs `cargo xtask proof-mutants check`, which refuses a receipt for other core sources, so a change to the core needs a new campaign before a release.
 The harnesses over lists of objects and over runs cover releases of at most three objects, and the decisions for single objects and approvals cover every input.
 A run harness lets the world answer each observation with any presence of each object, so its properties hold for every way the world changes between observations.
 The version harnesses take every core and train number symbolically.

@@ -7,7 +7,7 @@ use anyhow::{Result, anyhow, bail};
 use release_glz_core::{Computed, Initial, Pre, Refusal, Selection, VersionCore};
 use semver::{Prerelease, Version};
 
-use crate::model::{Bump, PrereleaseChannel};
+use crate::model::{Bump, PrereleaseChannel, bump_name};
 
 /// Drop the prerelease and build metadata, leaving `major.minor.patch`.
 pub fn core(version: &Version) -> Version {
@@ -41,6 +41,7 @@ pub fn follows(version: &Version, other: &Version) -> bool {
 /// A step that would carry a component past `u64::MAX` is refused rather than wrapped.
 pub fn apply_bump(version: &Version, bump: Bump) -> Result<Version> {
     let Some(next) = version_core(version).bumped(bump) else {
+        let bump = bump_name(bump);
         bail!("{version} has the largest {bump} number, so no {bump} release can follow it");
     };
     Ok(Version::new(next.major, next.minor, next.patch))
@@ -164,7 +165,8 @@ fn refused(refusal: Refusal, published: &Version, explicit: Option<&Version>) ->
     anyhow!(match refusal {
         Refusal::StepOverflow { core, bump } => format!(
             "{} has the largest {bump} number, so no {bump} release can follow it",
-            core_text(core)
+            core_text(core),
+            bump = bump_name(bump)
         ),
         Refusal::BehindPublishedCore { target } => format!(
             "prerelease core {} is behind published {}",
@@ -235,7 +237,7 @@ mod tests {
             (format!("1.{max}.3"), Bump::Minor),
             (format!("{max}.2.3"), Bump::Major),
         ] {
-            assert!(apply_bump(&v(&input), bump).is_err(), "{input} {bump}");
+            assert!(apply_bump(&v(&input), bump).is_err(), "{input} {bump:?}");
         }
         assert_eq!(
             apply_bump(&v(&format!("1.2.{max}")), Bump::Minor).unwrap(),

@@ -28,7 +28,7 @@ use release_glz::git::GitRepo;
 use release_glz::gleam::Gleam;
 use release_glz::handoff;
 use release_glz::model::{
-    Diagnostic, DiagnosticLevel, NextAction, PrereleaseChannel, ReleaseState,
+    Diagnostic, DiagnosticLevel, NextAction, PrereleaseChannel, ReleaseState, bump_name,
 };
 use release_glz::planner::{PlanOptions, Planner, release_commit_changes};
 use release_glz::reconciler::ApprovalEvidence;
@@ -1766,7 +1766,10 @@ fn print_plan(plan: &ReleasePlan, output: Output, command: &str) -> Result<()> {
             if plan.release_required {
                 println!(
                     "{}: {} -> {} ({})",
-                    plan.package, from, plan.version, plan.bump
+                    plan.package,
+                    from,
+                    plan.version,
+                    bump_name(plan.bump)
                 );
             } else {
                 println!(
@@ -1775,13 +1778,13 @@ fn print_plan(plan: &ReleasePlan, output: Output, command: &str) -> Result<()> {
                 );
             }
             for reason in &plan.reasons {
-                println!("  - [{}] {}", reason.bump, reason.summary);
+                println!("  - [{}] {}", bump_name(reason.bump), reason.summary);
             }
             if !plan.api.changes.is_empty() {
                 println!(
                     "  API: {} change(s), {} required",
                     plan.api.changes.len(),
-                    plan.api.impact
+                    bump_name(plan.api.impact)
                 );
             }
             if let Some(url) = &plan.pr_url {

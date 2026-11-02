@@ -19,7 +19,7 @@ use sha2::{Digest, Sha256};
 use crate::changelog::default_category;
 use crate::config::url_is_http_loopback;
 use crate::git::Commit;
-use crate::model::{ChangeEntry, ReleasePlan};
+use crate::model::{ChangeEntry, ReleasePlan, bump_name};
 use crate::units::GIB;
 
 /// REST API version this client pins its requests to.
@@ -1987,7 +1987,7 @@ fn pull_body(plan: &ReleasePlan, marker: &ManagedMarker) -> Result<String> {
     for reason in &plan.reasons {
         output.push_str(&format!(
             "- **{}**: {}\n",
-            reason.bump,
+            bump_name(reason.bump),
             inert_text(&reason.summary)
         ));
     }

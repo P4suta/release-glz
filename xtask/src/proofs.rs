@@ -18,7 +18,7 @@ use crate::source_snapshot::{SourceSnapshot, read_bounded};
 const MAX_REPORT_BYTES: usize = 64 * 1024 * 1024;
 
 /// The target directory inside the container, which lives in the evidence so it never shares the host's.
-const TARGET_DIRECTORY: &str = "/evidence/kani-target";
+pub const TARGET_DIRECTORY: &str = "/evidence/kani-target";
 
 /// The target directory of the census, which holds nothing but that one build.
 const CENSUS_DIRECTORY: &str = "kani-census";
@@ -314,13 +314,13 @@ fn refused(control: &Control, admission: Admission, evidence: &Path) -> Failure 
     ))
 }
 
-fn keep_logs(evidence: &Path, name: &str, stdout: &str, stderr: &str) -> Result<(), Failure> {
+pub fn keep_logs(evidence: &Path, name: &str, stdout: &str, stderr: &str) -> Result<(), Failure> {
     fs::write(evidence.join(format!("{name}.stdout.log")), stdout).map_err(Failure::io)?;
     fs::write(evidence.join(format!("{name}.stderr.log")), stderr).map_err(Failure::io)
 }
 
 /// Read the export of the run `name`, and keep the part the audit reads beside it.
-fn read_report(evidence: &Path, name: &str) -> Result<ProofReport, Failure> {
+pub fn read_report(evidence: &Path, name: &str) -> Result<ProofReport, Failure> {
     let bytes = read_bounded(&evidence.join(format!("{name}.json")), MAX_REPORT_BYTES)?;
     let report: ProofReport = serde_json::from_slice(&bytes)
         .map_err(|error| Failure::new(format!("Kani's export of {name} is unreadable: {error}")))?;
