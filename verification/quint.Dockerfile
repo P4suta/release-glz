@@ -1,7 +1,7 @@
 # The offline host of the Quint model, which `cargo xtask quint` runs with no network.
 FROM docker.io/library/eclipse-temurin:21-jre@sha256:0b99b3376fbb50dbf9c0af8535fdd5b8eb0d3fdfc8b1e4967f383b6919f6901a AS java
 
-FROM docker.io/library/node:24-bookworm-slim@sha256:c86ecead9e55a5210ac1727de38a4ca840bf03dcaf34dc9749addbf383b1920c
+FROM docker.io/library/node:24-bookworm-slim@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54
 COPY --from=java /opt/java/openjdk /opt/java/openjdk
 ENV PATH=/opt/java/openjdk/bin:/opt/quint/node_modules/.bin:$PATH
 ENV QUINT_HOME=/opt/quint
