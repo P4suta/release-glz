@@ -799,15 +799,11 @@ async fn run_init(
         None => manifest.clone(),
     };
     let action_sha = resolve_action_sha(explicit_action_sha).await?;
-    let relative_manifest = absolute_or_join(configured.path())?
-        .strip_prefix(repo.root().canonicalize()?)
-        .context("manifest is outside the git repository")?
-        .to_path_buf();
-    let public_manifest_path = relative_manifest.to_string_lossy().replace('\\', "/");
+    let public_manifest_path = repository_manifest_path(configured.path(), &repo)?;
     let workflow_settings = workflow_settings(
         configured.release()?,
         default_branch,
-        relative_manifest,
+        PathBuf::from(&public_manifest_path),
         action_sha.clone(),
     );
     let workflow_mode = if check {
@@ -1639,14 +1635,10 @@ fn managed_workflow_is_current(
     action_sha: &str,
 ) -> Result<bool> {
     let repo = GitRepo::discover(manifest.package_dir())?;
-    let relative_manifest = absolute_or_join(manifest.path())?
-        .strip_prefix(repo.root().canonicalize()?)
-        .context("manifest is outside the git repository")?
-        .to_path_buf();
     let settings = workflow_settings(
         release,
         repo.default_branch()?,
-        relative_manifest,
+        PathBuf::from(repository_manifest_path(manifest.path(), &repo)?),
         action_sha.to_owned(),
     );
     let outcome = release_glz::workflow::sync(
@@ -1752,6 +1744,20 @@ fn absolute_or_join(path: &Path) -> Result<PathBuf> {
     } else {
         Ok(std::env::current_dir()?.join(path).canonicalize()?)
     }
+}
+
+/// The manifest's path within `repo`, as the generated workflow and `init/v1` name it.
+fn repository_manifest_path(manifest: &Path, repo: &GitRepo) -> Result<String> {
+    let absolute = absolute_or_join(manifest)?;
+    let relative = absolute
+        .strip_prefix(repo.root().canonicalize()?)
+        .context("manifest is outside the git repository")?;
+    Ok(slash_separated(relative))
+}
+
+/// A relative path with `/` between its components on every OS, the rule that the Candidate's manifest path and the plan's release files follow.
+fn slash_separated(relative: &Path) -> String {
+    relative.to_string_lossy().replace('\\', "/")
 }
 
 #[cfg(test)]
@@ -2048,5 +2054,26 @@ mod tests {
         let relative = absolute_or_join(Path::new("Cargo.toml")).unwrap();
         assert!(relative.is_absolute());
         assert_eq!(absolute_or_join(&relative).unwrap(), relative);
+    }
+
+    #[test]
+    fn a_manifest_below_the_repository_root_is_named_with_slashes_on_every_os() {
+        let temp = tempfile::tempdir().unwrap();
+        release_glz_test_support::init_repository(temp.path());
+        let package = temp.path().join("packages").join("widget");
+        std::fs::create_dir_all(&package).unwrap();
+        let manifest = package.join("gleam.toml");
+        std::fs::write(&manifest, "name = \"widget\"\nversion = \"1.0.0\"\n").unwrap();
+        let repo = GitRepo::discover(&package).unwrap();
+
+        // Strings, because Windows compares paths by component and treats both separators alike.
+        assert_eq!(
+            repository_manifest_path(&manifest, &repo).unwrap(),
+            "packages/widget/gleam.toml"
+        );
+        assert_eq!(
+            slash_separated(Path::new(r"packages\widget\gleam.toml")),
+            "packages/widget/gleam.toml"
+        );
     }
 }

@@ -9,6 +9,7 @@ use release_glz::artifact::{
     validate_hex_tarball,
 };
 use release_glz::failure::{RefusalReason, refusal_reason};
+use release_glz_test_support::write_tar_name;
 use sha2::{Digest, Sha256};
 
 #[test]
@@ -242,7 +243,7 @@ fn archive_paths_reject_names_that_some_supported_os_cannot_represent() {
         "escape\u{1b}name",
         "next\u{85}line",
     ] {
-        let archive = tar_gz(&[(path, b"contents")]);
+        let archive = tar_gz_with_unchecked_name(path, b"contents");
         assert_error_contains(
             validate_docs_tarball(&archive, ArchiveLimits::default()),
             RefusalReason::ArchivePathUnsafe,
@@ -750,6 +751,20 @@ fn tar_gz_with_rewritten_first_path(path: &[u8]) -> Vec<u8> {
     let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
     encoder.write_all(&raw).unwrap();
     encoder.finish().unwrap()
+}
+
+/// A gzip-compressed archive of one regular file whose name the `tar` crate never checks against this OS, so the product's refusal is what a test sees.
+fn tar_gz_with_unchecked_name(path: &str, contents: &[u8]) -> Vec<u8> {
+    let mut header = tar::Header::new_gnu();
+    header.set_entry_type(tar::EntryType::Regular);
+    header.set_size(contents.len() as u64);
+    header.set_mode(0o644);
+    header.set_mtime(0);
+    write_tar_name(header.as_mut_bytes(), path.as_bytes());
+    header.set_cksum();
+    let mut archive = tar::Builder::new(GzEncoder::new(Vec::new(), Compression::default()));
+    archive.append(&header, contents).unwrap();
+    archive.into_inner().unwrap().finish().unwrap()
 }
 
 fn tar(files: &[(&str, &[u8])]) -> Vec<u8> {

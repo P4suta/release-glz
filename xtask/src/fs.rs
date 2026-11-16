@@ -200,13 +200,14 @@ fn run_stamp() -> Result<u128, Failure> {
 #[cfg(test)]
 mod tests {
     use super::{
-        create_dir, create_dir_all, files_with_suffix, is_symlink, read_if_present, read_to_string,
-        write,
+        create_dir, create_dir_all, files_with_suffix, read_if_present, read_to_string, write,
     };
 
     #[cfg(unix)]
     #[test]
     fn only_a_symbolic_link_reads_as_one() {
+        use super::is_symlink;
+
         let root = tempfile::tempdir().unwrap();
         write(root.path().join("file"), "").unwrap();
         std::os::unix::fs::symlink(root.path().join("file"), root.path().join("link")).unwrap();
