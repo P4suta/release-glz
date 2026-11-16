@@ -1,4 +1,4 @@
-//! Unified diff rendering for the `--diff` mode of `init` and `migrate`.
+//! Unified diff rendering for the `--diff` mode of `init`.
 
 /// The path that a unified diff gives the side of a file that doesn't exist.
 const MISSING_FILE: &str = "/dev/null";

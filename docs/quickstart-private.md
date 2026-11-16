@@ -3,7 +3,7 @@
 Use this path only for a registry implementing the standard Hex API, repository, package tarball, and docs endpoints.
 Non-standard publish protocols are not adapted by v1.
 
-Generate the complete schema 2 configuration with all registry values explicit:
+Generate the complete `[tools.release-glz]` configuration with all registry values explicit:
 
 ```console
 release-glz init --profile private \

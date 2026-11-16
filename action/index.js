@@ -36,7 +36,7 @@ const SHA256_HEX_ANY_CASE = /^[a-fA-F0-9]{64}$/;
 /// A digest of nothing but zeroes, which is what the checksum manifest carries until a release fills it in.
 const SHA256_HEX_ZEROED = /^0{64}$/;
 
-/// A git object id: the SHA-1 form git writes today, or the SHA-256 form a migrated repository writes.
+/// A git object id: the SHA-1 form git writes by default, or the SHA-256 form of a repository that uses SHA-256 object names.
 const GIT_OBJECT_HEX = /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/;
 
 /// Size the checksum manifest and a `SHA256SUMS` file may reach.

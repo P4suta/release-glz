@@ -3,15 +3,15 @@
 //! Unknown keys, wrong types, paths outside the repository, unsafe ref prefixes, URLs carrying credentials, and non-HTTPS registry origins are rejected here rather than at the point of use, so an invalid manifest cannot reach a publication path at all.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use semver::Version;
 use serde::{Deserialize, Serialize};
-use toml_edit::{DocumentMut, Item, Table, TableLike, value};
+use toml_edit::{DocumentMut, Item, TableLike, value};
 
-use crate::gleam::MINIMUM_SUPPORTED_COMPILER;
 use crate::model::PrereleaseChannel;
 
 /// Base URL of the hex.pm publish API.
@@ -26,11 +26,11 @@ const HEXPM_DOCS_URL: &str = "https://repo.hex.pm/docs";
 /// Base URL of the hex.pm package pages.
 const HEXPM_PACKAGES_URL: &str = "https://hex.pm/packages";
 
-/// The `schema` of the flat `[tools.release-glz]` keys that predate structured tables.
-const FLAT_SCHEMA: i64 = 1;
+/// The only `schema` that `[tools.release-glz]` may set.
+const RELEASE_CONFIG_SCHEMA: i64 = 2;
 
-/// The `schema` of the structured `[tools.release-glz]` tables.
-const STRUCTURED_SCHEMA: i64 = 2;
+/// The key under `[tools]` that holds the release-glz configuration.
+const RELEASE_TABLE: &str = "release-glz";
 
 /// The ASCII delete control character, which Git refuses in a ref.
 const ASCII_DELETE: u8 = 0x7f;
@@ -343,9 +343,6 @@ pub struct ApiException {
 /// The `[tools.release-glz]` table, after validation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReleaseConfig {
-    /// Configuration schema version.
-    /// Only `2` can produce a Candidate.
-    pub schema: u32,
     /// Exact Gleam compiler a Candidate must be built with.
     pub compiler: Version,
     /// Where the package is published.
@@ -360,45 +357,31 @@ pub struct ReleaseConfig {
     pub changelog: ChangelogConfig,
     /// Expiring API baseline exceptions.
     pub api_exceptions: Vec<ApiException>,
-    /// Warnings raised by the configuration itself, such as a legacy schema.
-    pub compatibility_warnings: Vec<String>,
-    /// Legacy flat `changelog_path`, mirrored into [`ChangelogConfig::path`].
-    pub changelog_path: PathBuf,
     /// Branch prefix for the rolling Release PR.
     pub release_branch_prefix: String,
     /// Permit a deliberate 0.x release line.
     pub allow_version_zero: bool,
     /// Prerelease channel currently selected, if any.
     pub prerelease: Option<PrereleaseChannel>,
-    /// Legacy schema 1 allowance for versions with no API baseline.
-    pub allow_unknown_api_for: BTreeSet<Version>,
     /// Explicit baseline commit per version, used when the artifact search cannot identify one.
     pub baseline_refs: BTreeMap<Version, String>,
 }
 
-impl Default for ReleaseConfig {
-    fn default() -> Self {
-        Self {
-            schema: 1,
-            compiler: MINIMUM_SUPPORTED_COMPILER,
-            registry: RegistryConfig::default(),
-            approval: ApprovalConfig::default(),
-            outputs: OutputConfig::default(),
-            hooks: HooksConfig::default(),
-            changelog: ChangelogConfig::default(),
-            api_exceptions: Vec::new(),
-            compatibility_warnings: vec![
-                "legacy release-glz configuration; run `release-glz migrate --update`".into(),
-            ],
-            changelog_path: PathBuf::from("CHANGELOG.md"),
-            release_branch_prefix: "release-glz/".to_owned(),
-            allow_version_zero: false,
-            prerelease: None,
-            allow_unknown_api_for: BTreeSet::new(),
-            baseline_refs: BTreeMap::new(),
-        }
+/// The refusal of an operation that reads `[tools.release-glz]` from a manifest that has none.
+///
+/// [`crate::failure::classify`] reads it as a usage or configuration failure, so every command that refuses an unconfigured manifest exits the same way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MissingReleaseConfig;
+
+impl fmt::Display for MissingReleaseConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(
+            "the manifest has no `[tools.release-glz]` configuration; run `release-glz init` to write it",
+        )
     }
 }
+
+impl std::error::Error for MissingReleaseConfig {}
 
 /// A parsed `gleam.toml`, kept alongside its original bytes.
 ///
@@ -414,8 +397,7 @@ pub struct Manifest {
     pub version: Version,
     /// The `[repository]` table.
     pub repository: RepositoryConfig,
-    /// The validated `[tools.release-glz]` table.
-    pub release: ReleaseConfig,
+    release: Option<ReleaseConfig>,
 }
 
 impl Manifest {
@@ -468,19 +450,21 @@ impl Manifest {
         &self.source
     }
 
-    /// Whether a `[tools.release-glz]` table is present at all.
-    pub fn has_release_config(&self) -> bool {
-        self.document
-            .get("tools")
-            .and_then(Item::as_table_like)
-            .and_then(|tools| tools.get("release-glz"))
-            .is_some()
+    /// The validated `[tools.release-glz]` table, or the refusal that names `release-glz init` when the manifest has none.
+    pub fn release(&self) -> Result<&ReleaseConfig, MissingReleaseConfig> {
+        self.release.as_ref().ok_or(MissingReleaseConfig)
     }
 
-    /// Render a complete schema 2 configuration for a package that has never been configured for release-glz.
-    /// Existing release configuration is intentionally handled by migration or workflow refresh instead.
+    /// The validated `[tools.release-glz]` table, for a command that also runs on an unconfigured package.
+    pub fn configured_release(&self) -> Option<&ReleaseConfig> {
+        self.release.as_ref()
+    }
+
+    /// Render a complete configuration for a package that has no `[tools.release-glz]` table.
+    ///
+    /// A configured package keeps its configuration, and `init` refreshes only its workflow.
     pub fn render_initialized(&self, settings: &InitializationSettings) -> Result<String> {
-        if self.has_release_config() {
+        if self.release.is_some() {
             bail!("init profiles are only valid for an unconfigured package");
         }
         if self.version.major == 0 && !settings.allow_version_zero {
@@ -509,7 +493,7 @@ impl Manifest {
         let registry = &settings.registry;
         rendered.push_str(&format!(
             "[tools.release-glz]\n\
-schema = 2\n\
+schema = {RELEASE_CONFIG_SCHEMA}\n\
 compiler = {}\n\
 release_branch_prefix = \"release-glz/\"\n\
 allow_version_zero = {}\n\
@@ -567,7 +551,7 @@ notes_dir = \".release-glz/notes\"\n\n\
             toml_string(&format!("refs/heads/{}", settings.default_branch)),
         ));
         Self::parse(self.path.clone(), rendered.clone())
-            .context("generated schema 2 configuration did not validate")?;
+            .context("generated release-glz configuration did not validate")?;
         Ok(rendered)
     }
 
@@ -618,22 +602,24 @@ notes_dir = \".release-glz/notes\"\n\n\
 
     /// Select or clear the prerelease channel in memory.
     ///
-    /// Clearing a channel never creates a release table that the manifest lacks.
-    pub fn set_prerelease(&mut self, channel: Option<PrereleaseChannel>) {
+    /// Only a configured manifest has a channel, so an unconfigured one is refused and left unchanged.
+    pub fn set_prerelease(
+        &mut self,
+        channel: Option<PrereleaseChannel>,
+    ) -> Result<(), MissingReleaseConfig> {
+        let release = self.release.as_mut().ok_or(MissingReleaseConfig)?;
+        let table = release_table_mut(&mut self.document)
+            .expect("a configured manifest has a release-glz table");
         match channel {
             Some(channel) => {
-                ensure_release_table(&mut self.document);
-                release_table_mut(&mut self.document)
-                    .expect("validated release-glz table")
-                    .insert("prerelease", value(channel.as_str()));
+                table.insert("prerelease", value(channel.as_str()));
             }
             None => {
-                if let Some(release) = release_table_mut(&mut self.document) {
-                    release.remove("prerelease");
-                }
+                table.remove("prerelease");
             }
         }
-        self.release.prerelease = channel;
+        release.prerelease = channel;
+        Ok(())
     }
 
     /// Render the current in-memory manifest.
@@ -697,103 +683,54 @@ fn parse_repository(document: &DocumentMut) -> Result<RepositoryConfig> {
     Ok(output)
 }
 
-fn parse_release_config(document: &DocumentMut) -> Result<ReleaseConfig> {
-    let mut output = ReleaseConfig::default();
+/// The `[tools.release-glz]` table, which a manifest that release-glz has not configured lacks.
+fn parse_release_config(document: &DocumentMut) -> Result<Option<ReleaseConfig>> {
     let Some(tools) = document.get("tools") else {
-        return Ok(output);
+        return Ok(None);
     };
     let tools = tools.as_table_like().context("`tools` must be a table")?;
-    let Some(table) = tools.get("release-glz") else {
-        return Ok(output);
+    let Some(table) = tools.get(RELEASE_TABLE) else {
+        return Ok(None);
     };
-    if !table.is_table_like() {
-        bail!("`tools.release-glz` must be a table");
-    }
+    let table = table
+        .as_table_like()
+        .context("`tools.release-glz` must be a table")?;
+    check_schema(table.get("schema"))?;
+    deserialize_release_table(&document.to_string()).map(Some)
+}
 
-    if let Some(schema) = table.get("schema") {
-        match schema.as_integer() {
-            Some(STRUCTURED_SCHEMA) => {
-                return parse_structured_release_config(&document.to_string());
-            }
-            Some(FLAT_SCHEMA) => {}
-            Some(value) => {
-                bail!("unsupported release-glz schema {value}; expected 1 or 2")
-            }
-            None => bail!("release-glz schema must be an integer"),
+/// Refuse a `schema` other than [`RELEASE_CONFIG_SCHEMA`], before any other key can make the table fail for a less direct reason.
+fn check_schema(schema: Option<&Item>) -> Result<()> {
+    let found = match schema {
+        Some(schema) if schema.as_integer() == Some(RELEASE_CONFIG_SCHEMA) => return Ok(()),
+        Some(Item::Value(schema)) => {
+            let mut schema = schema.clone();
+            schema.decor_mut().clear();
+            format!("`schema = {schema}`")
         }
-    }
-    if [
-        "compiler",
-        "registry",
-        "approval",
-        "outputs",
-        "hooks",
-        "changelog",
-        "api_exceptions",
-    ]
-    .iter()
-    .any(|key| table.get(key).is_some())
-    {
-        bail!("structured release-glz configuration requires explicit `schema = 2`");
-    }
-
-    if let Some(path) = table.get("changelog_path").and_then(Item::as_str) {
-        output.changelog_path = PathBuf::from(path);
-        output.changelog.path = output.changelog_path.clone();
-    }
-    if let Some(prefix) = table.get("release_branch_prefix").and_then(Item::as_str) {
-        output.release_branch_prefix = prefix.to_owned();
-    }
-    if let Some(allow) = table.get("allow_version_zero").and_then(Item::as_bool) {
-        output.allow_version_zero = allow;
-    }
-    if let Some(channel) = table.get("prerelease").and_then(Item::as_str) {
-        output.prerelease = Some(channel.parse().map_err(anyhow::Error::msg)?);
-    }
-    if let Some(versions) = table.get("allow_unknown_api_for").and_then(Item::as_array) {
-        for version in versions.iter() {
-            let Some(version) = version.as_str() else {
-                bail!("`allow_unknown_api_for` must contain version strings");
-            };
-            output.allow_unknown_api_for.insert(
-                version
-                    .parse()
-                    .with_context(|| format!("invalid override version `{version}`"))?,
-            );
-        }
-    }
-    if let Some(refs) = table.get("baseline_refs").and_then(Item::as_table_like) {
-        for (version, git_ref) in refs.iter() {
-            let Some(git_ref) = git_ref.as_str() else {
-                bail!("baseline ref for `{version}` must be a string");
-            };
-            output.baseline_refs.insert(
-                version
-                    .parse()
-                    .with_context(|| format!("invalid baseline version `{version}`"))?,
-                git_ref.to_owned(),
-            );
-        }
-    }
-    validate_release_config(&output)?;
-    Ok(output)
+        Some(_) => "a `schema` table".to_owned(),
+        None => "no `schema`".to_owned(),
+    };
+    bail!("`[tools.release-glz]` requires `schema = {RELEASE_CONFIG_SCHEMA}`, but it sets {found}")
 }
 
 #[derive(Debug, Deserialize)]
-struct StructuredRoot {
-    tools: StructuredTools,
+struct ManifestTables {
+    tools: ToolsTable,
 }
 
 #[derive(Debug, Deserialize)]
-struct StructuredTools {
+struct ToolsTable {
     #[serde(rename = "release-glz")]
-    release_glz: StructuredReleaseConfig,
+    release_glz: ReleaseTable,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct StructuredReleaseConfig {
-    schema: u32,
+struct ReleaseTable {
+    /// Accepted here because [`check_schema`] already refused every other value.
+    #[serde(rename = "schema")]
+    _schema: serde::de::IgnoredAny,
     compiler: Version,
     registry: RegistryConfig,
     approval: ApprovalConfig,
@@ -819,39 +756,24 @@ fn default_release_branch_prefix() -> String {
     "release-glz/".into()
 }
 
-fn parse_structured_release_config(source: &str) -> Result<ReleaseConfig> {
-    let root: StructuredRoot = toml_edit::de::from_str(source).map_err(|error| {
-        anyhow::anyhow!("invalid `[tools.release-glz]` schema 2 configuration: {error}")
-    })?;
+fn deserialize_release_table(source: &str) -> Result<ReleaseConfig> {
+    let root: ManifestTables = toml_edit::de::from_str(source)
+        .map_err(|error| anyhow::anyhow!("invalid `[tools.release-glz]` configuration: {error}"))?;
     let raw = root.tools.release_glz;
-    if i64::from(raw.schema) != STRUCTURED_SCHEMA {
-        bail!("unsupported release-glz schema {}; expected 2", raw.schema);
-    }
-    let allow_unknown_api_for = raw
-        .api_exceptions
-        .iter()
-        .map(|exception| exception.version.clone())
-        .collect();
-    let mut output = ReleaseConfig {
-        schema: raw.schema,
+    let output = ReleaseConfig {
         compiler: raw.compiler,
         registry: raw.registry,
         approval: raw.approval,
         outputs: raw.outputs,
         hooks: raw.hooks,
-        changelog_path: raw.changelog.path.clone(),
         changelog: raw.changelog,
         api_exceptions: raw.api_exceptions,
-        compatibility_warnings: Vec::new(),
         release_branch_prefix: raw.release_branch_prefix,
         allow_version_zero: raw.allow_version_zero,
         prerelease: raw.prerelease,
-        allow_unknown_api_for,
         baseline_refs: raw.baseline_refs,
     };
     validate_release_config(&output)?;
-    // Keep the compatibility field exactly aligned with the structured value.
-    output.changelog_path = output.changelog.path.clone();
     Ok(output)
 }
 
@@ -1159,39 +1081,43 @@ fn release_table_mut(document: &mut DocumentMut) -> Option<&mut dyn TableLike> {
     document
         .get_mut("tools")
         .and_then(Item::as_table_like_mut)
-        .and_then(|tools| tools.get_mut("release-glz"))
+        .and_then(|tools| tools.get_mut(RELEASE_TABLE))
         .and_then(Item::as_table_like_mut)
-}
-
-fn ensure_release_table(document: &mut DocumentMut) {
-    if !document.as_table().contains_key("tools") {
-        document["tools"] = Item::Table(Table::new());
-    }
-    let inline = document
-        .get("tools")
-        .and_then(Item::as_inline_table)
-        .is_some();
-    let tools = document
-        .get_mut("tools")
-        .and_then(Item::as_table_like_mut)
-        .expect("validated tools table");
-    if tools.get("release-glz").is_none() {
-        let release = if inline {
-            Item::Value(toml_edit::Value::InlineTable(toml_edit::InlineTable::new()))
-        } else {
-            Item::Table(Table::new())
-        };
-        tools.insert("release-glz", release);
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// The release table of a configured manifest, with `extra` after its first keys.
+    fn release_table(extra: &str) -> String {
+        format!(
+            r#"[tools.release-glz]
+schema = 2
+compiler = "1.18.1"
+{extra}
+[tools.release-glz.registry]
+provider = "hexpm"
+api_url = "https://hex.pm/api"
+repository_url = "https://repo.hex.pm"
+docs_url = "https://repo.hex.pm/docs"
+credential_env = "HEXPM_API_KEY"
+auth = "hex-token"
+
+[tools.release-glz.approval]
+normal = "release-pr-and-environment"
+manual = "environment"
+environment = "release"
+separation = "solo"
+manual_refs = ["refs/heads/main"]
+"#
+        )
+    }
+
     #[test]
     fn version_edit_preserves_comments_order_and_spelling() {
-        let source = r#"# leading comment
+        let source = format!(
+            r#"# leading comment
 name = "wibble" # package
 version = "1.2.3"
 
@@ -1201,13 +1127,13 @@ user = "owner"
 repo = "wibble"
 tag-prefix = "packages/wibble/"
 
-[tools.release-glz]
-allow_unknown_api_for = ["1.2.3"]
-
+{}
 [tools.release-glz.baseline_refs]
 "1.2.3" = "abc123"
-"#;
-        let manifest = Manifest::parse(PathBuf::from("gleam.toml"), source.to_owned()).unwrap();
+"#,
+            release_table("# pinned by hand\n")
+        );
+        let manifest = Manifest::parse(PathBuf::from("gleam.toml"), source.clone()).unwrap();
         let rendered = manifest.render_with_version(&Version::new(2, 0, 0));
         assert_eq!(
             rendered,
@@ -1218,30 +1144,47 @@ allow_unknown_api_for = ["1.2.3"]
             "packages/wibble/v2.0.0"
         );
         assert_eq!(
-            manifest.release.baseline_refs[&Version::new(1, 2, 3)],
+            manifest.release().unwrap().baseline_refs[&Version::new(1, 2, 3)],
             "abc123"
         );
     }
 
     #[test]
     fn prerelease_setting_round_trips_other_content() {
-        let source = "name = \"x\"\nversion = \"1.0.0\"\n# keep me\n";
-        let mut manifest = Manifest::parse(PathBuf::from("gleam.toml"), source.to_owned()).unwrap();
-        manifest.set_prerelease(Some(PrereleaseChannel::Rc));
+        let source = format!(
+            "name = \"x\"\nversion = \"1.0.0\"\n# keep me\n\n{}",
+            release_table("")
+        );
+        let mut manifest = Manifest::parse(PathBuf::from("gleam.toml"), source.clone()).unwrap();
+        manifest
+            .set_prerelease(Some(PrereleaseChannel::Rc))
+            .unwrap();
         let rendered = manifest.render();
         assert!(rendered.contains("# keep me"));
         assert!(rendered.contains("prerelease = \"rc\""));
-        manifest.set_prerelease(None);
-        assert!(!manifest.render().contains("prerelease ="));
+        assert_eq!(
+            manifest.release().unwrap().prerelease,
+            Some(PrereleaseChannel::Rc)
+        );
+        manifest.set_prerelease(None).unwrap();
+        assert_eq!(manifest.render(), source);
+        assert_eq!(manifest.release().unwrap().prerelease, None);
     }
 
     #[test]
-    fn clearing_a_prerelease_never_creates_release_configuration() {
-        let source = "name = \"x\"\nversion = \"1.0.0\"\n";
-        let mut manifest = Manifest::parse(PathBuf::from("gleam.toml"), source.to_owned()).unwrap();
-        manifest.set_prerelease(None);
-        assert_eq!(manifest.render(), source);
-        assert!(!manifest.has_release_config());
+    fn an_unconfigured_manifest_refuses_a_channel_and_stays_unchanged() {
+        for source in [
+            "name = \"x\"\nversion = \"1.0.0\"\n",
+            "name = \"x\"\nversion = \"1.0.0\"\ntools = { other = \"preserve\" }\n",
+        ] {
+            let mut manifest =
+                Manifest::parse(PathBuf::from("gleam.toml"), source.to_owned()).unwrap();
+            assert_eq!(manifest.release(), Err(MissingReleaseConfig));
+            for channel in [Some(PrereleaseChannel::Beta), None] {
+                assert_eq!(manifest.set_prerelease(channel), Err(MissingReleaseConfig));
+                assert_eq!(manifest.render(), source);
+            }
+        }
     }
 
     #[test]
@@ -1292,23 +1235,20 @@ repository = { type = "github", user = "owner", repo = "x", tag_prefix = "x-" }
     fn prerelease_edits_preserve_inline_tools_and_release_tables() {
         let source = r#"name = "x"
 version = "1.0.0"
-tools = { other = { keep = true }, "release-glz" = { prerelease = "alpha" } }
+tools = { other = { keep = true }, "release-glz" = { schema = 2, compiler = "1.18.1", prerelease = "alpha", registry = { provider = "hexpm", api_url = "https://hex.pm/api", repository_url = "https://repo.hex.pm", docs_url = "https://repo.hex.pm/docs", credential_env = "HEXPM_API_KEY", auth = "hex-token" }, approval = { normal = "release-pr-and-environment", manual = "environment", environment = "release", manual_refs = ["refs/heads/main"] } } }
 "#;
         let mut manifest = Manifest::parse(PathBuf::from("gleam.toml"), source.into()).unwrap();
-        manifest.set_prerelease(Some(PrereleaseChannel::Rc));
+        manifest
+            .set_prerelease(Some(PrereleaseChannel::Rc))
+            .unwrap();
         let rendered = manifest.render();
         assert!(rendered.contains("keep = true"), "{rendered}");
         assert!(rendered.contains("prerelease = \"rc\""), "{rendered}");
-
-        let source = r#"name = "x"
-version = "1.0.0"
-tools = { other = "preserve" }
-"#;
-        let mut manifest = Manifest::parse(PathBuf::from("gleam.toml"), source.into()).unwrap();
-        manifest.set_prerelease(Some(PrereleaseChannel::Beta));
+        manifest.set_prerelease(None).unwrap();
         let rendered = manifest.render();
-        assert!(rendered.contains("other = \"preserve\""), "{rendered}");
-        assert!(rendered.contains("prerelease = \"beta\""), "{rendered}");
+        assert!(!rendered.contains("prerelease"), "{rendered}");
+        let reparsed = Manifest::parse(PathBuf::from("gleam.toml"), rendered).unwrap();
+        assert_eq!(reparsed.release(), manifest.release());
     }
 
     #[test]
@@ -1330,7 +1270,7 @@ prerelease = ""
             .unwrap();
         assert!(rendered.contains("[tools.other]\nprerelease = \"\""));
         let parsed = Manifest::parse(PathBuf::from("gleam.toml"), rendered).unwrap();
-        assert_eq!(parsed.release.prerelease, None);
+        assert_eq!(parsed.release().unwrap().prerelease, None);
     }
 
     #[test]

@@ -19,7 +19,6 @@ pub mod gleam;
 pub mod handoff;
 pub mod hex;
 pub mod hooks;
-pub mod migrate;
 pub mod model;
 pub mod planner;
 mod process;

@@ -1,7 +1,7 @@
 use semver::Version;
 
 use release_glz::config::{ApprovalConfig, SeparationMode};
-use release_glz::doctor::{DoctorInput, assess, assess_local};
+use release_glz::doctor::{DoctorInput, assess, assess_local, assess_unconfigured};
 use release_glz::forge::GitHubEnvironmentAudit;
 use release_glz::model::{DiagnosticLevel, ReleaseState};
 use release_glz::registry::RegistryCredentialAudit;
@@ -20,7 +20,6 @@ fn audit() -> GitHubEnvironmentAudit {
 
 fn input() -> DoctorInput {
     DoctorInput {
-        config_schema: 2,
         package_version: Version::new(1, 2, 3),
         required_compiler: Version::new(1, 12, 3),
         installed_compiler: Some(Version::new(1, 12, 3)),
@@ -148,20 +147,54 @@ fn private_solo_repositories_require_an_actual_gate_or_explicit_digest_promotion
 }
 
 #[test]
-fn schema_two_and_github_observation_are_shipping_requirements_but_zero_x_is_only_a_warning() {
+fn a_missing_configuration_blocks_every_release_and_points_to_init() {
+    for (version, codes) in [
+        (Version::new(1, 2, 3), vec!["config_missing"]),
+        (
+            Version::new(0, 4, 2),
+            vec!["config_missing", "version_zero"],
+        ),
+    ] {
+        let report = assess_unconfigured(&version, Some(Version::new(1, 12, 3)));
+        assert_eq!(report.state, ReleaseState::Blocked);
+        assert_eq!(report.required_compiler, None);
+        assert_eq!(report.installed_compiler, Some(Version::new(1, 12, 3)));
+        assert_eq!(
+            report
+                .diagnostics
+                .iter()
+                .map(|diagnostic| diagnostic.code.as_str())
+                .collect::<Vec<_>>(),
+            codes
+        );
+        assert_eq!(report.diagnostics[0].level, DiagnosticLevel::Error);
+        assert!(
+            report.diagnostics[0]
+                .message
+                .contains("run `release-glz init`")
+        );
+        assert_eq!(report.next_actions.len(), 1);
+        assert!(
+            report.next_actions[0].argv.is_empty(),
+            "init needs a profile that doctor cannot choose"
+        );
+        assert!(
+            report.next_actions[0]
+                .description
+                .contains("release-glz init --update")
+        );
+    }
+}
+
+#[test]
+fn github_observation_is_a_shipping_requirement_but_zero_x_is_only_a_warning() {
     let mut incomplete = input();
-    incomplete.config_schema = 1;
     incomplete.package_version = Version::new(0, 4, 2);
     incomplete.github_environment = None;
 
     let report = assess(&incomplete);
     assert_eq!(report.state, ReleaseState::Blocked);
-    assert!(
-        report
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "config_schema_legacy")
-    );
+    assert_eq!(report.required_compiler, Some(Version::new(1, 12, 3)));
     assert!(report.diagnostics.iter().any(|diagnostic| {
         diagnostic.code == "github_environment_unobserved"
             && diagnostic.level == DiagnosticLevel::Error

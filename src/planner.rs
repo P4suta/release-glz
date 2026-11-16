@@ -16,7 +16,7 @@ use sha2::{Digest, Sha256};
 use crate::api;
 use crate::artifact;
 use crate::changelog::{self, ReleaseNotesConfig};
-use crate::config::{ApprovalMode, Manifest};
+use crate::config::{ApprovalMode, Manifest, ReleaseConfig};
 use crate::failure::{FailureClass, classified, with_default_class};
 use crate::git::{Commit, GitRepo};
 use crate::gleam::Gleam;
@@ -50,6 +50,7 @@ struct BaselineCacheEntry {
 #[derive(Clone, Copy)]
 struct BaselineSearch<'a> {
     manifest: &'a Manifest,
+    release: &'a ReleaseConfig,
     repo: &'a GitRepo,
     package_relative: &'a std::path::Path,
     version: &'a Version,
@@ -159,10 +160,11 @@ impl<R: Registry> Planner<R> {
             .gleam
             .snapshot_from_git(&repo, &head, package_relative)?;
         let manifest = Manifest::load(committed.package_dir().join("gleam.toml"))?;
-        if manifest.release.schema == 2 && compiler != manifest.release.compiler {
+        let release = manifest.release()?;
+        if compiler != release.compiler {
             bail!(
                 "configured Gleam compiler {} is required; found {compiler}",
-                manifest.release.compiler
+                release.compiler
             );
         }
         let package_state = self
@@ -172,12 +174,12 @@ impl<R: Registry> Planner<R> {
             .map_err(|error| with_default_class(error, FailureClass::TemporaryExternal))?;
 
         let mut plan = match package_state {
-            None => self.initial_plan(&manifest, &repo, options).await,
+            None => self.initial_plan(&manifest, release, &repo, options).await,
             Some(state) if state.latest().is_none() => {
-                self.initial_plan(&manifest, &repo, options).await
+                self.initial_plan(&manifest, release, &repo, options).await
             }
             Some(state) => {
-                self.existing_plan(&manifest, &repo, package_relative, state, options)
+                self.existing_plan(&manifest, release, &repo, package_relative, state, options)
                     .await
             }
         }?;
@@ -188,13 +190,12 @@ impl<R: Registry> Planner<R> {
     async fn initial_plan(
         &self,
         manifest: &Manifest,
+        release: &ReleaseConfig,
         repo: &GitRepo,
         options: &PlanOptions,
     ) -> Result<ReleasePlan> {
-        let prerelease = options
-            .prerelease_override
-            .unwrap_or(manifest.release.prerelease);
-        let version = first_version(manifest, options, prerelease)?;
+        let prerelease = options.prerelease_override.unwrap_or(release.prerelease);
+        let version = first_version(manifest, release, options, prerelease)?;
         // Exporting in a temporary snapshot validates exactly what the initial publication would contain while keeping `plan` read-only.
         let snapshot = self.gleam.snapshot(manifest.package_dir())?;
         self.gleam.export_hex_tarball(snapshot.package_dir())?;
@@ -229,9 +230,9 @@ impl<R: Registry> Planner<R> {
             }],
             api: ApiDiff::default(),
             changes,
-            warnings: plan_warnings(manifest, &version),
-            required_approvals: required_approvals(manifest),
-            stages: planned_stages(manifest),
+            warnings: plan_warnings(&version),
+            required_approvals: required_approvals(release),
+            stages: planned_stages(release),
             pr_url: None,
             release_pr_head: None,
             hex_url: None,
@@ -242,6 +243,7 @@ impl<R: Registry> Planner<R> {
     async fn existing_plan(
         &self,
         manifest: &Manifest,
+        release: &ReleaseConfig,
         repo: &GitRepo,
         package_relative: &std::path::Path,
         state: PackageState,
@@ -261,9 +263,8 @@ impl<R: Registry> Planner<R> {
                 ),
             ));
         }
-        // Validate a structured escape hatch before any potentially long artifact-fingerprint history scan.
-        // An expired or unresolvable exception is never silently weakened to the legacy boolean form.
-        let api_exception = validated_api_exception(manifest, repo, &latest.version)?;
+        // Validate the API exception before any potentially long artifact-fingerprint history scan.
+        let api_exception = validated_api_exception(release, repo, &latest.version)?;
         let source = self
             .registry
             .source_tarball(&manifest.package, &latest.version)
@@ -273,6 +274,7 @@ impl<R: Registry> Planner<R> {
         let baseline = self
             .find_baseline(BaselineSearch {
                 manifest,
+                release,
                 repo,
                 package_relative,
                 version: &latest.version,
@@ -373,9 +375,7 @@ impl<R: Registry> Planner<R> {
         }
 
         let explicit = explicit_request(candidate, &latest.version, options);
-        let configured_prerelease = options
-            .prerelease_override
-            .unwrap_or(manifest.release.prerelease);
+        let configured_prerelease = options.prerelease_override.unwrap_or(release.prerelease);
         let published_channel = latest
             .version
             .pre
@@ -407,7 +407,7 @@ impl<R: Registry> Planner<R> {
         } else {
             latest.version.clone()
         };
-        enforce_version_zero(&selected, manifest)?;
+        enforce_version_zero(&selected, release)?;
         if let Some(explicit) = explicit {
             reasons.push(ReleaseReason {
                 kind: ReasonKind::ExplicitVersion,
@@ -455,14 +455,14 @@ impl<R: Registry> Planner<R> {
             reasons,
             api,
             changes,
-            warnings: plan_warnings(manifest, &selected),
+            warnings: plan_warnings(&selected),
             required_approvals: if release_required {
-                required_approvals(manifest)
+                required_approvals(release)
             } else {
                 Vec::new()
             },
             stages: if release_required {
-                planned_stages(manifest)
+                planned_stages(release)
             } else {
                 Vec::new()
             },
@@ -471,8 +471,7 @@ impl<R: Registry> Planner<R> {
             hex_url: if release_required {
                 None
             } else {
-                manifest
-                    .release
+                release
                     .registry
                     .package_page(&manifest.package, &latest.version)
             },
@@ -483,6 +482,7 @@ impl<R: Registry> Planner<R> {
     async fn find_baseline(&self, search: BaselineSearch<'_>) -> Result<Baseline> {
         let BaselineSearch {
             manifest,
+            release,
             repo,
             package_relative,
             version,
@@ -501,7 +501,7 @@ impl<R: Registry> Planner<R> {
             });
         }
 
-        if let Some(git_ref) = manifest.release.baseline_refs.get(version) {
+        if let Some(git_ref) = release.baseline_refs.get(version) {
             let sha = repo.resolve(git_ref)?.with_context(|| {
                 format!("configured baseline ref `{git_ref}` cannot be resolved")
             })?;
@@ -686,77 +686,60 @@ impl<R: Registry> Planner<R> {
 }
 
 fn validated_api_exception(
-    manifest: &Manifest,
+    release: &ReleaseConfig,
     repo: &GitRepo,
     version: &Version,
 ) -> Result<Option<String>> {
-    if let Some(exception) = manifest
-        .release
+    let Some(exception) = release
         .api_exceptions
         .iter()
         .find(|exception| &exception.version == version)
-    {
-        let expires = chrono::NaiveDate::parse_from_str(&exception.expires, "%Y-%m-%d")
-            .expect("API exception dates are validated while parsing configuration");
-        if expires < chrono::Utc::now().date_naive() {
-            return Err(classified(
-                FailureClass::PolicyOrApproval,
-                format!(
-                    "API exception for {version} expired on {}; remove it or complete a newly reviewed exception",
-                    exception.expires
-                ),
-            ));
-        }
-        repo.resolve(&exception.baseline)?.with_context(|| {
+    else {
+        return Ok(None);
+    };
+    let expires = chrono::NaiveDate::parse_from_str(&exception.expires, "%Y-%m-%d")
+        .expect("API exception dates are validated while parsing configuration");
+    if expires < chrono::Utc::now().date_naive() {
+        return Err(classified(
+            FailureClass::PolicyOrApproval,
             format!(
-                "API exception baseline `{}` for {version} cannot be resolved",
-                exception.baseline
-            )
-        })?;
-        return Ok(Some(format!(
-            "the reviewed exception using baseline `{}` through {} because {}",
-            exception.baseline, exception.expires, exception.reason
-        )));
+                "API exception for {version} expired on {}; remove it or complete a newly reviewed exception",
+                exception.expires
+            ),
+        ));
     }
-
-    // v1.x can still read the legacy flat configuration, but schema 2 never derives authority from the compatibility field alone.
-    Ok(
-        (manifest.release.schema != 2 && manifest.release.allow_unknown_api_for.contains(version))
-            .then(|| "the legacy version-scoped override".into()),
-    )
+    repo.resolve(&exception.baseline)?.with_context(|| {
+        format!(
+            "API exception baseline `{}` for {version} cannot be resolved",
+            exception.baseline
+        )
+    })?;
+    Ok(Some(format!(
+        "the reviewed exception using baseline `{}` through {} because {}",
+        exception.baseline, exception.expires, exception.reason
+    )))
 }
 
-fn plan_warnings(manifest: &Manifest, version: &Version) -> Vec<Diagnostic> {
-    let mut warnings: Vec<_> = manifest
-        .release
-        .compatibility_warnings
-        .iter()
-        .map(|message| Diagnostic {
-            code: "legacy_config".into(),
-            level: DiagnosticLevel::Warning,
-            message: message.clone(),
-            detail: None,
-        })
-        .collect();
-    if version.major == 0 {
-        warnings.push(Diagnostic {
+fn plan_warnings(version: &Version) -> Vec<Diagnostic> {
+    (version.major == 0)
+        .then(|| Diagnostic {
             code: "version_zero".into(),
             level: DiagnosticLevel::Warning,
             message: "Gleam recommends starting packages at version 1.0.0".into(),
             detail: Some(
                 "release-glz applies Hex's 0.x rule: breaking changes use a minor release".into(),
             ),
-        });
-    }
-    warnings
+        })
+        .into_iter()
+        .collect()
 }
 
-fn required_approvals(manifest: &Manifest) -> Vec<ApprovalRequirement> {
+fn required_approvals(release: &ReleaseConfig) -> Vec<ApprovalRequirement> {
     let environment = || ApprovalRequirement {
         kind: ApprovalKind::Environment,
-        environment: Some(manifest.release.approval.environment.clone()),
+        environment: Some(release.approval.environment.clone()),
     };
-    match manifest.release.approval.normal {
+    match release.approval.normal {
         ApprovalMode::ReleasePrAndEnvironment => vec![
             ApprovalRequirement {
                 kind: ApprovalKind::ReleasePr,
@@ -768,8 +751,7 @@ fn required_approvals(manifest: &Manifest) -> Vec<ApprovalRequirement> {
     }
 }
 
-fn planned_stages(manifest: &Manifest) -> Vec<ReleaseStage> {
-    let release = &manifest.release;
+fn planned_stages(release: &ReleaseConfig) -> Vec<ReleaseStage> {
     // Each stage appears only when the configuration gives it something to do, in the order a release runs them.
     [
         (!release.hooks.verify.is_empty(), ReleaseStage::VerifyHooks),
@@ -798,10 +780,9 @@ pub fn prepare_release_files(
     plan: &ReleasePlan,
     entries: &[ChangeEntry],
 ) -> Result<BTreeMap<String, Vec<u8>>> {
+    let changelog_config = &manifest.release()?.changelog;
     let release_config = ReleaseNotesConfig::load(&repo.root().join(".github/release.yml"))?;
-    let changelog_path = manifest
-        .package_dir()
-        .join(&manifest.release.changelog_path);
+    let changelog_path = manifest.package_dir().join(&changelog_config.path);
     let existing = fs::read_to_string(&changelog_path).ok();
     let entries = release_config.apply(entries.iter().cloned());
     let historical_changelog = existing
@@ -809,7 +790,7 @@ pub fn prepare_release_files(
         .map(|existing| changelog::without_release_section(existing, &plan.version.to_string()));
     let notes = changelog::load_structured_notes(
         manifest.package_dir(),
-        &manifest.release.changelog.notes_dir,
+        &changelog_config.notes_dir,
         historical_changelog.as_deref(),
     )?;
     let entries = changelog::merge_supplemental_notes(entries, notes);
@@ -828,7 +809,7 @@ pub fn prepare_release_files(
         manifest
             .package_dir()
             .canonicalize()?
-            .join(&manifest.release.changelog_path)
+            .join(&changelog_config.path)
     }
     .strip_prefix(repo.root().canonicalize()?)
     .context("changelog is outside git repository")?
@@ -883,6 +864,7 @@ pub fn update_local(manifest: &mut Manifest, plan: &ReleasePlan) -> Result<Vec<P
 /// The version of a package's first release, from the manifest, the plan's overrides, and the configured train.
 fn first_version(
     manifest: &Manifest,
+    release: &ReleaseConfig,
     options: &PlanOptions,
     prerelease: Option<crate::model::PrereleaseChannel>,
 ) -> Result<Version> {
@@ -906,7 +888,7 @@ fn first_version(
         prerelease,
         options.prerelease_override == Some(None),
     )?;
-    enforce_version_zero(&version, manifest)?;
+    enforce_version_zero(&version, release)?;
     Ok(version)
 }
 
@@ -919,8 +901,8 @@ fn explicit_request<'a>(
     (!options.ignore_manifest_version && follows(candidate, latest)).then_some(candidate)
 }
 
-fn enforce_version_zero(version: &Version, manifest: &Manifest) -> Result<()> {
-    if release_glz_core::version_zero_refused(version.major, manifest.release.allow_version_zero) {
+fn enforce_version_zero(version: &Version, release: &ReleaseConfig) -> Result<()> {
+    if release_glz_core::version_zero_refused(version.major, release.allow_version_zero) {
         return Err(classified(
             FailureClass::PolicyOrApproval,
             format!(
@@ -958,31 +940,56 @@ mod tests {
     fn manifest() -> Manifest {
         Manifest::parse(
             PathBuf::from("gleam.toml"),
-            "name = \"widget\"\nversion = \"1.2.3\"\n".into(),
+            r#"name = "widget"
+version = "1.2.3"
+
+[tools.release-glz]
+schema = 2
+compiler = "1.18.1"
+
+[tools.release-glz.registry]
+provider = "hexpm"
+api_url = "https://hex.pm/api"
+repository_url = "https://repo.hex.pm"
+docs_url = "https://repo.hex.pm/docs"
+credential_env = "HEXPM_API_KEY"
+auth = "hex-token"
+
+[tools.release-glz.approval]
+normal = "release-pr-and-environment"
+manual = "environment"
+environment = "release"
+manual_refs = ["refs/heads/main"]
+"#
+            .into(),
         )
         .unwrap()
     }
 
+    fn release() -> ReleaseConfig {
+        manifest().release().unwrap().clone()
+    }
+
     #[test]
     fn approval_and_stage_helpers_cover_every_policy_combination() {
-        let mut manifest = manifest();
-        let approvals = required_approvals(&manifest);
+        let mut release = release();
+        let approvals = required_approvals(&release);
         assert_eq!(approvals.len(), 2);
         assert_eq!(approvals[0].kind, ApprovalKind::ReleasePr);
         assert_eq!(approvals[1].kind, ApprovalKind::Environment);
         assert_eq!(approvals[1].environment.as_deref(), Some("release"));
 
-        manifest.release.approval.normal = ApprovalMode::Environment;
-        let approvals = required_approvals(&manifest);
+        release.approval.normal = ApprovalMode::Environment;
+        let approvals = required_approvals(&release);
         assert_eq!(approvals.len(), 1);
         assert_eq!(approvals[0].kind, ApprovalKind::Environment);
 
-        manifest.release.outputs.docs = false;
-        manifest.release.outputs.github_release = false;
-        manifest.release.hooks.verify.clear();
-        manifest.release.hooks.notify.clear();
+        release.outputs.docs = false;
+        release.outputs.github_release = false;
+        release.hooks.verify.clear();
+        release.hooks.notify.clear();
         assert_eq!(
-            planned_stages(&manifest),
+            planned_stages(&release),
             [ReleaseStage::PrepareGitTag, ReleaseStage::PublishPackage]
         );
 
@@ -993,12 +1000,12 @@ mod tests {
             required: false,
             env: vec![],
         };
-        manifest.release.outputs.docs = true;
-        manifest.release.outputs.github_release = true;
-        manifest.release.hooks.verify.push(hook("policy"));
-        manifest.release.hooks.notify.push(hook("announce"));
+        release.outputs.docs = true;
+        release.outputs.github_release = true;
+        release.hooks.verify.push(hook("policy"));
+        release.hooks.notify.push(hook("announce"));
         assert_eq!(
-            planned_stages(&manifest),
+            planned_stages(&release),
             [
                 ReleaseStage::VerifyHooks,
                 ReleaseStage::PrepareGitTag,
@@ -1013,43 +1020,43 @@ mod tests {
 
     #[test]
     fn warnings_and_zero_version_policy_cover_both_major_lines() {
-        let mut manifest = manifest();
-        let stable = plan_warnings(&manifest, &Version::new(1, 0, 0));
-        assert_eq!(stable.len(), 1);
-        assert_eq!(stable[0].code, "legacy_config");
+        assert!(plan_warnings(&Version::new(1, 0, 0)).is_empty());
 
-        let zero = plan_warnings(&manifest, &Version::new(0, 9, 0));
-        assert_eq!(zero.len(), 2);
-        assert_eq!(zero[1].code, "version_zero");
+        let zero = plan_warnings(&Version::new(0, 9, 0));
+        assert_eq!(zero.len(), 1);
+        assert_eq!(zero[0].code, "version_zero");
         assert!(
-            zero[1]
+            zero[0]
                 .detail
                 .as_deref()
                 .unwrap()
                 .contains("breaking changes")
         );
 
-        let error = enforce_version_zero(&Version::new(0, 1, 0), &manifest)
+        let mut release = release();
+        let error = enforce_version_zero(&Version::new(0, 1, 0), &release)
             .unwrap_err()
             .to_string();
         assert!(error.contains("allow_version_zero"), "{error}");
-        manifest.release.allow_version_zero = true;
-        enforce_version_zero(&Version::new(0, 1, 0), &manifest).unwrap();
-        enforce_version_zero(&Version::new(1, 0, 0), &manifest).unwrap();
+        release.allow_version_zero = true;
+        enforce_version_zero(&Version::new(0, 1, 0), &release).unwrap();
+        enforce_version_zero(&Version::new(1, 0, 0), &release).unwrap();
     }
 
     #[test]
     fn a_first_release_keeps_its_prerelease_unless_the_plan_asks_for_a_stable_one() {
         let mut manifest = manifest();
+        let release = release();
         manifest.version = Version::parse("1.2.3-beta.3").unwrap();
         let options = PlanOptions::default();
         assert_eq!(
-            first_version(&manifest, &options, None).unwrap(),
+            first_version(&manifest, &release, &options, None).unwrap(),
             manifest.version
         );
         assert_eq!(
             first_version(
                 &manifest,
+                &release,
                 &options,
                 Some(crate::model::PrereleaseChannel::Beta)
             )
@@ -1061,14 +1068,14 @@ mod tests {
             ..PlanOptions::default()
         };
         assert_eq!(
-            first_version(&manifest, &stable, None).unwrap(),
+            first_version(&manifest, &release, &stable, None).unwrap(),
             Version::new(1, 2, 3)
         );
         let lowered = PlanOptions {
             version_override: Some(Version::new(1, 2, 2)),
             ..PlanOptions::default()
         };
-        let error = first_version(&manifest, &lowered, None)
+        let error = first_version(&manifest, &release, &lowered, None)
             .unwrap_err()
             .to_string();
         assert_eq!(
@@ -1076,7 +1083,7 @@ mod tests {
             "release policy forbids lowering the manifest version from 1.2.3-beta.3 to 1.2.2"
         );
         manifest.version = Version::new(0, 1, 0);
-        let error = first_version(&manifest, &options, None)
+        let error = first_version(&manifest, &release, &options, None)
             .unwrap_err()
             .to_string();
         assert!(error.contains("allow_version_zero"), "{error}");

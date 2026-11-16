@@ -94,7 +94,7 @@ The [release-readiness checklist](release-readiness.md) defines how maintainers 
 
 ## Candidate-first quick start
 
-For an unconfigured public package, preview and then apply a complete explicit schema 2 configuration and managed workflow:
+For an unconfigured public package, preview and then apply a complete explicit `[tools.release-glz]` configuration and managed workflow:
 
 ```console
 release-glz init --profile public --diff
@@ -159,11 +159,11 @@ Real publication also requires approval evidence supplied by the protected workf
 | `verify --candidate <DIR> [--online]` | Verifies checksums, semantic fingerprints, source, policy, inventory, and hook evidence; online mode also observes registry and GitHub. |
 | `release --candidate <DIR>` | Publishes the sealed bytes through the monotonic reconciler; `--dry-run` reports all remaining effects. |
 | `status [--candidate <DIR>] [--online]` | Reports the current state and next safe command, including partial releases. |
-| `doctor [--online] [--candidate-build]` | Defaults to local schema/compiler/workflow checks; online mode audits registry credentials and GitHub protections; candidate-build mode uses isolated caches and no credentials. |
+| `doctor [--online] [--candidate-build]` | Defaults to local configuration/compiler/workflow checks; online mode audits registry credentials and GitHub protections; candidate-build mode uses isolated caches and no credentials. A manifest without `[tools.release-glz]` reports `config_missing`, a `version_zero` warning for a 0.x package, and how `init` writes the configuration. |
 | `release-pr [--plan <FILE>]` | Maintains the rolling managed PR as one generated commit on the current default branch tip. The commit writes only the rendered files that differ from the tip, and when none differs, it writes no commit and reports `release_files_current`. When the plan needs no release, it closes the verified PR and removes its unchanged managed branch. It writes or closes only when the checkout is that tip, and otherwise reports `release_pr_superseded`. At the merge commit of the Release PR for the planned version it writes nothing and reports `release_pr_merged`. It looks up the pull requests of at most 200 commits since the baseline, and over that it lists every commit by subject and reports `changes_listed_by_commit`. It fails before any write when `[repository]` differs from GitHub's spelling of the slug, including letter case. The result's `release_pr_head` names the head commit it wrote or confirmed. |
 | `release-pr --candidate <DIR>` | Binds the Candidate's `intent_digest` to the open Release PR whose head is the Candidate's source commit. Its `release-pr-intent/v1` result reports `intent_binding`: `bound`, `merged` when the merged Release PR already carries the intent, `unbound` in a dry run, or `superseded` when a newer head replaced the Candidate's and nothing was written. |
 | `prerelease` / `set-version` | Selects a channel or raises the automatically required version; neither can lower the safety requirement. |
-| `init` / `migrate` | Requires exactly one of `--check`, `--diff`, or `--update`; modified managed files are never overwritten without an explicit update. |
+| `init` | Requires exactly one of `--check`, `--diff`, or `--update`; modified managed files are never overwritten without an explicit update. |
 | `completion` | Generates bash, zsh, fish, or PowerShell completion source. |
 
 Global options are `--manifest-path` and `--output human|json`.
@@ -188,7 +188,9 @@ Every refusal exits with status 2 before any request to GitHub.
 
 ## Configuration
 
-Publishing requires strictly typed `[tools.release-glz] schema = 2`.
+release-glz reads only a strictly typed `[tools.release-glz]` table with `schema = 2`.
+A table that sets any other `schema`, or none, is refused with exit code 2.
+Without the table, `init` writes it, `doctor` reports `config_missing`, and every other command that reads the configuration exits with code 2 and names `release-glz init`.
 Unknown keys, wrong types, paths outside the repository, unsafe ref prefixes, URLs with embedded credentials, and non-HTTPS registry origins are rejected.
 Explicit HTTP is accepted only for loopback tests.
 
@@ -241,10 +243,6 @@ That keeps them out of a hook's own environment, but a notification hook runs as
 Configure only hooks that you trust as much as the release workflow.
 Notification hooks use a separate least-privilege service credential.
 
-Legacy flat configuration remains readable during v1.x but cannot produce a Candidate.
-Use `release-glz migrate --check`, inspect `migrate --diff`, then apply `migrate --update`.
-See the [v1 migration guide](migration-v1.md).
-
 ## Version selection
 
 The selected requirement is the maximum of publication-input changes, commit intent, public API compatibility, and an explicit higher version.
@@ -254,7 +252,7 @@ For 0.x, fixes are patch while features, API additions, and breaking changes are
 
 API comparison uses `package-interface.json`.
 If a historical API cannot be determined, planning blocks by default.
-A schema 2 `api_exceptions` entry must bind an exact version to a baseline ref, a reason, and an expiry date.
+An `api_exceptions` entry must bind an exact version to a baseline ref, a reason, and an expiry date.
 
 Prerelease channels move `alpha → beta → rc → stable`, or increment within the same channel.
 Moving backward requires an explicitly higher core version.
@@ -302,7 +300,7 @@ The detailed table is in [recovery.md](recovery.md).
 
 JSON output uses the `command/v2` envelope with `ok`, `command`, `result`, `diagnostics`, and `next_actions`, which [command-envelope.schema.json](command-envelope.schema.json) describes.
 `ok` is `false` exactly when a diagnostic has the `error` level, and a successful command always carries a result.
-A failed command carries `null` for its result, except that `doctor`, `init --check`, and `migrate --check` also report the result that failed.
+A failed command carries `null` for its result, except that `doctor` and `init --check` also report the result that failed.
 Executable next actions contain canonical `argv`; non-portable human guidance uses an empty array.
 The `command` field is always display-only and must never be reparsed or sent to a shell.
 
@@ -318,14 +316,13 @@ Every result names its format in its own `schema` field, and each format has a p
 | `release-pr-intent/v1` | `release-pr --candidate` | [release-pr-intent.schema.json](release-pr-intent.schema.json) |
 | `doctor/v1` | `doctor` | [doctor-report.schema.json](doctor-report.schema.json) |
 | `init/v1` | `init` | [init-outcome.schema.json](init-outcome.schema.json) |
-| `migration/v1` | `migrate` | [migration-outcome.schema.json](migration-outcome.schema.json) |
 | `completion/v1` | `completion` | [completion.schema.json](completion.schema.json) |
 
 Formats evolve independently, and a format's identifier changes only when its meaning does.
 A hook prints `hook/v1` evidence, which [hook.schema.json](hook.schema.json) describes and a Candidate records.
 `state/v1`, which [release-state.schema.json](release-state.schema.json) describes, is the external state that `release` compares, and no command prints it.
 `init` reports the manifest path relative to the repository, wherever it runs.
-`migrate` does the same for the manifest and its backup, and outside any repository it reports them relative to the package directory.
+`doctor` reports a `null` `required_compiler` for a manifest without `[tools.release-glz]`.
 
 States are `up_to_date`, `planned`, `candidate_ready`, `awaiting_approval`, `partially_released`, `released`, `conflict`, and `blocked`.
 

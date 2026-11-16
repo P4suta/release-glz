@@ -137,7 +137,7 @@ async fn rehearsal_rejects_noncanonical_source_identifiers_before_creating_outpu
 }
 
 #[tokio::test]
-async fn rehearsal_rejects_missing_symbolic_legacy_and_wrong_compiler_sources_without_output()
+async fn rehearsal_rejects_missing_symbolic_unconfigured_and_wrong_compiler_sources_without_output()
 -> Result<()> {
     let temp = tempfile::tempdir()?;
     let repository = temp.path().join("repo");
@@ -187,18 +187,25 @@ async fn rehearsal_rejects_missing_symbolic_legacy_and_wrong_compiler_sources_wi
     assert!(symbolic.contains("exact full commit SHA"), "{symbolic}");
     assert!(!symbolic_output.exists());
 
-    let legacy_output = temp.path().join("legacy-candidate");
-    let legacy = Rehearsal::default()
+    let unconfigured_output = temp.path().join("unconfigured-candidate");
+    let unconfigured = Rehearsal::default()
         .run(&RehearseOptions {
             manifest_path: manifest_path.clone(),
             source_ref: sha,
-            output: legacy_output.clone(),
+            output: unconfigured_output.clone(),
         })
         .await
-        .unwrap_err()
-        .to_string();
-    assert!(legacy.contains("schema = 2"), "{legacy}");
-    assert!(!legacy_output.exists());
+        .unwrap_err();
+    assert_eq!(
+        release_glz::failure::classify(&unconfigured),
+        release_glz::failure::FailureClass::UsageOrConfig
+    );
+    let unconfigured = unconfigured.to_string();
+    assert!(
+        unconfigured.contains("[tools.release-glz]") && unconfigured.contains("release-glz init"),
+        "{unconfigured}"
+    );
+    assert!(!unconfigured_output.exists());
 
     require_gleam();
     fs::write(

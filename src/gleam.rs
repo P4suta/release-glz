@@ -362,8 +362,12 @@ fn collect_regular_files(
     Ok(())
 }
 
+/// The value of the registry credential that the manifest configures.
+///
+/// An unconfigured manifest names none, and redaction covers the standard credentials anyway.
 fn configured_registry_secret(manifest: &Manifest) -> Option<String> {
-    std::env::var(&manifest.release.registry.credential_env).ok()
+    let release = manifest.configured_release()?;
+    std::env::var(&release.registry.credential_env).ok()
 }
 
 fn check_output(output: &Output, action: &str, configured_secret: Option<&str>) -> Result<()> {

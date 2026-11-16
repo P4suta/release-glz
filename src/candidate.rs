@@ -363,7 +363,7 @@ impl SealedPolicy {
         package_dir: &Path,
         manifest_path: &str,
     ) -> Result<Self> {
-        let release = &manifest.release;
+        let release = manifest.release()?;
         let registry = &release.registry;
         let release_notes = fs::read_to_string(package_dir.join(&release.changelog.path))
             .ok()

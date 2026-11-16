@@ -1,0 +1,6 @@
+name = "quoted"
+version = "1.0.0"
+
+[tools.release-glz]
+schema = "2"
+compiler = "1.18.1"
