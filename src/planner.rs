@@ -591,11 +591,10 @@ impl<R: Registry> Planner<R> {
         digest.update(search.version.to_string().as_bytes());
         digest.update(b"\0");
         digest.update(search.published_fingerprint.as_bytes());
-        Some(
-            root.join("release-glz")
-                .join("baselines")
-                .join(format!("{}.json", crate::hex::lower(&digest.finalize()))),
-        )
+        Some(root.join("release-glz").join("baselines").join(format!(
+            "{}.json",
+            crate::canonical::finalize_sha256(digest)
+        )))
     }
 
     fn validated_cached_baseline(

@@ -818,7 +818,7 @@ fn registry_response(shared: &Arc<Mutex<RegistryState>>, request: &Request) -> R
                 200,
                 serde_json::json!({
                     "version": "1.2.3",
-                    "checksum": release_glz::hex::lower(&Sha256::digest(package)),
+                    "checksum": release_glz::canonical::sha256(package),
                     "has_docs": state.docs.is_some()
                 }),
             )
@@ -1180,7 +1180,7 @@ fn asset_json(asset: &FakeAsset) -> serde_json::Value {
     if asset.state == "uploaded" {
         value["digest"] = serde_json::json!(format!(
             "sha256:{}",
-            release_glz::hex::lower(&Sha256::digest(&asset.bytes))
+            release_glz::canonical::sha256(&asset.bytes)
         ));
     }
     value
@@ -1328,7 +1328,7 @@ fn hex_package() -> Vec<u8> {
     digest.update(version);
     digest.update(metadata);
     digest.update(&contents);
-    let checksum = release_glz::hex::upper(&digest.finalize());
+    let checksum = release_glz::hex::upper(&release_glz::canonical::finalize_sha256(digest));
     tar(&[
         ("VERSION", version),
         ("metadata.config", metadata),

@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use base64::Engine;
+use release_glz_domain::Sha256Digest;
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -16,7 +17,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::{ChildStderr, ChildStdin, ChildStdout};
 
 use crate::candidate::{HookEvidence, HookKind};
-use crate::canonical::canonical_json_bytes;
+use crate::canonical::{canonical_json_bytes, finalize_sha256, sha256};
 use crate::config::{HookConfig, validate_hook_config};
 use crate::failure::{Refusal, RefusalReason, refused};
 use crate::process::{SPAWN_ATTEMPTS, retryable_spawn_error, spawn_retry_delay};
@@ -122,7 +123,7 @@ pub struct SidecarRun {
 #[derive(Debug)]
 struct ExecutedHook {
     success: bool,
-    output_sha256: String,
+    output_sha256: Sha256Digest,
     evidence: serde_json::Value,
 }
 
@@ -134,7 +135,7 @@ impl ExecutedHook {
             kind,
             required: hook.required,
             success: self.success,
-            output_sha256: self.output_sha256.clone(),
+            output_sha256: self.output_sha256.to_string(),
         }
     }
 }
@@ -201,7 +202,7 @@ impl HookRunner {
                     kind: HookKind::Verify,
                     required: false,
                     success: false,
-                    output_sha256: crate::hex::lower(&Sha256::digest(error.to_string().as_bytes())),
+                    output_sha256: sha256(error.to_string()).into(),
                 }),
                 Err(error) => return Err(error),
             }
@@ -309,7 +310,7 @@ impl HookRunner {
                     kind: HookKind::Sidecar,
                     required: false,
                     success: false,
-                    output_sha256: crate::hex::lower(&Sha256::digest(error.to_string().as_bytes())),
+                    output_sha256: sha256(error.to_string()).into(),
                 }),
                 Err(error) => return Err(error),
             }
@@ -450,7 +451,7 @@ impl HookRunner {
                 hook.id
             );
         }
-        let output_sha256 = crate::hex::lower(&Sha256::digest(&stdout));
+        let output_sha256 = sha256(&stdout);
         if !status.success() {
             return Ok(ExecutedHook {
                 success: false,
@@ -662,7 +663,7 @@ async fn drain_limited<R: AsyncRead + Unpin>(
     Ok((output, exceeded))
 }
 
-fn tree_digest(root: &Path) -> Result<String> {
+fn tree_digest(root: &Path) -> Result<Sha256Digest> {
     let mut files = Vec::new();
     collect_tree(root, root, &mut files)?;
     files.sort_by(|left, right| left.0.cmp(&right.0));
@@ -674,7 +675,7 @@ fn tree_digest(root: &Path) -> Result<String> {
         digest.update((contents.len() as u64).to_be_bytes());
         digest.update(contents);
     }
-    Ok(crate::hex::lower(&digest.finalize()))
+    Ok(finalize_sha256(digest))
 }
 
 fn collect_tree(root: &Path, directory: &Path, output: &mut Vec<(String, PathBuf)>) -> Result<()> {

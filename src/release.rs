@@ -7,10 +7,9 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
-use sha2::{Digest, Sha256};
 
 use crate::candidate::{Candidate, CandidateManifest, SealedPolicy};
-use crate::canonical::SHA256_HEX_LEN;
+use crate::canonical::sha256;
 use crate::config::{Manifest, RegistryConfig};
 use crate::failure::{RefusalReason, refused};
 use crate::forge::{GitHubClient, GitHubRelease, GitHubReleaseAsset, GitHubRepository};
@@ -222,16 +221,17 @@ impl LiveReleaseTarget {
         else {
             return Ok(None);
         };
-        let sha256 = match release.outer_checksum {
-            Some(checksum) if is_sha256(&checksum) => checksum.to_ascii_lowercase(),
-            _ => sha256(
-                &self
-                    .registry
+        let digest = match release.outer_checksum {
+            Some(checksum) => checksum,
+            None => sha256(
+                self.registry
                     .source_tarball(&intent.package, &intent.version)
                     .await?,
             ),
         };
-        Ok(Some(ObservedArtifact { sha256 }))
+        Ok(Some(ObservedArtifact {
+            sha256: digest.into(),
+        }))
     }
 
     async fn exact_docs_observation(
@@ -254,7 +254,7 @@ impl LiveReleaseTarget {
             .await?
             .context("registry reports documentation but its archive is missing")?;
         Ok(Some(ObservedArtifact {
-            sha256: sha256(&bytes),
+            sha256: sha256(bytes).into(),
         }))
     }
 
@@ -446,7 +446,7 @@ impl ReleaseTarget for LiveReleaseTarget {
                     .context("release asset bytes are not sealed in the Candidate")?;
                 if payload.media_type != expected.media_type
                     || payload.bytes.len() as u64 != expected.size
-                    || sha256(payload.bytes) != *expected_digest
+                    || sha256(payload.bytes).as_str() != *expected_digest
                 {
                     bail!("release asset payload differs from the sealed Candidate");
                 }
@@ -523,14 +523,6 @@ fn ambiguous_publish_context(kind: &str, outcome: PublishOutcome) -> String {
             "{kind} publish response was ambiguous and did not become observable; refusing to POST again"
         ),
     }
-}
-
-fn sha256(bytes: &[u8]) -> String {
-    crate::hex::lower(&Sha256::digest(bytes))
-}
-
-fn is_sha256(value: &str) -> bool {
-    value.len() == SHA256_HEX_LEN && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 /// Whether `release` is the Release that the Candidate of `intent` drafted, as its target and its recorded digest show.

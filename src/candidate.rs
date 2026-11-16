@@ -8,15 +8,14 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use release_glz_domain::CommitId;
+use release_glz_domain::{CommitId, Sha256Digest};
 use semver::Version;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 use crate::artifact::{
     ArchiveLimits, validate_and_fingerprint_docs_tarball, validate_and_fingerprint_hex_tarball,
 };
-use crate::canonical::{canonical_json_bytes, canonical_sha256};
+use crate::canonical::{canonical_json_bytes, canonical_sha256, sha256};
 use crate::config::{
     ApprovalConfig, AuthKind, BUILT_IN_HOOK_ID, HookConfig, Manifest, OutputConfig,
     RegistryProvider, uses_trusted_transport, valid_env_name, validate_git_ref,
@@ -796,7 +795,7 @@ impl Candidate {
 
         let semantic_interface = canonical_sha256(&interface_value)?;
         if semantic_package != manifest.artifacts.package.semantic_sha256
-            || semantic_interface != manifest.artifacts.package_interface.semantic_sha256
+            || semantic_interface.as_str() != manifest.artifacts.package_interface.semantic_sha256
         {
             refuse!(
                 CandidateSemanticChecksumMismatch,
@@ -932,7 +931,7 @@ impl<'a> Intent<'a> {
 }
 
 fn intent_digest(intent: Intent<'_>) -> Result<String> {
-    canonical_sha256(&intent)
+    canonical_sha256(&intent).map(String::from)
 }
 
 #[derive(Serialize)]
@@ -984,6 +983,7 @@ fn candidate_digest(manifest: &CandidateManifest) -> Result<String> {
         notify_hook_definitions: &manifest.notify_hook_definitions,
         intent_digest: &manifest.intent_digest,
     })
+    .map(String::from)
 }
 
 fn core_artifacts(input: &CandidateInput) -> Result<CandidateArtifacts> {
@@ -1012,7 +1012,7 @@ fn core_artifacts(input: &CandidateInput) -> Result<CandidateArtifacts> {
     let package_interface = artifact_descriptor(
         INTERFACE_FILE,
         &input.package_interface,
-        canonical_sha256(&interface)?,
+        canonical_sha256(&interface)?.into(),
     );
     Ok(CandidateArtifacts {
         package,
@@ -1036,7 +1036,7 @@ fn validate_output_artifacts(outputs: &OutputConfig, docs_present: bool) -> Resu
 fn artifact_descriptor(path: &str, bytes: &[u8], semantic_sha256: String) -> SealedArtifact {
     SealedArtifact {
         path: path.into(),
-        sha256: crate::hex::lower(&Sha256::digest(bytes)),
+        sha256: sha256(bytes).into(),
         semantic_sha256,
         size: bytes.len() as u64,
     }
@@ -1049,7 +1049,7 @@ fn sidecar_descriptor(artifact: &SidecarArtifact) -> Result<SealedSidecarArtifac
         name: artifact.name.clone(),
         path: format!("sidecars/{}/{}", artifact.hook_id, artifact.name),
         media_type: artifact.media_type.clone(),
-        sha256: crate::hex::lower(&Sha256::digest(&artifact.bytes)),
+        sha256: sha256(&artifact.bytes).into(),
         size: artifact.bytes.len() as u64,
         public: artifact.public,
     })
@@ -1069,7 +1069,7 @@ fn verify_file(directory: &Path, descriptor: &SealedArtifact) -> Result<Vec<u8>>
         &descriptor.path,
     )?;
     if bytes.len() as u64 != descriptor.size
-        || crate::hex::lower(&Sha256::digest(&bytes)) != descriptor.sha256
+        || Ok(sha256(&bytes)) != Sha256Digest::parse(&descriptor.sha256)
     {
         refuse!(
             CandidateChecksumMismatch,
@@ -1087,7 +1087,7 @@ fn verify_sidecar_file(directory: &Path, descriptor: &SealedSidecarArtifact) -> 
         &descriptor.path,
     )?;
     if bytes.len() as u64 != descriptor.size
-        || crate::hex::lower(&Sha256::digest(&bytes)) != descriptor.sha256
+        || Ok(sha256(&bytes)) != Sha256Digest::parse(&descriptor.sha256)
     {
         refuse!(
             CandidateChecksumMismatch,
@@ -1653,12 +1653,12 @@ fn validate_notify_hook_definitions(ids: &[String], hooks: &[HookConfig]) -> Res
 }
 
 fn validate_sha256(value: &str, field: &str) -> Result<()> {
-    if !release_glz_core::is_sha256_hex(value.as_bytes()) {
-        refuse!(
-            CandidateChecksumMalformed,
-            "{field} is not a lowercase SHA-256 digest"
-        );
-    }
+    Sha256Digest::parse(value).with_context(|| {
+        Refusal::new(
+            RefusalReason::CandidateChecksumMalformed,
+            format!("{field} is not a lowercase SHA-256 digest"),
+        )
+    })?;
     Ok(())
 }
 

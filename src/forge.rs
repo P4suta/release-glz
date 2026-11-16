@@ -8,6 +8,7 @@ use anyhow::{Context, Result, bail};
 use base64::Engine;
 use chrono::Utc;
 use release_glz_core::{Answer, GITHUB_READS, MARKER_PREFIX, MARKER_SUFFIX, Next, RunRefusal};
+use release_glz_domain::{CommitId, ObjectId, Sha256Digest};
 use reqwest::{
     Method, StatusCode,
     header::{CONTENT_TYPE, RETRY_AFTER},
@@ -636,7 +637,7 @@ impl From<ReleaseAssetResponse> for GitHubReleaseAsset {
         let sha256 = value.digest.and_then(|digest| {
             digest
                 .strip_prefix("sha256:")
-                .filter(|digest| valid_sha256(digest))
+                .filter(|digest| Sha256Digest::parse(digest).is_ok())
                 .map(str::to_owned)
         });
         Self {
@@ -844,7 +845,7 @@ impl GitHubClient {
                 "GITHUB_TOKEN or GH_TOKEN is required for this command"
             );
         }
-        if artifact_id == 0 || !valid_sha256(expected_sha256) {
+        if artifact_id == 0 || Sha256Digest::parse(expected_sha256).is_err() {
             refuse!(
                 ActionsArtifactIdentityInvalid,
                 "GitHub Actions artifact identity is invalid"
@@ -1211,7 +1212,7 @@ impl GitHubClient {
         intent_digest: &str,
     ) -> Result<IntentBinding> {
         self.require_token()?;
-        if !valid_sha256(intent_digest) {
+        if Sha256Digest::parse(intent_digest).is_err() {
             bail!("Candidate intent digest is not a lowercase SHA-256 digest");
         }
         let pulls = self.open_pull_requests().await?;
@@ -1495,7 +1496,7 @@ impl GitHubClient {
             .await
             .context("invalid GitHub release asset response")?;
         let uploaded: GitHubReleaseAsset = uploaded.into();
-        let expected_sha256 = crate::hex::lower(&Sha256::digest(bytes));
+        let expected_sha256 = crate::canonical::sha256(bytes);
         if uploaded.name != name
             || uploaded.state != "uploaded"
             || uploaded.media_type != media_type
@@ -1722,7 +1723,7 @@ impl GitHubClient {
         }
         let Some(digest) = commit.commit.message.lines().find_map(|line| {
             line.strip_prefix("release-glz-digest: ")
-                .filter(|digest| valid_sha256(digest))
+                .filter(|digest| Sha256Digest::parse(digest).is_ok())
         }) else {
             return Ok(None);
         };
@@ -1732,7 +1733,7 @@ impl GitHubClient {
         let mut blobs = BTreeMap::new();
         for file in &commit.files {
             let blob = match (file.status.as_str(), file.sha.as_deref()) {
-                ("added" | "modified", Some(blob)) if valid_object_id(blob) => blob,
+                ("added" | "modified", Some(blob)) if ObjectId::parse(blob).is_ok() => blob,
                 _ => return Ok(None),
             };
             if blobs.insert(file.filename.as_str(), blob).is_some() {
@@ -2067,7 +2068,7 @@ pub fn files_digest(files: &BTreeMap<String, Vec<u8>>) -> String {
     for (path, contents) in files {
         release_glz_core::frame_file(path.as_bytes(), contents, |part| digest.update(part));
     }
-    crate::hex::lower(&digest.finalize())
+    crate::canonical::finalize_sha256(digest).into()
 }
 
 /// Text from a commit or a package interface, made unable to open an HTML comment or tag.
@@ -2146,10 +2147,10 @@ fn parse_marker(body: &str) -> Option<ManagedMarker> {
         (package?, branch?, head?, digest?, version?, intent?);
     let valid = crate::config::validate_package_name(package).is_ok()
         && !branch.is_empty()
-        && valid_object_id(head)
-        && valid_sha256(digest)
+        && CommitId::parse(head).is_ok()
+        && Sha256Digest::parse(digest).is_ok()
         && version.parse::<Version>().is_ok()
-        && (intent == PENDING_INTENT || valid_sha256(intent));
+        && (intent == PENDING_INTENT || Sha256Digest::parse(intent).is_ok());
     valid.then(|| ManagedMarker {
         package: package.to_owned(),
         branch: branch.to_owned(),
@@ -2168,7 +2169,9 @@ pub fn is_managed_release_pr(body: &str) -> bool {
 fn parse_candidate_digest(body: &str) -> Option<String> {
     body.lines().find_map(|line| {
         let digest = line.trim().strip_prefix("release-glz-candidate-digest: ")?;
-        valid_sha256(digest).then(|| digest.to_owned())
+        Sha256Digest::parse(digest)
+            .is_ok()
+            .then(|| digest.to_owned())
     })
 }
 
@@ -2184,14 +2187,6 @@ fn replace_managed_marker(body: &str, marker: &ManagedMarker) -> Result<String> 
         bail!("the updated Release PR body does not carry exactly its own marker");
     }
     Ok(output)
-}
-
-fn valid_sha256(value: &str) -> bool {
-    release_glz_core::is_sha256_hex(value.as_bytes())
-}
-
-fn valid_object_id(value: &str) -> bool {
-    release_glz_core::is_object_id(value.as_bytes())
 }
 
 fn encode_segment(value: &str) -> String {

@@ -159,15 +159,6 @@ pub const DEBT: &[&str] = &[
     "crates/release-glz-core/src/lib.rs: core-root: lacks #![deny(clippy::unimplemented)]",
     "crates/release-glz-core/src/lib.rs: core-root: lacks #![deny(clippy::unreachable)]",
     "crates/release-glz-core/src/lib.rs: core-root: lacks #![deny(clippy::unwrap_used)]",
-    // The identity types move into the domain crate.
-    "src/candidate.rs: core-rule-copy: `validate_sha256` calls release_glz_core::is_sha256_hex",
-    "src/canonical.rs: core-rule-copy: the module defines SHA256_HEX_LEN",
-    "src/forge.rs: core-rule-copy: `valid_object_id` calls release_glz_core::is_object_id",
-    "src/forge.rs: core-rule-copy: `valid_sha256` calls release_glz_core::is_sha256_hex",
-    "src/registry.rs: core-rule-copy: `validate_checksum` calls is_ascii_hexdigit",
-    "src/registry.rs: core-rule-copy: `validate_checksum` names SHA256_HEX_LEN",
-    "src/release.rs: core-rule-copy: `is_sha256` calls is_ascii_hexdigit",
-    "src/release.rs: core-rule-copy: `is_sha256` names SHA256_HEX_LEN",
     // The approval source fallback becomes a fact enum of the core.
     "src/candidate.rs: core-rule-copy: `validate_approval` spells \"workflow-dispatch-digest\"",
     "src/config.rs: core-rule-copy: `validate_release_config` spells \"workflow-dispatch-digest\"",

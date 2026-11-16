@@ -518,7 +518,7 @@ impl ReleaseTarget for FakeTarget {
                     .find(|asset| asset.hook_id == hook_id.as_str() && asset.name == name.as_str())
                     .unwrap();
                 assert_eq!(
-                    release_glz::hex::lower(&Sha256::digest(asset.bytes)),
+                    release_glz::canonical::sha256(asset.bytes).as_str(),
                     *sha256
                 );
                 inner
@@ -774,7 +774,7 @@ fn hex_package() -> Vec<u8> {
     digest.update(version);
     digest.update(metadata);
     digest.update(&contents);
-    let checksum = release_glz::hex::upper(&digest.finalize());
+    let checksum = release_glz::hex::upper(&release_glz::canonical::finalize_sha256(digest));
     tar(&[
         ("VERSION", version),
         ("metadata.config", metadata),
