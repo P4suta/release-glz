@@ -576,9 +576,11 @@ impl ReleaseRunError {
         self.class
     }
 
-    /// The reason of the typed refusal that stopped the run, if one did.
+    /// The reason of the typed refusal that stopped the run, when that refusal has the run's class.
+    ///
+    /// A run whose state imposes another class, such as a partial release, names no reason.
     pub fn refusal_reason(&self) -> Option<crate::failure::RefusalReason> {
-        crate::failure::refusal_reason(&self.source)
+        crate::failure::reason_of_class(self.class, &self.source)
     }
 }
 
@@ -898,5 +900,91 @@ fn state_label(state: ReleaseState) -> &'static str {
         ReleaseState::PartiallyReleased => "partial release",
         ReleaseState::Blocked => "release blocked",
         _ => "release failed",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::run_error;
+    use crate::failure::{
+        FailureClass, RefusalReason, classify, diagnostic_code, refusal_reason, refused,
+    };
+    use crate::model::ReleaseState;
+
+    const STATES: [ReleaseState; 8] = [
+        ReleaseState::UpToDate,
+        ReleaseState::Planned,
+        ReleaseState::CandidateReady,
+        ReleaseState::AwaitingApproval,
+        ReleaseState::PartiallyReleased,
+        ReleaseState::Released,
+        ReleaseState::Conflict,
+        ReleaseState::Blocked,
+    ];
+
+    #[test]
+    fn a_failed_run_is_coded_by_its_refusal_only_when_the_refusal_has_the_run_class() {
+        let invalid = anyhow::Error::new(run_error(
+            ReleaseState::Blocked,
+            refused(
+                RefusalReason::RegistryReleaseInvalid,
+                "the registry release names another version",
+            ),
+        ));
+        assert_eq!(classify(&invalid), FailureClass::TemporaryExternal);
+        assert_eq!(
+            refusal_reason(&invalid),
+            Some(RefusalReason::RegistryReleaseInvalid)
+        );
+        assert_eq!(diagnostic_code(&invalid), "registry_release_invalid");
+
+        let partial = run_error(
+            ReleaseState::PartiallyReleased,
+            refused(
+                RefusalReason::RegistryReleaseNotVisible,
+                "the release did not appear on the registry",
+            ),
+        );
+        assert_eq!(partial.failure_class(), FailureClass::PartialRelease);
+        assert_eq!(partial.refusal_reason(), None);
+        let partial = anyhow::Error::new(partial);
+        assert_eq!(classify(&partial), FailureClass::PartialRelease);
+        assert_eq!(refusal_reason(&partial), None);
+        assert_eq!(diagnostic_code(&partial), "partial_release");
+
+        let conflict = anyhow::Error::new(run_error(
+            ReleaseState::Conflict,
+            refused(
+                RefusalReason::RegistryReleaseInvalid,
+                "the registry release names another version",
+            ),
+        ));
+        assert_eq!(classify(&conflict), FailureClass::ImmutableStateConflict);
+        assert_eq!(refusal_reason(&conflict), None);
+        assert_eq!(diagnostic_code(&conflict), "immutable_state_conflict");
+    }
+
+    #[test]
+    fn a_failed_run_keeps_its_class_whatever_refusal_stopped_it() {
+        for state in STATES {
+            for &reason in RefusalReason::ALL {
+                let run = run_error(
+                    state,
+                    refused(reason, "message text is not classification")
+                        .context("while releasing"),
+                );
+                let class = run.failure_class();
+                let named = (reason.class() == class).then_some(reason);
+                assert_eq!(run.refusal_reason(), named, "{state:?} {reason:?}");
+                let error = anyhow::Error::new(run);
+                assert_eq!(classify(&error), class, "{state:?} {reason:?}");
+                assert_eq!(refusal_reason(&error), named, "{state:?} {reason:?}");
+                assert_eq!(
+                    diagnostic_code(&error),
+                    named.map_or(class.diagnostic_code(), RefusalReason::code),
+                    "{state:?} {reason:?}"
+                );
+            }
+        }
     }
 }

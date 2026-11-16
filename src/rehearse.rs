@@ -100,9 +100,7 @@ impl Rehearsal {
                 },
             )
             .await
-            .map_err(|error| {
-                crate::failure::classified(crate::failure::FailureClass::Hook, error)
-            })?;
+            .map_err(hook_failure)?;
 
         let package_tarball = self.gleam.export_hex_tarball(snapshot.package_dir())?;
         let package_interface = self
@@ -180,9 +178,7 @@ impl Rehearsal {
                 },
             )
             .await
-            .map_err(|error| {
-                crate::failure::classified(crate::failure::FailureClass::Hook, error)
-            })?;
+            .map_err(hook_failure)?;
         input.hook_evidence.extend(sidecars.evidence);
         input.sidecars = built_in_evidence;
         input.sidecars.extend(sidecars.artifacts);
@@ -190,6 +186,11 @@ impl Rehearsal {
             crate::failure::classified(crate::failure::FailureClass::ImmutableStateConflict, error)
         })
     }
+}
+
+/// Classify a failure of the verify or sidecar hooks, keeping the reason of a refusal that is itself a hook failure.
+fn hook_failure(error: anyhow::Error) -> anyhow::Error {
+    crate::failure::classified_keeping_reason(crate::failure::FailureClass::Hook, error)
 }
 
 /// The repository that contains `manifest_path`, and the manifest's path relative to that repository's root.
@@ -227,4 +228,47 @@ fn source_refusal(refusal: CommitIdRefusal) -> anyhow::Error {
         RefusalReason::CandidateSourceCommitInvalid,
         format_args!("--ref must be a full lowercase commit SHA: {refusal}"),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::hook_failure;
+    use crate::failure::{
+        FailureClass, Refusal, RefusalReason, classify, diagnostic_code, refused,
+    };
+
+    #[test]
+    fn a_hook_failure_keeps_only_the_reason_of_a_hook_refusal() {
+        for (error, code) in [
+            (
+                refused(
+                    RefusalReason::HookSnapshotModified,
+                    "verify hook `lint` modified the source snapshot",
+                ),
+                "hook_snapshot_modified",
+            ),
+            (
+                anyhow::anyhow!("the hook process did not exit").context(Refusal::new(
+                    RefusalReason::HookTimedOut,
+                    "hook `lint` timed out after 5 seconds",
+                )),
+                "hook_timed_out",
+            ),
+            (
+                refused(
+                    RefusalReason::HookEnvProtected,
+                    "hook `lint` allows `GITHUB_TOKEN`",
+                ),
+                "hook_failure",
+            ),
+            (
+                anyhow::anyhow!("failed to start hook `lint`"),
+                "hook_failure",
+            ),
+        ] {
+            let failure = hook_failure(error);
+            assert_eq!(classify(&failure), FailureClass::Hook, "{code}");
+            assert_eq!(diagnostic_code(&failure), code);
+        }
+    }
 }

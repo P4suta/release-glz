@@ -23,7 +23,9 @@ use release_glz::doctor::{
     DoctorInput, DoctorReport, assess as assess_doctor, assess_local as assess_doctor_local,
     assess_unconfigured as assess_doctor_unconfigured,
 };
-use release_glz::failure::{FailureClass, RefusalReason, classified, refused};
+use release_glz::failure::{
+    FailureClass, RefusalReason, classified, classified_keeping_reason, refused,
+};
 use release_glz::forge::{GitHubClient, GitHubRepository, IntentBinding, MAX_ATTRIBUTED_COMMITS};
 use release_glz::git::GitRepo;
 use release_glz::gleam::Gleam;
@@ -535,7 +537,7 @@ async fn run(cli: Cli) -> Result<i32> {
                     GitHubRepository::parse(&sealed.github_repository)
                         .map_err(|error| classified(FailureClass::ImmutableStateConflict, error))?,
                 )
-                .map_err(|error| classified(FailureClass::UsageOrConfig, error))?;
+                .map_err(|error| classified_keeping_reason(FailureClass::UsageOrConfig, error))?;
                 let merged = github
                     .merged_release_pr(
                         &sealed.source.commit_sha,
@@ -757,12 +759,12 @@ async fn run_init(
     } = mode;
     require_one_mode(check, diff, update)?;
     let mut manifest = Manifest::load(manifest_path)
-        .map_err(|error| classified(FailureClass::UsageOrConfig, error))?;
+        .map_err(|error| classified_keeping_reason(FailureClass::UsageOrConfig, error))?;
     let repo = GitRepo::discover(manifest.package_dir())
-        .map_err(|error| classified(FailureClass::UsageOrConfig, error))?;
+        .map_err(|error| classified_keeping_reason(FailureClass::UsageOrConfig, error))?;
     let default_branch = repo
         .default_branch()
-        .map_err(|error| classified(FailureClass::UsageOrConfig, error))?;
+        .map_err(|error| classified_keeping_reason(FailureClass::UsageOrConfig, error))?;
 
     let initialized_source = if manifest.configured_release().is_some() {
         if profile_args.profile.is_some() || profile_args.configures_fields() {
@@ -782,7 +784,7 @@ async fn run_init(
         let registry = initialization_registry(profile, profile_args)?;
         let compiler = Gleam::default()
             .installed_version()
-            .map_err(|error| classified(FailureClass::UsageOrConfig, error))?;
+            .map_err(|error| classified_keeping_reason(FailureClass::UsageOrConfig, error))?;
         let rendered = manifest
             .render_initialized(&InitializationSettings {
                 compiler,
@@ -790,13 +792,13 @@ async fn run_init(
                 registry,
                 allow_version_zero: profile_args.allow_version_zero,
             })
-            .map_err(|error| classified(FailureClass::UsageOrConfig, error))?;
+            .map_err(|error| classified_keeping_reason(FailureClass::UsageOrConfig, error))?;
         Some(rendered)
     };
 
     let configured = match &initialized_source {
         Some(source) => Manifest::parse(manifest.path().to_path_buf(), source.clone())
-            .map_err(|error| classified(FailureClass::UsageOrConfig, error))?,
+            .map_err(|error| classified_keeping_reason(FailureClass::UsageOrConfig, error))?,
         None => manifest.clone(),
     };
     let action_sha = resolve_action_sha(explicit_action_sha).await?;
@@ -988,7 +990,7 @@ fn initialization_registry(
                     )
                 })?;
             validate_registry_repository(RegistryProvider::HexPm, Some(organization))
-                .map_err(|error| classified(FailureClass::UsageOrConfig, error))?;
+                .map_err(|error| classified_keeping_reason(FailureClass::UsageOrConfig, error))?;
             Ok(RegistryConfig::hexpm_organization(organization))
         }
         InitProfile::Private => {
@@ -1034,12 +1036,12 @@ fn initialization_registry(
 async fn resolve_action_sha(explicit: Option<&str>) -> Result<String> {
     if let Some(sha) = explicit {
         release_glz::workflow::validate_action_sha(sha)
-            .map_err(|error| classified(FailureClass::UsageOrConfig, error))?;
+            .map_err(|error| classified_keeping_reason(FailureClass::UsageOrConfig, error))?;
         return Ok(sha.to_owned());
     }
     let repository = GitHubRepository::parse("P4suta/release-glz")?;
     let client = GitHubClient::from_environment(repository)
-        .map_err(|error| classified(FailureClass::UsageOrConfig, error))?;
+        .map_err(|error| classified_keeping_reason(FailureClass::UsageOrConfig, error))?;
     let tag = format!("v{}", env!("CARGO_PKG_VERSION"));
     let state = client
         .tag_state(&tag)
@@ -1104,7 +1106,7 @@ async fn run_doctor(
     candidate_build: bool,
 ) -> Result<i32> {
     let manifest = Manifest::load(manifest_path)
-        .map_err(|error| classified(FailureClass::UsageOrConfig, error))?;
+        .map_err(|error| classified_keeping_reason(FailureClass::UsageOrConfig, error))?;
     let installed_compiler = Gleam::default().installed_version().ok();
     let Some(release) = manifest.configured_release() else {
         // Every other check reads the configuration, and a Candidate build refuses without it.
@@ -1268,8 +1270,7 @@ async fn sync_rolling_release_pr(
 
 /// Read a plan that another job wrote, and refuse one that doesn't describe this checkout.
 fn handed_off_plan(path: &Path, manifest_path: &Path) -> Result<ReleasePlan> {
-    let usage =
-        |error: anyhow::Error| classified(FailureClass::UsageOrConfig, format!("{error:#}"));
+    let usage = |error| classified_keeping_reason(FailureClass::UsageOrConfig, error);
     let plan = handoff::read(path).map_err(usage)?;
     let manifest = Manifest::load(manifest_path).map_err(usage)?;
     let repo = GitRepo::discover(manifest.package_dir()).map_err(usage)?;
@@ -1387,7 +1388,7 @@ async fn write_rolling_release_pr(
 /// Only commands that plan a release build one, so commands that read a sealed Candidate run without a manifest in the working directory.
 fn manifest_planner(manifest_path: &Path) -> Result<Planner<HexRegistry>> {
     let manifest = Manifest::load(manifest_path)
-        .map_err(|error| classified(FailureClass::UsageOrConfig, error))?;
+        .map_err(|error| classified_keeping_reason(FailureClass::UsageOrConfig, error))?;
     let registry = HexRegistry::from_environment(&manifest.release()?.registry)
         .map_err(|error| default_failure_class(error, FailureClass::UsageOrConfig))?;
     Ok(Planner::new(registry, Gleam::default()))
@@ -1451,7 +1452,7 @@ async fn approval_from_environment(
     let repository = GitHubRepository::parse(&manifest.github_repository)
         .map_err(|error| classified(FailureClass::PolicyOrApproval, error))?;
     let github = GitHubClient::from_environment(repository)
-        .map_err(|error| classified(FailureClass::UsageOrConfig, error))?;
+        .map_err(|error| classified_keeping_reason(FailureClass::UsageOrConfig, error))?;
     verify_approval(
         manifest,
         &request,

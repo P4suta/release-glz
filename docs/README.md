@@ -343,6 +343,7 @@ Exit code meanings are stable:
 
 A failed command without a result carries one error diagnostic, whose `code` names what failed.
 A refusal that release-glz names carries its reason code, which decides the exit code; any other failure carries the code of its class.
+A step that imposes another class on a refusal, such as a release that stops after it published part of a release, carries the code of that class instead.
 The class codes are `internal_failure`, `usage_or_config`, `policy_or_approval`, `immutable_state_conflict`, `temporary_external_failure`, `hook_failure`, and `partial_release`, for exit codes 1 to 7 in order.
 Reason codes are stable, and a code is never reused for another refusal:
 
