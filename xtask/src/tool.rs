@@ -107,6 +107,28 @@ pub fn succeed(command: &mut Command, what: &str) -> Result<(), Failure> {
     }
 }
 
+/// Runs a command that has to refuse its input with exactly the `refusal` exit code, and shows its output only when it doesn't.
+///
+/// # Errors
+///
+/// Returns a failure naming `what`, with the command's output, when the command can't start or exits with any other status.
+pub fn refuse(command: &mut Command, what: &str, refusal: i32) -> Result<(), Failure> {
+    let output = command
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|error| Failure::new(format!("{what} didn't start: {error}")))?;
+    if output.status.code() == Some(refusal) {
+        Ok(())
+    } else {
+        Err(Failure::new(format!(
+            "{what} exited with {} instead of its refusal {refusal}:\n{}{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        )))
+    }
+}
+
 /// The standard output of a command that must succeed.
 ///
 /// # Errors
@@ -130,8 +152,31 @@ pub fn capture(command: &mut Command, what: &str) -> Result<String, Failure> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Tool, capture, succeed};
+    use super::{Tool, capture, refuse, succeed};
     use std::path::Path;
+
+    #[test]
+    fn only_the_named_refusal_counts_as_one() {
+        let unknown = || {
+            let mut command = Tool::Git.command(Path::new("."));
+            command.arg("no-such-subcommand");
+            command
+        };
+        refuse(&mut unknown(), "git no-such-subcommand", 1).unwrap();
+        let other = refuse(&mut unknown(), "git no-such-subcommand", 2).unwrap_err();
+        assert!(
+            other
+                .to_string()
+                .starts_with("git no-such-subcommand exited with")
+        );
+        let accepted = refuse(
+            Tool::Git.command(Path::new(".")).arg("--version"),
+            "git --version",
+            1,
+        )
+        .unwrap_err();
+        assert!(accepted.to_string().contains("git version"));
+    }
 
     #[test]
     fn a_child_inherits_no_repository_context_from_a_hook() {

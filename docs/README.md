@@ -122,11 +122,11 @@ A job that runs the compiler holds no write permission, and a job that can write
 
 | Job | Runs | Compiler | Permissions |
 |---|---|---|---|
-| `plan` | every push and `prepare` dispatch | yes | `contents: read`, `pull-requests: read` |
+| `plan` | every push and `prepare` dispatch | yes | `contents: read` |
 | `release-pr` | every push, from the plan artifact | no | `contents: write`, `pull-requests: write` |
 | `rehearse-release-pr` | when `release-pr` wrote or confirmed a head | yes | `contents: read` |
 | `bind-release-pr` | after that rehearsal | no | `contents: read`, `pull-requests: write` |
-| `prepare` | a push that requires a release, or a `prepare` dispatch | yes | `contents: read`, `pull-requests: read` |
+| `prepare` | a push that requires a release, or a `prepare` dispatch | yes | `contents: read` |
 | `validate-promotion` | a `promote` dispatch | no | none |
 | `authorize` | a push with a sealed Candidate | no | `contents: read`, `pull-requests: read` |
 | `publish` | an approved Candidate | no | `actions: read`, `contents: write`, `id-token: write`, `pull-requests: read`, and the Environment secret |
