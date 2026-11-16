@@ -2,6 +2,7 @@
 //!
 //! Reads are separated from publication so that planning and verification never need a credential.
 
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::time::Duration;
@@ -121,19 +122,21 @@ pub struct PackageState {
 }
 
 impl PackageState {
-    /// Highest published version, prereleases included.
-    pub fn latest(&self) -> Option<&HexRelease> {
-        self.releases
-            .iter()
-            .max_by(|a, b| a.version.cmp(&b.version))
+    /// Release of the highest precedence, prereleases included.
+    ///
+    /// Refuses when two releases share that precedence and differ in build metadata.
+    pub fn latest(&self) -> Result<Option<&HexRelease>> {
+        highest(self.releases.iter(), "latest")
     }
 
-    /// Highest published version that is not a prerelease.
-    pub fn latest_stable(&self) -> Option<&HexRelease> {
-        self.releases
-            .iter()
-            .filter(|release| release.version.pre.is_empty())
-            .max_by(|a, b| a.version.cmp(&b.version))
+    /// Release of the highest precedence that is not a prerelease, refused like [`PackageState::latest`].
+    pub fn latest_stable(&self) -> Result<Option<&HexRelease>> {
+        highest(
+            self.releases
+                .iter()
+                .filter(|release| release.version.pre.is_empty()),
+            "latest stable",
+        )
     }
 
     /// One exact release, if it is published.
@@ -142,6 +145,46 @@ impl PackageState {
             .iter()
             .find(|release| &release.version == version)
     }
+}
+
+/// The release of the highest precedence among `releases`, which the core decides without build metadata.
+///
+/// Two releases that share the highest precedence and differ in build metadata are refused, since semantic versioning orders neither first.
+/// A tie below the highest precedence is accepted, since it can't change the result.
+fn highest<'a>(
+    releases: impl Iterator<Item = &'a HexRelease>,
+    which: &str,
+) -> Result<Option<&'a HexRelease>> {
+    let mut highest: Option<&HexRelease> = None;
+    let mut tied: Option<&HexRelease> = None;
+    for release in releases {
+        let Some(current) = highest else {
+            highest = Some(release);
+            continue;
+        };
+        match release_glz_core::compare(
+            &crate::version::view(&release.version),
+            &crate::version::view(&current.version),
+        ) {
+            Ordering::Greater => {
+                highest = Some(release);
+                tied = None;
+            }
+            Ordering::Equal if tied.is_none() && release.version != current.version => {
+                tied = Some(release);
+            }
+            Ordering::Equal | Ordering::Less => {}
+        }
+    }
+    if let (Some(highest), Some(tied)) = (highest, tied) {
+        refuse!(
+            RegistryReleasePrecedenceTie,
+            "the registry lists {} and {}, which share the highest precedence, so neither is the {which} release",
+            highest.version,
+            tied.version
+        );
+    }
+    Ok(highest)
 }
 
 /// Read access to a package registry.
@@ -830,8 +873,146 @@ mod tests {
                 },
             ],
         };
-        assert_eq!(state.latest().unwrap().version, "1.1.0".parse().unwrap());
-        assert!(state.latest().unwrap().retired);
+        let latest = state.latest().unwrap().unwrap();
+        assert_eq!(latest.version, "1.1.0".parse().unwrap());
+        assert!(latest.retired);
+    }
+
+    fn listing(versions: &[&str]) -> PackageState {
+        PackageState {
+            releases: versions
+                .iter()
+                .map(|version| HexRelease {
+                    version: version.parse().unwrap(),
+                    has_docs: false,
+                    retired: false,
+                })
+                .collect(),
+        }
+    }
+
+    /// Every order of `versions`, so no outcome can depend on the order that the registry lists releases in.
+    fn every_order<'a>(versions: &[&'a str]) -> Vec<Vec<&'a str>> {
+        if versions.is_empty() {
+            return vec![Vec::new()];
+        }
+        (0..versions.len())
+            .flat_map(|first| {
+                let mut rest = versions.to_vec();
+                let head = rest.remove(first);
+                every_order(&rest).into_iter().map(move |mut order| {
+                    order.insert(0, head);
+                    order
+                })
+            })
+            .collect()
+    }
+
+    /// The version that a lookup returns, or the reason that it refuses with.
+    type Outcome = Result<Option<String>, Option<RefusalReason>>;
+
+    const TIE: Outcome = Err(Some(RefusalReason::RegistryReleasePrecedenceTie));
+
+    const NONE: Outcome = Ok(None);
+
+    fn found(version: &str) -> Outcome {
+        Ok(Some(version.to_owned()))
+    }
+
+    fn outcome(release: Result<Option<&HexRelease>>) -> Outcome {
+        match release {
+            Ok(release) => Ok(release.map(|release| release.version.to_string())),
+            Err(error) => Err(refusal_reason(&error)),
+        }
+    }
+
+    /// Asserts the latest and the latest stable release of every order of `versions`.
+    fn assert_every_order(versions: &[&str], latest: &Outcome, latest_stable: &Outcome) {
+        for order in every_order(versions) {
+            let state = listing(&order);
+            assert_eq!(
+                (&outcome(state.latest()), &outcome(state.latest_stable())),
+                (latest, latest_stable),
+                "{order:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_build_metadata_tie_at_the_highest_precedence_is_refused_in_every_order() {
+        for (first, second) in [("1.0.0+a", "1.0.0+b"), ("1.0.0+b", "1.0.0+a")] {
+            let state = listing(&[first, second]);
+            for (which, release) in [
+                ("latest", state.latest()),
+                ("latest stable", state.latest_stable()),
+            ] {
+                let error = release.unwrap_err();
+                assert_eq!(
+                    (refusal_reason(&error), error.to_string()),
+                    (
+                        Some(RefusalReason::RegistryReleasePrecedenceTie),
+                        format!(
+                            "the registry lists {first} and {second}, which share the highest precedence, so neither is the {which} release"
+                        )
+                    )
+                );
+            }
+        }
+        assert_every_order(&["1.0.0+a", "1.0.0+b", "0.9.0"], &TIE, &TIE);
+        assert_every_order(&["1.0.0+a", "1.0.0+b", "1.0.0+a"], &TIE, &TIE);
+        assert_every_order(
+            &["1.0.0-rc.2+a", "1.0.0-rc.2+b", "1.0.0-rc.1", "0.9.0"],
+            &TIE,
+            &found("0.9.0"),
+        );
+        assert_every_order(
+            &["1.0.0+a", "1.0.0+b", "1.0.1-rc.1"],
+            &found("1.0.1-rc.1"),
+            &TIE,
+        );
+    }
+
+    /// Only the highest precedence decides, since a tie below it can't change the latest release.
+    #[test]
+    fn a_build_metadata_tie_below_the_highest_precedence_is_accepted_in_every_order() {
+        assert_every_order(&["1.0.0+a", "1.1.0"], &found("1.1.0"), &found("1.1.0"));
+        assert_every_order(
+            &["1.0.0+a", "1.0.0+b", "1.1.0+c"],
+            &found("1.1.0+c"),
+            &found("1.1.0+c"),
+        );
+        assert_every_order(
+            &["0.9.0", "1.0.0-rc.1+a", "1.0.0-rc.1+b", "1.0.0"],
+            &found("1.0.0"),
+            &found("1.0.0"),
+        );
+        assert_every_order(
+            &["1.0.0+a", "1.0.0+a"],
+            &found("1.0.0+a"),
+            &found("1.0.0+a"),
+        );
+    }
+
+    #[test]
+    fn releases_order_by_precedence_and_the_stable_latest_skips_prereleases() {
+        assert_every_order(&["1.0.0-rc.2", "1.0.0"], &found("1.0.0"), &found("1.0.0"));
+        assert_every_order(&["1.0.0-rc.2", "1.0.0-rc.10"], &found("1.0.0-rc.10"), &NONE);
+        assert_every_order(
+            &["1.0.0-alpha.9", "1.0.0-beta.1", "0.9.9"],
+            &found("1.0.0-beta.1"),
+            &found("0.9.9"),
+        );
+        assert_every_order(
+            &["1.0.0-rc", "1.0.0-rc.1", "1.0.0-rc.1.1"],
+            &found("1.0.0-rc.1.1"),
+            &NONE,
+        );
+        assert_every_order(
+            &["2.0.0-alpha.1", "1.10.0", "1.9.0"],
+            &found("2.0.0-alpha.1"),
+            &found("1.10.0"),
+        );
+        assert_every_order(&[], &NONE, &NONE);
     }
 
     #[tokio::test]
@@ -857,10 +1038,10 @@ mod tests {
             ],
         };
         assert_eq!(
-            state.latest().unwrap().version,
+            state.latest().unwrap().unwrap().version,
             "1.3.0-alpha.1".parse().unwrap()
         );
-        assert_eq!(state.latest_stable().unwrap().version, target);
+        assert_eq!(state.latest_stable().unwrap().unwrap().version, target);
         assert!(state.release(&Version::new(9, 9, 9)).is_none());
 
         let registry = ReadOnlyRegistry { state: Some(state) };

@@ -402,6 +402,8 @@ refusal_reasons! {
     ApprovalReleasePrMissing => "approval_release_pr_missing", PolicyOrApproval;
     /// The repository that a rehearsal builds from names its objects with a hash other than SHA-1, so GitHub can't serve its commits.
     RepositoryObjectFormatUnsupported => "repository_object_format_unsupported", UsageOrConfig;
+    /// Two registry releases share the highest precedence, among every release or among the stable ones, and differ in build metadata, so neither is the latest.
+    RegistryReleasePrecedenceTie => "registry_release_precedence_tie", ImmutableStateConflict;
 }
 
 /// An error that names its refusal, whose reason decides the class.
