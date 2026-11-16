@@ -204,6 +204,7 @@ enum Rule {
     CoreUnproved,
     CoreRuleCopy,
     CoreAlias,
+    CoreGlob,
     DomainOpen,
     CrateEdge,
     UnmappedCrate,
@@ -221,6 +222,7 @@ impl Rule {
             Self::CoreUnproved => "core-unproved",
             Self::CoreRuleCopy => "core-rule-copy",
             Self::CoreAlias => "core-alias",
+            Self::CoreGlob => "core-glob",
             Self::DomainOpen => "domain-open",
             Self::CrateEdge => "crate-edge",
             Self::UnmappedCrate => "unmapped-crate",
@@ -248,7 +250,10 @@ impl Rule {
                 "construct the checked type in release-glz-domain, whose constructor calls the core predicate"
             }
             Self::CoreAlias => {
-                "name `release_glz_core` directly instead of renaming it, so the gate sees each call of a core predicate"
+                "name `release_glz_core` in each path instead of importing or renaming it, so the gate sees each call of a core predicate"
+            }
+            Self::CoreGlob => {
+                "import the needed names of `release_glz_core` explicitly, so no core predicate comes into scope"
             }
             Self::DomainOpen => {
                 "keep the fields private, and construct the type only through a checked constructor that calls the core predicate"
@@ -1282,7 +1287,7 @@ impl Place {
             (Self::Core, Rule::CoreOwned) => {
                 !flags.kani && !matches!(flags.control, Control::Inside)
             }
-            (Self::Shell, Rule::CoreRuleCopy | Rule::CoreAlias)
+            (Self::Shell, Rule::CoreRuleCopy | Rule::CoreAlias | Rule::CoreGlob)
             | (Self::Domain, Rule::DomainOpen) => !flags.test,
             _ => false,
         }
@@ -1666,7 +1671,7 @@ impl Scan {
 
     /// The path from the core crate's own name that `names` reach from the scope at `index`, when its scopes, or the crate root's names that `crate::` reaches, bind them into the core crate.
     ///
-    /// A re-export through a module other than the crate root stays unresolved, and the `core-alias` rule and the crate root's names cover every form the shell can write without one.
+    /// It follows the `use` bindings of the file's own scopes and, through `crate::`, of the crate root, but not a re-export through any other module, which the gate refuses where it starts instead, since every `use` that brings in a core predicate, a glob of the core crate, or the core crate itself is a finding.
     fn resolve(&self, index: usize, names: &[String]) -> Option<Vec<String>> {
         let relative = names
             .iter()
@@ -1796,16 +1801,45 @@ impl Scan {
             } else if first == Some("alloc") {
                 self.record(Rule::CoreOwned, format!("{context} imports {shown}"));
             }
-            let names_core = self
+            let import = self
                 .resolve(top, &leaf.path)
-                .is_some_and(|path| path.len() == 1);
-            if let Some(local) = leaf.local.filter(|local| names_core && local != CORE_CRATE) {
-                self.record(
-                    Rule::CoreAlias,
-                    format!("{context} renames {CORE_CRATE} as {local}"),
-                );
+                .and_then(|path| core_import(leaf.local.as_deref(), &path, &context));
+            if let Some((rule, item)) = import {
+                self.record(rule, item);
             }
         }
+    }
+}
+
+/// The rule and the item of a `use` leaf whose path resolves to `path` in the core crate, when it brings the core crate itself, a core predicate, or a glob of the core crate into scope as `local`.
+///
+/// Each such import is where a re-export of a core predicate starts, so refusing it leaves no name through which another module calls the predicate unseen.
+fn core_import(local: Option<&str>, path: &[String], context: &str) -> Option<(Rule, String)> {
+    let last = path.last()?;
+    match local {
+        Some(local) if path.len() == 1 && local == CORE_CRATE => {
+            Some((Rule::CoreAlias, format!("{context} imports {CORE_CRATE}")))
+        }
+        Some(local) if path.len() == 1 => Some((
+            Rule::CoreAlias,
+            format!("{context} renames {CORE_CRATE} as {local}"),
+        )),
+        Some(local) if CORE_RULES.contains(&last.as_str()) => {
+            let rename = if local == last {
+                String::new()
+            } else {
+                format!(" as {local}")
+            };
+            let shown = path.join("::");
+            Some((
+                Rule::CoreRuleCopy,
+                format!("{context} imports {shown}{rename}"),
+            ))
+        }
+        None if path.len() == 1 => {
+            Some((Rule::CoreGlob, format!("{context} imports {CORE_CRATE}::*")))
+        }
+        Some(_) | None => None,
     }
 }
 
@@ -1928,11 +1962,14 @@ impl Visit<'_> for Scan {
             let item = format!("{} declares extern crate std", self.context());
             self.enter(&node.attrs, None, |scan| scan.record(Rule::CoreStd, item));
         }
-        if let Some((_, alias)) = &node.rename
-            && node.ident == CORE_CRATE
-            && alias != CORE_CRATE
-        {
-            let item = format!("{} renames {CORE_CRATE} as {alias}", self.context());
+        if node.ident == CORE_CRATE {
+            let context = self.context();
+            let item = match &node.rename {
+                Some((_, alias)) if alias != CORE_CRATE => {
+                    format!("{context} renames {CORE_CRATE} as {alias}")
+                }
+                Some(_) | None => format!("{context} declares extern crate {CORE_CRATE}"),
+            };
             self.enter(&node.attrs, None, |scan| scan.record(Rule::CoreAlias, item));
         }
     }
@@ -2343,10 +2380,6 @@ mod proofs {
                 "`digest` calls release_glz_core::is_sha256_hex",
             ),
             (
-                "use release_glz_core::{is_object_id as object};\nfn pin(value: &str) -> bool { object(value.as_bytes()) }\n",
-                "`pin` calls release_glz_core::is_object_id",
-            ),
-            (
                 "fn hex(value: &str) -> bool { value.bytes().all(|byte| byte.is_ascii_hexdigit()) }\n",
                 "`hex` calls is_ascii_hexdigit",
             ),
@@ -2381,6 +2414,16 @@ mod proofs {
                 [format!("src/copy.rs: core-rule-copy: {item}")]
             );
         }
+        assert_eq!(
+            planted(
+                "src/copy.rs",
+                "use release_glz_core::{is_object_id as object};\nfn pin(value: &str) -> bool { object(value.as_bytes()) }\n"
+            ),
+            [
+                "src/copy.rs: core-rule-copy: `pin` calls release_glz_core::is_object_id",
+                "src/copy.rs: core-rule-copy: the module imports release_glz_core::is_object_id as object",
+            ]
+        );
         assert_eq!(
             planted(
                 "crates/test-support/src/copy.rs",
@@ -2886,7 +2929,11 @@ fn uploaded() {
                 "src/copy.rs",
                 "use policy::is_object_id as valid;\nuse release_glz_core as policy;\nfn pin(value: &str) -> bool { valid(value.as_bytes()) }\n"
             ),
-            calls
+            [
+                called.to_owned(),
+                "src/copy.rs: core-rule-copy: the module imports release_glz_core::is_object_id as valid".to_owned(),
+                renamed("src/copy.rs")
+            ]
         );
         assert_eq!(
             planted_all(&[
@@ -2902,33 +2949,36 @@ fn uploaded() {
 
     #[test]
     fn the_shell_names_the_core_crate_only_by_its_own_name() {
+        let renames = "the module renames release_glz_core as policy";
         let cases = [
-            ("use release_glz_core as policy;\n", Some("the module")),
-            (
-                "use ::release_glz_core::{self as policy};\n",
-                Some("the module"),
-            ),
-            (
-                "extern crate release_glz_core as policy;\n",
-                Some("the module"),
-            ),
+            ("use release_glz_core as policy;\n", Some(renames)),
+            ("use ::release_glz_core::{self as policy};\n", Some(renames)),
+            ("extern crate release_glz_core as policy;\n", Some(renames)),
             (
                 "fn pin() {\n    use release_glz_core as policy;\n}\n",
-                Some("`pin`"),
+                Some("`pin` renames release_glz_core as policy"),
             ),
             (
                 "#[cfg(test)]\nmod tests {\n    use release_glz_core as policy;\n}\n",
                 None,
             ),
-            ("use release_glz_core;\n", None),
+            (
+                "use release_glz_core;\n",
+                Some("the module imports release_glz_core"),
+            ),
+            (
+                "mod policy {\n    pub use release_glz_core::{self};\n}\n",
+                Some("`policy` imports release_glz_core"),
+            ),
+            (
+                "extern crate release_glz_core;\n",
+                Some("the module declares extern crate release_glz_core"),
+            ),
         ];
-        for (source, context) in cases {
+        for (source, item) in cases {
             assert_eq!(
                 planted("src/copy.rs", source),
-                context
-                    .map(|context| format!(
-                        "src/copy.rs: core-alias: {context} renames release_glz_core as policy"
-                    ))
+                item.map(|item| format!("src/copy.rs: core-alias: {item}"))
                     .into_iter()
                     .collect::<Vec<_>>()
             );
@@ -2943,6 +2993,11 @@ fn uploaded() {
     #[test]
     fn a_crate_path_reaches_the_bindings_of_the_crate_root() {
         let calls = "src/copy.rs: core-rule-copy: `pin` calls release_glz_core::is_object_id";
+        let imports = |path: &str, rename: &str| {
+            format!(
+                "{path}: core-rule-copy: the module imports release_glz_core::is_object_id{rename}"
+            )
+        };
         let cases = [
             (
                 "use release_glz_core as policy;\nmod copy;\n",
@@ -2952,17 +3007,21 @@ fn uploaded() {
             (
                 "pub use release_glz_core::is_object_id;\n",
                 "fn pin(value: &[u8]) -> bool { crate::is_object_id(value) }\n",
-                vec![calls.to_owned()],
+                vec![calls.to_owned(), imports("src/lib.rs", "")],
             ),
             (
                 "pub use release_glz_core::is_object_id as valid;\n",
                 "fn pin(value: &[u8]) -> bool { crate::valid(value) }\n",
-                vec![calls.to_owned()],
+                vec![calls.to_owned(), imports("src/lib.rs", " as valid")],
             ),
             (
                 "pub use release_glz_core::is_object_id as valid;\n",
                 "use crate::valid;\nfn pin(value: &[u8]) -> bool { valid(value) }\n",
-                vec![calls.to_owned()],
+                vec![
+                    calls.to_owned(),
+                    imports("src/copy.rs", " as valid"),
+                    imports("src/lib.rs", " as valid"),
+                ],
             ),
             (
                 "pub fn valid(value: &[u8]) -> bool { !value.is_empty() }\n",
@@ -2984,44 +3043,51 @@ fn uploaded() {
     #[test]
     fn an_import_binds_only_inside_its_scope() {
         let import = "use release_glz_core::is_object_id as valid;\n";
+        let calls = |context: &str| format!("`{context}` calls release_glz_core::is_object_id");
+        let imports =
+            |context: &str| format!("{context} imports release_glz_core::is_object_id as valid");
         let cases = [
             (
                 format!(
                     "#[cfg(test)]\nmod tests {{\n    {import}}}\n\nfn valid(value: &str) -> bool {{ !value.is_empty() }}\n\nfn check(value: &str) -> bool {{ valid(value) }}\n"
                 ),
-                None,
+                Vec::new(),
             ),
             (
                 format!(
                     "fn first(value: &str) -> bool {{\n    {import}    valid(value.as_bytes())\n}}\n\nfn second(value: &str) -> bool {{ valid(value) }}\n"
                 ),
-                Some("first"),
+                vec![calls("first"), imports("`first`")],
             ),
             (
                 format!(
                     "{import}\nfn local(value: &str) -> bool {{\n    use crate::checks::valid;\n    valid(value)\n}}\n"
                 ),
-                None,
+                vec![imports("the module")],
             ),
             (
                 format!(
                     "{import}\nmod inner {{\n    use super::valid;\n\n    fn pin(value: &[u8]) -> bool {{ valid(value) }}\n}}\n"
                 ),
-                Some("inner::pin"),
+                vec![
+                    calls("inner::pin"),
+                    imports("`inner`"),
+                    imports("the module"),
+                ],
             ),
             (
                 format!(
                     "{import}\nmod inner {{\n    use super::*;\n\n    fn pin(value: &[u8]) -> bool {{ valid(value) }}\n}}\n"
                 ),
-                Some("inner::pin"),
+                vec![calls("inner::pin"), imports("the module")],
             ),
         ];
-        for (source, context) in cases {
+        for (source, items) in cases {
             assert_eq!(
                 planted("src/copy.rs", &source),
-                context
-                    .map(|context| format!("src/copy.rs: core-rule-copy: `{context}` calls release_glz_core::is_object_id"))
-                    .into_iter()
+                items
+                    .iter()
+                    .map(|item| format!("src/copy.rs: core-rule-copy: {item}"))
                     .collect::<Vec<_>>()
             );
         }
@@ -3032,7 +3098,70 @@ fn uploaded() {
                     "{import}\nmod inner {{\n    use crate::valid;\n\n    fn pin(value: &[u8]) -> bool {{ valid(value) }}\n}}\n"
                 )
             ),
-            ["src/lib.rs: core-rule-copy: `inner::pin` calls release_glz_core::is_object_id"]
+            [
+                calls("inner::pin"),
+                imports("`inner`"),
+                imports("the module")
+            ]
+            .map(|item| format!("src/lib.rs: core-rule-copy: {item}"))
+        );
+    }
+
+    #[test]
+    fn a_predicate_reexport_is_refused_where_it_starts() {
+        assert_eq!(
+            planted_all(&[
+                (
+                    "src/lib.rs",
+                    "mod policy { pub use release_glz_core::is_object_id; } mod copy;\n"
+                ),
+                (
+                    "src/copy.rs",
+                    "fn pin(value: &[u8]) -> bool { crate::policy::is_object_id(value) }\n"
+                ),
+            ]),
+            ["src/lib.rs: core-rule-copy: `policy` imports release_glz_core::is_object_id"]
+        );
+    }
+
+    #[test]
+    fn the_shell_imports_no_core_predicate_by_name_or_glob() {
+        let cases = [
+            (
+                "use release_glz_core::{Bump, hex::is_object_id, is_commit_id as commit};\n",
+                vec![
+                    "core-rule-copy: the module imports release_glz_core::hex::is_object_id",
+                    "core-rule-copy: the module imports release_glz_core::is_commit_id as commit",
+                ],
+            ),
+            (
+                "pub(crate) use release_glz_core::lowercase_hex as hex;\n",
+                vec!["core-rule-copy: the module imports release_glz_core::lowercase_hex as hex"],
+            ),
+            (
+                "use release_glz_core::*;\n",
+                vec!["core-glob: the module imports release_glz_core::*"],
+            ),
+            (
+                "#[cfg(test)]\nmod tests {\n    use release_glz_core::{is_sha256_hex, *};\n}\n",
+                Vec::new(),
+            ),
+        ];
+        for (source, items) in cases {
+            assert_eq!(
+                planted("src/copy.rs", source),
+                items
+                    .iter()
+                    .map(|item| format!("src/copy.rs: {item}"))
+                    .collect::<Vec<_>>()
+            );
+        }
+        let support = "crates/test-support/src/copy.rs";
+        assert_eq!(
+            planted(support, "use release_glz_core::is_sha256_hex;\n"),
+            [format!(
+                "{support}: core-rule-copy: the module imports release_glz_core::is_sha256_hex"
+            )]
         );
     }
 
