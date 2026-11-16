@@ -115,6 +115,26 @@ pub fn remove_file(path: impl AsRef<Path>) -> Result<(), Failure> {
     raw::remove_file(path).map_err(|error| failed("deleting", path, &error))
 }
 
+/// Whether a symbolic link sits at `path`, which a path that names nothing never is.
+///
+/// # Errors
+///
+/// Returns a failure naming the path when it names something that can't be inspected.
+pub fn is_symlink(path: &Path) -> Result<bool, Failure> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) => Ok(metadata.file_type().is_symlink()),
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+            ) =>
+        {
+            Ok(false)
+        }
+        Err(error) => Err(failed("inspecting", path, &error)),
+    }
+}
+
 /// The files under `directory` and its subdirectories whose names end with `suffix`, in sorted order.
 ///
 /// # Errors
@@ -180,8 +200,21 @@ fn run_stamp() -> Result<u128, Failure> {
 #[cfg(test)]
 mod tests {
     use super::{
-        create_dir, create_dir_all, files_with_suffix, read_if_present, read_to_string, write,
+        create_dir, create_dir_all, files_with_suffix, is_symlink, read_if_present, read_to_string,
+        write,
     };
+
+    #[cfg(unix)]
+    #[test]
+    fn only_a_symbolic_link_reads_as_one() {
+        let root = tempfile::tempdir().unwrap();
+        write(root.path().join("file"), "").unwrap();
+        std::os::unix::fs::symlink(root.path().join("file"), root.path().join("link")).unwrap();
+        assert!(is_symlink(&root.path().join("link")).unwrap());
+        assert!(!is_symlink(&root.path().join("file")).unwrap());
+        assert!(!is_symlink(&root.path().join("missing")).unwrap());
+        assert!(!is_symlink(&root.path().join("file/below")).unwrap());
+    }
 
     #[test]
     fn a_listing_holds_every_matching_file_below_the_directory_in_order() {
