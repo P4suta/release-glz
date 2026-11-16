@@ -1,4 +1,5 @@
 use release_glz::failure::{FailureClass, classified, classify, with_default_class};
+use release_glz_test_support::http::FakeServer;
 
 #[test]
 fn an_explicit_internal_class_is_never_replaced_by_a_boundary_default() {
@@ -39,40 +40,21 @@ fn a_classified_failure_keeps_every_cause() {
 
 #[tokio::test]
 async fn connection_errors_are_classified_by_type_not_message_text() {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let address = listener.local_addr().unwrap();
-    listener.set_nonblocking(true).unwrap();
-    let server = std::thread::spawn(move || {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-        loop {
-            match listener.accept() {
-                Ok((stream, _)) => {
-                    drop(stream);
-                    return;
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    assert!(
-                        std::time::Instant::now() < deadline,
-                        "client never connected to the test listener"
-                    );
-                    std::thread::sleep(std::time::Duration::from_millis(10));
-                }
-                Err(error) => panic!("test listener failed: {error}"),
-            }
-        }
-    });
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .connect_timeout(std::time::Duration::from_secs(2))
-        .timeout(std::time::Duration::from_secs(2))
-        .build()
-        .unwrap();
+    // The server closes the connection before the TLS handshake, which ends the request without a client timeout.
+    let mut server = FakeServer::start();
+    server.hang_up();
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
     let error = client
-        .get(format!("https://{address}/"))
+        .get(format!("https://{}/", server.address()))
         .send()
         .await
         .unwrap_err();
-    server.join().unwrap();
+    server.finish();
+    assert_eq!(
+        server.connections(),
+        1,
+        "client never connected to the test listener"
+    );
     assert!(
         error.is_connect(),
         "expected a connect error, got {error:?}"

@@ -6,6 +6,7 @@ use std::ffi::{OsStr, OsString};
 use std::path::Path;
 use std::process::{Command, Output};
 
+pub mod http;
 pub mod oidc;
 pub mod schema;
 
@@ -148,27 +149,9 @@ pub fn require_gleam() -> String {
         )
 }
 
-/// Read what `reader` has into `buffer` and return the count, retrying a read that a signal interrupted.
-///
-/// A single `read` reports `ErrorKind::Interrupted` instead of retrying, so a test server that unwraps it fails for a reason outside the code under test.
-///
-/// # Panics
-///
-/// When the read fails for any other reason.
-pub fn read_some(reader: &mut impl std::io::Read, buffer: &mut [u8]) -> usize {
-    loop {
-        match reader.read(buffer) {
-            Ok(count) => return count,
-            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
-            Err(error) => fail(format_args!("read failed: {error}")),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{path_searching_first, read_some};
-    use std::io::{self, Read};
+    use super::path_searching_first;
     use std::path::{Path, PathBuf};
 
     #[test]
@@ -182,41 +165,5 @@ mod tests {
             .collect();
         assert_eq!(searched.first().map(PathBuf::as_path), Some(directory));
         assert_eq!(searched.get(1..), Some(inherited.as_slice()));
-    }
-
-    /// Fails its first read with `error`, then serves `data`.
-    struct FailsFirst {
-        error: Option<io::ErrorKind>,
-        data: &'static [u8],
-    }
-
-    impl Read for FailsFirst {
-        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-            if let Some(error) = self.error.take() {
-                return Err(error.into());
-            }
-            self.data.read(buffer)
-        }
-    }
-
-    #[test]
-    fn a_read_that_a_signal_interrupts_is_retried() {
-        let mut reader = FailsFirst {
-            error: Some(io::ErrorKind::Interrupted),
-            data: b"request",
-        };
-        let mut buffer = [0_u8; 16];
-        assert_eq!(read_some(&mut reader, &mut buffer), 7);
-        assert_eq!(&buffer[..7], b"request");
-    }
-
-    #[test]
-    #[should_panic(expected = "read failed")]
-    fn any_other_read_error_still_fails_the_test() {
-        let mut reader = FailsFirst {
-            error: Some(io::ErrorKind::ConnectionReset),
-            data: b"request",
-        };
-        read_some(&mut reader, &mut [0_u8; 16]);
     }
 }
