@@ -8,6 +8,7 @@ use std::process::{Command, Output};
 
 pub mod http;
 pub mod oidc;
+pub mod property;
 pub mod schema;
 
 /// The only environment variables a spawned binary under test inherits.

@@ -724,6 +724,12 @@ impl Candidate {
                     "invalid candidate manifest",
                 )
             })?;
+        if canonical_json_bytes(&manifest)? != manifest_bytes {
+            refuse!(
+                CandidateManifestInvalid,
+                "candidate manifest isn't the canonical JSON that sealing writes"
+            );
+        }
         if manifest.schema != "candidate/v1" {
             refuse!(
                 CandidateSchemaUnsupported,
@@ -1274,8 +1280,12 @@ fn validate_registry_identity(registry: &RegistryIdentity) -> Result<()> {
         ("repository_url", &registry.repository_url),
         ("docs_url", &registry.docs_url),
     ] {
-        let url = reqwest::Url::parse(raw)
-            .with_context(|| format!("candidate registry {field} is invalid"))?;
+        let url = reqwest::Url::parse(raw).with_context(|| {
+            Refusal::new(
+                RefusalReason::UrlMalformed,
+                format!("candidate registry {field} is invalid"),
+            )
+        })?;
         if url.host_str().is_none() || url.cannot_be_a_base() {
             refuse!(
                 UrlNotHierarchical,
