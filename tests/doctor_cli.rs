@@ -27,7 +27,7 @@ const READ_BUFFER_BYTES: usize = 4096;
 const HEADER_TERMINATOR: &[u8] = b"\r\n\r\n";
 
 #[test]
-fn doctor_cli_collects_local_and_github_checks_into_envelope_v2() {
+fn doctor_cli_collects_local_and_github_checks_into_the_command_envelope() {
     let temp = tempfile::tempdir().unwrap();
     let registry = FakeGitHub::start(vec![""]);
     std::fs::write(
@@ -91,7 +91,7 @@ fn doctor_cli_collects_local_and_github_checks_into_envelope_v2() {
     );
     let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_published_envelope(&envelope);
-    assert_eq!(envelope["schema"], "command/v2");
+    assert_eq!(envelope["schema"], "command/v1");
     assert_eq!(envelope["ok"], true);
     assert_eq!(envelope["result"]["schema"], "doctor/v1");
     assert_eq!(envelope["result"]["state"], "up_to_date");
@@ -276,7 +276,7 @@ fn doctor_cli_uses_policy_exit_and_unsuccessful_envelope_when_blocked() {
     assert_eq!(output.status.code(), Some(3));
     let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_published_envelope(&envelope);
-    assert_eq!(envelope["schema"], "command/v2");
+    assert_eq!(envelope["schema"], "command/v1");
     assert_eq!(envelope["ok"], false);
     assert_eq!(envelope["result"]["state"], "blocked");
     assert_eq!(envelope["diagnostics"][0]["code"], "compiler_mismatch");

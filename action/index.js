@@ -1004,19 +1004,19 @@ function buildCommandArgs(command, environment = process.env) {
 }
 
 /**
- * One diagnostic of a `command/v2` result, with the fields the Action reads.
+ * One diagnostic of a `command/v1` result, with the fields the Action reads.
  * @typedef {{code: string, message: string} & Record<string, unknown>} Diagnostic
  */
 
 /**
- * One next action of a `command/v2` result, with the fields the Action reads.
+ * One next action of a `command/v1` result, with the fields the Action reads.
  * @typedef {{command: string, argv: string[]} & Record<string, unknown>} NextAction
  */
 
 /**
- * A `command/v2` result, typed as far as the Action reads it.
+ * A `command/v1` result, typed as far as the Action reads it.
  * @typedef {object} CommandEnvelopeFields
- * @property {"command/v2"} schema
+ * @property {"command/v1"} schema
  * @property {boolean} ok
  * @property {string} command
  * @property {unknown} [result]
@@ -1054,7 +1054,7 @@ function isNextAction(value) {
 function isCommandEnvelope(value) {
   return (
     isRecord(value) &&
-    value.schema === "command/v2" &&
+    value.schema === "command/v1" &&
     typeof value.ok === "boolean" &&
     typeof value.command === "string" &&
     Array.isArray(value.diagnostics) &&
@@ -1065,7 +1065,7 @@ function isCommandEnvelope(value) {
 }
 
 /**
- * The `command/v2` result that release-glz printed.
+ * The `command/v1` result that release-glz printed.
  * @param {string} stdout
  * @returns {CommandEnvelope}
  */
@@ -1079,20 +1079,20 @@ function parseCommandEnvelope(stdout) {
   }
   if (
     !isRecord(value) ||
-    value.schema !== "command/v2" ||
+    value.schema !== "command/v1" ||
     typeof value.ok !== "boolean" ||
     typeof value.command !== "string" ||
     !Array.isArray(value.diagnostics) ||
     !Array.isArray(value.next_actions)
   ) {
-    throw new Error("release-glz output is not command/v2");
+    throw new Error("release-glz output is not command/v1");
   }
   if (!value.next_actions.every(isNextAction)) {
     throw new Error("release-glz next action does not contain canonical argv");
   }
   // What remains is a diagnostic without a code or a message.
   if (!isCommandEnvelope(value)) {
-    throw new Error("release-glz output is not command/v2");
+    throw new Error("release-glz output is not command/v1");
   }
   return value;
 }

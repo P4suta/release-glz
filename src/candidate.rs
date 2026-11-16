@@ -561,17 +561,10 @@ impl Candidate {
         Ok((evidence, artifacts))
     }
 
-    /// Digest the decision without sealing anything.
-    ///
-    /// `plan` and `release-pr` use this to publish an intent digest before any artifact exists.
-    pub fn core_intent_digest(input: &CandidateInput) -> Result<String> {
-        Self::core_intent_digest_prepared(input, None)
-    }
-
     /// Digest the decision, reusing archives that were already validated.
-    pub(crate) fn core_intent_digest_prepared(
+    pub(crate) fn core_intent_digest(
         input: &CandidateInput,
-        prepared: Option<&CandidateArtifacts>,
+        artifacts: &CandidateArtifacts,
     ) -> Result<String> {
         validate_package_name(&input.package)?;
         validate_source(&input.source)?;
@@ -589,14 +582,6 @@ impl Candidate {
         )?;
         validate_notify_hooks(&input.notify_hooks)?;
         validate_notify_hook_definitions(&input.notify_hooks, &input.notify_hook_definitions)?;
-        let owned;
-        let artifacts = match prepared {
-            Some(artifacts) => artifacts,
-            None => {
-                owned = core_artifacts(input)?;
-                &owned
-            }
-        };
         intent_digest(Intent::from_input(input, artifacts))
     }
 

@@ -23,7 +23,7 @@ pub const MAX_PLAN_BYTES: u64 = 4 * MIB;
 pub enum Refusal {
     /// The file is larger than [`MAX_PLAN_BYTES`].
     TooLarge,
-    /// The file is not a `plan/v3` document, or it carries a field the format lacks.
+    /// The file is not a `plan/v1` document, or it carries a field the format lacks.
     NotAPlan(String),
     /// The document names another schema.
     Schema(String),

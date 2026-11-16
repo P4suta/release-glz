@@ -1,6 +1,6 @@
 //! Command-line front end for `release-glz`.
 //!
-//! The binary parses argv, calls into the [`release_glz`] engine, and renders either human output or a `command/v2` envelope.
+//! The binary parses argv, calls into the [`release_glz`] engine, and renders either human output or a `command/v1` envelope.
 //! Release decisions live in the library so another front end can make the same ones.
 
 #![warn(missing_docs)]
@@ -1174,9 +1174,9 @@ async fn run_doctor(
                 report.diagnostics.push(Diagnostic {
                     code: "candidate_build_failed".into(),
                     level: DiagnosticLevel::Error,
-                    message: "the isolated v1 Candidate build failed without credentials".into(),
+                    message: "the isolated Candidate build failed without credentials".into(),
                     detail: Some(format!(
-                        "{error}. If this is a dependency authentication failure, note that private dependencies are not supported in v1 Candidates; make them credential-free, replace/vendor them, or build outside the v1 publication path."
+                        "{error}. If this is a dependency authentication failure, note that private dependencies are not supported in Candidates; make them credential-free, replace/vendor them, or build outside the release-glz publication path."
                     )),
                 });
                 report.next_actions.push(NextAction::guidance(
@@ -1499,7 +1499,7 @@ fn print_checked_result<T: serde::Serialize>(
     match output {
         Output::Json => {
             let envelope = release_glz::model::CommandEnvelope {
-                schema: "command/v2".into(),
+                schema: "command/v1".into(),
                 ok,
                 command: command.into(),
                 result: Some(result),
@@ -1526,7 +1526,7 @@ fn print_doctor(report: &DoctorReport, output: Output) -> Result<()> {
     match output {
         Output::Json => {
             let envelope = release_glz::model::CommandEnvelope {
-                schema: "command/v2".into(),
+                schema: "command/v1".into(),
                 ok: report.state != ReleaseState::Blocked,
                 command: "doctor".into(),
                 result: Some(report),

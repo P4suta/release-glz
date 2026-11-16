@@ -1,6 +1,6 @@
 //! The vocabulary of the plan, its reasons, and the lifecycle states.
 //!
-//! Types here are the wire format of `plan/v3` and of the `command/v2` envelope, so a rename is a compatibility break rather than a refactor.
+//! Types here are the wire format of `plan/v1` and of the `command/v1` envelope, so a rename is a compatibility break rather than a refactor.
 
 use semver::Version;
 use serde::{Deserialize, Serialize};
@@ -145,7 +145,7 @@ pub struct ApprovalRequirement {
 /// Stable machine-readable envelope shared by every command.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommandEnvelope<T> {
-    /// Always `command/v2`.
+    /// Always `command/v1`.
     pub schema: String,
     /// Whether the command succeeded.
     pub ok: bool,
@@ -168,7 +168,7 @@ impl<T> CommandEnvelope<T> {
         next_actions: Vec<NextAction>,
     ) -> Self {
         Self {
-            schema: "command/v2".into(),
+            schema: "command/v1".into(),
             ok: true,
             command: command.into(),
             result: Some(result),
@@ -184,7 +184,7 @@ impl<T> CommandEnvelope<T> {
         next_actions: Vec<NextAction>,
     ) -> Self {
         Self {
-            schema: "command/v2".into(),
+            schema: "command/v1".into(),
             ok: false,
             command: command.into(),
             result: None,
@@ -384,7 +384,7 @@ pub struct ChangeEntry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReleasePlan {
-    /// Always `plan/v3`.
+    /// Always `plan/v1`.
     pub schema: String,
     /// Where the package currently is in the release lifecycle.
     pub state: ReleaseState,
@@ -440,7 +440,7 @@ pub struct ReleasePlan {
 
 impl ReleasePlan {
     /// The schema identifier every plan carries.
-    pub const SCHEMA: &'static str = "plan/v3";
+    pub const SCHEMA: &'static str = "plan/v1";
 }
 
 #[cfg(test)]

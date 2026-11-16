@@ -16,21 +16,21 @@ pub enum Reached {
 }
 
 pub fn check(data: &[u8]) -> Vec<Reached> {
-    let (old, new) = match data.iter().position(|byte| *byte == SEPARATOR) {
+    let (baseline, current) = match data.iter().position(|byte| *byte == SEPARATOR) {
         Some(index) => (&data[..index], &data[index + 1..]),
         None => (data, data),
     };
-    for interface in [old, new] {
+    for interface in [baseline, current] {
         if let Ok(diff) = compare(interface, interface) {
             assert!(diff.changes.is_empty(), "{diff:?}");
             assert_eq!(diff.status, ApiStatus::Compatible);
             assert_eq!(diff.impact, Bump::None);
         }
     }
-    let Ok(forward) = compare(old, new) else {
+    let Ok(forward) = compare(baseline, current) else {
         return Vec::new();
     };
-    let backward = compare(new, old).expect("a comparison succeeds in both directions");
+    let backward = compare(current, baseline).expect("a comparison succeeds in both directions");
     assert_derived_fields(&forward);
     assert_derived_fields(&backward);
     assert_eq!(removals(&forward), additions(&backward));

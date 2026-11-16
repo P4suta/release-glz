@@ -46,7 +46,7 @@ test("maps all published runner targets", () => {
   assert.deepEqual(targetFor("win32", "arm64"), ["aarch64-pc-windows-msvc", "zip"]);
 });
 
-test("builds v1 candidate command arguments without a shell", () => {
+test("builds candidate command arguments without a shell", () => {
   const common = { "INPUT_MANIFEST-PATH": "packages/widget/gleam.toml" };
   assert.deepEqual(
     buildCommandArgs("rehearse", {
@@ -96,10 +96,10 @@ test("builds v1 candidate command arguments without a shell", () => {
   );
 });
 
-test("accepts only command envelope schema v2 and extracts domain outputs", () => {
+test("accepts only the command/v1 envelope and extracts domain outputs", () => {
   const envelope = parseCommandEnvelope(
     JSON.stringify({
-      schema: "command/v2",
+      schema: "command/v1",
       ok: true,
       command: "rehearse",
       result: {
@@ -113,7 +113,7 @@ test("accepts only command envelope schema v2 and extracts domain outputs", () =
     }),
   );
   assert.equal(resultOutputs(envelope).state, "candidate_ready");
-  assert.throws(() => parseCommandEnvelope('{"ok":true}'), /command\/v2/);
+  assert.throws(() => parseCommandEnvelope('{"ok":true}'), /command\/v1/);
   assert.throws(
     () =>
       parseCommandEnvelope(
@@ -122,7 +122,7 @@ test("accepts only command envelope schema v2 and extracts domain outputs", () =
           diagnostics: [{ level: "error", message: "no code", detail: null }],
         }),
       ),
-    /command\/v2/,
+    /command\/v1/,
   );
   assert.throws(
     () =>
@@ -491,7 +491,7 @@ test("streaming subprocess execution is bounded and times out", async () => {
   assert.ok(Date.now() - started < 400, "SIGTERM-resistant child was not force-killed");
 
   const failureEnvelope = JSON.stringify({
-    schema: "command/v2",
+    schema: "command/v1",
     ok: false,
     command: "release",
     result: null,
@@ -661,7 +661,7 @@ test("Action pauses workflow commands while release-glz output reaches the log",
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "release-glz-commands-test-"));
   const binary = path.join(directory, "release-glz");
   const envelope = {
-    schema: "command/v2",
+    schema: "command/v1",
     ok: false,
     command: "plan",
     result: null,
@@ -732,7 +732,7 @@ test("Action preserves a nonzero command envelope, diagnostics, argv, and exit c
   const binary = path.join(directory, "release-glz");
   const output = path.join(directory, "github-output");
   const envelope = {
-    schema: "command/v2",
+    schema: "command/v1",
     ok: false,
     command: "plan",
     result: null,

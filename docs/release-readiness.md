@@ -1,6 +1,6 @@
-# v1 release readiness
+# Release readiness
 
-This is the final, fail-closed checklist for publishing the first immutable release-glz version.
+This is the final, fail-closed checklist for publishing release-glz 1.0.0, the first immutable release-glz version.
 Complete it from a clean protected branch.
 Do not create a GitHub Release, move a tag, or publish any package while an item is unresolved.
 
@@ -46,4 +46,4 @@ Do not create a GitHub Release, move a tag, or publish any package while an item
   Then test one clean installation for each documented operating-system family and run `release-glz --version`.
 
 The checksum manifest intentionally remains fail-closed until the external preparation run is complete.
-Producing the real six-platform archives and the single checksum-only commit are the only expected external steps before v1.
+Producing the real six-platform archives and the single checksum-only commit are the only expected external steps before release-glz 1.0.0.

@@ -1,7 +1,7 @@
 //! Release planning: deciding whether to release, and as which version.
 //!
 //! The planner only reads.
-//! Its output is a `plan/v3`, which later stages seal and publish, so a decision can be reviewed before anything is built.
+//! Its output is a `plan/v1`, which later stages seal and publish, so a decision can be reviewed before anything is built.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -329,7 +329,7 @@ impl<R: Registry> Planner<R> {
             .baseline_interface(manifest, &latest.version, &source)
             .await
         {
-            Ok(old_interface) => api::compare(&old_interface, &local_interface)?,
+            Ok(baseline_interface) => api::compare(&baseline_interface, &local_interface)?,
             Err(error) => {
                 if let Some(exception) = api_exception {
                     reasons.push(ReleaseReason {

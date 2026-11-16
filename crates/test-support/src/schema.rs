@@ -9,12 +9,12 @@ use serde_json::Value;
 
 use crate::fail;
 
-/// The schema of the `command/v2` envelope that wraps every JSON result.
+/// The schema of the `command/v1` envelope that wraps every JSON result.
 pub const ENVELOPE_SCHEMA: &str = "command-envelope.schema.json";
 
 /// The `schema` identifier of each command result, and the published schema that describes it.
 pub const RESULT_SCHEMAS: [(&str, &str); 9] = [
-    ("plan/v3", "release-plan.schema.json"),
+    ("plan/v1", "release-plan.schema.json"),
     ("candidate/v1", "candidate.schema.json"),
     ("verify/v1", "candidate-verification.schema.json"),
     ("status/v1", "candidate-status.schema.json"),
@@ -80,7 +80,7 @@ pub fn published_schemas() -> BTreeMap<String, Value> {
         .collect()
 }
 
-/// Panic unless `envelope` matches the `command/v2` schema and its result matches the schema its own `schema` field names.
+/// Panic unless `envelope` matches the `command/v1` schema and its result matches the schema its own `schema` field names.
 pub fn assert_published_envelope(envelope: &Value) {
     assert_matches(ENVELOPE_SCHEMA, envelope);
     if !envelope["result"].is_null() {

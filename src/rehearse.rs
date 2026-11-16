@@ -140,7 +140,7 @@ impl Rehearsal {
         };
         // Evidence, the intent digest, and the seal all describe the same archives, so they are validated and expanded once here rather than once per step.
         let (built_in_evidence, artifacts) = Candidate::built_in_evidence_and_artifacts(&input)?;
-        let intent_digest = Candidate::core_intent_digest_prepared(&input, Some(&artifacts))?;
+        let intent_digest = Candidate::core_intent_digest(&input, &artifacts)?;
         let sidecars = hook_runner
             .run_sidecars(
                 &sidecar_hooks,

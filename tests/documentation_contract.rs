@@ -1,7 +1,7 @@
 use std::fs;
 
 #[test]
-fn project_guide_documents_the_v1_candidate_first_contract() {
+fn project_guide_documents_the_candidate_first_contract() {
     let overview = fs::read_to_string("README.md").unwrap();
     assert!(overview.contains("](docs/README.md)"));
     let readme = fs::read_to_string("docs/README.md").unwrap();
@@ -16,7 +16,7 @@ fn project_guide_documents_the_v1_candidate_first_contract() {
         "status",
         "doctor",
         "config_missing",
-        "command/v2",
+        "command/v1",
         "candidate_digest",
         "intent_digest",
         "Hex.pm Organization",
@@ -46,7 +46,7 @@ fn project_guide_documents_the_v1_candidate_first_contract() {
 }
 
 #[test]
-fn registry_guides_and_release_checklist_preserve_the_v1_operational_boundary() {
+fn registry_guides_and_release_checklist_preserve_the_operational_boundary() {
     let organization = fs::read_to_string("docs/quickstart-organization.md").unwrap();
     for required in [
         "--profile organization",
@@ -181,7 +181,7 @@ fn the_guide_states_the_plan_file_limit_the_reader_enforces() {
     let guide = fs::read_to_string("docs/README.md").unwrap();
     let statement = guide
         .lines()
-        .find(|line| line.contains("`plan/v3` document of at most"))
+        .find(|line| line.contains("`plan/v1` document of at most"))
         .expect("the guide states no plan file limit");
     let (number, rest) = statement
         .split_once("at most ")

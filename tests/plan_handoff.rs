@@ -168,8 +168,8 @@ fn a_file_that_plan_out_could_not_have_written_is_refused_with_its_reason() {
         ("above the limit".into(), above_limit, Refusal::TooLarge),
         (
             "another schema".into(),
-            edited(|plan| plan["schema"] = "plan/v1".into()),
-            Refusal::Schema("plan/v1".into()),
+            edited(|plan| plan["schema"] = "plan/v2".into()),
+            Refusal::Schema("plan/v2".into()),
         ),
         (
             "a Release PR head".into(),

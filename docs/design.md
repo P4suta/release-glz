@@ -1,4 +1,4 @@
-# v1 architecture
+# Architecture
 
 release-glz separates decisions, sealed inputs, and observed effects so that an approval cannot accidentally authorize different bytes.
 
@@ -6,7 +6,7 @@ release-glz separates decisions, sealed inputs, and observed effects so that an 
 
 `ReleasePlan` is pure release intent.
 Planning reads the selected manifest, committed history, registry metadata and artifacts, pull requests, and public API.
-It joins independent requirements with `none < patch < minor < major` and returns `plan/v3`.
+It joins independent requirements with `none < patch < minor < major` and returns `plan/v1`.
 It changes neither external state nor tracked files, and it builds no Candidate, so it reports no intent digest.
 
 `Candidate` is one immutable package release.
@@ -99,7 +99,7 @@ Notify hooks implement observe/apply with a Candidate-derived idempotency key.
 
 ## Compatibility
 
-Machine output is wrapped in `command/v2`; domain data versions independently.
+Machine output is wrapped in `command/v1`; domain data versions independently.
 Within a schema, removing or changing a field is forbidden.
 Repository paths use `/` regardless of host OS.
 Exit codes distinguish usage, policy, conflict, temporary external failure, hook failure, and partial release.
