@@ -217,6 +217,7 @@ impl ProofReport {
     }
 
     /// The harnesses of this report that the audit wouldn't admit: one that failed, has errors, or doesn't meet its listed covers and owned assertions, and one that `inventory` doesn't list.
+    #[must_use]
     pub fn unproved(&self, inventory: &[Harness]) -> Vec<String> {
         self.verification_results
             .results
@@ -235,11 +236,13 @@ impl ProofReport {
     }
 
     /// The number of harnesses that the run executed.
-    pub fn executed(&self) -> usize {
+    #[must_use]
+    pub const fn executed(&self) -> usize {
         self.verification_results.summary.executed
     }
 
     /// What this report of a run of every harness shows, before the exit status, logs, and source binding are known.
+    #[must_use]
     pub fn audit_proofs(&self, expected: &[Harness]) -> ProofRun {
         let names = expected
             .iter()
@@ -273,6 +276,7 @@ impl ProofReport {
     }
 
     /// What this report of a run of `control` shows, before the logs and source binding are known.
+    #[must_use]
     pub fn audit_control(&self, control: &Control) -> ControlRun {
         let summary = &self.verification_results.summary;
         let result = self.result(control.harness);
@@ -357,13 +361,19 @@ fn proved(result: &HarnessResult, harness: &Harness) -> bool {
         && result.checks.iter().all(|check| match check.status {
             CheckStatus::Success | CheckStatus::Unreachable => check.category != "cover",
             CheckStatus::Satisfied => check.category == "cover",
-            _ => false,
+            CheckStatus::Failure
+            | CheckStatus::Undetermined
+            | CheckStatus::Unsatisfiable
+            | CheckStatus::SolverError
+            | CheckStatus::Covered
+            | CheckStatus::Uncovered => false,
         })
 }
 
 /// Whether the logs of a run show no value that Kani replaced with an arbitrary one.
 ///
 /// Kani turns each unsupported construct into a check that fails when the construct is reachable, and the audit refuses any such failure, so its warning that a construct exists decides nothing.
+#[must_use]
 pub fn logs_supported(stdout: &str, stderr: &str) -> bool {
     const UNSOUND_DIAGNOSTICS: [&str; 2] =
         ["not enough arguments", "inserting non-deterministic value"];
@@ -508,9 +518,9 @@ mod tests {
         let mut report = proofs();
         report["property_details"][0]["property_details"]["passed"] = serde_json::json!(0);
         assert!(!proofs_admitted(&report));
-        let mut report = control_run();
-        report["property_details"][0]["property_details"]["failed"] = serde_json::json!(0);
-        assert!(!control_admitted(&report));
+        let mut control = control_run();
+        control["property_details"][0]["property_details"]["failed"] = serde_json::json!(0);
+        assert!(!control_admitted(&control));
     }
 
     #[test]
@@ -532,8 +542,7 @@ mod tests {
     fn a_missing_duplicated_or_unregistered_harness_is_refused() {
         for section in ["harness_metadata", "error_details", "property_details"] {
             let mut report = proofs();
-            let entries = report[section].as_array_mut().unwrap();
-            let entry = entries.pop().unwrap();
+            let entry = report[section].as_array_mut().unwrap().pop().unwrap();
             assert!(
                 !proofs_admitted(&report),
                 "admitted a missing {section} entry"
@@ -597,7 +606,8 @@ mod tests {
     #[test]
     fn a_harness_without_its_listed_covers_or_owned_assertions_is_refused() {
         let harness = HARNESS;
-        for select in [&cover as Selection<'_>, &owned_assertion(harness)] {
+        let selections: [Selection<'_>; 2] = [&cover, &owned_assertion(harness)];
+        for select in selections {
             let mut report = proofs();
             let checks = checks(&mut report, harness);
             checks.retain(|check| !select(check));
@@ -627,9 +637,9 @@ mod tests {
         let first = checks[0]["id"].clone();
         checks[1]["id"] = first;
         assert!(!proofs_admitted(&report));
-        let mut report = proofs();
-        check(&mut report, harness, |_| true)["description"] = serde_json::json!("");
-        assert!(!proofs_admitted(&report));
+        let mut undescribed = proofs();
+        check(&mut undescribed, harness, |_| true)["description"] = serde_json::json!("");
+        assert!(!proofs_admitted(&undescribed));
     }
 
     #[test]
@@ -672,38 +682,40 @@ mod tests {
         let harness = CONTROL.harness;
         let failed = |check: &Value| check["status"] == "Failure";
 
-        let mut report = control_run();
-        check(&mut report, harness, failed)["status"] = serde_json::json!("Success");
-        recount(&mut report);
+        let mut failed_nothing = control_run();
+        check(&mut failed_nothing, harness, failed)["status"] = serde_json::json!("Success");
+        recount(&mut failed_nothing);
         assert!(
-            !control_admitted(&report),
+            !control_admitted(&failed_nothing),
             "admitted a control that failed nothing"
         );
 
-        let mut report = control_run();
-        check(&mut report, harness, |check| {
+        let mut failed_elsewhere = control_run();
+        check(&mut failed_elsewhere, harness, |check| {
             check["status"] == "Success" && check["category"] != "cover"
         })["status"] = serde_json::json!("Failure");
-        recount(&mut report);
+        recount(&mut failed_elsewhere);
         assert!(
-            !control_admitted(&report),
+            !control_admitted(&failed_elsewhere),
             "admitted a control that failed elsewhere"
         );
 
-        let mut report = control_run();
-        check(&mut report, harness, failed)["description"] = serde_json::json!("another assertion");
+        let mut another_assertion = control_run();
+        check(&mut another_assertion, harness, failed)["description"] =
+            serde_json::json!("another assertion");
         assert!(
-            !control_admitted(&report),
+            !control_admitted(&another_assertion),
             "admitted another failed assertion"
         );
 
         for status in ["Undetermined", "SolverError", "Covered", "Uncovered"] {
-            let mut report = control_run();
-            check(&mut report, harness, |check| check["status"] == "Success")["status"] =
-                serde_json::json!(status);
-            recount(&mut report);
+            let mut unresolved = control_run();
+            check(&mut unresolved, harness, |check| {
+                check["status"] == "Success"
+            })["status"] = serde_json::json!(status);
+            recount(&mut unresolved);
             assert!(
-                !control_admitted(&report),
+                !control_admitted(&unresolved),
                 "admitted an unresolved {status} check"
             );
         }
@@ -713,18 +725,18 @@ mod tests {
             ("failed_properties_type", "Other"),
             ("exit_status", "timeout"),
         ] {
-            let mut report = control_run();
-            report["error_details"][0][field] = serde_json::json!(value);
+            let mut errored = control_run();
+            errored["error_details"][0][field] = serde_json::json!(value);
             assert!(
-                !control_admitted(&report),
+                !control_admitted(&errored),
                 "admitted an error with {field} {value}"
             );
         }
 
-        let mut report = control_run();
-        report["verification_results"]["summary"]["executed"] = serde_json::json!(2);
+        let mut two_harnesses = control_run();
+        two_harnesses["verification_results"]["summary"]["executed"] = serde_json::json!(2);
         assert!(
-            !control_admitted(&report),
+            !control_admitted(&two_harnesses),
             "admitted a control run of two harnesses"
         );
 
@@ -756,7 +768,7 @@ mod tests {
     /// The image and the audit name the same Kani release, so a version bump has to change both.
     #[test]
     fn the_image_installs_the_kani_release_the_audit_expects() {
-        let dockerfile = std::fs::read_to_string(
+        let dockerfile = crate::fs::read_to_string(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("../verification/kani.Dockerfile"),
         )

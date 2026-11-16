@@ -42,6 +42,16 @@ pub enum Tool {
     Npm,
     Jq,
     Dotfiles,
+    /// Docker, which hosts the pinned verification images with the bounded runner's limits.
+    Docker,
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the process owner constructs each command in one place, from a tool that names its program"
+)]
+fn new_command(program: &str) -> Command {
+    Command::new(program)
 }
 
 impl Tool {
@@ -58,13 +68,22 @@ impl Tool {
             Self::Npm => NPM,
             Self::Jq => "jq",
             Self::Dotfiles => "dotfiles",
+            Self::Docker => "docker",
         }
     }
 
     /// A command for the tool, run from `root` without the invoking hook's repository context.
+    #[must_use]
     pub fn command(self, root: &Path) -> Command {
-        let mut command = Command::new(self.program());
+        let mut command = self.anywhere();
         command.current_dir(root);
+        command
+    }
+
+    /// A command for the tool, run from the current directory without the invoking hook's repository context.
+    #[must_use]
+    pub fn anywhere(self) -> Command {
+        let mut command = new_command(self.program());
         for name in REPOSITORY_VARIABLES {
             command.env_remove(name);
         }
@@ -73,6 +92,10 @@ impl Tool {
 }
 
 /// Runs a command with inherited streams and requires success.
+///
+/// # Errors
+///
+/// Returns a failure naming `what` when the command can't start or exits unsuccessfully.
 pub fn succeed(command: &mut Command, what: &str) -> Result<(), Failure> {
     let status = command
         .status()
@@ -85,6 +108,10 @@ pub fn succeed(command: &mut Command, what: &str) -> Result<(), Failure> {
 }
 
 /// The standard output of a command that must succeed.
+///
+/// # Errors
+///
+/// Returns a failure naming `what` when the command can't start, exits unsuccessfully, or prints output that isn't UTF-8.
 pub fn capture(command: &mut Command, what: &str) -> Result<String, Failure> {
     let output = command
         .stdin(Stdio::null())
@@ -130,13 +157,13 @@ mod tests {
                 .to_string()
                 .starts_with("git no-such-subcommand failed with")
         );
-        let failure = capture(
-            &mut std::process::Command::new("release-glz-no-such-tool"),
+        let missing = capture(
+            &mut super::new_command("release-glz-no-such-tool"),
             "the missing tool",
         )
         .unwrap_err();
         assert!(
-            failure
+            missing
                 .to_string()
                 .starts_with("the missing tool didn't start")
         );

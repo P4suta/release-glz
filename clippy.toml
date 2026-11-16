@@ -1,0 +1,68 @@
+doc-valid-idents = [
+  "..",
+  "GitHub",
+  "UTF-8",
+  "UTF-16",
+  "JSON",
+  "TOML",
+  "YAML",
+  "macOS",
+  "Kani",
+  "OIDC",
+  "CLI",
+  "SHA-256",
+]
+
+too-many-arguments-threshold = 4
+too-many-lines-threshold = 80
+cognitive-complexity-threshold = 18
+type-complexity-threshold = 250
+max-fn-params-bools = 1
+enum-variant-name-threshold = 2
+enum-variant-size-threshold = 256
+
+msrv = "1.100.0"
+
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-indexing-slicing-in-tests = true
+
+avoid-breaking-exported-api = false
+
+pass-by-value-size-limit = 128
+
+disallowed-methods = [
+  { path = "std::fs::read", reason = "read files only through the file owner, which names the path in each error" },
+  { path = "std::fs::read_to_string", reason = "read files only through the file owner, which names the path in each error" },
+  { path = "std::fs::write", reason = "write files only through the file owner, which names the path in each error" },
+  { path = "std::fs::File::create", reason = "create files only through the file owner" },
+  { path = "std::fs::OpenOptions::new", reason = "open files for writing only through the file owner" },
+  { path = "std::fs::rename", reason = "replace files only through the file owner" },
+  { path = "std::fs::remove_file", reason = "delete files only through the file owner, which keeps the primary error" },
+  { path = "std::fs::remove_dir_all", reason = "delete trees only through the file owner, which keeps the primary error" },
+  { path = "std::fs::create_dir", reason = "create directories only through the file owner" },
+  { path = "std::fs::create_dir_all", reason = "create directories only through the file owner" },
+  { path = "std::fs::copy", reason = "copy files only through the file owner" },
+  { path = "std::process::Command::new", reason = "start children only through the tool owner, which names each tool" },
+  { path = "std::process::exit", reason = "bypasses destructors; return an ExitCode from main" },
+  { path = "std::env::set_var", reason = "races with other threads; wire the value through arguments instead" },
+  { path = "std::env::remove_var", reason = "races with other threads; wire the value through arguments instead" },
+  { path = "std::time::SystemTime::now", reason = "no decision reads a clock; the shell passes the time in as a value" },
+  { path = "std::time::Instant::now", reason = "no decision reads a clock" },
+  { path = "std::thread::sleep", reason = "sleeping guesses when something will be ready; block on the event itself" },
+  { path = "std::mem::forget", reason = "leaks destructors; use `ManuallyDrop` or explicit drop" },
+  { path = "core::result::Result::ok", reason = "turns a failure into absence; match, inspect, or report the error instead" },
+  { path = "core::result::Result::unwrap_or", reason = "turns a failure into a stand-in; report the error instead" },
+  { path = "core::result::Result::unwrap_or_default", reason = "turns a failure into an empty value; report the error instead" },
+  { path = "core::result::Result::or", reason = "turns a failure into a stand-in; report the error instead" },
+  { path = "core::result::Result::or_else", reason = "turns a failure into another attempt with the first one unreported; match and say what happened to it" },
+  { path = "std::path::Path::exists", reason = "erases the difference between absent and unreadable; try the operation and match its error" },
+  { path = "std::path::Path::is_file", reason = "erases the difference between absent and unreadable; try the operation and match its error" },
+  { path = "std::path::Path::is_dir", reason = "erases the difference between absent and unreadable; try the operation and match its error" },
+]
+
+disallowed-types = [
+  { path = "std::time::Instant", reason = "no decision reads a clock" },
+  { path = "std::time::SystemTime", reason = "no decision reads a clock; the shell passes the time in as a value" },
+]

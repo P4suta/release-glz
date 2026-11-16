@@ -43,8 +43,13 @@ fn subject(message: &str) -> Option<&str> {
 }
 
 /// Refuses a commit message without a known type, or a fix without a staged test.
+///
+/// # Errors
+///
+/// Returns a failure when the message is unreadable or empty, names no Conventional Commit type, or is a fix without a staged test.
+/// Returns a failure when Git can't show the staged changes of a fix.
 pub fn check(root: &Path, message: &Path) -> Result<(), Failure> {
-    let text = std::fs::read_to_string(message).map_err(|error| {
+    let text = crate::fs::read_to_string(message).map_err(|error| {
         Failure::new(format!(
             "the commit message {} is unreadable: {error}",
             message.display()

@@ -1,9 +1,8 @@
 //! Pinned verification images run with the same resource limits on every machine.
 
+use crate::tool::Tool;
 use std::fmt;
-use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::path::Path;
 
 /// Every proof image runs on this platform, so a verdict doesn't depend on the host's architecture.
 const PLATFORM: &str = "linux/amd64";
@@ -28,7 +27,8 @@ impl Failure {
     }
 
     /// A failure to read or write local evidence.
-    pub fn io(error: std::io::Error) -> Self {
+    #[must_use]
+    pub fn io(error: &std::io::Error) -> Self {
         Self(format!("evidence I/O failed: {error}"))
     }
 }
@@ -39,21 +39,8 @@ impl fmt::Display for Failure {
     }
 }
 
-/// A new directory under `target/assurance` for the evidence of one `kind` of run.
-pub fn evidence_directory(root: &Path, kind: &str) -> Result<PathBuf, Failure> {
-    let started = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|error| Failure::new(error.to_string()))?
-        .as_nanos();
-    let directory = root
-        .join("target")
-        .join("assurance")
-        .join(format!("{kind}-{started}-{}", std::process::id()));
-    std::fs::create_dir_all(&directory).map_err(Failure::io)?;
-    Ok(directory)
-}
-
 /// What a command in the container printed and how it ended.
+#[derive(Debug)]
 pub struct Exit {
     /// The exit status, or `None` when a signal ended it.
     pub code: Option<i32>,
@@ -64,6 +51,7 @@ pub struct Exit {
 }
 
 /// The directories a command sees and whether it may reach the network.
+#[derive(Debug)]
 pub struct Mounts<'a> {
     /// Mounted read-only at `/workspace`, which is also the working directory.
     pub workspace: &'a Path,
@@ -74,15 +62,29 @@ pub struct Mounts<'a> {
 }
 
 /// An image that Docker built from a pinned Dockerfile, named by its content digest.
+#[derive(Debug)]
 pub struct Container {
     image: String,
 }
 
+/// A container together with the directories that its commands see.
+#[derive(Debug, Clone, Copy)]
+pub struct Mounted<'a> {
+    pub container: &'a Container,
+    pub mounts: &'a Mounts<'a>,
+}
+
 impl Container {
     /// Build `dockerfile` from the repository at `root`, and keep the image's digest in this run's `evidence`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a failure when Docker can't start or fails the build.
+    /// Returns a failure when the image identity can't be read or isn't a SHA-256 digest.
     pub fn build(root: &Path, evidence: &Path, dockerfile: &str) -> Result<Self, Failure> {
         let identity = evidence.join("image-id");
-        let status = Command::new("docker")
+        let status = Tool::Docker
+            .command(root)
             .args([
                 "build",
                 "--quiet",
@@ -94,7 +96,6 @@ impl Container {
             .arg("--iidfile")
             .arg(&identity)
             .arg("verification")
-            .current_dir(root)
             .status()
             .map_err(|error| Failure::new(format!("Docker could not start: {error}")))?;
         if !status.success() {
@@ -102,7 +103,7 @@ impl Container {
                 "the image build failed with {status}"
             )));
         }
-        let image = std::fs::read_to_string(&identity).map_err(Failure::io)?;
+        let image = crate::fs::read_to_string(&identity)?;
         let image = image.trim().to_owned();
         let digest = image.strip_prefix("sha256:").unwrap_or_default();
         if digest.len() != DIGEST_HEX || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
@@ -114,6 +115,7 @@ impl Container {
     }
 
     /// The digest of the image.
+    #[must_use]
     pub fn image(&self) -> &str {
         &self.image
     }
@@ -121,13 +123,17 @@ impl Container {
     /// Run `command` with the bounded runner's limits, and report how it ended.
     ///
     /// A command that runs out of time is inconclusive, so it is a failure rather than an exit to judge.
+    ///
+    /// # Errors
+    ///
+    /// Returns a failure when Docker can't start or the command reaches its time limit.
     pub fn run(
         &self,
         mounts: &Mounts<'_>,
         environment: &[(&str, &str)],
         command: &[&str],
     ) -> Result<Exit, Failure> {
-        let mut docker = Command::new("docker");
+        let mut docker = Tool::Docker.anywhere();
         docker.args([
             "run",
             "--rm",
@@ -175,6 +181,10 @@ impl Container {
     }
 
     /// Run `command` without the network and return its standard output, or fail unless it exits with status 0.
+    ///
+    /// # Errors
+    ///
+    /// Returns a failure when the command can't run, reaches its time limit, or exits with another status.
     pub fn output(
         &self,
         workspace: &Path,

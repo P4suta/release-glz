@@ -1,4 +1,4 @@
-//! Repository tasks: the fast gate and the pinned verification images.
+//! The command line of the repository tasks.
 //!
 //! `cargo xtask check` runs the fast gate, `--staged` checks only the staged files, and `--platform` runs the checks that depend on the operating system.
 //! `cargo xtask commit-msg MESSAGE` refuses a commit message without a Conventional Commit type, and a fix without a staged test.
@@ -8,30 +8,15 @@
 //! `cargo xtask quint` model-checks the release protocol and writes the traces that the replay test reads.
 //! `cargo xtask trace` checks that `docs/assurance.md` maps every property to evidence that exists, and every check to a property.
 
-mod check;
-mod commit_msg;
-mod container;
-mod inventory;
-mod lean;
-mod proof_mutants;
-mod proof_report;
-mod proofs;
-mod quint;
-mod report;
-mod source_snapshot;
-mod tool;
-mod trace;
-
 use std::path::Path;
 use std::process::ExitCode;
+use xtask::container::Failure;
+use xtask::{check, commit_msg, lean, proof_mutants, proofs, quint, trace};
 
-fn main() -> ExitCode {
-    let Some(root) = Path::new(env!("CARGO_MANIFEST_DIR")).parent() else {
-        eprintln!("xtask lives outside the repository");
-        return ExitCode::FAILURE;
-    };
-    let arguments = std::env::args().skip(1).collect::<Vec<_>>();
-    let outcome = match arguments.iter().map(String::as_str).collect::<Vec<_>>()[..] {
+const USAGE: &str = "usage: cargo xtask check [--staged | --platform]|commit-msg MESSAGE|proofs|proof-mutants [--shard K --of N | merge RECEIPT... | check]|lean|quint|trace";
+
+fn run(root: &Path, arguments: &[&str]) -> Option<Result<(), Failure>> {
+    Some(match *arguments {
         ["check"] => check::run(root, check::Scope::Everything),
         ["check", "--staged"] => check::run(root, check::Scope::Staged),
         ["check", "--platform"] => check::run(root, check::Scope::Platform),
@@ -42,9 +27,7 @@ fn main() -> ExitCode {
             match (index.parse::<usize>(), count.parse::<usize>()) {
                 (Ok(index), Ok(count)) => proof_mutants::Shard::new(index, count)
                     .and_then(|shard| proof_mutants::run(root, Some(shard))),
-                _ => Err(container::Failure::new(
-                    "a shard is two numbers: `--shard K --of N`",
-                )),
+                _ => Err(Failure::new("a shard is two numbers: `--shard K --of N`")),
             }
         }
         ["proof-mutants", "merge", ref receipts @ ..] if !receipts.is_empty() => {
@@ -54,18 +37,26 @@ fn main() -> ExitCode {
         ["lean"] => lean::run(root),
         ["quint"] => quint::run(root),
         ["trace"] => trace::run(root),
-        _ => {
-            eprintln!(
-                "usage: cargo xtask check [--staged | --platform]|commit-msg MESSAGE|proofs|proof-mutants [--shard K --of N | merge RECEIPT... | check]|lean|quint|trace"
-            );
-            return ExitCode::from(2);
-        }
+        _ => return None,
+    })
+}
+
+fn main() -> ExitCode {
+    let Some(root) = Path::new(env!("CARGO_MANIFEST_DIR")).parent() else {
+        eprintln!("xtask lives outside the repository");
+        return ExitCode::FAILURE;
     };
-    match outcome {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(failure) => {
+    let arguments = std::env::args().skip(1).collect::<Vec<_>>();
+    let arguments = arguments.iter().map(String::as_str).collect::<Vec<_>>();
+    match run(root, &arguments) {
+        Some(Ok(())) => ExitCode::SUCCESS,
+        Some(Err(failure)) => {
             eprintln!("{failure}");
             ExitCode::FAILURE
+        }
+        None => {
+            eprintln!("{USAGE}");
+            ExitCode::from(2)
         }
     }
 }

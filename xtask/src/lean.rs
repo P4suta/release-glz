@@ -1,7 +1,7 @@
 //! Lean theorems about the models of the core crate, tied to it by complete refinement vectors.
 
+use crate::fs;
 use std::fmt::Write as _;
-use std::fs;
 use std::path::Path;
 
 use release_glz_core::{
@@ -204,7 +204,7 @@ fn lists<T: Clone>(items: &[T], length: usize) -> Vec<Vec<T>> {
     lists
 }
 
-fn lean_presence(presence: Presence) -> &'static str {
+const fn lean_presence(presence: Presence) -> &'static str {
     match presence {
         Presence::Absent => ".absent",
         Presence::Pending => ".pending",
@@ -222,7 +222,7 @@ fn lean_object(object: Object) -> String {
     )
 }
 
-fn lean_decision(decision: Decision) -> &'static str {
+const fn lean_decision(decision: Decision) -> &'static str {
     match decision {
         Decision::Create => ".create",
         Decision::Keep => ".keep",
@@ -239,7 +239,13 @@ fn lean_outcome(outcome: Outcome<'_>) -> Result<String, Failure> {
                 ReleaseState::Released => ".released",
                 ReleaseState::PartiallyReleased => ".partiallyReleased",
                 ReleaseState::CandidateReady => ".candidateReady",
-                other => return Err(Failure::new(format!("the core reported state {other:?}"))),
+                other @ (ReleaseState::UpToDate
+                | ReleaseState::Planned
+                | ReleaseState::AwaitingApproval
+                | ReleaseState::Conflict
+                | ReleaseState::Blocked) => {
+                    return Err(Failure::new(format!("the core reported state {other:?}")));
+                }
             };
             let effects = effects.map(|index| index.to_string()).collect::<Vec<_>>();
             format!(".proceed {state} [{}]", effects.join(", "))
@@ -274,28 +280,25 @@ fn core_segments(text: &[u8], secrets: &[&[u8]]) -> Segments {
 
 /// The maximal runs of equal flags, each as its flag and its length.
 fn runs(flags: &[bool]) -> Segments {
-    let mut runs: Segments = Vec::new();
-    for flag in flags {
-        match runs.last_mut() {
-            Some((last, length)) if last == flag => *length += 1,
-            _ => runs.push((*flag, 1)),
-        }
-    }
-    runs
+    flags
+        .chunk_by(PartialEq::eq)
+        .filter_map(|run| run.first().map(|flag| (*flag, run.len())))
+        .collect()
 }
 
 /// The overreach defect: redaction that also removes the byte after each redacted run.
 fn overreach(text: &[u8], secrets: &[&[u8]]) -> Segments {
-    let mut flags = core_segments(text, secrets)
+    let flags = core_segments(text, secrets)
         .into_iter()
         .flat_map(|(redacted, length)| std::iter::repeat_n(redacted, length))
         .collect::<Vec<_>>();
-    for index in (1..flags.len()).rev() {
-        if flags[index - 1] {
-            flags[index] = true;
-        }
-    }
-    runs(&flags)
+    let previous = std::iter::once(false).chain(flags.iter().copied());
+    let reached = flags
+        .iter()
+        .zip(previous)
+        .map(|(flag, before)| *flag || before)
+        .collect::<Vec<_>>();
+    runs(&reached)
 }
 
 /// The bytes the core frames for one file.
@@ -360,12 +363,11 @@ fn last_only(body: &[u8]) -> Option<usize> {
     let start = body
         .windows(prefix.len())
         .rposition(|window| window == prefix)?;
-    let end = body[start..]
+    let marker = body.get(start..)?;
+    let end = marker
         .windows(suffix.len())
-        .position(|window| window == suffix)?
-        + start
-        + suffix.len();
-    (end == body.len()).then_some(start)
+        .position(|window| window == suffix)?;
+    (marker.get(end..)? == suffix).then_some(start)
 }
 
 /// The values that the core reads from `fields`.
@@ -377,18 +379,20 @@ fn core_values(fields: &[Vec<u8>]) -> FieldValues {
 fn repeated(fields: &[Vec<u8>]) -> FieldValues {
     let mut values: [Option<Vec<u8>>; 6] = Default::default();
     for field in fields {
-        let separator = field.iter().position(|byte| *byte == b'=')?;
-        let slot = MARKER_KEYS
-            .iter()
-            .position(|key| key.as_bytes() == &field[..separator])?;
-        values[slot] = Some(field[separator + 1..].to_vec());
+        let mut parts = field.splitn(2, |byte| *byte == b'=');
+        let (key, value) = (parts.next()?, parts.next()?);
+        let slot = values
+            .iter_mut()
+            .zip(MARKER_KEYS)
+            .find_map(|(slot, known)| (known.as_bytes() == key).then_some(slot))?;
+        *slot = Some(value.to_vec());
     }
     let [package, branch, head, digest, version, intent] = values;
     Some([package?, branch?, head?, digest?, version?, intent?])
 }
 
 /// The bodies whose marker the vectors compare: each lead before each rendered marker, and bodies that no marker ends.
-fn marker_bodies() -> Vec<Vec<u8>> {
+fn marker_bodies() -> Result<Vec<Vec<u8>>, Failure> {
     let mut bodies = vec![Vec::new(), MARKER_PREFIX.as_bytes().to_vec()];
     for values in VECTOR_VALUES {
         let marker = rendered(values);
@@ -397,9 +401,14 @@ fn marker_bodies() -> Vec<Vec<u8>> {
         }
         bodies.push([marker.as_slice(), b"x"].concat());
         bodies.push([MARKER_PREFIX.as_bytes(), b"x", marker.as_slice()].concat());
-        bodies.push(marker[..marker.len() - MARKER_SUFFIX.len()].to_vec());
+        let unended = marker
+            .strip_suffix(MARKER_SUFFIX.as_bytes())
+            .ok_or_else(|| {
+                Failure::new("the core rendered a marker that doesn't end with its suffix")
+            })?;
+        bodies.push(unended.to_vec());
     }
-    bodies
+    Ok(bodies)
 }
 
 /// The field lists whose values the vectors compare: rendered fields, and lists with a key missing, repeated, unknown, or without `=`.
@@ -418,7 +427,7 @@ fn field_lists() -> Vec<Vec<Vec<u8>>> {
     unseparated.push(b"intent".to_vec());
     let mut lists = VECTOR_VALUES.into_iter().map(fields).collect::<Vec<_>>();
     lists.push(missing);
-    lists.push([release.clone(), vec![release[0].clone()]].concat());
+    lists.push(release.iter().chain(release.first()).cloned().collect());
     lists.push([release.clone(), vec![b"other=1".to_vec()]].concat());
     lists.push(unseparated);
     lists.push(release.iter().rev().cloned().collect());
@@ -434,24 +443,31 @@ fn lean_values(values: [&[u8]; 6]) -> String {
 
 /// Append one Lean table named `name` of type `kind` with `rows`.
 fn table(source: &mut String, name: &str, kind: &str, rows: &[String]) {
-    source.push_str(&format!("def {name} : {kind} := [\n"));
-    source.push_str(&rows.join(",\n"));
-    source.push_str("\n]\n\n");
+    source.extend([
+        "def ",
+        name,
+        " : ",
+        kind,
+        " := [\n",
+        rows.join(",\n").as_str(),
+        "\n]\n\n",
+    ]);
 }
 
 /// The Lean module that compares the models with the core crate on every listed input.
 ///
-/// The publication vectors cover every object and every list of at most [`VECTOR_OBJECTS`] objects.
-/// The redaction vectors cover every text of at most [`VECTOR_TEXT`] bytes over `a` and `b` with every pair of [`VECTOR_SECRETS`].
+/// The publication vectors cover every object and every list of at most `VECTOR_OBJECTS` objects.
+/// The redaction vectors cover every text of at most `VECTOR_TEXT` bytes over `a` and `b` with every pair of `VECTOR_SECRETS`.
+///
+/// # Errors
+///
+/// Returns a failure when the core reports a reconcile state that the model lacks, or renders a marker without its suffix.
 pub fn refinement() -> Result<String, Failure> {
     refinement_with(&CORE_TABLES)
 }
 
-/// The refinement module whose vectors come from `tables`, apart from the plan vectors, which always come from the core crate.
-fn refinement_with(tables: &Tables) -> Result<String, Failure> {
-    let mut source = String::from(
-        "import Publication\nimport Redaction\nimport Framing\nimport Marker\n\nset_option autoImplicit false\nset_option maxRecDepth 100000\n\nnamespace ReleaseGlz.Refinement\n\nopen ReleaseGlz\n\n",
-    );
+/// Append the decision vectors from `tables`, and the plan vectors, which always come from the core crate.
+fn publication_vectors(source: &mut String, tables: &Tables) -> Result<(), Failure> {
     let decisions = objects()
         .into_iter()
         .map(|object| {
@@ -463,7 +479,7 @@ fn refinement_with(tables: &Tables) -> Result<String, Failure> {
         })
         .collect::<Vec<_>>();
     table(
-        &mut source,
+        source,
         "decisionVectors",
         "List (Obj × Decision)",
         &decisions,
@@ -483,11 +499,16 @@ fn refinement_with(tables: &Tables) -> Result<String, Failure> {
         }
     }
     table(
-        &mut source,
+        source,
         "reconcileVectors",
         "List (List Obj × Bool × Outcome)",
         &reconciliations,
     );
+    Ok(())
+}
+
+/// Append the redaction vectors from `tables`.
+fn redaction_vectors(source: &mut String, tables: &Tables) {
     let mut redactions = Vec::new();
     for text in lists(b"ab", VECTOR_TEXT) {
         for first in VECTOR_SECRETS {
@@ -504,11 +525,15 @@ fn refinement_with(tables: &Tables) -> Result<String, Failure> {
         }
     }
     table(
-        &mut source,
+        source,
         "redactionVectors",
         "List (List Nat × List (List Nat) × List (Bool × Nat))",
         &redactions,
     );
+}
+
+/// Append the file and notification framing vectors from `tables`.
+fn framing_vectors(source: &mut String, tables: &Tables) {
     let mut files = Vec::new();
     for path in VECTOR_PARTS {
         for contents in VECTOR_PARTS {
@@ -521,7 +546,7 @@ fn refinement_with(tables: &Tables) -> Result<String, Failure> {
         }
     }
     table(
-        &mut source,
+        source,
         "fileFrameVectors",
         "List (List Nat × List Nat × List Nat)",
         &files,
@@ -538,11 +563,15 @@ fn refinement_with(tables: &Tables) -> Result<String, Failure> {
         }
     }
     table(
-        &mut source,
+        source,
         "notificationVectors",
         "List (List Nat × List Nat × List Nat)",
         &notifications,
     );
+}
+
+/// Append the inert, render, marker start, and marker values vectors from `tables`.
+fn marker_vectors(source: &mut String, tables: &Tables) -> Result<(), Failure> {
     let inert = lists(b"a<", VECTOR_INERT)
         .into_iter()
         .map(|text| {
@@ -553,12 +582,7 @@ fn refinement_with(tables: &Tables) -> Result<String, Failure> {
             )
         })
         .collect::<Vec<_>>();
-    table(
-        &mut source,
-        "inertVectors",
-        "List (List Nat × List Nat)",
-        &inert,
-    );
+    table(source, "inertVectors", "List (List Nat × List Nat)", &inert);
     let renders = VECTOR_VALUES
         .into_iter()
         .map(|values| {
@@ -570,12 +594,12 @@ fn refinement_with(tables: &Tables) -> Result<String, Failure> {
         })
         .collect::<Vec<_>>();
     table(
-        &mut source,
+        source,
         "renderVectors",
         "List (Marker.Values × List Nat)",
         &renders,
     );
-    let starts = marker_bodies()
+    let starts = marker_bodies()?
         .into_iter()
         .map(|body| {
             let start = (tables.find_marker)(&body)
@@ -584,7 +608,7 @@ fn refinement_with(tables: &Tables) -> Result<String, Failure> {
         })
         .collect::<Vec<_>>();
     table(
-        &mut source,
+        source,
         "markerStartVectors",
         "List (List Nat × Option Nat)",
         &starts,
@@ -604,11 +628,23 @@ fn refinement_with(tables: &Tables) -> Result<String, Failure> {
         })
         .collect::<Vec<_>>();
     table(
-        &mut source,
+        source,
         "markerValuesVectors",
         "List (List (List Nat) × Option Marker.Values)",
         &readings,
     );
+    Ok(())
+}
+
+/// The refinement module whose vectors come from `tables`, apart from the plan vectors, which always come from the core crate.
+fn refinement_with(tables: &Tables) -> Result<String, Failure> {
+    let mut source = String::from(
+        "import Publication\nimport Redaction\nimport Framing\nimport Marker\n\nset_option autoImplicit false\nset_option maxRecDepth 100000\n\nnamespace ReleaseGlz.Refinement\n\nopen ReleaseGlz\n\n",
+    );
+    publication_vectors(&mut source, tables)?;
+    redaction_vectors(&mut source, tables);
+    framing_vectors(&mut source, tables);
+    marker_vectors(&mut source, tables)?;
     writeln!(
         source,
         "def notificationDomain : List Nat := {}\n",
@@ -637,9 +673,9 @@ fn axioms_admitted(report: &str, theorems: &[&str]) -> bool {
                 .filter_map(|line| line.strip_prefix(&prefix))
                 .collect::<Vec<_>>();
             match reports.as_slice() {
-                [report] => {
-                    *report == "does not depend on any axioms"
-                        || report
+                [only] => {
+                    *only == "does not depend on any axioms"
+                        || only
                             .strip_prefix("depends on axioms: [")
                             .and_then(|axioms| axioms.strip_suffix(']'))
                             .is_some_and(|axioms| {
@@ -683,9 +719,15 @@ fn refuses_the_defects(report: &str) -> bool {
 }
 
 /// Check the models, their refinement of the core crate, a fresh kernel replay of each, and the refusal of broken tables, in the pinned image.
+///
+/// # Errors
+///
+/// Returns a failure when the evidence or the image can't be made, or the image runs another Lean release.
+/// Returns a failure when a module doesn't compile, proves another set of theorems, rests on an untrusted axiom, or fails its replay.
+/// Returns a failure when the refinement admits a broken table.
 pub fn run(root: &Path) -> Result<(), Failure> {
-    let evidence = crate::container::evidence_directory(root, "lean")?;
-    fs::write(evidence.join("Refinement.lean"), refinement()?).map_err(Failure::io)?;
+    let evidence = fs::evidence_directory(root, "lean")?;
+    fs::write(evidence.join("Refinement.lean"), refinement()?)?;
     let container = Container::build(root, &evidence, "verification/lean.Dockerfile")?;
     let version = container.output(root, &evidence, &["lean", "--version"])?;
     if !version.contains(LEAN_VERSION) {
@@ -710,7 +752,7 @@ pub fn run(root: &Path) -> Result<(), Failure> {
                 &format!("{directory}/{module}.lean"),
             ],
         )?;
-        fs::write(evidence.join(format!("{module}-axioms.log")), &report).map_err(Failure::io)?;
+        fs::write(evidence.join(format!("{module}-axioms.log")), &report)?;
         if !axioms_admitted(&report, theorems) {
             return Err(Failure::new(format!(
                 "{module} proves another set of theorems or depends on an untrusted axiom; see {}",
@@ -721,12 +763,11 @@ pub fn run(root: &Path) -> Result<(), Failure> {
     }
 
     // The same refinement has to fail for the broken tables, on exactly the vectors they break.
-    fs::create_dir(evidence.join("broken")).map_err(Failure::io)?;
+    fs::create_dir(evidence.join("broken"))?;
     fs::write(
         evidence.join("broken").join("Refinement.lean"),
         refinement_with(&BROKEN_TABLES)?,
-    )
-    .map_err(Failure::io)?;
+    )?;
     let mounts = Mounts {
         workspace: root,
         evidence: &evidence,
@@ -745,7 +786,7 @@ pub fn run(root: &Path) -> Result<(), Failure> {
         ],
     )?;
     let report = format!("{}{}", broken.stdout, broken.stderr);
-    fs::write(evidence.join("broken-axioms.log"), &report).map_err(Failure::io)?;
+    fs::write(evidence.join("broken-axioms.log"), &report)?;
     if broken.code == Some(0) || !refuses_the_defects(&report) {
         return Err(Failure::new(format!(
             "the refinement admitted a broken decision, redaction, or framing table; see {}",
@@ -773,7 +814,7 @@ mod tests {
     };
 
     #[test]
-    fn the_broken_tables_differ_from_the_core_in_each_table() {
+    fn the_broken_decision_redaction_and_framing_tables_differ_from_the_core() {
         let differing = objects()
             .into_iter()
             .filter(|object| (BROKEN_TABLES.decide)(*object) != object.decision())
@@ -807,12 +848,25 @@ mod tests {
                 );
             }
         }
+        assert_ne!(
+            refinement().unwrap(),
+            refinement_with(&BROKEN_TABLES).unwrap()
+        );
+        assert_eq!(
+            refinement().unwrap(),
+            refinement_with(&CORE_TABLES).unwrap()
+        );
+    }
+
+    #[test]
+    fn the_broken_marker_tables_differ_from_the_core() {
         assert_eq!((CORE_TABLES.inert)(b"a<b"), b"a&lt;b");
         assert_eq!((BROKEN_TABLES.inert)(b"a<b"), b"a<b");
         for values in VECTOR_VALUES {
             assert_ne!((BROKEN_TABLES.render)(values), (CORE_TABLES.render)(values));
         }
         let starts = marker_bodies()
+            .unwrap()
             .iter()
             .filter(|body| (BROKEN_TABLES.find_marker)(body) != (CORE_TABLES.find_marker)(body))
             .count();
@@ -828,14 +882,6 @@ mod tests {
             })
             .count();
         assert_eq!(readings, 1, "only the repeated key differs");
-        assert_ne!(
-            refinement().unwrap(),
-            refinement_with(&BROKEN_TABLES).unwrap()
-        );
-        assert_eq!(
-            refinement().unwrap(),
-            refinement_with(&CORE_TABLES).unwrap()
-        );
     }
 
     #[test]
@@ -916,7 +962,7 @@ mod tests {
     #[test]
     fn the_audited_theorems_are_the_ones_the_models_print() {
         for (module, theorems) in MODELS {
-            let model = std::fs::read_to_string(
+            let model = crate::fs::read_to_string(
                 std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                     .join(format!("../verification/lean/{module}.lean")),
             )

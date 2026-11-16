@@ -191,7 +191,10 @@ fn script_tests(root: &Path) -> Result<Vec<String>, Failure> {
             .file_name()
             .into_string()
             .map_err(|name| {
-                Failure::new(format!("{SCRIPTS} holds a name that isn't UTF-8: {name:?}"))
+                Failure::new(format!(
+                    "{SCRIPTS} holds a name that isn't UTF-8: {}",
+                    name.display()
+                ))
             })?;
         if name.ends_with(".test.js") {
             tests.push(format!("{SCRIPTS}/{name}"));
@@ -339,6 +342,10 @@ fn platform(root: &Path) -> Result<(), Failure> {
 }
 
 /// Runs the checks of one scope and reports every failure together.
+///
+/// # Errors
+///
+/// Returns a failure naming every check of the scope that failed.
 pub fn run(root: &Path, scope: Scope) -> Result<(), Failure> {
     match scope {
         Scope::Everything => everything(root),
@@ -366,7 +373,7 @@ mod tests {
             ["src/main.rs", "xtask/src/check.rs"]
         );
         assert_eq!(with_suffix(&paths, ".toml"), ["Cargo.toml"]);
-        assert!(with_suffix(&paths, ".yml").is_empty());
+        assert_eq!(with_suffix(&paths, ".yml"), Vec::<&str>::new());
     }
 
     #[test]
