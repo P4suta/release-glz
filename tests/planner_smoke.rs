@@ -81,6 +81,83 @@ impl Registry for ExistingRegistry {
     }
 }
 
+/// A registry that lists releases in a given order and refuses every download.
+#[derive(Clone)]
+struct ListedRegistry {
+    versions: Vec<Version>,
+}
+
+#[async_trait]
+impl Registry for ListedRegistry {
+    async fn package(&self, _name: &str) -> Result<Option<PackageState>> {
+        Ok(Some(PackageState {
+            releases: self
+                .versions
+                .iter()
+                .map(|version| HexRelease {
+                    version: version.clone(),
+                    has_docs: true,
+                    retired: false,
+                })
+                .collect(),
+        }))
+    }
+
+    async fn source_tarball(&self, _name: &str, _version: &Version) -> Result<Vec<u8>> {
+        bail!("planning read a source tarball before it chose the latest release")
+    }
+
+    async fn docs_tarball(&self, _name: &str, _version: &Version) -> Result<Option<Vec<u8>>> {
+        bail!("planning read documentation before it chose the latest release")
+    }
+}
+
+#[tokio::test]
+async fn planning_refuses_releases_that_tie_at_the_highest_precedence_before_any_download()
+-> Result<()> {
+    require_gleam();
+    let temp = tempfile::tempdir()?;
+    let package = temp.path();
+    init_gleam_fixture(package, "tie_fixture", "1.0.0")?;
+    let manifest_path = package.join("gleam.toml");
+
+    for (listed, message) in [
+        (
+            ["1.0.0+a", "1.0.0+b"].as_slice(),
+            "the registry lists 1.0.0+a and 1.0.0+b, which share the highest precedence, so neither is the latest release",
+        ),
+        (
+            ["1.0.0+b", "1.0.0+a"].as_slice(),
+            "the registry lists 1.0.0+b and 1.0.0+a, which share the highest precedence, so neither is the latest release",
+        ),
+        (
+            ["1.0.0+a", "1.0.0+b", "1.0.1-rc.1"].as_slice(),
+            "the registry lists 1.0.0+a and 1.0.0+b, which share the highest precedence, so neither is the latest stable release",
+        ),
+    ] {
+        let versions = listed
+            .iter()
+            .map(|version| version.parse())
+            .collect::<Result<Vec<Version>, _>>()?;
+        let error = uncached_planner(ListedRegistry { versions }, Gleam::default())
+            .plan(&PlanOptions {
+                manifest_path: manifest_path.clone(),
+                ..PlanOptions::default()
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(
+            (refusal_reason(&error), format!("{error:#}")),
+            (
+                Some(RefusalReason::RegistryReleasePrecedenceTie),
+                message.to_owned()
+            ),
+            "{listed:?}"
+        );
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn initial_plan_covers_empty_registry_version_floor_and_prerelease_train_edges() -> Result<()>
 {

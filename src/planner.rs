@@ -28,7 +28,7 @@ use crate::model::{
     ReleaseState,
 };
 use crate::refuse;
-use crate::registry::{HexRegistry, PackageState, Registry};
+use crate::registry::{HexRegistry, HexRelease, PackageState, Registry};
 use crate::version::{bump_between, effective_bump, follows, initial_version, select_version};
 
 const DEFAULT_BASELINE_SEARCH_LIMIT: usize = 2_048;
@@ -60,6 +60,29 @@ struct BaselineSearch<'a> {
     retired: bool,
     published: &'a artifact::NormalizedArtifact,
     published_fingerprint: &'a str,
+}
+
+/// The registry releases that a plan for an already published package starts from.
+struct Published {
+    latest: HexRelease,
+    latest_stable: Option<Version>,
+}
+
+impl Published {
+    /// The latest and latest stable releases of `state`, or `None` when it has no release.
+    ///
+    /// Both are resolved before any download, so a precedence tie refuses whether or not a release turns out to be required.
+    fn of(state: &PackageState) -> Result<Option<Self>> {
+        let Some(latest) = state.latest()? else {
+            return Ok(None);
+        };
+        Ok(Some(Self {
+            latest: latest.clone(),
+            latest_stable: state
+                .latest_stable()?
+                .map(|release| release.version.clone()),
+        }))
+    }
 }
 
 fn default_baseline_cache_dir() -> Option<PathBuf> {
@@ -177,14 +200,22 @@ impl<R: Registry> Planner<R> {
             .await
             .map_err(|error| with_default_class(error, FailureClass::TemporaryExternal))?;
 
-        let mut plan = match package_state {
+        let published = match &package_state {
+            Some(state) => Published::of(state)?,
+            None => None,
+        };
+        let mut plan = match published {
             None => self.initial_plan(&manifest, release, &repo, options).await,
-            Some(state) if state.latest().is_none() => {
-                self.initial_plan(&manifest, release, &repo, options).await
-            }
-            Some(state) => {
-                self.existing_plan(&manifest, release, &repo, package_relative, state, options)
-                    .await
+            Some(published) => {
+                self.existing_plan(
+                    &manifest,
+                    release,
+                    &repo,
+                    package_relative,
+                    published,
+                    options,
+                )
+                .await
             }
         }?;
         plan.manifest_path = relative_manifest.to_string_lossy().replace('\\', "/");
@@ -250,10 +281,13 @@ impl<R: Registry> Planner<R> {
         release: &ReleaseConfig,
         repo: &GitRepo,
         package_relative: &std::path::Path,
-        state: PackageState,
+        published: Published,
         options: &PlanOptions,
     ) -> Result<ReleasePlan> {
-        let latest = state.latest().expect("checked above").clone();
+        let Published {
+            latest,
+            latest_stable,
+        } = published;
         let candidate = options
             .version_override
             .as_ref()
@@ -402,7 +436,7 @@ impl<R: Registry> Planner<R> {
         let selected = if release_required {
             select_version(
                 &latest.version,
-                state.latest_stable().map(|release| &release.version),
+                latest_stable.as_ref(),
                 required,
                 explicit,
                 configured_prerelease,

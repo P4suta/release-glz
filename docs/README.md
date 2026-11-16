@@ -502,6 +502,7 @@ Reason codes are stable, and a code is never reused for another refusal:
 | `approval_request_incomplete` | 3 | The publishing job's environment lacks a variable that release approval checks. |
 | `approval_release_pr_missing` | 3 | A push release has no server-verified merged managed Release PR for its Candidate. |
 | `repository_object_format_unsupported` | 2 | The repository that a rehearsal builds from names its objects with a hash other than SHA-1, so GitHub can't serve its commits. |
+| `registry_release_precedence_tie` | 4 | Two registry releases share the highest precedence, among every release or among the stable ones, and differ in build metadata, so neither is the latest. |
 
 A release run that stops after it published part of a release exits 7 whatever stopped it, including a required notify hook that fails after publication.
 Inspection commands, `status`, `verify --online`, and `release --dry-run`, exit 0 whenever they can report a state, and that `state` names what remains.
