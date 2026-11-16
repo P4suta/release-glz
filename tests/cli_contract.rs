@@ -1,7 +1,7 @@
 use std::process::Command;
 
 use release_glz_test_support::schema::assert_published_envelope;
-use release_glz_test_support::{git, init_repository, isolated_command};
+use release_glz_test_support::{fs, git, init_repository, isolated_command};
 
 fn binary() -> Command {
     isolated_command(env!("CARGO_BIN_EXE_release-glz"))
@@ -150,7 +150,7 @@ fn json_output_uses_the_command_envelope() {
 fn unconfigured_package() -> (tempfile::TempDir, std::path::PathBuf, String) {
     let temp = tempfile::tempdir().unwrap();
     let manifest = temp.path().join("gleam.toml");
-    std::fs::write(&manifest, "name = \"widget\"\nversion = \"1.0.0\"\n").unwrap();
+    fs::write(&manifest, "name = \"widget\"\nversion = \"1.0.0\"\n");
     init_repository(temp.path());
     for setting in [
         ["core.hooksPath", ".git/no-hooks"],
@@ -201,10 +201,10 @@ fn commands_that_read_the_release_configuration_refuse_a_manifest_without_it() {
             message.contains("[tools.release-glz]") && message.contains("release-glz init"),
             "{command:?}: {message}"
         );
-        assert!(!temp.path().join("candidate").exists(), "{command:?}");
+        assert!(!fs::exists(temp.path().join("candidate")), "{command:?}");
     }
     assert_eq!(
-        std::fs::read_to_string(&manifest).unwrap(),
+        fs::read_to_string(&manifest),
         "name = \"widget\"\nversion = \"1.0.0\"\n"
     );
 }
@@ -258,7 +258,7 @@ fn doctor_reports_a_manifest_without_release_configuration_and_points_to_init() 
 fn json_configuration_failures_use_the_command_envelope_and_exit_two() {
     let temp = tempfile::tempdir().unwrap();
     let manifest = temp.path().join("gleam.toml");
-    std::fs::write(&manifest, "name = 42\nversion = \"1.0.0\"\n").unwrap();
+    fs::write(&manifest, "name = 42\nversion = \"1.0.0\"\n");
     let output = binary()
         .args([
             "--manifest-path",

@@ -45,32 +45,44 @@ pub(crate) fn redirect_target<S>(
 where
     S: AsRef<str>,
 {
-    response
-        .headers()
-        .get(reqwest::header::LOCATION)
-        .and_then(|location| location.to_str().ok())
-        .and_then(|location| response.url().join(location).ok())
-        .map(|target| target.origin())
-        .filter(|origin| origin.is_tuple())
-        .map_or_else(
-            || "a missing or invalid Location".to_owned(),
-            |origin| {
-                let secrets = standard_secrets()
-                    .chain(
-                        credentials
-                            .into_iter()
-                            .map(|credential| credential.as_ref().to_owned()),
-                    )
-                    .flat_map(|secret| [secret.to_ascii_lowercase(), secret]);
-                redact_values(&origin.ascii_serialization(), secrets)
-            },
+    let Some(location) = response.headers().get(reqwest::header::LOCATION) else {
+        return "a missing Location".to_owned();
+    };
+    let target = match location.to_str() {
+        Ok(location) => response
+            .url()
+            .join(location)
+            .map_err(|error| error.to_string()),
+        Err(error) => Err(error.to_string()),
+    };
+    let origin = match target {
+        Ok(target) => target.origin(),
+        Err(reason) => return format!("an invalid Location: {reason}"),
+    };
+    if !origin.is_tuple() {
+        return "a Location without an origin".to_owned();
+    }
+    let secrets = standard_secrets()
+        .chain(
+            credentials
+                .into_iter()
+                .map(|credential| credential.as_ref().to_owned()),
         )
+        .flat_map(|secret| [secret.to_ascii_lowercase(), secret]);
+    redact_values(&origin.ascii_serialization(), secrets)
+}
+
+/// The value of the credential variable `name` as text that redaction removes, or `None` when it isn't set.
+///
+/// A value that isn't Unicode is taken in the lossy form that a transcript of it would show, so it is redacted too.
+pub fn redacted_value(name: &str) -> Option<String> {
+    std::env::var_os(name).map(|value| value.to_string_lossy().into_owned())
 }
 
 fn standard_secrets() -> impl Iterator<Item = String> {
     STANDARD_SECRET_ENV_NAMES
         .into_iter()
-        .filter_map(|name| std::env::var(name).ok())
+        .filter_map(redacted_value)
 }
 
 /// Replace each run of text that some occurrence of a secret covers with one `[REDACTED]`.

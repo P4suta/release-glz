@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::process::Command;
+
 use std::sync::{Arc, Mutex};
 
 use base64::Engine as _;
@@ -20,6 +20,7 @@ use release_glz::model::ReleaseState;
 use release_glz::reconciler::{ApprovalEvidence, ReconcileEffect};
 use release_glz::registry::HexRegistry;
 use release_glz::release::{CandidateReleaseRunner, LiveReleaseTarget};
+use release_glz_test_support::fs;
 use release_glz_test_support::http::{FakeServer, Reply, Request, Response};
 use release_glz_test_support::oidc;
 use semver::Version;
@@ -534,17 +535,15 @@ fn live_fixture_without_docs(registry_base: &str) -> LiveFixture {
 fn sealed_fixture(registry_base: &str, assets: &[(&str, &str)], with_docs: bool) -> LiveFixture {
     let temp = tempfile::tempdir().unwrap();
     let repository = temp.path().join("repo");
-    std::fs::create_dir_all(repository.join("src")).unwrap();
-    std::fs::write(
+    fs::create_dir_all(repository.join("src"));
+    fs::write(
         repository.join("gleam.toml"),
         "name = \"widget\"\nversion = \"1.2.3\"\n",
-    )
-    .unwrap();
-    std::fs::write(
+    );
+    fs::write(
         repository.join("src/widget.gleam"),
         "pub fn widget() -> Int { 1 }\n",
-    )
-    .unwrap();
+    );
     git(&repository, &["init", "--initial-branch=main"]);
     git(&repository, &["config", "core.hooksPath", ".git/no-hooks"]);
     git(
@@ -1119,11 +1118,12 @@ fn github_response(
             json_response(201, answer)
         }
         ("DELETE", path) if path.starts_with("/repos/owner/widget/releases/assets/") => {
-            let id = path
-                .rsplit('/')
-                .next()
-                .and_then(|id| id.parse::<u64>().ok());
-            match state.assets.iter().position(|asset| Some(asset.id) == id) {
+            let id = path.rsplit('/').next();
+            match state
+                .assets
+                .iter()
+                .position(|asset| id == Some(asset.id.to_string().as_str()))
+            {
                 Some(index) => {
                     let removed = state.assets.remove(index);
                     let draft = state.draft;
@@ -1296,7 +1296,7 @@ fn release_json(state: &GitHubState, base_url: &str) -> serde_json::Value {
 }
 
 fn git(directory: &std::path::Path, args: &[&str]) {
-    let output = Command::new("git")
+    let output = release_glz_test_support::new_command("git")
         .arg("-C")
         .arg(directory)
         .args(args)
@@ -1310,7 +1310,7 @@ fn git(directory: &std::path::Path, args: &[&str]) {
 }
 
 fn git_output(directory: &std::path::Path, args: &[&str]) -> String {
-    let output = Command::new("git")
+    let output = release_glz_test_support::new_command("git")
         .arg("-C")
         .arg(directory)
         .args(args)

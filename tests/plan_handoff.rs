@@ -11,7 +11,7 @@ use release_glz::model::{
     ReleasePlan, ReleaseReason, ReleaseStage, ReleaseState,
 };
 use release_glz_test_support::schema::assert_matches;
-use release_glz_test_support::{git, init_repository, property};
+use release_glz_test_support::{fs, git, init_repository, property};
 use semver::{BuildMetadata, Prerelease, Version};
 use serde_json::Value;
 
@@ -30,7 +30,7 @@ impl History {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path();
         init_repository(root);
-        std::fs::write(root.join("gleam.toml"), MANIFEST).unwrap();
+        fs::write(root.join("gleam.toml"), MANIFEST);
         git(root, &["add", "gleam.toml"]);
         let first = commit(root, "feat: first");
         git(root, &["switch", "--quiet", "--create", "side"]);
@@ -53,7 +53,7 @@ impl History {
 
     fn file(&self, name: &str, bytes: &[u8]) -> PathBuf {
         let path = self.directory.path().join(name);
-        std::fs::write(&path, bytes).unwrap();
+        fs::write(&path, bytes);
         path
     }
 }
@@ -147,7 +147,7 @@ fn a_written_plan_reads_back_unchanged_and_is_never_replaced() {
     let written = plan(Some(&history.first));
 
     handoff::write_new(&path, &written).unwrap();
-    let bytes = std::fs::read(&path).unwrap();
+    let bytes = fs::read(&path);
     assert_eq!(
         serde_json::to_value(handoff::read(&path).unwrap()).unwrap(),
         serde_json::to_value(&written).unwrap()
@@ -160,12 +160,12 @@ fn a_written_plan_reads_back_unchanged_and_is_never_replaced() {
     );
     assert_eq!(
         error
-            .downcast_ref::<std::io::Error>()
-            .map(std::io::Error::kind),
+            .downcast_ref::<release_glz::fs::Error>()
+            .map(release_glz::fs::Error::kind),
         Some(std::io::ErrorKind::AlreadyExists),
         "{error:#}"
     );
-    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    assert_eq!(fs::read(&path), bytes);
 }
 
 #[test]
@@ -337,11 +337,11 @@ proptest! {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("plan.json");
         handoff::write_new(&path, &plan).unwrap();
-        let written = std::fs::read(&path).unwrap();
+        let written = fs::read(&path);
         let changed_path = directory.path().join("changed.json");
         for change in &changes {
             let changed = change.apply(&written);
-            std::fs::write(&changed_path, &changed).unwrap();
+            fs::write(&changed_path, &changed);
             match handoff::read(&changed_path) {
                 Ok(read) => {
                     prop_assert_eq!(read.schema.as_str(), ReleasePlan::SCHEMA, "{:?}", change);

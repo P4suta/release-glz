@@ -3,7 +3,6 @@
 //! Rendering is idempotent, so the rolling Release PR can be regenerated on every push without producing a new diff each time.
 
 use std::collections::BTreeSet;
-use std::fs;
 use std::ops::Range;
 use std::path::Path;
 
@@ -11,6 +10,8 @@ use anyhow::{Context, Result};
 use chrono::{NaiveDate, Utc};
 use serde::Deserialize;
 
+use crate::failure::{Refusal, RefusalReason};
+use crate::fs;
 use crate::git::conventional_bump;
 use crate::model::{Bump, ChangeEntry};
 use crate::refuse;
@@ -113,9 +114,9 @@ struct StructuredNote {
 }
 
 impl ReleaseNotesConfig {
-    /// Read the configuration, falling back to defaults when absent.
+    /// Read the configuration, falling back to defaults when no regular file is at the path.
     pub fn load(path: &Path) -> Result<Self> {
-        if !path.is_file() {
+        if fs::kind(path)? != fs::Kind::File {
             return Ok(Self::default());
         }
         let source = fs::read_to_string(path)?;
@@ -172,6 +173,18 @@ impl ReleaseNotesConfig {
     }
 }
 
+/// The text of the changelog at `path`, or `None` when the package has none.
+///
+/// A changelog that is there but can't be read is refused, so its releases are never rendered or sealed as if it were missing.
+pub(crate) fn read_if_present(path: &Path) -> Result<Option<String>> {
+    fs::read_to_string_if_present(path).with_context(|| {
+        Refusal::new(
+            RefusalReason::ChangelogUnreadable,
+            format!("the changelog `{}` can't be read", path.display()),
+        )
+    })
+}
+
 /// Read the structured note fragments that have not been released yet.
 pub fn load_structured_notes(
     package_root: &Path,
@@ -179,7 +192,7 @@ pub fn load_structured_notes(
     existing_changelog: Option<&str>,
 ) -> Result<Vec<ChangeEntry>> {
     let directory = package_root.join(notes_directory);
-    if !directory.exists() {
+    if fs::kind(&directory)? == fs::Kind::Absent {
         return Ok(Vec::new());
     }
     let metadata = fs::symlink_metadata(&directory)?;
@@ -190,9 +203,8 @@ pub fn load_structured_notes(
         );
     }
     let mut paths = fs::read_dir(&directory)?
-        .collect::<std::io::Result<Vec<_>>>()?
         .into_iter()
-        .map(|entry| entry.path())
+        .map(|entry| entry.path().to_path_buf())
         .filter(|path| {
             path.extension()
                 .is_some_and(|extension| extension == "toml")
@@ -397,6 +409,11 @@ fn render_section_on(version: &str, entries: &[ChangeEntry], date: NaiveDate) ->
     output
 }
 
+/// The date that the heading of `version`'s section records, or `None` when it records none, so rendering dates the section anew.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "a heading whose date doesn't parse records no date, and rendering replaces it"
+)]
 fn release_section_date(section: &str, version: &str) -> Option<NaiveDate> {
     let prefix = format!("## [{version}] - ");
     let raw = section.lines().next()?.strip_prefix(&prefix)?;
@@ -447,6 +464,7 @@ pub const fn category_of(bump: Bump) -> NoteCategory {
 mod tests {
     use super::*;
     use crate::failure::{RefusalReason, refusal_reason};
+    use release_glz_test_support::fs;
 
     /// The reason and message of the refusal that loading the notes under `notes` of `package_root` ends in.
     fn notes_refusal(package_root: &Path, notes: &str) -> (Option<RefusalReason>, String) {
@@ -536,17 +554,15 @@ mod tests {
     fn structured_notes_are_strict_single_line_and_deduplicated_by_pr_and_id() {
         let temp = tempfile::tempdir().unwrap();
         let notes = temp.path().join(".release-glz/notes");
-        fs::create_dir_all(&notes).unwrap();
+        fs::create_dir_all(&notes);
         fs::write(
             notes.join("duplicate-pr.toml"),
             "id = \"duplicate-pr\"\ncategory = \"fixed\"\ntext = \"duplicate PR note\"\npull_request = 42\n",
-        )
-        .unwrap();
+        );
         fs::write(
             notes.join("security-hardening.toml"),
             "id = \"security-hardening\"\ncategory = \"security\"\ntext = \"Harden archive validation\"\n",
-        )
-        .unwrap();
+        );
         let loaded = load_structured_notes(
             temp.path(),
             Path::new(".release-glz/notes"),
@@ -575,8 +591,7 @@ mod tests {
         fs::write(
             notes.join("multiline.toml"),
             "id = \"multiline\"\ncategory = \"changed\"\ntext = \"first\\nsecond\"\n",
-        )
-        .unwrap();
+        );
         assert_eq!(
             notes_refusal(temp.path(), ".release-glz/notes"),
             note(NOTE_TEXT)
@@ -593,7 +608,7 @@ mod tests {
                 .is_empty()
         );
         let invalid = temp.path().join("invalid.yml");
-        fs::write(&invalid, "changelog: [").unwrap();
+        fs::write(&invalid, "changelog: [");
         let error = ReleaseNotesConfig::load(&invalid).unwrap_err();
         assert_eq!(
             error.to_string(),
@@ -614,7 +629,7 @@ mod tests {
     - title: Everything else
       labels: ["*"]
 "#;
-        fs::write(temp.path().join("release.yml"), source).unwrap();
+        fs::write(temp.path().join("release.yml"), source);
         let config = ReleaseNotesConfig::load(&temp.path().join("release.yml")).unwrap();
         let entry = |author: Option<&str>, labels: &[&str], title: &str| ChangeEntry {
             title: title.into(),
@@ -650,8 +665,7 @@ mod tests {
     - title: Security
       labels: [security]
 "#,
-        )
-        .unwrap();
+        );
         let wildcard_first =
             ReleaseNotesConfig::load(&temp.path().join("wildcard-first.yml")).unwrap();
         let categorized = wildcard_first.apply([entry(None, &["security"], "security")]);
@@ -681,20 +695,20 @@ mod tests {
     fn structured_note_directory_file_and_count_limits_fail_closed() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("notes");
-        fs::write(&path, "not a directory").unwrap();
+        fs::write(&path, "not a directory");
         assert_eq!(
             notes_refusal(temp.path(), "notes"),
             layout("structured changelog notes path is not a directory")
         );
 
-        fs::remove_file(&path).unwrap();
-        fs::create_dir(&path).unwrap();
-        fs::write(path.join("large.toml"), vec![b'x'; 64 * 1024 + 1]).unwrap();
+        fs::remove_file(&path);
+        fs::create_dir(&path);
+        fs::write(path.join("large.toml"), vec![b'x'; 64 * 1024 + 1]);
         assert_eq!(notes_refusal(temp.path(), "notes"), layout(NOTE_FILE));
 
-        fs::remove_file(path.join("large.toml")).unwrap();
+        fs::remove_file(path.join("large.toml"));
         for index in 0..=1_000 {
-            fs::write(path.join(format!("{index}.toml")), "").unwrap();
+            fs::write(path.join(format!("{index}.toml")), "");
         }
         assert_eq!(
             notes_refusal(temp.path(), "notes"),
@@ -750,8 +764,8 @@ mod tests {
         ] {
             let temp = tempfile::tempdir().unwrap();
             let notes = temp.path().join("notes");
-            fs::create_dir(&notes).unwrap();
-            fs::write(notes.join(filename), source).unwrap();
+            fs::create_dir(&notes);
+            fs::write(notes.join(filename), source);
             assert_eq!(
                 notes_refusal(temp.path(), "notes"),
                 note(message),
@@ -761,12 +775,11 @@ mod tests {
 
         let temp = tempfile::tempdir().unwrap();
         let notes = temp.path().join("notes");
-        fs::create_dir(&notes).unwrap();
+        fs::create_dir(&notes);
         fs::write(
             notes.join("target.toml"),
             "id = \"target\"\ncategory = \"fixed\"\ntext = \"text\"\n",
-        )
-        .unwrap();
+        );
         symlink("target.toml", notes.join("linked.toml")).unwrap();
         assert_eq!(notes_refusal(temp.path(), "notes"), layout(NOTE_FILE));
     }
@@ -775,7 +788,7 @@ mod tests {
     fn every_note_category_marker_and_render_shape_is_stable() {
         let temp = tempfile::tempdir().unwrap();
         let notes = temp.path().join("notes");
-        fs::create_dir(&notes).unwrap();
+        fs::create_dir(&notes);
         for category in [
             "added",
             "changed",
@@ -789,8 +802,7 @@ mod tests {
                 format!(
                     "id = \"{category}\"\ncategory = \"{category}\"\ntext = \"{category} note\"\n"
                 ),
-            )
-            .unwrap();
+            );
         }
         let loaded = load_structured_notes(
             temp.path(),

@@ -86,8 +86,8 @@ fn hex(data: &[u8]) -> bool {
     assert!(validation.content_entries <= LIMITS.max_entries);
     assert!(validation.expanded_bytes <= LIMITS.max_total_bytes);
     assert_eq!(
-        validate_hex_tarball(data, ArchiveLimits::default()).ok(),
-        Some(validation.clone())
+        validate_hex_tarball(data, ArchiveLimits::default()).map_err(|error| format!("{error:#}")),
+        Ok(validation.clone())
     );
     assert_limits_refuse_below(data, &validation);
     true

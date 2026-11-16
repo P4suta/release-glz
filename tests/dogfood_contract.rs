@@ -1,12 +1,11 @@
-use std::fs;
 use std::path::Path;
-use std::process::Command;
 
 use release_glz::api;
 use release_glz::config::{Manifest, RegistryProvider};
 use release_glz::git::GitRepo;
 use release_glz::version::{effective_bump, next_prerelease_with_core};
 use release_glz::{Bump, PrereleaseChannel};
+use release_glz_test_support::fs;
 use semver::Version;
 
 const KANGAROO: &str = "tests/fixtures/dogfood/kangaroo";
@@ -45,15 +44,15 @@ fn dogfood_manifests_cover_public_initial_and_private_prerelease_paths() {
 #[test]
 fn dogfood_api_snapshots_cover_additions_and_zero_major_breakage() {
     let kangaroo = api::compare(
-        &fs::read(Path::new(KANGAROO).join("api/baseline.json")).unwrap(),
-        &fs::read(Path::new(KANGAROO).join("api/current.json")).unwrap(),
+        &fs::read(Path::new(KANGAROO).join("api/baseline.json")),
+        &fs::read(Path::new(KANGAROO).join("api/current.json")),
     )
     .unwrap();
     assert_eq!(kangaroo.impact, Bump::Minor);
 
     let mutants = api::compare(
-        &fs::read(Path::new(GLEAM_MUTANTS).join("api/baseline.json")).unwrap(),
-        &fs::read(Path::new(GLEAM_MUTANTS).join("api/current.json")).unwrap(),
+        &fs::read(Path::new(GLEAM_MUTANTS).join("api/baseline.json")),
+        &fs::read(Path::new(GLEAM_MUTANTS).join("api/current.json")),
     )
     .unwrap();
     assert_eq!(mutants.impact, Bump::Major);
@@ -97,13 +96,12 @@ fn dogfood_archive_uses_the_commit_and_excludes_dirty_worktree_content() {
     fs::write(
         repository.join("src/kangaroo.gleam"),
         "pub fn dirty_only() -> Int { 999 }\n",
-    )
-    .unwrap();
+    );
     let archive = temp.path().join("archive");
-    fs::create_dir(&archive).unwrap();
+    fs::create_dir(&archive);
     repo.archive(&sha, &archive).unwrap();
 
-    let source = fs::read_to_string(archive.join("src/kangaroo.gleam")).unwrap();
+    let source = fs::read_to_string(archive.join("src/kangaroo.gleam"));
     assert!(source.contains("pub fn run"));
     assert!(!source.contains("dirty_only"));
 }
@@ -116,13 +114,13 @@ fn copy_fixture(source: &Path, destination: &Path) {
         "api/current.json",
     ] {
         let target = destination.join(relative);
-        fs::create_dir_all(target.parent().unwrap()).unwrap();
-        fs::copy(source.join(relative), target).unwrap();
+        fs::create_dir_all(target.parent().unwrap());
+        fs::copy(source.join(relative), target);
     }
 }
 
 fn git(directory: &Path, arguments: &[&str]) {
-    let output = Command::new("git")
+    let output = release_glz_test_support::new_command("git")
         .arg("-C")
         .arg(directory)
         .args(arguments)

@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
-use std::fs;
 
 use release_glz_test_support::fake_tool::{self, Action, Behavior};
+use release_glz_test_support::fs;
 use release_glz_test_support::isolated_command;
 
 /// One variable from every family that dependency build code must never read.
@@ -47,8 +47,7 @@ fn the_compiler_runs_without_tokens_inputs_runner_files_or_registry_credentials(
             "/tests/fixtures/dogfood/gleam-mutants/gleam.toml"
         ),
         temp.path().join("gleam.toml"),
-    )
-    .unwrap();
+    );
 
     let mut command = isolated_command(env!("CARGO_BIN_EXE_release-glz"));
     command
@@ -61,13 +60,12 @@ fn the_compiler_runs_without_tokens_inputs_runner_files_or_registry_credentials(
     }
     let output = command.output().unwrap();
 
-    let recorded = fs::read(&record).unwrap_or_else(|error| {
-        panic!(
-            "the gleam that PATH finds first never ran ({error}): {}",
-            String::from_utf8_lossy(&output.stderr)
-        )
-    });
-    let recorded: BTreeMap<String, String> = serde_json::from_slice(&recorded).unwrap();
+    assert!(
+        fs::exists(&record),
+        "the gleam that PATH finds first never ran: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let recorded: BTreeMap<String, String> = serde_json::from_slice(&fs::read(&record)).unwrap();
     for (name, value) in WITHHELD {
         assert!(!recorded.contains_key(name), "{name} reached the compiler");
         assert!(

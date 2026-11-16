@@ -335,7 +335,7 @@ impl HexRegistry {
 
     /// Build a client, reading the credential from `credential_env`.
     pub fn from_environment(config: &RegistryConfig) -> Result<Self> {
-        let credential = std::env::var(&config.credential_env).ok();
+        let credential = crate::environment::variable(&config.credential_env)?;
         Self::from_config(config, credential.as_deref())
     }
 

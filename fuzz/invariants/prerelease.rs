@@ -44,11 +44,13 @@ pub fn check(data: &[u8]) -> Vec<Reached> {
 /// The prerelease that `text` spells, when the `semver` crate accepts it.
 fn read<'a>(text: &'a [u8], reached: &mut Vec<Reached>) -> Option<(Pre<'a>, semver::Prerelease)> {
     let expected = std::str::from_utf8(text)
-        .ok()
-        .and_then(|text| semver::Prerelease::new(text).ok());
+        .map_err(|error| error.to_string())
+        .and_then(|text| semver::Prerelease::new(text).map_err(|error| error.to_string()));
     let pre = Pre::parse(text);
-    assert_eq!(pre.is_valid(), expected.is_some(), "{text:?}");
-    let expected = expected?;
+    assert_eq!(pre.is_valid(), expected.is_ok(), "{text:?}: {expected:?}");
+    let Ok(expected) = expected else {
+        return None;
+    };
     assert_eq!(spelled(pre), text, "{expected}");
     match pre {
         Pre::Stable => {}

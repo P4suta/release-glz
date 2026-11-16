@@ -1,5 +1,4 @@
 use std::collections::BTreeMap;
-use std::fs;
 use std::io::Write;
 use std::ops::Range;
 
@@ -18,6 +17,7 @@ use release_glz::config::{
 use release_glz::failure::{FailureClass, RefusalReason, classify, refusal_reason};
 use release_glz::hooks::SidecarArtifact;
 use release_glz::release::{LiveReleaseTarget, SourceBoundCandidate};
+use release_glz_test_support::fs;
 use release_glz_test_support::property::{self, ByteChange};
 use release_glz_test_support::schema::assert_published_envelope;
 use release_glz_test_support::{git, init_repository, isolated_command};
@@ -430,7 +430,7 @@ fn candidate_verification_detects_any_raw_artifact_change() {
         ),
     )
     .unwrap();
-    fs::write(directory.join("artifacts/package.tar"), b"tampered").unwrap();
+    fs::write(directory.join("artifacts/package.tar"), b"tampered");
     let error = Candidate::verify(&directory).unwrap_err();
     assert_eq!(
         refusal_reason(&error),
@@ -455,8 +455,7 @@ fn candidate_verification_rejects_unsealed_inventory_entries() {
     fs::write(
         directory.join("unsealed-secret.txt"),
         b"must not be ignored",
-    )
-    .unwrap();
+    );
     let error = Candidate::verify(&directory).unwrap_err();
     assert_eq!(
         refusal_reason(&error),
@@ -661,8 +660,7 @@ fn candidate_manifest_is_bounded_strict_json_in_a_regular_file() {
     fs::write(
         oversized.join("candidate.json"),
         vec![b' '; 1024 * 1024 + 1],
-    )
-    .unwrap();
+    );
     let error = Candidate::verify(&oversized).unwrap_err();
     assert_eq!(
         refusal_reason(&error),
@@ -679,8 +677,7 @@ fn candidate_manifest_is_bounded_strict_json_in_a_regular_file() {
         fs::rename(
             linked.join("candidate.json"),
             linked.join("manifest-target"),
-        )
-        .unwrap();
+        );
         symlink("manifest-target", linked.join("candidate.json")).unwrap();
         let error = Candidate::verify(&linked).unwrap_err();
         assert_eq!(
@@ -700,7 +697,7 @@ fn a_manifest_respelled_without_changing_its_value_is_refused() {
     input.release_notes = "Widget\u{1f}release notes.".into();
     Candidate::seal(&directory, input).unwrap();
     let path = directory.join("candidate.json");
-    let sealed = fs::read(&path).unwrap();
+    let sealed = fs::read(&path);
     let escape = sealed
         .windows(6)
         .position(|window| window == br"\u001f")
@@ -719,14 +716,14 @@ fn a_manifest_respelled_without_changing_its_value_is_refused() {
             serde_json::from_slice::<serde_json::Value>(&sealed).unwrap(),
             "{case} changes the value"
         );
-        fs::write(&path, respelled).unwrap();
+        fs::write(&path, respelled);
         assert_eq!(
             verify_refusal(&directory),
             Some(RefusalReason::CandidateManifestInvalid),
             "{case}"
         );
     }
-    fs::write(&path, &sealed).unwrap();
+    fs::write(&path, &sealed);
     Candidate::verify(&directory).unwrap();
 }
 
@@ -836,10 +833,10 @@ fn a_sealed_file_with_its_size_but_other_bytes_fails_its_checksum() {
     let directory = temp.path().join("candidate");
     Candidate::seal(&directory, fresh_candidate_input()).unwrap();
     let path = directory.join("artifacts/package.tar");
-    let mut bytes = fs::read(&path).unwrap();
+    let mut bytes = fs::read(&path);
     let last = bytes.len() - 1;
     bytes[last] ^= 0xff;
-    fs::write(&path, bytes).unwrap();
+    fs::write(&path, bytes);
 
     let error = Candidate::verify(&directory).unwrap_err();
 
@@ -920,8 +917,7 @@ fn publication_reads_the_source_policy_from_the_commit_instead_of_the_working_tr
     fs::write(
         repository.join("gleam.toml"),
         POLICY_SOURCE.replace("https://hex.pm/api", "https://attacker.example/api"),
-    )
-    .unwrap();
+    );
     let sealed = Candidate::seal(
         &temp.path().join("candidate"),
         honest_policy_input(&repository, &sha),
@@ -941,7 +937,7 @@ fn publication_refuses_a_source_commit_without_release_configuration() {
     let temp = tempfile::tempdir().unwrap();
     let (repository, sha) =
         policy_repository_from(temp.path(), "name = \"widget\"\nversion = \"1.2.3\"\n");
-    fs::write(repository.join("gleam.toml"), POLICY_SOURCE).unwrap();
+    fs::write(repository.join("gleam.toml"), POLICY_SOURCE);
     let sealed = Candidate::seal(
         &temp.path().join("candidate"),
         honest_policy_input(&repository, &sha),
@@ -970,10 +966,10 @@ fn candidate_commands_refuse_a_checkout_without_release_configuration() {
     let temp = tempfile::tempdir().unwrap();
     let unconfigured = "name = \"widget\"\nversion = \"1.2.3\"\n";
     let (repository, sha) = policy_repository_from(temp.path(), unconfigured);
-    fs::write(repository.join("gleam.toml"), POLICY_SOURCE).unwrap();
+    fs::write(repository.join("gleam.toml"), POLICY_SOURCE);
     let candidate = temp.path().join("candidate");
     Candidate::seal(&candidate, honest_policy_input(&repository, &sha)).unwrap();
-    fs::write(repository.join("gleam.toml"), unconfigured).unwrap();
+    fs::write(repository.join("gleam.toml"), unconfigured);
     for arguments in [
         vec!["release-pr", "--dry-run", "--candidate"],
         vec!["release", "--dry-run", "--candidate"],
@@ -1056,7 +1052,7 @@ fn offline_candidate_commands_need_no_manifest_in_the_working_directory() {
     let candidate = temp.path().join("candidate");
     Candidate::seal(&candidate, fresh_candidate_input()).unwrap();
     let elsewhere = temp.path().join("elsewhere");
-    fs::create_dir(&elsewhere).unwrap();
+    fs::create_dir(&elsewhere);
     for command in ["verify", "status"] {
         let output = isolated_command(env!("CARGO_BIN_EXE_release-glz"))
             .current_dir(&elsewhere)
@@ -1173,8 +1169,8 @@ fn policy_repository(temp: &std::path::Path) -> (std::path::PathBuf, String) {
 /// A committed copy of `source` and the SHA of its commit.
 fn policy_repository_from(temp: &std::path::Path, source: &str) -> (std::path::PathBuf, String) {
     let repository = temp.join("repo");
-    fs::create_dir_all(&repository).unwrap();
-    fs::write(repository.join("gleam.toml"), source).unwrap();
+    fs::create_dir_all(&repository);
+    fs::write(repository.join("gleam.toml"), source);
     init_repository(&repository);
     for (name, value) in [
         ("core.hooksPath", ".git/no-hooks"),
@@ -1383,8 +1379,7 @@ fn sidecars_are_sealed_beside_but_cannot_change_the_candidate_core_intent() {
     fs::write(
         temp.path().join("with/sidecars/sbom/sbom.cdx.json"),
         b"tampered",
-    )
-    .unwrap();
+    );
     assert_eq!(
         verify_refusal(&temp.path().join("with")),
         Some(RefusalReason::CandidateChecksumMismatch)
@@ -1922,6 +1917,31 @@ fn a_package_is_private_on_an_organization_or_a_hex_compatible_registry() {
     }
 }
 
+/// A missing changelog seals no release notes, and one that can't be read stops the policy rather than sealing none.
+#[test]
+fn only_a_missing_changelog_seals_empty_release_notes() {
+    let temp = tempfile::tempdir().unwrap();
+    let manifest = Manifest::parse(temp.path().join("gleam.toml"), POLICY_SOURCE.into()).unwrap();
+    let policy = SealedPolicy::from_source(&manifest, temp.path(), "gleam.toml").unwrap();
+    assert_eq!(policy.release_notes, "");
+
+    let changelog = temp.path().join("CHANGELOG.md");
+    fs::write(&changelog, [0xff, 0xfe]);
+    let error = SealedPolicy::from_source(&manifest, temp.path(), "gleam.toml").unwrap_err();
+    assert_eq!(
+        (refusal_reason(&error), error.to_string()),
+        (
+            Some(RefusalReason::ChangelogUnreadable),
+            format!("the changelog `{}` can't be read", changelog.display())
+        )
+    );
+    assert_eq!(classify(&error), FailureClass::UsageOrConfig);
+    assert!(
+        format!("{error:#}").contains(&format!("failed to read `{}`", changelog.display())),
+        "{error:#}"
+    );
+}
+
 #[test]
 fn built_in_evidence_is_private_when_github_release_upload_is_disabled() {
     let mut input = fresh_candidate_input();
@@ -2045,10 +2065,9 @@ fn notify_hook(id: &str) -> HookConfig {
 
 fn mutate_candidate_json(directory: &std::path::Path, mutate: impl FnOnce(&mut serde_json::Value)) {
     let path = directory.join("candidate.json");
-    let mut manifest: serde_json::Value =
-        serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    let mut manifest: serde_json::Value = serde_json::from_slice(&fs::read(&path)).unwrap();
     mutate(&mut manifest);
-    fs::write(path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+    fs::write(path, serde_json::to_vec(&manifest).unwrap());
 }
 
 /// `bytes` with bit `bit` of the byte at `offset` inverted.
@@ -2176,12 +2195,12 @@ proptest! {
         for (file, change) in &changes {
             let file = &files[file.index(files.len())];
             let path = directory.join(file);
-            let original = fs::read(&path).unwrap();
-            fs::write(&path, change.apply(&original)).unwrap();
+            let original = fs::read(&path);
+            fs::write(&path, change.apply(&original));
             let outcome = Candidate::verify(&directory)
                 .map(drop)
                 .map_err(|error| (refusal_reason(&error), format!("{error:#}")));
-            fs::write(&path, &original).unwrap();
+            fs::write(&path, &original);
             let expected = if file == "candidate.json" {
                 MANIFEST_REFUSALS
             } else {
@@ -2289,8 +2308,7 @@ impl SealedBytes {
         Self {
             package: Candidate::package_bytes(directory, manifest).unwrap(),
             docs: Candidate::docs_bytes(directory, manifest).unwrap(),
-            interface: fs::read(directory.join(&manifest.artifacts.package_interface.path))
-                .unwrap(),
+            interface: fs::read(directory.join(&manifest.artifacts.package_interface.path)),
             sidecars: Candidate::sidecar_bytes(directory, manifest)
                 .unwrap()
                 .into_iter()

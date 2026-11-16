@@ -1,5 +1,4 @@
 use std::collections::BTreeSet;
-use std::fs;
 use std::path::Path;
 
 use release_glz::candidate::{
@@ -14,6 +13,7 @@ use release_glz::model::{
 };
 use release_glz::reconciler::ExternalReleaseState;
 use release_glz_domain::CommitId;
+use release_glz_test_support::fs;
 use release_glz_test_support::schema::{
     RESULT_SCHEMAS, assert_matches, assert_published_envelope, published_schemas, violations,
 };
@@ -552,16 +552,16 @@ fn without(value: &Value, pointer: &str, key: &str) -> Value {
 /// Every format identifier a `schema` field or constant in the Rust sources under `directory` names.
 fn named_formats(directory: &Path) -> BTreeSet<String> {
     let mut formats = BTreeSet::new();
-    for entry in fs::read_dir(directory).unwrap() {
+    for entry in std::fs::read_dir(directory).unwrap() {
         let path = entry.unwrap().path();
-        if path.is_dir() {
+        if fs::is_dir(&path) {
             formats.extend(named_formats(&path));
             continue;
         }
         if path.extension().is_none_or(|extension| extension != "rs") {
             continue;
         }
-        let source = fs::read_to_string(&path).unwrap();
+        let source = fs::read_to_string(&path);
         for prefix in ["schema: \"", "\"schema\": \"", "SCHEMA: &'static str = \""] {
             let mut rest = source.as_str();
             while let Some((_, literal)) = rest.split_once(prefix) {
@@ -589,8 +589,7 @@ fn is_format_identifier(identifier: &str) -> bool {
 }
 
 fn assert_schema_surface(path: &str, title: &str, schema_id: &str, actual: serde_json::Value) {
-    let schema: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+    let schema: serde_json::Value = serde_json::from_str(&fs::read_to_string(path)).unwrap();
     assert_eq!(
         schema["$schema"],
         "https://json-schema.org/draft/2020-12/schema"

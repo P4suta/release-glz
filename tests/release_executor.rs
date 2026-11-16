@@ -23,6 +23,7 @@ use release_glz::reconciler::{
     ObservedGithubRelease, ObservedTag, ReconcileEffect, ReleaseIntent,
 };
 use release_glz::release::{CandidateReleaseRunner, ReleasePayload, ReleaseTarget};
+use release_glz_test_support::fs;
 use release_glz_test_support::oidc;
 use release_glz_test_support::schema::assert_published_result;
 use semver::Version;
@@ -181,7 +182,7 @@ async fn missing_approval_is_reported_without_applying_a_single_effect() {
 #[tokio::test]
 async fn an_invalid_candidate_and_an_existing_checksum_conflict_keep_their_exact_states() {
     let fixture = candidate_fixture();
-    std::fs::write(fixture.directory.join("artifacts/package.tar"), b"tampered").unwrap();
+    fs::write(fixture.directory.join("artifacts/package.tar"), b"tampered");
     let error = CandidateReleaseRunner::new(FakeTarget::default())
         .run(&fixture.directory, &approved(&fixture.manifest))
         .await

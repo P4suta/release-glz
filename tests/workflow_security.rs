@@ -1,10 +1,9 @@
-use std::fs;
-
+use release_glz_test_support::fs;
 use serde_norway::{Mapping, Value};
 
 #[test]
 fn distribution_builds_and_smokes_every_supported_native_target() {
-    let yaml = fs::read_to_string(".github/workflows/distribute.yml").unwrap();
+    let yaml = fs::read_to_string(".github/workflows/distribute.yml");
     serde_norway::from_str::<serde_norway::Value>(&yaml).unwrap();
     for target in [
         "x86_64-unknown-linux-musl",
@@ -98,8 +97,7 @@ fn with_job_permissions(workflow: &Value, name: &str, permissions: Option<&str>)
 #[test]
 fn a_scalar_job_permission_can_neither_widen_nor_hide_the_attesting_job() {
     let workflow: Value =
-        serde_norway::from_str(&fs::read_to_string(".github/workflows/distribute.yml").unwrap())
-            .unwrap();
+        serde_norway::from_str(&fs::read_to_string(".github/workflows/distribute.yml")).unwrap();
     assert_eq!(only_the_release_job_attests(&workflow), Ok(()));
     let others = workflow["jobs"]
         .as_mapping()
@@ -153,9 +151,7 @@ fn a_scalar_job_permission_can_neither_widen_nor_hide_the_attesting_job() {
 
 #[test]
 fn distribution_is_attested_and_uploaded_to_a_draft_exactly_once() {
-    let yaml = fs::read_to_string(".github/workflows/distribute.yml")
-        .unwrap()
-        .replace("\r\n", "\n");
+    let yaml = fs::read_to_string(".github/workflows/distribute.yml").replace("\r\n", "\n");
     assert!(!yaml.contains("--clobber"));
     // GitHub's tag endpoint answers only with a published Release, so it can't find the draft.
     assert!(!yaml.contains("releases/tags/"));
@@ -243,7 +239,7 @@ fn distribution_is_attested_and_uploaded_to_a_draft_exactly_once() {
 
 #[test]
 fn distribution_requires_same_source_assurance_before_preparation_and_publication() {
-    let source = fs::read_to_string(".github/workflows/distribute.yml").unwrap();
+    let source = fs::read_to_string(".github/workflows/distribute.yml");
     let workflow: serde_norway::Value = serde_norway::from_str(&source).unwrap();
     let jobs = &workflow["jobs"];
     assert_eq!(jobs["assurance"]["needs"].as_str(), Some("validate"));
@@ -273,7 +269,7 @@ fn distribution_requires_same_source_assurance_before_preparation_and_publicatio
 
 #[test]
 fn distribution_prepares_checksums_without_mutating_a_release_before_the_tag() {
-    let yaml = fs::read_to_string(".github/workflows/distribute.yml").unwrap();
+    let yaml = fs::read_to_string(".github/workflows/distribute.yml");
     assert!(yaml.contains("workflow_dispatch:"));
     assert!(yaml.contains("version:"));
     assert!(yaml.contains("prepare:"));
@@ -296,7 +292,7 @@ fn distribution_prepares_checksums_without_mutating_a_release_before_the_tag() {
 
 #[test]
 fn distribution_packages_unix_archives_without_the_runner_tar() {
-    let yaml = fs::read_to_string(".github/workflows/distribute.yml").unwrap();
+    let yaml = fs::read_to_string(".github/workflows/distribute.yml");
     assert!(yaml.contains("node scripts/package-unix.js"));
     for host_archiver in ["tar -C", "tar -c", "gzip -n", "touch -t"] {
         assert!(
