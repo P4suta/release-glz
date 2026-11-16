@@ -218,6 +218,75 @@ pub struct CandidateManifest {
     pub candidate_digest: String,
 }
 
+impl CandidateManifest {
+    /// Read the bytes of `candidate.json`, refusing a manifest that sealing could not have written.
+    ///
+    /// The manifest has to be the canonical JSON of a valid `candidate/v1` value.
+    /// Its artifacts and digests are checked by [`Candidate::verify`], which reads the Candidate's files.
+    pub fn parse(bytes: &[u8]) -> Result<Self> {
+        let manifest: Self = serde_json::from_slice(bytes).with_context(|| {
+            Refusal::new(
+                RefusalReason::CandidateManifestInvalid,
+                "invalid candidate manifest",
+            )
+        })?;
+        if canonical_json_bytes(&manifest)? != bytes {
+            refuse!(
+                CandidateManifestInvalid,
+                "candidate manifest isn't the canonical JSON that sealing writes"
+            );
+        }
+        if manifest.schema != "candidate/v1" {
+            refuse!(
+                CandidateSchemaUnsupported,
+                "unsupported candidate schema `{}`",
+                manifest.schema
+            );
+        }
+        validate_package_name(&manifest.package)?;
+        validate_source(&manifest.source)?;
+        validate_candidate_tag(&manifest.tag, &manifest.version)?;
+        validate_registry_identity(&manifest.registry)?;
+        validate_github_repository(&manifest.github_repository)?;
+        validate_release_branch_prefix(&manifest.release_branch_prefix)?;
+        validate_release_notes(&manifest.release_notes)?;
+        validate_approval(&manifest.approval)?;
+        validate_hook_evidence(&manifest.hook_evidence)?;
+        validate_sidecars(&manifest.sidecars)?;
+        validate_sidecar_output_policy(manifest.private, &manifest.outputs, &manifest.sidecars)?;
+        validate_standard_output_artifacts(
+            &manifest.package,
+            &manifest.version,
+            &manifest.outputs,
+            &manifest.sidecars,
+        )?;
+        validate_candidate_hook_definitions(
+            &manifest.verify_hook_definitions,
+            &manifest.sidecar_hook_definitions,
+            &manifest.notify_hook_definitions,
+            &manifest.registry.credential_env,
+        )?;
+        validate_evidenced_hooks(
+            &manifest.verify_hook_definitions,
+            &manifest.sidecar_hook_definitions,
+            &manifest.hook_evidence,
+            &manifest.sidecars,
+        )?;
+        validate_notify_hooks(&manifest.notify_hooks)?;
+        validate_notify_hook_definitions(
+            &manifest.notify_hooks,
+            &manifest.notify_hook_definitions,
+        )?;
+        validate_output_artifacts(&manifest.outputs, manifest.artifacts.docs.is_some())?;
+        validate_descriptor_path(&manifest.artifacts.package, PACKAGE_FILE)?;
+        validate_descriptor_path(&manifest.artifacts.package_interface, INTERFACE_FILE)?;
+        if let Some(docs) = &manifest.artifacts.docs {
+            validate_descriptor_path(docs, DOCS_FILE)?;
+        }
+        Ok(manifest)
+    }
+}
+
 /// Everything needed to seal a Candidate, including the raw bytes.
 #[derive(Debug, Clone)]
 pub struct CandidateInput {
@@ -720,66 +789,7 @@ impl Candidate {
             MAX_MANIFEST_BYTES,
             "candidate manifest",
         )?;
-        let manifest: CandidateManifest =
-            serde_json::from_slice(&manifest_bytes).with_context(|| {
-                Refusal::new(
-                    RefusalReason::CandidateManifestInvalid,
-                    "invalid candidate manifest",
-                )
-            })?;
-        if canonical_json_bytes(&manifest)? != manifest_bytes {
-            refuse!(
-                CandidateManifestInvalid,
-                "candidate manifest isn't the canonical JSON that sealing writes"
-            );
-        }
-        if manifest.schema != "candidate/v1" {
-            refuse!(
-                CandidateSchemaUnsupported,
-                "unsupported candidate schema `{}`",
-                manifest.schema
-            );
-        }
-        validate_package_name(&manifest.package)?;
-        validate_source(&manifest.source)?;
-        validate_candidate_tag(&manifest.tag, &manifest.version)?;
-        validate_registry_identity(&manifest.registry)?;
-        validate_github_repository(&manifest.github_repository)?;
-        validate_release_branch_prefix(&manifest.release_branch_prefix)?;
-        validate_release_notes(&manifest.release_notes)?;
-        validate_approval(&manifest.approval)?;
-        validate_hook_evidence(&manifest.hook_evidence)?;
-        validate_sidecars(&manifest.sidecars)?;
-        validate_sidecar_output_policy(manifest.private, &manifest.outputs, &manifest.sidecars)?;
-        validate_standard_output_artifacts(
-            &manifest.package,
-            &manifest.version,
-            &manifest.outputs,
-            &manifest.sidecars,
-        )?;
-        validate_candidate_hook_definitions(
-            &manifest.verify_hook_definitions,
-            &manifest.sidecar_hook_definitions,
-            &manifest.notify_hook_definitions,
-            &manifest.registry.credential_env,
-        )?;
-        validate_evidenced_hooks(
-            &manifest.verify_hook_definitions,
-            &manifest.sidecar_hook_definitions,
-            &manifest.hook_evidence,
-            &manifest.sidecars,
-        )?;
-        validate_notify_hooks(&manifest.notify_hooks)?;
-        validate_notify_hook_definitions(
-            &manifest.notify_hooks,
-            &manifest.notify_hook_definitions,
-        )?;
-        validate_output_artifacts(&manifest.outputs, manifest.artifacts.docs.is_some())?;
-        validate_descriptor_path(&manifest.artifacts.package, PACKAGE_FILE)?;
-        validate_descriptor_path(&manifest.artifacts.package_interface, INTERFACE_FILE)?;
-        if let Some(docs) = &manifest.artifacts.docs {
-            validate_descriptor_path(docs, DOCS_FILE)?;
-        }
+        let manifest = CandidateManifest::parse(&manifest_bytes)?;
         validate_candidate_inventory(directory, &manifest)?;
         for sidecar in &manifest.sidecars {
             verify_sidecar_file(directory, sidecar)?;
@@ -1532,9 +1542,7 @@ fn validate_sidecars(sidecars: &[SealedSidecarArtifact]) -> Result<()> {
             );
         }
         validate_sha256(&sidecar.sha256, "sidecar checksum")?;
-        total = total
-            .checked_add(sidecar.size)
-            .context("candidate sidecar total size overflow")?;
+        total = total.saturating_add(sidecar.size);
         if sidecar.size > MAX_SIDECAR_BYTES || total > MAX_TOTAL_SIDECAR_BYTES {
             refuse!(
                 CandidateSidecarsTooLarge,

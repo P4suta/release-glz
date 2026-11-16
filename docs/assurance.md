@@ -73,7 +73,9 @@ It requests a runner token only from `actions.githubusercontent.com` or a host i
 Kani proves the window for every pair of times, and the run numbers for texts of up to three bytes and the two 20-digit texts around 2^64.
 It proves the hosts for every host whose length reaches a boundary of the rule, because the rule reads only the last 30 bytes of a longer host.
 The adapter parses each URL, decides whether a host is a loopback address, and verifies the token's signature before the core decides.
+Fuzzing signs generated claims with the example key of RFC 7515, and a token verifies only with that key's own signature and with claims that name the expected run.
 
+- Fuzz: `oidc`
 - Kani: `oidc::proofs::a_token_is_valid_exactly_while_its_window_holds_now`
 - Kani: `oidc::proofs::run_numbers_are_exactly_decimal_digits`
 - Kani: `oidc::proofs::an_oidc_url_trusts_no_host_but_githubs_own`
@@ -304,7 +306,9 @@ It proves the step between versions for every core and train number over version
 A digest or a commit id counts only when it has its exact length and nothing but lowercase hexadecimal digits, so one value never has two spellings.
 Kani proves the digit check for every byte and the identity checks for every value of an identity's length.
 It proves the refusal of every other length for values of up to three bytes, and for all-digit values one byte too short or too long.
+Fuzzing holds every accepted `candidate.json` to the canonical JSON of its value, so another spelling of the same manifest is refused.
 
+- Fuzz: `candidate`
 - Kani: `hex::proofs::a_hex_digit_is_exactly_a_lowercase_hexadecimal_digit`
 - Kani: `hex::proofs::hex_identities_check_every_byte`
 - Kani: `hex::proofs::hex_identities_refuse_every_other_length`
@@ -379,13 +383,28 @@ That fold rests on `icu_normalizer` and the tests, and it approximates the defau
 
 No proof covers these parsers.
 Fuzzing checks them, and every pull request replays the committed corpus of each fuzz target.
+`fuzz/Cargo.toml` names the functions that each target reaches, and a test refuses a function in `src` that deserializes bytes without a target or a stated reason that it needs none.
+That test finds a parser by its call to a deserializer, also through a name that a `use` item gives one, and it names each function with the `mod` and `impl` blocks around it.
+It can't see a parser written by hand, which the manifest names directly.
 
 - Fuzz: `api_interface`
+- Fuzz: `api_responses`
+- Fuzz: `candidate`
+- Fuzz: `changelog_notes`
 - Fuzz: `config`
+- Fuzz: `git_log`
+- Fuzz: `handoff`
+- Fuzz: `hook_output`
 - Fuzz: `identifiers`
+- Fuzz: `oidc`
 - Fuzz: `pr_marker`
 - Fuzz: `prerelease`
 - Test: `tests/fuzz_corpus.rs::every_fuzz_target_runs_shared_invariants_that_this_suite_replays`
+- Test: `tests/assurance_workflow.rs::every_untrusted_parser_has_a_fuzz_target_with_invariants_and_seeds`
+- Test: `tests/assurance_workflow.rs::the_parser_inventory_refuses_each_gap_between_targets_parsers_and_seeds`
+- Test: `tests/assurance_workflow.rs::the_parser_inventory_follows_imported_names_and_tells_methods_of_two_types_apart`
+- Test: `tests/plan_handoff.rs::a_file_that_plan_out_could_not_have_written_is_refused_with_its_reason`
+- Test: `tests/hooks_contract.rs::hook_output_protocol_is_strict_at_every_field`
 
 ### A Release PR body carries exactly the marker that release-glz wrote
 

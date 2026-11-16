@@ -1,0 +1,4 @@
+# A note may describe a change that no pull request carries.
+id = "cve_2026_0001"
+category = "security"
+text = 'Refuse a redirect that leaves the registry origin.'

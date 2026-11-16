@@ -1,0 +1,4 @@
+id = "two-lines"
+category = "changed"
+text = """First line.
+Second line."""

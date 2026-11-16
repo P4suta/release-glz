@@ -1,0 +1,1 @@
+{"schema":"hook/v1","success":true,"summary":"SBOM generated","evidence":{"artifacts":[{"name":"widget-1.2.3.cdx.json","media_type":"application/vnd.cyclonedx+json","content_base64":"eyJib21Gb3JtYXQiOiJDeWNsb25lRFgifQ==","public":true},{"name":"build.log","media_type":"text/plain","content_base64":""}]}}

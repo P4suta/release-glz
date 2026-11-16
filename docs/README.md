@@ -175,10 +175,11 @@ Repository paths in public data are normalized to relative `/` paths.
 
 Compiling a package runs its dependencies' build code, so the job that holds a token able to write the repository shouldn't compile.
 `plan --out <FILE>` runs in a read-only job, and `release-pr --plan <FILE>` writes the Release PR in a separate job that never starts the compiler.
+`plan --out` refuses a plan whose file would be larger than `release-pr --plan` accepts, and it leaves no file behind.
 `release-pr --plan` treats the file as untrusted input.
 It refuses the file unless all of these hold:
 
-- The file is a `plan/v1` document of at most 4 MiB with no unknown field.
+- The file is a `plan/v1` document of at most 4 MiB with no unknown field, spelled as `plan --out` writes it.
 - The plan names no Release PR yet.
 - The plan's package and manifest version match the checked-out `gleam.toml`.
 - The plan's baseline, when it has one, is a full commit id in the history of `HEAD`.

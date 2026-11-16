@@ -1,0 +1,4 @@
+id = "fix-empty-manifest"
+category = "fixed"
+text = "Fix a crash when the manifest is empty."
+pull_request = 12
