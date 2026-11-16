@@ -1,0 +1,4 @@
+id = "zero"
+category = "added"
+text = "Add a gadget."
+pull_request = 0

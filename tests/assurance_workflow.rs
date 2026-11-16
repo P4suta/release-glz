@@ -1,3 +1,4 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
 
@@ -203,26 +204,338 @@ fn routine_ci_runs_the_one_fast_gate() {
     );
 }
 
+/// The calls that turn bytes from outside release-glz into a typed value.
+const DESERIALIZERS: [&str; 7] = [
+    "serde_json::from_slice",
+    "serde_json::from_str",
+    "serde_json::from_reader",
+    "serde_json::from_value",
+    "serde_norway::from_",
+    "toml_edit::de::from_",
+    "DocumentMut>()",
+];
+
+/// The parser inventory of the fuzz manifest, which names each function as `file::function`.
+#[derive(Debug, Default)]
+struct ParserInventory {
+    /// The functions whose untrusted input each fuzz target's invariants reach.
+    fuzzed: BTreeMap<String, Vec<String>>,
+    /// The deserializing functions that need no fuzz target, each with the reason.
+    exempt: BTreeMap<String, String>,
+}
+
+impl ParserInventory {
+    fn of(manifest: &toml_edit::DocumentMut) -> Self {
+        let parsers = manifest
+            .get("package")
+            .and_then(|package| package.get("metadata"))
+            .and_then(|metadata| metadata.get("parsers"))
+            .expect("the fuzz manifest holds [package.metadata.parsers]");
+        let table = |name: &str| {
+            parsers
+                .get(name)
+                .and_then(toml_edit::Item::as_table)
+                .unwrap_or_else(|| {
+                    panic!("the fuzz manifest holds [package.metadata.parsers.{name}]")
+                })
+        };
+        let fuzzed = table("fuzzed")
+            .iter()
+            .map(|(target, functions)| {
+                let functions = functions
+                    .as_array()
+                    .unwrap_or_else(|| panic!("`{target}` lists its parsers"))
+                    .iter()
+                    .map(|function| function.as_str().unwrap().to_owned())
+                    .collect();
+                (target.to_owned(), functions)
+            })
+            .collect();
+        let exempt = table("exempt")
+            .iter()
+            .map(|(function, reason)| (function.to_owned(), reason.as_str().unwrap().to_owned()))
+            .collect();
+        Self { fuzzed, exempt }
+    }
+}
+
+/// The name of the function that `line` declares, if it declares one.
+fn declared_function(line: &str) -> Option<&str> {
+    let mut rest = line.trim_start();
+    if let Some(after) = ["pub(crate) ", "pub(super) ", "pub "]
+        .iter()
+        .find_map(|visibility| rest.strip_prefix(visibility))
+    {
+        rest = after;
+    }
+    while let Some(after) = ["const ", "async ", "unsafe "]
+        .iter()
+        .find_map(|qualifier| rest.strip_prefix(qualifier))
+    {
+        rest = after;
+    }
+    let name = rest
+        .strip_prefix("fn ")?
+        .split(|character: char| !(character.is_ascii_alphanumeric() || character == '_'))
+        .next()?;
+    (!name.is_empty()).then_some(name)
+}
+
+/// The `file::function` of each call in `sources` that deserializes, outside comments and `mod tests`.
+///
+/// A call outside every function, such as an import, counts as `file::<module>`.
+fn deserializing_functions(sources: &BTreeMap<String, String>) -> BTreeSet<String> {
+    let mut found = BTreeSet::new();
+    for (file, source) in sources {
+        let mut function = "<module>";
+        let mut in_tests = false;
+        for line in source.lines() {
+            if in_tests {
+                in_tests = line != "}";
+                continue;
+            }
+            if line.trim() == "mod tests {" {
+                in_tests = true;
+                continue;
+            }
+            if let Some(name) = declared_function(line) {
+                function = name;
+            }
+            let code = line.trim_start();
+            if !code.starts_with("//") && DESERIALIZERS.iter().any(|call| code.contains(call)) {
+                found.insert(format!("{file}::{function}"));
+            }
+        }
+    }
+    found
+}
+
+/// What the parser inventory gets wrong about the fuzz `targets` and the `sources` of `src`, in sorted order.
+///
+/// `read` returns the text of a file in the repository, and `complete` tells whether a target has an invariant module and a seed.
+fn inventory_findings(
+    inventory: &ParserInventory,
+    targets: &BTreeSet<String>,
+    sources: &BTreeMap<String, String>,
+    read: impl Fn(&str) -> Option<String>,
+    complete: impl Fn(&str) -> bool,
+) -> Vec<String> {
+    let mut findings = Vec::new();
+    for target in targets {
+        if inventory.fuzzed.get(target).is_none_or(Vec::is_empty) {
+            findings.push(format!(
+                "fuzz target `{target}` names no parser in [package.metadata.parsers.fuzzed]"
+            ));
+        }
+        if !complete(target) {
+            findings.push(format!(
+                "fuzz target `{target}` lacks an invariant module or a seed"
+            ));
+        }
+    }
+    let fuzzed: BTreeSet<&String> = inventory.fuzzed.values().flatten().collect();
+    for target in inventory
+        .fuzzed
+        .keys()
+        .filter(|target| !targets.contains(*target))
+    {
+        findings.push(format!(
+            "[package.metadata.parsers.fuzzed] names `{target}`, which isn't a fuzz target"
+        ));
+    }
+    for entry in fuzzed.iter().copied().chain(inventory.exempt.keys()) {
+        let declared = entry.rsplit_once("::").is_some_and(|(file, function)| {
+            read(file).is_some_and(|source| {
+                source
+                    .lines()
+                    .any(|line| declared_function(line) == Some(function))
+            })
+        });
+        if !declared {
+            findings.push(format!("`{entry}` names no function in its file"));
+        }
+    }
+    let sites = deserializing_functions(sources);
+    for site in &sites {
+        if !fuzzed.contains(site) && !inventory.exempt.contains_key(site) {
+            findings.push(format!(
+                "`{site}` deserializes bytes without a fuzz target: add a target whose invariants reach it to [package.metadata.parsers.fuzzed], or give the reason it needs none in [package.metadata.parsers.exempt]"
+            ));
+        }
+    }
+    for (entry, reason) in &inventory.exempt {
+        if !sites.contains(entry) {
+            findings.push(format!(
+                "the exemption of `{entry}` matches no deserializing call"
+            ));
+        }
+        if reason.trim().is_empty() {
+            findings.push(format!("the exemption of `{entry}` gives no reason"));
+        }
+        if fuzzed.contains(entry) {
+            findings.push(format!("`{entry}` is both fuzzed and exempt"));
+        }
+    }
+    findings.sort();
+    findings
+}
+
+/// Every source file below `src`, by its path relative to the repository.
+fn src_sources() -> BTreeMap<String, String> {
+    let mut sources = BTreeMap::new();
+    let mut pending = vec![Path::new("src").to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        for entry in fs::read_dir(&directory).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if path.extension().is_some_and(|extension| extension == "rs") {
+                let shown = path.to_str().unwrap().replace('\\', "/");
+                sources.insert(shown, fs::read_to_string(&path).unwrap());
+            }
+        }
+    }
+    sources
+}
+
+/// Whether a fuzz target has its invariant module and at least one seed.
+fn target_is_complete(target: &str) -> bool {
+    Path::new(&format!("fuzz/invariants/{target}.rs")).is_file()
+        && fs::read_dir(format!("fuzz/corpus/{target}"))
+            .is_ok_and(|mut seeds| seeds.next().is_some())
+}
+
+fn parser_inventory() -> ParserInventory {
+    ParserInventory::of(
+        &fs::read_to_string("fuzz/Cargo.toml")
+            .unwrap()
+            .parse()
+            .unwrap(),
+    )
+}
+
+/// Every function in `src` that deserializes bytes has a fuzz target, or an exemption that says why it needs none.
+///
+/// A new parser fails this test until `fuzz/Cargo.toml` names it, and a removed target fails it for the parsers that the target covered.
 #[test]
-fn every_required_parser_has_a_bounded_fuzz_target() {
-    let targets = fuzz_targets();
-    for target in [
-        "archive",
-        "config",
-        "pr_marker",
-        "api_interface",
-        "identifiers",
-        "prerelease",
-    ] {
-        assert!(
-            targets.iter().any(|name| name == target),
-            "missing {target}"
-        );
-    }
-    for target in &targets {
-        let source = format!("fuzz/fuzz_targets/{target}.rs");
-        assert!(Path::new(&source).is_file(), "missing {source}");
-    }
+fn every_untrusted_parser_has_a_fuzz_target_with_invariants_and_seeds() {
+    let inventory = parser_inventory();
+    let targets: BTreeSet<_> = fuzz_targets().into_iter().collect();
+    let sources = src_sources();
+    let read = |file: &str| fs::read_to_string(file).ok();
+    let findings = inventory_findings(&inventory, &targets, &sources, read, target_is_complete);
+    assert!(findings.is_empty(), "{}", findings.join("\n"));
+
+    let mut without_handoff = targets.clone();
+    without_handoff.remove("handoff");
+    assert_eq!(
+        inventory_findings(
+            &inventory,
+            &without_handoff,
+            &sources,
+            read,
+            target_is_complete
+        ),
+        ["[package.metadata.parsers.fuzzed] names `handoff`, which isn't a fuzz target"]
+    );
+    let mut with_a_new_parser = sources.clone();
+    with_a_new_parser.insert(
+        "src/notes.rs".to_owned(),
+        "pub fn parse_note(text: &str) -> anyhow::Result<Note> {\n    Ok(toml_edit::de::from_str(text)?)\n}\n".to_owned(),
+    );
+    assert_eq!(
+        inventory_findings(
+            &inventory,
+            &targets,
+            &with_a_new_parser,
+            read,
+            target_is_complete
+        ),
+        [
+            "`src/notes.rs::parse_note` deserializes bytes without a fuzz target: add a target whose invariants reach it to [package.metadata.parsers.fuzzed], or give the reason it needs none in [package.metadata.parsers.exempt]"
+        ]
+    );
+}
+
+#[test]
+fn the_parser_inventory_refuses_each_gap_between_targets_parsers_and_seeds() {
+    let inventory = ParserInventory {
+        fuzzed: BTreeMap::from([
+            (
+                "notes".to_owned(),
+                vec!["src/notes.rs::parse_note".to_owned()],
+            ),
+            (
+                "gone".to_owned(),
+                vec!["src/gone.rs::parse_gone".to_owned()],
+            ),
+        ]),
+        exempt: BTreeMap::from([
+            (
+                "src/cache.rs::read_cache".to_owned(),
+                "release-glz wrote the entry".to_owned(),
+            ),
+            (
+                "src/notes.rs::parse_note".to_owned(),
+                "duplicated".to_owned(),
+            ),
+            ("src/stale.rs::old".to_owned(), " ".to_owned()),
+        ]),
+    };
+    let sources = BTreeMap::from([
+        (
+            "src/notes.rs".to_owned(),
+            [
+                "pub fn parse_note(text: &str) -> Note {",
+                "    toml_edit::de::from_str(text).unwrap()",
+                "}",
+                "",
+                "pub(crate) async fn parse_label(text: &str) -> Label {",
+                "    // A comment that names serde_json::from_str isn't a call.",
+                "    serde_json::from_str(text).unwrap()",
+                "}",
+                "",
+                "#[cfg(test)]",
+                "mod tests {",
+                "    fn fixture() -> Note {",
+                "        serde_json::from_slice(b\"{}\").unwrap()",
+                "    }",
+                "}",
+            ]
+            .join("\n"),
+        ),
+        (
+            "src/cache.rs".to_owned(),
+            "use serde_json::from_slice;\n\nfn read_cache(bytes: &[u8]) -> Option<Cache> {\n    serde_json::from_slice(bytes).ok()\n}\n".to_owned(),
+        ),
+    ]);
+    let targets = BTreeSet::from(["notes".to_owned(), "hooks".to_owned()]);
+    let findings = inventory_findings(
+        &inventory,
+        &targets,
+        &sources,
+        |file| sources.get(file).cloned(),
+        |target| target == "notes",
+    );
+    let unfuzzed = |site: &str| {
+        format!(
+            "`{site}` deserializes bytes without a fuzz target: add a target whose invariants reach it to [package.metadata.parsers.fuzzed], or give the reason it needs none in [package.metadata.parsers.exempt]"
+        )
+    };
+    let mut expected = vec![
+        "fuzz target `hooks` names no parser in [package.metadata.parsers.fuzzed]".to_owned(),
+        "fuzz target `hooks` lacks an invariant module or a seed".to_owned(),
+        "[package.metadata.parsers.fuzzed] names `gone`, which isn't a fuzz target".to_owned(),
+        "`src/gone.rs::parse_gone` names no function in its file".to_owned(),
+        "`src/stale.rs::old` names no function in its file".to_owned(),
+        unfuzzed("src/cache.rs::<module>"),
+        unfuzzed("src/notes.rs::parse_label"),
+        "the exemption of `src/stale.rs::old` matches no deserializing call".to_owned(),
+        "the exemption of `src/stale.rs::old` gives no reason".to_owned(),
+        "`src/notes.rs::parse_note` is both fuzzed and exempt".to_owned(),
+    ];
+    expected.sort();
+    assert_eq!(findings, expected);
 }
 
 #[test]

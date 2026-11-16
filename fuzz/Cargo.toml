@@ -8,11 +8,57 @@ license = "MIT OR Apache-2.0"
 [package.metadata]
 cargo-fuzz = true
 
+# The functions that read bytes from outside release-glz, by the fuzz target whose invariants reach them.
+# `tests/assurance_workflow.rs` finds every call in `src` that deserializes bytes, and it refuses one in a function that neither table names.
+[package.metadata.parsers.fuzzed]
+api_interface = ["src/api.rs::parse_surface"]
+api_responses = [
+  "src/forge.rs::decode_json",
+  "src/forge.rs::parse_pull_request_page",
+  "src/forge.rs::parse_release_page",
+  "src/registry.rs::parse_package_response",
+  "src/registry.rs::parse_release_response",
+]
+archive = [
+  "src/artifact.rs::normalize_expanded_contents",
+  "src/artifact.rs::validate_docs_tarball",
+  "src/artifact.rs::validate_hex_tarball",
+]
+candidate = ["src/candidate.rs::parse"]
+changelog_notes = ["src/changelog.rs::parse", "src/changelog.rs::parse_structured_note"]
+config = ["src/config.rs::deserialize_release_table", "src/config.rs::parse"]
+git_log = ["src/git.rs::parse_commit_log"]
+handoff = ["src/handoff.rs::parse"]
+hook_output = ["src/hooks.rs::parse_hook_output", "src/hooks.rs::parse_sidecar_artifacts"]
+identifiers = ["src/forge.rs::parse", "src/model.rs::from_str"]
+oidc = [
+  "src/authorization.rs::parse_discovery",
+  "src/authorization.rs::parse_jwks",
+  "src/authorization.rs::parse_token_response",
+  "src/authorization.rs::verify_compact_rs256",
+  "src/authorization.rs::verify_github_oidc_token",
+]
+pr_marker = ["src/forge.rs::is_managed_release_pr"]
+prerelease = ["crates/release-glz-core/src/precedence.rs::parse"]
+
+# The functions in `src` that deserialize bytes without a fuzz target, each with the reason that it needs none.
+[package.metadata.parsers.exempt]
+"src/artifact.rs::normalize_package_dir" = "it re-reads the package's own gleam.toml, which the config target reads through Manifest::parse"
+"src/candidate.rs::core_artifacts" = "it reads the package interface that the pinned Gleam compiler wrote"
+"src/candidate.rs::verify" = "it reads the sealed package interface only to digest it canonically against the checksum that the manifest records"
+"src/gleam.rs::build_hex_tarball_from_compiler_outputs" = "it reads the package information that the pinned Gleam compiler wrote"
+"src/gleam.rs::dependency_otp_apps" = "it reads the manifest.toml that the pinned Gleam compiler wrote"
+"src/main.rs::credential_free_candidate_build" = "it reads the command/v1 diagnostics of the release-glz process that it started, only to word an error"
+"src/planner.rs::validated_cached_baseline" = "it reads a baseline cache entry that release-glz wrote, and an entry it can't read counts as a miss"
+"src/workflow.rs::sync" = "it reads the managed-state record that release-glz wrote beside the workflow, and a record it can't read refuses to overwrite the workflow"
+
 [dependencies]
 anyhow = "1.0.104"
+base64 = "0.23.1"
 libfuzzer-sys = "0.4.13"
 release-glz = { path = ".." }
 release-glz-core = { path = "../crates/release-glz-core" }
+ring = "0.17.14"
 semver = "1.0.28"
 serde_json = "1.0.154"
 sha2 = "0.11.0"
@@ -63,6 +109,55 @@ bench = false
 [[bin]]
 name = "prerelease"
 path = "fuzz_targets/prerelease.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "api_responses"
+path = "fuzz_targets/api_responses.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "candidate"
+path = "fuzz_targets/candidate.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "changelog_notes"
+path = "fuzz_targets/changelog_notes.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "git_log"
+path = "fuzz_targets/git_log.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "handoff"
+path = "fuzz_targets/handoff.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "hook_output"
+path = "fuzz_targets/hook_output.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "oidc"
+path = "fuzz_targets/oidc.rs"
 test = false
 doc = false
 bench = false

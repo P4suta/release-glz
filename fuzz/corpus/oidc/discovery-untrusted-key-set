@@ -1,0 +1,1 @@
+{"issuer":"https://token.actions.githubusercontent.com","jwks_uri":"https://token.actions.githubusercontent.com.attacker.example/.well-known/jwks"}

@@ -195,6 +195,18 @@ fn a_file_that_plan_out_could_not_have_written_is_refused_with_its_reason() {
             edited(|plan| plan["pr_url"] = "https://github.test/acme/widget/pull/1".into()),
             Refusal::ReleasePrNamed,
         ),
+        (
+            "a baseline whose members are listed by position".into(),
+            edited(|plan| {
+                plan["baseline"] = serde_json::json!(["0.9.0", "v0.9.0", null, "tag", false]);
+            }),
+            Refusal::NotAPlan(handoff::UNWRITTEN_SPELLING.into()),
+        ),
+        (
+            "a state spelled as a map".into(),
+            edited(|plan| plan["state"] = serde_json::json!({"planned": null})),
+            Refusal::NotAPlan(handoff::UNWRITTEN_SPELLING.into()),
+        ),
     ];
     for pointer in [
         "",

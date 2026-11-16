@@ -1,0 +1,71 @@
+{
+  "schema": "plan/v1",
+  "state": "planned",
+  "package": "widget",
+  "manifest_path": "gleam.toml",
+  "published_version": "0.9.0",
+  "manifest_version": "1.0.0",
+  "version": "1.0.0",
+  "bump": "major",
+  "release_required": true,
+  "artifacts_changed": true,
+  "prerelease": null,
+  "tag": "v1.0.0",
+  "baseline": {
+    "version": "0.9.0",
+    "git_ref": "v0.9.0",
+    "sha": "0123456789abcdef0123456789abcdef01234567",
+    "source": "tag",
+    "retired": false
+  },
+  "reasons": [
+    {
+      "kind": "api_breaking",
+      "bump": "major",
+      "summary": "removed widget/old"
+    }
+  ],
+  "api": {
+    "status": "not_checked",
+    "impact": "none",
+    "changes": [
+      {
+        "kind": "removed",
+        "path": "widget/old",
+        "breaking": true,
+        "summary": "removed"
+      }
+    ]
+  },
+  "changes": [
+    {
+      "title": "fix: second",
+      "pull_request": 7,
+      "author": "Fixture",
+      "url": null,
+      "labels": [
+        "bug"
+      ],
+      "category": "Fixed"
+    }
+  ],
+  "warnings": [
+    {
+      "code": "fixture",
+      "level": "warning",
+      "message": "fixture",
+      "detail": null
+    }
+  ],
+  "required_approvals": [
+    {
+      "kind": "environment",
+      "environment": "release"
+    }
+  ],
+  "stages": [],
+  "pr_url": null,
+  "release_pr_head": null,
+  "hex_url": null,
+  "github_release_url": null
+}
