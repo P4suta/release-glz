@@ -46,7 +46,7 @@ fn sealed_candidate_cli_lifecycle_reuses_one_candidate_without_rebuilding() {
     assert_success(&rehearse, "rehearse");
     let rehearsed = json(&rehearse);
     assert_published_envelope(&rehearsed);
-    assert_eq!(rehearsed["schema"], "command/v2");
+    assert_eq!(rehearsed["schema"], "command/v1");
     assert_eq!(rehearsed["result"]["schema"], "candidate/v1");
     assert_eq!(rehearsed["result"]["source"]["commit_sha"], source_sha);
     let candidate_digest = rehearsed["result"]["candidate_digest"]
@@ -185,7 +185,7 @@ fn a_version_below_the_automatic_minimum_is_a_policy_exit_not_an_internal_failur
     );
     let envelope = json(&output);
     assert_published_envelope(&envelope);
-    assert_eq!(envelope["schema"], "command/v2");
+    assert_eq!(envelope["schema"], "command/v1");
     assert_eq!(envelope["ok"], false);
     assert_eq!(envelope["diagnostics"][0]["code"], "policy_or_approval");
     assert_eq!(
@@ -850,7 +850,7 @@ fn a_handed_off_plan_that_does_not_describe_the_checkout_is_refused_before_any_r
         ),
         (
             "another schema",
-            edit(&|plan| plan["schema"] = "plan/v1".into()),
+            edit(&|plan| plan["schema"] = "plan/v2".into()),
         ),
         (
             "an unknown field",

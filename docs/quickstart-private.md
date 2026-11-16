@@ -1,7 +1,7 @@
 # Hex-compatible private registry quickstart
 
 Use this path only for a registry implementing the standard Hex API, repository, package tarball, and docs endpoints.
-Non-standard publish protocols are not adapted by v1.
+release-glz does not adapt non-standard publish protocols.
 
 Generate the complete `[tools.release-glz]` configuration with all registry values explicit:
 
@@ -41,10 +41,10 @@ Raw private package and docs Candidate artifacts remain in the short-lived Actio
 By default no private core artifact or evidence is uploaded to a GitHub Release.
 Set `allow_private_evidence_upload = true` only after reviewing the contents of every built-in and hook-produced sidecar.
 
-The v1 Candidate boundary requires every dependency to build without credentials.
+The Candidate boundary requires every dependency to build without credentials.
 A private publication target is supported; private dependencies are not.
 `doctor --candidate-build` removes all credentials and uses isolated caches so this incompatibility is reported before a release run.
-Replace or vendor the dependency, use a public source, or choose a publication path outside v1; release-glz does not contain a private dependency resolver.
+Replace or vendor the dependency, use a public source, or choose a publication path outside release-glz; release-glz does not contain a private dependency resolver.
 
 Some GitHub plans do not support required Environment reviewers for private repositories.
 release-glz never weakens approval automatically.

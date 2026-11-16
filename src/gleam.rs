@@ -249,12 +249,6 @@ impl Gleam {
         fs::read(&path).with_context(|| format!("Gleam did not create `{}`", path.display()))
     }
 
-    /// Build the package documentation.
-    pub fn docs_build(&self, package_dir: &Path) -> Result<()> {
-        let manifest = Manifest::load(package_dir.join("gleam.toml"))?;
-        self.build_docs_with(package_dir, &manifest)
-    }
-
     fn build_docs_with(&self, package_dir: &Path, manifest: &Manifest) -> Result<()> {
         let output = process::output(self.command(package_dir)?.args(["docs", "build"]))?;
         let credential = configured_registry_secret(manifest);

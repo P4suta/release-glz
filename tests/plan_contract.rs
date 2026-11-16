@@ -48,7 +48,7 @@ fn release_plan_uses_its_independently_versioned_contract() {
         github_release_url: None,
     };
     let value = serde_json::to_value(plan).unwrap();
-    assert_eq!(value["schema"], "plan/v3");
+    assert_eq!(value["schema"], "plan/v1");
     // Planning builds no Candidate, so it has no intent to digest.
     assert!(value.get("intent_digest").is_none());
     assert_eq!(value["state"], "planned");

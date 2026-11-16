@@ -62,10 +62,10 @@ fn release_state_is_monotonic_except_terminal_diagnostics() {
 }
 
 #[test]
-fn command_envelope_v2_has_one_stable_shape() {
+fn command_envelope_has_one_stable_shape() {
     let envelope = CommandEnvelope::success(
         "plan",
-        json!({"schema": "plan/v3", "state": "planned"}),
+        json!({"schema": "plan/v1", "state": "planned"}),
         vec![Diagnostic {
             code: "version_zero".into(),
             level: DiagnosticLevel::Warning,
@@ -86,10 +86,10 @@ fn command_envelope_v2_has_one_stable_shape() {
         }],
     );
     let value = serde_json::to_value(envelope).unwrap();
-    assert_eq!(value["schema"], "command/v2");
+    assert_eq!(value["schema"], "command/v1");
     assert_eq!(value["ok"], true);
     assert_eq!(value["command"], "plan");
-    assert_eq!(value["result"]["schema"], "plan/v3");
+    assert_eq!(value["result"]["schema"], "plan/v1");
     assert_eq!(value["diagnostics"][0]["level"], "warning");
     assert_eq!(
         value["next_actions"][0]["command"],

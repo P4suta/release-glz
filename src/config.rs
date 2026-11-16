@@ -53,7 +53,7 @@ const MAX_REPOSITORY_LEN: usize = 255;
 /// The `[repository]` table that names the package's forge.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RepositoryConfig {
-    /// Forge kind; only `github` participates in the v1 release path.
+    /// Forge kind; only `github` participates in the release path.
     pub kind: Option<String>,
     /// Owner of the repository on the forge.
     pub user: Option<String>,

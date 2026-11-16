@@ -3,7 +3,7 @@
 `release-glz` is Candidate-first release automation for one Gleam package.
 It plans from immutable git history, seals the bytes that were reviewed, and then reconciles Hex, HexDocs, git, and GitHub without replacing an existing object.
 
-The v1 model has three deliberately separate layers:
+The model has three deliberately separate layers:
 
 - `ReleasePlan` is a read-only decision: version, reasons, warnings, required approvals, and ordered stages.
 - `Candidate` is the sealed publication unit: one committed source SHA, exact package and docs bytes, policy and hook evidence, and their digests.
@@ -13,14 +13,14 @@ The central invariant is simple: `release --candidate` publishes the exact bytes
 
 ## Status and scope
 
-v1 supports one package per invocation on GitHub.com with:
+release-glz supports one package per invocation on GitHub.com with:
 
 - public Hex.pm;
 - a Hex.pm Organization repository; and
 - a standard Hex API/repository compatible private registry (`hex-compatible`).
 
 Multiple manifests in one repository can be released independently, but a single Candidate always represents one package.
-Non-standard self-hosted publish protocols, atomic multi-package releases, crates.io, Homebrew, and Scoop are outside the v1 contract.
+Non-standard self-hosted publish protocols, atomic multi-package releases, crates.io, Homebrew, and Scoop are outside the release-glz contract.
 
 See the registry-specific guides:
 
@@ -42,7 +42,7 @@ The package requires Rust 1.100 or newer.
 Repeat the source installation command to update.
 Remove a source installation with `cargo uninstall release-glz`.
 The repository includes a GitHub Action definition, but its default run downloads a versioned release binary, and no published release assets are available yet.
-Homebrew and Scoop are outside the v1 contract.
+Homebrew and Scoop are outside the release-glz contract.
 
 After immutable release assets are published, use the following commands to verify and install the archive for your host:
 
@@ -154,7 +154,7 @@ Real publication also requires approval evidence supplied by the protected workf
 
 | Command | Contract |
 |---|---|
-| `plan [--out <FILE>]` | Reads git, registry, API, and change history and returns a `plan/v3`; it changes neither external state nor tracked files. `--out` also writes the plan to a new file and refuses to replace an existing one. |
+| `plan [--out <FILE>]` | Reads git, registry, API, and change history and returns a `plan/v1`; it changes neither external state nor tracked files. `--out` also writes the plan to a new file and refuses to replace an existing one. |
 | `rehearse --ref <SHA> --out <DIR>` | Builds from the committed snapshot with the configured compiler, validates archives, runs verify/sidecar hooks, and seals a `candidate/v1`. |
 | `verify --candidate <DIR> [--online]` | Verifies checksums, semantic fingerprints, source, policy, inventory, and hook evidence; online mode also observes registry and GitHub. |
 | `release --candidate <DIR>` | Publishes the sealed bytes through the monotonic reconciler; `--dry-run` reports all remaining effects. |
@@ -177,7 +177,7 @@ Compiling a package runs its dependencies' build code, so the job that holds a t
 `release-pr --plan` treats the file as untrusted input.
 It refuses the file unless all of these hold:
 
-- The file is a `plan/v3` document of at most 4 MiB with no unknown field.
+- The file is a `plan/v1` document of at most 4 MiB with no unknown field.
 - The plan names no Release PR yet.
 - The plan's package and manifest version match the checked-out `gleam.toml`.
 - The plan's baseline, when it has one, is a full commit id in the history of `HEAD`.
@@ -234,9 +234,9 @@ notes_dir = ".release-glz/notes"
 `credential_env` is an environment-variable name, never a credential value.
 Only the protected publish job receives the configured registry credential.
 Planning, rolling-PR authorization, and Candidate preparation receive no secret.
-v1 supports publishing to a private hex-compatible target only when all dependencies needed to build the Candidate are available without credentials.
+release-glz supports publishing to a private hex-compatible target only when all dependencies needed to build the Candidate are available without credentials.
 `doctor --candidate-build` reports the original isolated compiler/dependency failure and blocks when the credential-free build cannot complete.
-For a private dependency, replace/vendor it, use a public dependency source, or build outside the v1 publication path.
+For a private dependency, replace/vendor it, use a public dependency source, or build outside the release-glz publication path.
 release-glz does not implement a private dependency resolver.
 For hooks, each entry contains an ID, an argv array, timeout, required flag, and an allowlist of environment names; shell command strings are not accepted.
 The registry publication credential, GitHub/OIDC authorization tokens, and GitHub environment/output control files are never forwardable to hooks, even when named in that allowlist.
@@ -299,7 +299,7 @@ The detailed table is in [recovery.md](recovery.md).
 
 ## Machine-readable contract
 
-JSON output uses the `command/v2` envelope with `ok`, `command`, `result`, `diagnostics`, and `next_actions`, which [command-envelope.schema.json](command-envelope.schema.json) describes.
+JSON output uses the `command/v1` envelope with `ok`, `command`, `result`, `diagnostics`, and `next_actions`, which [command-envelope.schema.json](command-envelope.schema.json) describes.
 `ok` is `false` exactly when a diagnostic has the `error` level, and a successful command always carries a result.
 A failed command carries `null` for its result, except that `doctor` and `init --check` also report the result that failed.
 Executable next actions contain canonical `argv`; non-portable human guidance uses an empty array.
@@ -309,7 +309,7 @@ Every result names its format in its own `schema` field, and each format has a p
 
 | `schema` | Printed by | Schema |
 |---|---|---|
-| `plan/v3` | `plan`, `release-pr` without `--candidate`, `status` without `--candidate`, `set-version`, `prerelease` | [release-plan.schema.json](release-plan.schema.json) |
+| `plan/v1` | `plan`, `release-pr` without `--candidate`, `status` without `--candidate`, `set-version`, `prerelease` | [release-plan.schema.json](release-plan.schema.json) |
 | `candidate/v1` | `rehearse` | [candidate.schema.json](candidate.schema.json) |
 | `verify/v1` | `verify` without `--online` | [candidate-verification.schema.json](candidate-verification.schema.json) |
 | `status/v1` | `status --candidate` without `--online` | [candidate-status.schema.json](candidate-status.schema.json) |

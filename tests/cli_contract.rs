@@ -81,7 +81,7 @@ fn json_usage_errors_are_machine_readable_and_keep_the_requested_command() {
     assert!(output.stderr.is_empty());
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_published_envelope(&value);
-    assert_eq!(value["schema"], "command/v2");
+    assert_eq!(value["schema"], "command/v1");
     assert_eq!(value["ok"], false);
     assert_eq!(value["command"], "release");
     assert_eq!(value["diagnostics"][0]["code"], "usage_or_config");
@@ -97,7 +97,7 @@ fn equals_form_json_output_also_preserves_the_usage_error_envelope() {
     assert_eq!(output.status.code(), Some(2));
     assert!(output.stderr.is_empty());
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(value["schema"], "command/v2");
+    assert_eq!(value["schema"], "command/v1");
     assert_eq!(value["command"], "release");
 }
 
@@ -122,7 +122,7 @@ fn completion_supports_all_documented_shells() {
 }
 
 #[test]
-fn json_output_uses_the_command_envelope_v2() {
+fn json_output_uses_the_command_envelope() {
     for shell in ["bash", "zsh", "fish", "powershell"] {
         let output = binary()
             .args(["--output", "json", "completion", shell])
@@ -131,7 +131,7 @@ fn json_output_uses_the_command_envelope_v2() {
         assert!(output.status.success(), "{shell}");
         let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_published_envelope(&value);
-        assert_eq!(value["schema"], "command/v2");
+        assert_eq!(value["schema"], "command/v1");
         assert_eq!(value["ok"], true);
         assert_eq!(value["command"], "completion");
         assert_eq!(value["result"]["schema"], "completion/v1");
@@ -255,7 +255,7 @@ fn doctor_reports_a_manifest_without_release_configuration_and_points_to_init() 
 }
 
 #[test]
-fn json_configuration_failures_use_envelope_v2_and_exit_two() {
+fn json_configuration_failures_use_the_command_envelope_and_exit_two() {
     let temp = tempfile::tempdir().unwrap();
     let manifest = temp.path().join("gleam.toml");
     std::fs::write(&manifest, "name = 42\nversion = \"1.0.0\"\n").unwrap();
@@ -272,7 +272,7 @@ fn json_configuration_failures_use_envelope_v2_and_exit_two() {
     assert_eq!(output.status.code(), Some(2));
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_published_envelope(&value);
-    assert_eq!(value["schema"], "command/v2");
+    assert_eq!(value["schema"], "command/v1");
     assert_eq!(value["ok"], false);
     assert_eq!(value["command"], "doctor");
     assert_eq!(value["diagnostics"][0]["level"], "error");

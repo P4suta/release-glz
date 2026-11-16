@@ -1257,14 +1257,6 @@ impl GitHubClient {
         bail!("GitHub open pull-request search exceeded its bounded page limit")
     }
 
-    /// Page of the GitHub Release for a tag, if one exists.
-    pub async fn release_for_tag(&self, tag: &str) -> Result<Option<String>> {
-        Ok(self
-            .release_details_for_tag(tag)
-            .await?
-            .map(|release| release.html_url))
-    }
-
     /// What a tag points at, and whether it is annotated.
     pub async fn tag_state(&self, tag: &str) -> Result<Option<GitHubTagState>> {
         let Some(reference) = self

@@ -32,14 +32,14 @@ struct Surface {
 ///
 /// Signatures leave out documentation, deprecation text, and unlabeled argument names.
 /// Type variables are numbered by first occurrence, so two interfaces that differ only by the compiler's renaming of type variables compare equal.
-pub fn compare(old: &[u8], new: &[u8]) -> Result<ApiDiff> {
-    let old = parse_surface(old).context("invalid baseline package interface")?;
-    let new = parse_surface(new).context("invalid local package interface")?;
+pub fn compare(baseline: &[u8], current: &[u8]) -> Result<ApiDiff> {
+    let baseline = parse_surface(baseline).context("invalid baseline package interface")?;
+    let current = parse_surface(current).context("invalid local package interface")?;
     let mut changes = Vec::new();
 
-    let old_modules: BTreeSet<_> = old.modules.keys().cloned().collect();
-    let new_modules: BTreeSet<_> = new.modules.keys().cloned().collect();
-    for module in old_modules.difference(&new_modules) {
+    let baseline_modules: BTreeSet<_> = baseline.modules.keys().cloned().collect();
+    let current_modules: BTreeSet<_> = current.modules.keys().cloned().collect();
+    for module in baseline_modules.difference(&current_modules) {
         changes.push(change(
             ApiChangeKind::Removed,
             format!("module {module}"),
@@ -47,7 +47,7 @@ pub fn compare(old: &[u8], new: &[u8]) -> Result<ApiDiff> {
             format!("removed public module `{module}`"),
         ));
     }
-    for module in new_modules.difference(&old_modules) {
+    for module in current_modules.difference(&baseline_modules) {
         changes.push(change(
             ApiChangeKind::Added,
             format!("module {module}"),
@@ -55,11 +55,11 @@ pub fn compare(old: &[u8], new: &[u8]) -> Result<ApiDiff> {
             format!("added public module `{module}`"),
         ));
     }
-    for module in old_modules.intersection(&new_modules) {
+    for module in baseline_modules.intersection(&current_modules) {
         compare_module(
             module,
-            &old.modules[module],
-            &new.modules[module],
+            &baseline.modules[module],
+            &current.modules[module],
             &mut changes,
         );
     }
@@ -85,17 +85,35 @@ pub fn compare(old: &[u8], new: &[u8]) -> Result<ApiDiff> {
 
 fn compare_module(
     module: &str,
-    old: &ModuleSurface,
-    new: &ModuleSurface,
+    baseline: &ModuleSurface,
+    current: &ModuleSurface,
     changes: &mut Vec<ApiChange>,
 ) {
-    compare_items(module, "function", &old.functions, &new.functions, changes);
-    compare_items(module, "constant", &old.constants, &new.constants, changes);
-    compare_items(module, "type alias", &old.aliases, &new.aliases, changes);
+    compare_items(
+        module,
+        "function",
+        &baseline.functions,
+        &current.functions,
+        changes,
+    );
+    compare_items(
+        module,
+        "constant",
+        &baseline.constants,
+        &current.constants,
+        changes,
+    );
+    compare_items(
+        module,
+        "type alias",
+        &baseline.aliases,
+        &current.aliases,
+        changes,
+    );
 
-    let old_types: BTreeSet<_> = old.types.keys().cloned().collect();
-    let new_types: BTreeSet<_> = new.types.keys().cloned().collect();
-    for name in old_types.difference(&new_types) {
+    let baseline_types: BTreeSet<_> = baseline.types.keys().cloned().collect();
+    let current_types: BTreeSet<_> = current.types.keys().cloned().collect();
+    for name in baseline_types.difference(&current_types) {
         changes.push(change(
             ApiChangeKind::Removed,
             format!("{module}::type {name}"),
@@ -103,7 +121,7 @@ fn compare_module(
             format!("removed public type `{module}.{name}`"),
         ));
     }
-    for name in new_types.difference(&old_types) {
+    for name in current_types.difference(&baseline_types) {
         changes.push(change(
             ApiChangeKind::Added,
             format!("{module}::type {name}"),
@@ -111,10 +129,10 @@ fn compare_module(
             format!("added public type `{module}.{name}`"),
         ));
     }
-    for name in old_types.intersection(&new_types) {
-        let old_type = &old.types[name];
-        let new_type = &new.types[name];
-        if old_type.signature != new_type.signature {
+    for name in baseline_types.intersection(&current_types) {
+        let baseline_type = &baseline.types[name];
+        let current_type = &current.types[name];
+        if baseline_type.signature != current_type.signature {
             changes.push(change(
                 ApiChangeKind::Changed,
                 format!("{module}::type {name}"),
@@ -122,20 +140,20 @@ fn compare_module(
                 format!("changed public type `{module}.{name}`"),
             ));
         }
-        compare_constructors(module, name, old_type, new_type, changes);
+        compare_constructors(module, name, baseline_type, current_type, changes);
     }
 }
 
 fn compare_items(
     module: &str,
     kind: &str,
-    old: &BTreeMap<String, String>,
-    new: &BTreeMap<String, String>,
+    baseline: &BTreeMap<String, String>,
+    current: &BTreeMap<String, String>,
     changes: &mut Vec<ApiChange>,
 ) {
-    let old_names: BTreeSet<_> = old.keys().cloned().collect();
-    let new_names: BTreeSet<_> = new.keys().cloned().collect();
-    for name in old_names.difference(&new_names) {
+    let baseline_names: BTreeSet<_> = baseline.keys().cloned().collect();
+    let current_names: BTreeSet<_> = current.keys().cloned().collect();
+    for name in baseline_names.difference(&current_names) {
         changes.push(change(
             ApiChangeKind::Removed,
             format!("{module}::{kind} {name}"),
@@ -143,7 +161,7 @@ fn compare_items(
             format!("removed public {kind} `{module}.{name}`"),
         ));
     }
-    for name in new_names.difference(&old_names) {
+    for name in current_names.difference(&baseline_names) {
         changes.push(change(
             ApiChangeKind::Added,
             format!("{module}::{kind} {name}"),
@@ -151,8 +169,8 @@ fn compare_items(
             format!("added public {kind} `{module}.{name}`"),
         ));
     }
-    for name in old_names.intersection(&new_names) {
-        if old[name] != new[name] {
+    for name in baseline_names.intersection(&current_names) {
+        if baseline[name] != current[name] {
             changes.push(change(
                 ApiChangeKind::Changed,
                 format!("{module}::{kind} {name}"),
@@ -166,13 +184,13 @@ fn compare_items(
 fn compare_constructors(
     module: &str,
     type_name: &str,
-    old: &TypeSurface,
-    new: &TypeSurface,
+    baseline: &TypeSurface,
+    current: &TypeSurface,
     changes: &mut Vec<ApiChange>,
 ) {
-    let old_names: BTreeSet<_> = old.constructors.keys().cloned().collect();
-    let new_names: BTreeSet<_> = new.constructors.keys().cloned().collect();
-    for name in old_names.difference(&new_names) {
+    let baseline_names: BTreeSet<_> = baseline.constructors.keys().cloned().collect();
+    let current_names: BTreeSet<_> = current.constructors.keys().cloned().collect();
+    for name in baseline_names.difference(&current_names) {
         changes.push(change(
             ApiChangeKind::Removed,
             format!("{module}::type {type_name}::{name}"),
@@ -181,7 +199,7 @@ fn compare_constructors(
         ));
     }
     // A constructor addition breaks exhaustive pattern matches.
-    for name in new_names.difference(&old_names) {
+    for name in current_names.difference(&baseline_names) {
         changes.push(change(
             ApiChangeKind::ConstructorAdded,
             format!("{module}::type {type_name}::{name}"),
@@ -189,8 +207,8 @@ fn compare_constructors(
             format!("added constructor `{module}.{name}` to existing type `{type_name}`"),
         ));
     }
-    for name in old_names.intersection(&new_names) {
-        if old.constructors[name] != new.constructors[name] {
+    for name in baseline_names.intersection(&current_names) {
+        if baseline.constructors[name] != current.constructors[name] {
             changes.push(change(
                 ApiChangeKind::Changed,
                 format!("{module}::type {type_name}::{name}"),
@@ -443,51 +461,52 @@ mod tests {
 
     #[test]
     fn type_variable_rename_and_docs_are_ignored() {
-        let old = interface(module(
+        let baseline = interface(module(
             json!({"map": function(0, Value::Null, true)}),
             json!({}),
         ));
-        let new = interface(module(
+        let current = interface(module(
             json!({"map": function(91, Value::Null, true)}),
             json!({}),
         ));
-        let diff = compare(&old, &new).unwrap();
+        let diff = compare(&baseline, &current).unwrap();
         assert_eq!(diff.impact, Bump::None);
     }
 
     #[test]
     fn labels_and_target_support_are_breaking() {
-        let old = interface(module(
+        let baseline = interface(module(
             json!({"map": function(0, json!("value"), true)}),
             json!({}),
         ));
-        let new = interface(module(
+        let current = interface(module(
             json!({"map": function(0, json!("item"), false)}),
             json!({}),
         ));
-        let diff = compare(&old, &new).unwrap();
+        let diff = compare(&baseline, &current).unwrap();
         assert_eq!(diff.impact, Bump::Major);
     }
 
     #[test]
     fn public_item_addition_is_minor() {
-        let old = interface(module(json!({}), json!({})));
-        let new = interface(module(
+        let baseline = interface(module(json!({}), json!({})));
+        let current = interface(module(
             json!({"new": function(0, Value::Null, true)}),
             json!({}),
         ));
-        assert_eq!(compare(&old, &new).unwrap().impact, Bump::Minor);
+        assert_eq!(compare(&baseline, &current).unwrap().impact, Bump::Minor);
     }
 
     #[test]
     fn constructor_addition_is_breaking() {
-        let old_type = json!({"parameters": 0, "constructors": [{"name": "A", "parameters": []}]});
-        let new_type = json!({"parameters": 0, "constructors": [
+        let baseline_type =
+            json!({"parameters": 0, "constructors": [{"name": "A", "parameters": []}]});
+        let current_type = json!({"parameters": 0, "constructors": [
             {"name": "A", "parameters": []}, {"name": "B", "parameters": []}
         ]});
-        let old = interface(module(json!({}), json!({"Choice": old_type})));
-        let new = interface(module(json!({}), json!({"Choice": new_type})));
-        let diff = compare(&old, &new).unwrap();
+        let baseline = interface(module(json!({}), json!({"Choice": baseline_type})));
+        let current = interface(module(json!({}), json!({"Choice": current_type})));
+        let diff = compare(&baseline, &current).unwrap();
         assert_eq!(diff.impact, Bump::Major);
         assert_eq!(diff.changes[0].kind, ApiChangeKind::ConstructorAdded);
     }
@@ -532,18 +551,18 @@ mod tests {
                 "type-aliases": {"Id": {"parameters": 0, "alias": {"kind": "named", "name": "String", "package": "", "module": "gleam", "parameters": []}}}
             })),
         );
-        for (old, new) in [
+        for (baseline, current) in [
             function_removed,
             type_parameters_changed,
             opaque_became_public,
             alias_changed,
         ] {
-            assert_eq!(compare(&old, &new).unwrap().impact, Bump::Major);
+            assert_eq!(compare(&baseline, &current).unwrap().impact, Bump::Major);
         }
 
-        let old = serde_json::to_vec(&json!({"modules": {"one": empty_module}})).unwrap();
-        let new = serde_json::to_vec(&json!({"modules": {}})).unwrap();
-        assert_eq!(compare(&old, &new).unwrap().impact, Bump::Major);
+        let baseline = serde_json::to_vec(&json!({"modules": {"one": empty_module}})).unwrap();
+        let current = serde_json::to_vec(&json!({"modules": {}})).unwrap();
+        assert_eq!(compare(&baseline, &current).unwrap().impact, Bump::Major);
     }
 
     #[test]
@@ -557,7 +576,7 @@ mod tests {
                 "parameters": []
             })
         };
-        let old = serde_json::to_vec(&json!({
+        let baseline = serde_json::to_vec(&json!({
             "modules": {
                 "removed_module": module(json!({}), json!({})),
                 "shared": {
@@ -592,7 +611,7 @@ mod tests {
             }
         }))
         .unwrap();
-        let new = serde_json::to_vec(&json!({
+        let current = serde_json::to_vec(&json!({
             "modules": {
                 "added_module": module(json!({}), json!({})),
                 "shared": {
@@ -628,7 +647,7 @@ mod tests {
         }))
         .unwrap();
 
-        let diff = compare(&old, &new).unwrap();
+        let diff = compare(&baseline, &current).unwrap();
         assert_eq!(diff.status, ApiStatus::Changed);
         assert_eq!(diff.impact, Bump::Major);
         let paths: BTreeSet<_> = diff
@@ -707,11 +726,11 @@ mod tests {
             .unwrap()
         };
 
-        let old = surface(7, "old docs", true);
+        let baseline = surface(7, "old docs", true);
         let renamed = surface(999, "new docs", true);
         let changed = surface(999, "new docs", false);
-        assert_eq!(compare(&old, &renamed).unwrap().impact, Bump::None);
-        assert_eq!(compare(&old, &changed).unwrap().impact, Bump::Major);
+        assert_eq!(compare(&baseline, &renamed).unwrap().impact, Bump::None);
+        assert_eq!(compare(&baseline, &changed).unwrap().impact, Bump::Major);
     }
 
     #[test]

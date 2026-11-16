@@ -300,8 +300,8 @@ pub fn fingerprint_normalized(normalized: &NormalizedArtifact) -> String {
 /// Whether two Hex tarballs contain the same publication inputs.
 ///
 /// Compression and timestamps are ignored, and the manifest version is masked, so a rebuild of unchanged sources compares equal.
-pub fn artifacts_equal(old: &[u8], new: &[u8]) -> Result<bool> {
-    Ok(normalize_hex_tarball(old)? == normalize_hex_tarball(new)?)
+pub fn artifacts_equal(baseline: &[u8], current: &[u8]) -> Result<bool> {
+    Ok(normalize_hex_tarball(baseline)? == normalize_hex_tarball(current)?)
 }
 
 /// Normalize the publish inputs in a package directory without invoking the compiler.
@@ -843,16 +843,16 @@ mod tests {
 
     #[test]
     fn version_and_generated_code_are_ignored() {
-        let old = package("1.0.0", "pub fn one() { 1 }", "old compiler output");
-        let new = package("2.0.0", "pub fn one() { 1 }", "new compiler output");
-        assert!(artifacts_equal(&old, &new).unwrap());
+        let baseline = package("1.0.0", "pub fn one() { 1 }", "old compiler output");
+        let current = package("2.0.0", "pub fn one() { 1 }", "new compiler output");
+        assert!(artifacts_equal(&baseline, &current).unwrap());
     }
 
     #[test]
     fn source_changes_are_detected() {
-        let old = package("1.0.0", "pub fn one() { 1 }", "same");
-        let new = package("1.0.1", "pub fn one() { 2 }", "same");
-        assert!(!artifacts_equal(&old, &new).unwrap());
+        let baseline = package("1.0.0", "pub fn one() { 1 }", "same");
+        let current = package("1.0.1", "pub fn one() { 2 }", "same");
+        assert!(!artifacts_equal(&baseline, &current).unwrap());
     }
 
     #[test]
