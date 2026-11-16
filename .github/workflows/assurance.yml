@@ -40,8 +40,8 @@ jobs:
       - name: Install the pinned Rust toolchain
         shell: bash
         run: |
-          rustup toolchain install 1.88.0 --profile minimal --no-self-update
-          rustup default 1.88.0
+          rustup toolchain install 1.100.0 --profile minimal --no-self-update
+          rustup default 1.100.0
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
         with:
           otp-version: "28.5"
@@ -61,8 +61,8 @@ jobs:
           persist-credentials: false
       - name: Install the pinned Rust toolchain
         run: |
-          rustup toolchain install 1.88.0 --profile minimal --no-self-update
-          rustup default 1.88.0
+          rustup toolchain install 1.100.0 --profile minimal --no-self-update
+          rustup default 1.100.0
       - name: Install fixed assurance tools
         run: |
           cargo install --locked cargo-deny --version 0.20.2
@@ -89,11 +89,11 @@ jobs:
           persist-credentials: false
       - name: Install the pinned Rust toolchain
         run: |
-          rustup toolchain install 1.88.0 --profile minimal --no-self-update
-          rustup default 1.88.0
+          rustup toolchain install 1.100.0 --profile minimal --no-self-update
+          rustup default 1.100.0
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "24"
+          node-version: "24.22.3"
           package-manager-cache: false
       - name: Install fixed actionlint and zizmor
         env:
@@ -159,7 +159,7 @@ jobs:
           gleam-version: "1.19.2"
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "24"
+          node-version: "24.22.3"
           package-manager-cache: false
       - name: Install fixed coverage tool
         run: cargo install --locked cargo-llvm-cov --version 0.9.0
@@ -186,8 +186,8 @@ jobs:
           persist-credentials: false
       - name: Install the pinned Rust toolchain
         run: |
-          rustup toolchain install 1.88.0 --profile minimal --no-self-update
-          rustup default 1.88.0
+          rustup toolchain install 1.100.0 --profile minimal --no-self-update
+          rustup default 1.100.0
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
         with:
           otp-version: "28.5"
@@ -226,8 +226,8 @@ jobs:
           persist-credentials: false
       - name: Install the pinned Rust toolchain
         run: |
-          rustup toolchain install 1.88.0 --profile minimal --no-self-update
-          rustup default 1.88.0
+          rustup toolchain install 1.100.0 --profile minimal --no-self-update
+          rustup default 1.100.0
       - name: Require the assurance map to cite every check and only checks that exist
         run: cargo xtask trace
       - name: Require the committed mutation receipt to cover these core sources
@@ -247,8 +247,8 @@ jobs:
           persist-credentials: false
       - name: Install the pinned Rust toolchain
         run: |
-          rustup toolchain install 1.88.0 --profile minimal --no-self-update
-          rustup default 1.88.0
+          rustup toolchain install 1.100.0 --profile minimal --no-self-update
+          rustup default 1.100.0
       - name: Prove the model for every list length and its refinement of the core crate, and refuse a broken decision table
         run: cargo xtask lean
 
@@ -264,8 +264,8 @@ jobs:
           persist-credentials: false
       - name: Install the pinned Rust toolchain
         run: |
-          rustup toolchain install 1.88.0 --profile minimal --no-self-update
-          rustup default 1.88.0
+          rustup toolchain install 1.100.0 --profile minimal --no-self-update
+          rustup default 1.100.0
       - name: Check every state of the model, fail its probe, and write the replayed traces again
         run: cargo xtask quint
 

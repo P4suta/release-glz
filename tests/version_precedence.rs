@@ -166,7 +166,7 @@ fn build_metadata_never_changes_precedence() {
 
 #[test]
 fn the_prerelease_grammar_agrees_with_semver_on_every_short_text() {
-    let alphabet = [b'0', b'1', b'a', b'Z', b'-', b'.', b'+', b'_'];
+    let alphabet = *b"01aZ-.+_";
     let mut level = vec![Vec::new()];
     let mut texts = Vec::new();
     for _ in 0..4 {
