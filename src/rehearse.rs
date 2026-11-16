@@ -205,7 +205,7 @@ pub(crate) fn locate_manifest(manifest_path: &Path) -> Result<(GitRepo, PathBuf)
         .parent()
         .context("manifest path has no package directory")?;
     let repo = GitRepo::discover(package_directory)?;
-    let root = repo.root().canonicalize()?;
+    let root = crate::fs::canonicalize(repo.root())?;
     let relative_manifest = requested_manifest
         .strip_prefix(&root)
         .context("manifest is outside the git repository")?
@@ -220,9 +220,11 @@ pub(crate) fn manifest_path_text(relative_manifest: &Path) -> String {
 
 fn absolute(path: &Path) -> Result<PathBuf> {
     if path.is_absolute() {
-        Ok(path.canonicalize()?)
+        Ok(crate::fs::canonicalize(path)?)
     } else {
-        Ok(std::env::current_dir()?.join(path).canonicalize()?)
+        Ok(crate::fs::canonicalize(
+            std::env::current_dir()?.join(path),
+        )?)
     }
 }
 

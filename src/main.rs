@@ -6,6 +6,7 @@
 #![warn(missing_docs)]
 
 use std::path::{Path, PathBuf};
+use std::process::ExitCode;
 
 use anyhow::{Context, Result, bail};
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
@@ -284,54 +285,47 @@ impl Train {
     }
 }
 
-/// Print clap's usage or help text, and exit with the internal failure status when it can't be written.
-fn print_usage(error: &clap::Error) {
-    if error.print().is_err() {
-        std::process::exit(FailureClass::Internal.exit_code());
+/// Print clap's usage or help text and end with `status`, or with the internal failure status when the text can't be written.
+fn print_usage(error: &clap::Error, status: ExitCode) -> ExitCode {
+    match error.print() {
+        Ok(()) => status,
+        Err(_) => FailureClass::Internal.exit_status(),
     }
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> ExitCode {
     let arguments = std::env::args_os().collect::<Vec<_>>();
     let cli = match Cli::try_parse_from(arguments.clone()) {
         Ok(cli) => cli,
         Err(error) => {
-            let exit = error.exit_code();
-            if exit == 0 {
-                print_usage(&error);
-                return;
+            if error.exit_code() == 0 {
+                return print_usage(&error, ExitCode::SUCCESS);
             }
-            if requested_json_output(&arguments) {
-                let command = requested_command(&arguments);
-                let envelope = release_glz::model::CommandEnvelope::<serde_json::Value>::failure(
-                    command,
-                    vec![Diagnostic {
-                        code: FailureClass::UsageOrConfig.diagnostic_code().into(),
-                        level: DiagnosticLevel::Error,
-                        message: error.to_string(),
-                        detail: None,
-                    }],
-                    vec![],
-                );
-                print_failure_envelope(&envelope);
-            } else {
-                print_usage(&error);
+            let refused = FailureClass::UsageOrConfig.exit_status();
+            if !requested_json_output(&arguments) {
+                return print_usage(&error, refused);
             }
-            std::process::exit(FailureClass::UsageOrConfig.exit_code());
+            let command = requested_command(&arguments);
+            let envelope = release_glz::model::CommandEnvelope::<serde_json::Value>::failure(
+                command,
+                vec![Diagnostic {
+                    code: FailureClass::UsageOrConfig.diagnostic_code().into(),
+                    level: DiagnosticLevel::Error,
+                    message: error.to_string(),
+                    detail: None,
+                }],
+                vec![],
+            );
+            print_failure_envelope(&envelope);
+            return refused;
         }
     };
     let output = cli.output;
     let command = cli.command.name();
-    let configured_credential = Manifest::load(&cli.manifest_path)
-        .ok()
-        .and_then(|manifest| {
-            let release = manifest.configured_release()?;
-            std::env::var(&release.registry.credential_env).ok()
-        });
+    let configured_credential = configured_credential(&cli.manifest_path);
     match run(cli).await {
-        Ok(code) if code != 0 => std::process::exit(code),
-        Ok(_) => {}
+        Ok(status) => status,
         Err(error) => {
             let message = release_glz::secrets::redact_with(
                 &format!("{error:#}"),
@@ -353,9 +347,20 @@ async fn main() {
                 eprintln!("{command}: failed");
                 eprintln!("  Error [{}]: {message}", error_code(&error));
             }
-            std::process::exit(exit_code(&error));
+            exit_status(&error)
         }
     }
+}
+
+/// The value of the registry credential that the manifest at `manifest_path` configures, which a failure report redacts.
+///
+/// A manifest that can't be loaded names no credential here, and every command that reads it reports why it can't be loaded.
+fn configured_credential(manifest_path: &Path) -> Option<String> {
+    let Ok(manifest) = Manifest::load(manifest_path) else {
+        return None;
+    };
+    let release = manifest.configured_release()?;
+    release_glz::secrets::redacted_value(&release.registry.credential_env)
 }
 
 /// Print a failure envelope, or report on stderr that its serialization failed, while the exit status still names the failure class.
@@ -403,15 +408,15 @@ fn requested_command(arguments: &[std::ffi::OsString]) -> String {
     "cli".into()
 }
 
-fn exit_code(error: &anyhow::Error) -> i32 {
-    release_glz::failure::classify(error).exit_code()
+fn exit_status(error: &anyhow::Error) -> ExitCode {
+    release_glz::failure::classify(error).exit_status()
 }
 
 fn error_code(error: &anyhow::Error) -> &'static str {
     release_glz::failure::diagnostic_code(error)
 }
 
-async fn run(cli: Cli) -> Result<i32> {
+async fn run(cli: Cli) -> Result<ExitCode> {
     let command_name = cli.command.name();
     let base_options = PlanOptions {
         manifest_path: cli.manifest_path.clone(),
@@ -433,7 +438,7 @@ async fn run(cli: Cli) -> Result<i32> {
                     cli.output,
                 )?,
             }
-            return Ok(0);
+            return Ok(ExitCode::SUCCESS);
         }
         Command::Init {
             profile,
@@ -457,7 +462,9 @@ async fn run(cli: Cli) -> Result<i32> {
         }
         Command::Plan { out } => {
             if let Some(out) = &out
-                && out.exists()
+                && release_glz::fs::kind(out)
+                    .map_err(|error| classified(FailureClass::UsageOrConfig, error))?
+                    != release_glz::fs::Kind::Absent
             {
                 return Err(classified(
                     FailureClass::UsageOrConfig,
@@ -485,7 +492,7 @@ async fn run(cli: Cli) -> Result<i32> {
                 .await
                 .map_err(|error| default_failure_class(error, FailureClass::UsageOrConfig))?;
             print_result("rehearse", &candidate, cli.output)?;
-            return Ok(0);
+            return Ok(ExitCode::SUCCESS);
         }
         Command::Verify { candidate, online } => {
             let sealed = verified_candidate(&candidate)?;
@@ -501,7 +508,7 @@ async fn run(cli: Cli) -> Result<i32> {
                 });
                 print_result("verify", &result, cli.output)?;
             }
-            return Ok(0);
+            return Ok(ExitCode::SUCCESS);
         }
         Command::ReleasePr {
             candidate,
@@ -589,7 +596,7 @@ async fn run(cli: Cli) -> Result<i32> {
                     }),
                     cli.output,
                 )?;
-                return Ok(0);
+                return Ok(ExitCode::SUCCESS);
             }
             if let Some(plan_file) = plan_file {
                 let plan = handed_off_plan(&plan_file, &cli.manifest_path)?;
@@ -629,7 +636,7 @@ async fn run(cli: Cli) -> Result<i32> {
                 ));
             }
             print_result("release", &report, cli.output)?;
-            return Ok(0);
+            return Ok(ExitCode::SUCCESS);
         }
         Command::Status { candidate, online } => {
             if let Some(candidate) = candidate {
@@ -656,7 +663,7 @@ async fn run(cli: Cli) -> Result<i32> {
                     });
                     print_result_with_actions("status", &result, vec![next_action], cli.output)?;
                 }
-                return Ok(0);
+                return Ok(ExitCode::SUCCESS);
             }
             manifest_planner(&cli.manifest_path)?
                 .plan(&base_options)
@@ -725,7 +732,7 @@ async fn run(cli: Cli) -> Result<i32> {
     };
 
     print_plan(&plan, cli.output, command_name)?;
-    Ok(0)
+    Ok(ExitCode::SUCCESS)
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -748,7 +755,7 @@ async fn run_init(
     profile_args: &ProfileArgs,
     explicit_action_sha: Option<&str>,
     mode: ModeArgs,
-) -> Result<i32> {
+) -> Result<ExitCode> {
     let ModeArgs {
         check,
         diff,
@@ -834,7 +841,7 @@ async fn run_init(
         if let Some(workflow_diff) = &workflow_diff {
             print!("{workflow_diff}");
         }
-        return Ok(0);
+        return Ok(ExitCode::SUCCESS);
     }
 
     let mut manifest_written = false;
@@ -896,9 +903,9 @@ async fn run_init(
         output,
     )?;
     Ok(if stale {
-        FailureClass::PolicyOrApproval.exit_code()
+        FailureClass::PolicyOrApproval.exit_status()
     } else {
-        0
+        ExitCode::SUCCESS
     })
 }
 
@@ -1097,43 +1104,51 @@ async fn run_doctor(
     output: Output,
     online: bool,
     candidate_build: bool,
-) -> Result<i32> {
+) -> Result<ExitCode> {
     let manifest = Manifest::load(manifest_path)
         .map_err(|error| classified_keeping_reason(FailureClass::UsageOrConfig, error))?;
-    let installed_compiler = Gleam::default().installed_version().ok();
+    let installed_compiler = observed(
+        "the installed Gleam version",
+        Gleam::default().installed_version(),
+        None,
+    );
     let Some(release) = manifest.configured_release() else {
         // Every other check reads the configuration, and a Candidate build refuses without it.
         print_doctor(
             &assess_doctor_unconfigured(&manifest.version, installed_compiler),
             output,
         )?;
-        return Ok(FailureClass::PolicyOrApproval.exit_code());
+        return Ok(FailureClass::PolicyOrApproval.exit_status());
     };
-    let action_sha = GitRepo::discover(manifest.package_dir())
-        .ok()
-        .and_then(|repo| release_glz::workflow::action_sha_from_workflow(repo.root()).ok());
-    let workflow_current = action_sha
-        .as_deref()
-        .is_some_and(|sha| managed_workflow_is_current(&manifest, release, sha).unwrap_or(false));
+    let credential = release_glz::secrets::redacted_value(&release.registry.credential_env);
+    let credential = credential.as_deref();
+    let workflow_current = observed(
+        "the managed release workflow",
+        GitRepo::discover(manifest.package_dir())
+            .and_then(|repo| release_glz::workflow::action_sha_from_workflow(repo.root()))
+            .and_then(|sha| managed_workflow_is_current(&manifest, release, &sha)),
+        credential,
+    ) == Some(true);
     let (registry_credential, github_environment) = if online {
         let registry = if std::env::var_os(&release.registry.credential_env).is_none() {
             RegistryCredentialAudit::Missing
         } else {
-            match HexRegistry::from_environment(&release.registry) {
-                Ok(registry) => registry
-                    .audit_credential()
+            let audit = match HexRegistry::from_environment(&release.registry) {
+                Ok(registry) => registry.audit_credential().await,
+                Err(error) => Err(error),
+            };
+            observed("the registry credential", audit, credential)
+                .unwrap_or(RegistryCredentialAudit::Unavailable)
+        };
+        let audit = match github_client(&manifest) {
+            Ok(client) => {
+                client
+                    .environment_audit(&release.approval.environment)
                     .await
-                    .unwrap_or(RegistryCredentialAudit::Unavailable),
-                Err(_) => RegistryCredentialAudit::Unavailable,
             }
+            Err(error) => Err(error),
         };
-        let github = match github_client(&manifest) {
-            Ok(client) => client
-                .environment_audit(&release.approval.environment)
-                .await
-                .ok(),
-            Err(_) => None,
-        };
+        let github = observed("the GitHub Environment", audit, credential);
         (registry, github)
     } else {
         (RegistryCredentialAudit::Missing, None)
@@ -1182,10 +1197,24 @@ async fn run_doctor(
     }
     print_doctor(&report, output)?;
     Ok(if report.state == ReleaseState::Blocked {
-        FailureClass::PolicyOrApproval.exit_code()
+        FailureClass::PolicyOrApproval.exit_status()
     } else {
-        0
+        ExitCode::SUCCESS
     })
+}
+
+/// What one doctor check observed, or `None` after naming on stderr why it observed nothing.
+///
+/// The report states a check without an observation as unobserved or failing, so the stderr line only adds the reason.
+fn observed<T>(check: &str, observation: Result<T>, credential: Option<&str>) -> Option<T> {
+    match observation {
+        Ok(value) => Some(value),
+        Err(error) => {
+            let reason = release_glz::secrets::redact_with(&format!("{error:#}"), credential);
+            eprintln!("release-glz: doctor could not observe {check}: {reason}");
+            None
+        }
+    }
 }
 
 async fn credential_free_candidate_build(manifest: &Manifest) -> Result<()> {
@@ -1194,7 +1223,7 @@ async fn credential_free_candidate_build(manifest: &Manifest) -> Result<()> {
     let temporary = tempfile::tempdir()?;
     let candidate = temporary.path().join("candidate");
     let cache = temporary.path().join("cache");
-    std::fs::create_dir_all(&cache)?;
+    release_glz::fs::create_dir_all(&cache)?;
     let executable = std::env::current_exe()?;
     let mut command = tokio::process::Command::new(executable);
     command
@@ -1232,16 +1261,22 @@ async fn credential_free_candidate_build(manifest: &Manifest) -> Result<()> {
     if output.status.success() {
         return Ok(());
     }
-    let detail = serde_json::from_slice::<serde_json::Value>(&output.stdout)
-        .ok()
-        .and_then(|envelope| {
-            envelope.get("diagnostics")?.as_array().map(|diagnostics| {
-                diagnostics
-                    .iter()
-                    .filter_map(|diagnostic| diagnostic.get("message")?.as_str())
-                    .collect::<Vec<_>>()
-                    .join("; ")
-            })
+    let envelope = match serde_json::from_slice::<serde_json::Value>(&output.stdout) {
+        Ok(envelope) => envelope,
+        Err(error) => bail!(
+            "isolated Candidate subprocess failed with {} and printed no command envelope: {error}",
+            output.status
+        ),
+    };
+    let detail = envelope
+        .get("diagnostics")
+        .and_then(serde_json::Value::as_array)
+        .map(|diagnostics| {
+            diagnostics
+                .iter()
+                .filter_map(|diagnostic| diagnostic.get("message")?.as_str())
+                .collect::<Vec<_>>()
+                .join("; ")
         })
         .filter(|detail| !detail.is_empty())
         .unwrap_or_else(|| "isolated Candidate subprocess failed".into());
@@ -1389,13 +1424,17 @@ fn manifest_planner(manifest_path: &Path) -> Result<Planner<HexRegistry>> {
 
 /// The sealed Candidate at `directory`.
 ///
-/// A path that isn't a directory is a mistyped argument, and only a Candidate that fails its own checks is a conflict.
+/// A path that isn't a directory, or can't be inspected, is a mistyped argument, and only a Candidate that fails its own checks is a conflict.
 fn verified_candidate(directory: &Path) -> Result<release_glz::candidate::CandidateManifest> {
-    if !directory.is_dir() {
-        return Err(refused(
-            RefusalReason::CandidateNotDirectory,
-            format_args!("`{}` is not a Candidate directory", directory.display()),
-        ));
+    match release_glz::fs::kind(directory) {
+        Ok(release_glz::fs::Kind::Directory) => {}
+        Ok(_) => {
+            return Err(refused(
+                RefusalReason::CandidateNotDirectory,
+                format_args!("`{}` is not a Candidate directory", directory.display()),
+            ));
+        }
+        Err(error) => return Err(refused(RefusalReason::CandidateNotDirectory, error)),
     }
     Candidate::verify(directory)
         .map_err(|error| classified_keeping_reason(FailureClass::ImmutableStateConflict, error))
@@ -1674,9 +1713,9 @@ fn shell_name(shell: CompletionShell) -> &'static str {
 }
 
 fn github_client(manifest: &Manifest) -> Result<GitHubClient> {
-    let repository = match std::env::var("GITHUB_REPOSITORY") {
-        Ok(repository) => GitHubRepository::parse(&repository)?,
-        Err(_) => GitHubRepository::parse(&manifest.repository.github_name().context(
+    let repository = match release_glz::environment::variable("GITHUB_REPOSITORY")? {
+        Some(repository) => GitHubRepository::parse(&repository)?,
+        None => GitHubRepository::parse(&manifest.repository.github_name().context(
             "set GITHUB_REPOSITORY or configure a GitHub `[repository]` in gleam.toml",
         )?)?,
     };
@@ -1740,9 +1779,11 @@ fn print_plan(plan: &ReleasePlan, output: Output, command: &str) -> Result<()> {
 
 fn absolute_or_join(path: &Path) -> Result<PathBuf> {
     if path.is_absolute() {
-        Ok(path.canonicalize()?)
+        Ok(release_glz::fs::canonicalize(path)?)
     } else {
-        Ok(std::env::current_dir()?.join(path).canonicalize()?)
+        Ok(release_glz::fs::canonicalize(
+            std::env::current_dir()?.join(path),
+        )?)
     }
 }
 
@@ -1750,7 +1791,7 @@ fn absolute_or_join(path: &Path) -> Result<PathBuf> {
 fn repository_manifest_path(manifest: &Path, repo: &GitRepo) -> Result<String> {
     let absolute = absolute_or_join(manifest)?;
     let relative = absolute
-        .strip_prefix(repo.root().canonicalize()?)
+        .strip_prefix(release_glz::fs::canonicalize(repo.root())?)
         .context("manifest is outside the git repository")?;
     Ok(slash_separated(relative))
 }
@@ -1767,6 +1808,7 @@ mod tests {
         ApiChange, ApiChangeKind, ApiDiff, ApiStatus, Baseline, BaselineSource, Bump, ReasonKind,
         ReleaseReason,
     };
+    use release_glz_test_support::fs;
 
     fn plan() -> ReleasePlan {
         ReleasePlan {
@@ -1937,13 +1979,13 @@ mod tests {
             (FailureClass::Internal, 1, "internal_failure"),
         ] {
             let error = classified(class, "message text is not classification");
-            assert_eq!(exit_code(&error), expected_exit);
+            assert_eq!(exit_status(&error), ExitCode::from(expected_exit));
             assert_eq!(error_code(&error), expected_code);
         }
         let misleading = anyhow::anyhow!("hook approval conflict connection must be fixed");
-        assert_eq!(exit_code(&misleading), 1);
+        assert_eq!(exit_status(&misleading), ExitCode::from(1));
         let missing = anyhow::Error::new(release_glz::config::MissingReleaseConfig);
-        assert_eq!(exit_code(&missing), 2);
+        assert_eq!(exit_status(&missing), ExitCode::from(2));
         assert_eq!(error_code(&missing), "config_missing");
     }
 
@@ -2061,9 +2103,9 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         release_glz_test_support::init_repository(temp.path());
         let package = temp.path().join("packages").join("widget");
-        std::fs::create_dir_all(&package).unwrap();
+        fs::create_dir_all(&package);
         let manifest = package.join("gleam.toml");
-        std::fs::write(&manifest, "name = \"widget\"\nversion = \"1.0.0\"\n").unwrap();
+        fs::write(&manifest, "name = \"widget\"\nversion = \"1.0.0\"\n");
         let repo = GitRepo::discover(&package).unwrap();
 
         // Strings, because Windows compares paths by component and treats both separators alike.

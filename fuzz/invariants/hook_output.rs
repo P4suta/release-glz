@@ -132,8 +132,8 @@ fn artifacts(evidence: Map<String, Value>) -> bool {
         assert_eq!(
             base64::engine::general_purpose::STANDARD
                 .decode(content)
-                .ok(),
-            Some(artifact.bytes.clone())
+                .map_err(|error| error.to_string()),
+            Ok(artifact.bytes.clone())
         );
         assert_eq!(
             artifact.public,

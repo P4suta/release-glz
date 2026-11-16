@@ -161,12 +161,12 @@ impl<'de> Visitor<'de> for Shape {
     }
 }
 
-/// The members of `data` that `shape` keeps, or `None` when `data` isn't JSON.
-fn projected(data: &[u8], shape: Shape) -> Option<Value> {
+/// The members of `data` that `shape` keeps, or the error that says why `data` isn't JSON.
+fn projected(data: &[u8], shape: Shape) -> serde_json::Result<Value> {
     let mut deserializer = serde_json::Deserializer::from_slice(data);
-    let value = shape.deserialize(&mut deserializer).ok()?;
-    deserializer.end().ok()?;
-    Some(value)
+    let value = shape.deserialize(&mut deserializer)?;
+    deserializer.end()?;
+    Ok(value)
 }
 
 /// The members of an accepted response that its typed reader reads, which an independent reader checks the accepted value against.
@@ -312,9 +312,13 @@ fn render_package(state: &PackageState) -> Vec<u8> {
 }
 
 /// The valid version that an object input names, which a release response is observed for so that a valid input can be accepted.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "an input that isn't JSON or names no valid version names none, and the invariant observes it for the fallback version"
+)]
 fn named_version(data: &[u8]) -> Option<Version> {
-    projected(data, RELEASE)?
-        .as_object()?
+    projected(data, RELEASE)
+        .ok()?
         .get("version")?
         .as_str()?
         .parse()

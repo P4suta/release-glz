@@ -55,8 +55,6 @@ tokio = { version = "1.54.1", features = ["test-util"] }
 # The release engine meets the workspace baseline one lint group at a time.
 # Each entry leaves with the change that makes the crate pass that lint.
 [lints.clippy]
-disallowed_methods = "allow"
-disallowed_types = "allow"
 too_many_arguments = "allow"
 enum_variant_names = "allow"
 unwrap_used = "deny"

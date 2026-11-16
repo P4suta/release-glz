@@ -5,17 +5,16 @@ use release_glz::workflow::{self, WorkflowMode, WorkflowSettings};
 use release_glz_test_support::fake_tool::{self, Action, Behavior, Condition, Rule};
 use release_glz_test_support::http::{FakeServer, Request, Response};
 use release_glz_test_support::schema::assert_published_envelope;
-use release_glz_test_support::{git, init_repository, isolated_command};
+use release_glz_test_support::{fs, git, init_repository, isolated_command};
 
 #[test]
 fn doctor_cli_collects_local_and_github_checks_into_the_command_envelope() {
     let temp = tempfile::tempdir().unwrap();
     let mut registry = fake_github(&[""]);
-    std::fs::write(
+    fs::write(
         temp.path().join("gleam.toml"),
         manifest(&registry.base_url()),
-    )
-    .unwrap();
+    );
     init_repository(temp.path());
     workflow::sync(
         temp.path(),
@@ -91,11 +90,10 @@ fn doctor_cli_collects_local_and_github_checks_into_the_command_envelope() {
 fn doctor_defaults_to_local_checks_without_contacting_registry_or_github() {
     let temp = tempfile::tempdir().unwrap();
     let mut registry = fake_github(&[]);
-    std::fs::write(
+    fs::write(
         temp.path().join("gleam.toml"),
         manifest(&registry.base_url()),
-    )
-    .unwrap();
+    );
     init_repository(temp.path());
     workflow::sync(
         temp.path(),
@@ -139,23 +137,55 @@ fn doctor_defaults_to_local_checks_without_contacting_registry_or_github() {
     let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_published_envelope(&envelope);
     assert_eq!(envelope["result"]["state"], "up_to_date");
+    assert_eq!(String::from_utf8_lossy(&output.stderr), "");
+}
+
+/// A check that observes nothing still blocks the report, and stderr names why it observed nothing.
+#[test]
+fn doctor_names_why_a_check_observed_nothing() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut registry = fake_github(&[]);
+    fs::write(
+        temp.path().join("gleam.toml"),
+        manifest(&registry.base_url()),
+    );
+    init_repository(temp.path());
+    let gleam = fake_gleam(temp.path(), &Behavior::reporting_version("1.12.3"));
+
+    let output = isolated_command(env!("CARGO_BIN_EXE_release-glz"))
+        .current_dir(temp.path())
+        .args(["--output", "json", "doctor"])
+        .env("PATH", &gleam)
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(3));
+    assert_eq!(registry.finish().len(), 0);
+    let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_published_envelope(&envelope);
+    assert_eq!(envelope["diagnostics"][0]["code"], "workflow_outdated");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.starts_with(
+            "release-glz: doctor could not observe the managed release workflow: managed release workflow is missing: failed to read `"
+        ),
+        "{stderr}"
+    );
 }
 
 #[test]
 fn candidate_build_reports_the_original_isolated_failure_without_claiming_credential_cause() {
     let temp = tempfile::tempdir().unwrap();
     let mut registry = fake_github(&[]);
-    std::fs::write(
+    fs::write(
         temp.path().join("gleam.toml"),
         manifest(&registry.base_url()),
-    )
-    .unwrap();
-    std::fs::create_dir(temp.path().join("src")).unwrap();
-    std::fs::write(
+    );
+    fs::create_dir(temp.path().join("src"));
+    fs::write(
         temp.path().join("src/widget.gleam"),
         "pub fn value() -> Int { 1 }\n",
-    )
-    .unwrap();
+    );
     init_repository(temp.path());
     git(temp.path(), &["add", "."]);
     git(temp.path(), &["commit", "-m", "initial"]);
@@ -219,11 +249,10 @@ fn candidate_build_reports_the_original_isolated_failure_without_claiming_creden
 fn doctor_cli_uses_policy_exit_and_unsuccessful_envelope_when_blocked() {
     let temp = tempfile::tempdir().unwrap();
     let mut registry = fake_github(&[""]);
-    std::fs::write(
+    fs::write(
         temp.path().join("gleam.toml"),
         manifest(&registry.base_url()),
-    )
-    .unwrap();
+    );
     init_repository(temp.path());
     workflow::sync(
         temp.path(),

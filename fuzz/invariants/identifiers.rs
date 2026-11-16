@@ -64,8 +64,8 @@ fn repository(text: &str) -> bool {
     };
     assert_eq!(repository.full_name(), text);
     assert_eq!(
-        GitHubRepository::parse(&repository.full_name()).ok(),
-        Some(repository)
+        GitHubRepository::parse(&repository.full_name()).map_err(|error| format!("{error:#}")),
+        Ok(repository)
     );
     true
 }
@@ -76,7 +76,11 @@ fn channel(text: &str) -> bool {
         .find(|(name, _)| *name == text)
         .map(|(_, channel)| *channel);
     let parsed = text.parse::<PrereleaseChannel>();
-    assert_eq!(parsed.as_ref().ok().copied(), expected, "{text:?}");
+    assert_eq!(
+        parsed.as_ref().map_err(drop).copied(),
+        expected.ok_or(()),
+        "{text:?}"
+    );
     let Ok(channel) = parsed else {
         return false;
     };
@@ -84,8 +88,8 @@ fn channel(text: &str) -> bool {
     let json = serde_json::to_string(&channel).expect("a channel serializes");
     assert_eq!(json, format!("\"{text}\""));
     assert_eq!(
-        serde_json::from_str::<PrereleaseChannel>(&json).ok(),
-        Some(channel)
+        serde_json::from_str::<PrereleaseChannel>(&json).map_err(|error| error.to_string()),
+        Ok(channel)
     );
     true
 }
@@ -97,8 +101,8 @@ fn channel_json(text: &str) -> bool {
     assert_eq!(channel.as_str().parse::<PrereleaseChannel>(), Ok(channel));
     let json = serde_json::to_string(&channel).expect("a channel serializes");
     assert_eq!(
-        serde_json::from_str::<PrereleaseChannel>(&json).ok(),
-        Some(channel)
+        serde_json::from_str::<PrereleaseChannel>(&json).map_err(|error| error.to_string()),
+        Ok(channel)
     );
     true
 }

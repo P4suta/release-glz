@@ -3,8 +3,8 @@
 //! The writing job never runs the compiler, so it reads the plan as untrusted input and keeps only what it can check against its own checkout.
 
 use std::fmt;
-use std::fs::{File, OpenOptions};
-use std::io::{Read, Write};
+
+use std::io::Read;
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -84,26 +84,21 @@ pub fn write_new(path: &Path, plan: &ReleasePlan) -> Result<()> {
     if exceeds_limit(&bytes) {
         return Err(Refusal::TooLarge.into());
     }
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
-        .with_context(|| format!("failed to create plan `{}`", path.display()))?;
-    file.write_all(&bytes)?;
-    file.sync_all()?;
-    Ok(())
+    crate::fs::write_new(path, &bytes)
+        .with_context(|| format!("failed to create plan `{}`", path.display()))
 }
 
-/// Whether a plan file of `bytes` is larger than [`MAX_PLAN_BYTES`].
+/// Whether a plan file of `bytes` is larger than [`MAX_PLAN_BYTES`], as a length that doesn't fit a `u64` is.
 fn exceeds_limit(bytes: &[u8]) -> bool {
-    u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_PLAN_BYTES
+    !u64::try_from(bytes.len()).is_ok_and(|length| length <= MAX_PLAN_BYTES)
 }
 
 /// Read a plan file that `plan --out` wrote, refusing anything that `plan --out` could not have written.
 pub fn read(path: &Path) -> Result<ReleasePlan> {
     let mut bytes = Vec::new();
-    File::open(path)
-        .and_then(|file| file.take(MAX_PLAN_BYTES + 1).read_to_end(&mut bytes))
+    crate::fs::open(path)
+        .map_err(anyhow::Error::from)
+        .and_then(|file| Ok(file.take(MAX_PLAN_BYTES + 1).read_to_end(&mut bytes)?))
         .with_context(|| format!("failed to read plan `{}`", path.display()))?;
     parse(&bytes)
 }

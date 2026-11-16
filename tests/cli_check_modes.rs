@@ -1,7 +1,7 @@
 use std::process::Command;
 
 use release_glz_test_support::schema::assert_published_envelope;
-use release_glz_test_support::{init_repository, isolated_command};
+use release_glz_test_support::{fs, init_repository, isolated_command};
 
 fn binary() -> Command {
     isolated_command(env!("CARGO_BIN_EXE_release-glz"))
@@ -13,7 +13,7 @@ const ACTION_SHA: &str = "abcdef0123456789abcdef0123456789abcdef01";
 fn init_check_is_non_mutating_and_fails_when_the_managed_workflow_is_stale() {
     let temp = tempfile::tempdir().unwrap();
     init_repository(temp.path());
-    std::fs::write(temp.path().join("gleam.toml"), schema_two_manifest()).unwrap();
+    fs::write(temp.path().join("gleam.toml"), schema_two_manifest());
 
     let output = binary()
         .current_dir(temp.path())
@@ -28,12 +28,9 @@ fn init_check_is_non_mutating_and_fails_when_the_managed_workflow_is_stale() {
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(3));
-    assert!(
-        !temp
-            .path()
-            .join(".github/workflows/release-glz.yml")
-            .exists()
-    );
+    assert!(!fs::exists(
+        temp.path().join(".github/workflows/release-glz.yml")
+    ));
     let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_published_envelope(&envelope);
     assert_eq!(envelope["ok"], false);
@@ -50,7 +47,7 @@ fn init_check_is_non_mutating_and_fails_when_the_managed_workflow_is_stale() {
 fn init_diff_update_and_check_form_a_non_destructive_managed_file_lifecycle() {
     let temp = tempfile::tempdir().unwrap();
     init_repository(temp.path());
-    std::fs::write(temp.path().join("gleam.toml"), schema_two_manifest()).unwrap();
+    fs::write(temp.path().join("gleam.toml"), schema_two_manifest());
     let workflow = temp.path().join(".github/workflows/release-glz.yml");
 
     let diff = binary()
@@ -63,7 +60,7 @@ fn init_diff_update_and_check_form_a_non_destructive_managed_file_lifecycle() {
     assert!(diff_text.contains("+++ .github/workflows/release-glz.yml"));
     assert!(diff_text.contains("@@ "));
     assert!(diff_text.contains("name: release-glz"));
-    assert!(!workflow.exists());
+    assert!(!fs::exists(&workflow));
 
     let json_diff = binary()
         .current_dir(temp.path())
@@ -98,7 +95,7 @@ fn init_diff_update_and_check_form_a_non_destructive_managed_file_lifecycle() {
         .unwrap();
     assert_eq!(unsupported_global_dry_run.status.code(), Some(2));
     assert_published_envelope(&serde_json::from_slice(&unsupported_global_dry_run.stdout).unwrap());
-    assert!(!workflow.exists());
+    assert!(!fs::exists(&workflow));
 
     let update = binary()
         .current_dir(temp.path())
@@ -121,7 +118,7 @@ fn init_diff_update_and_check_form_a_non_destructive_managed_file_lifecycle() {
     assert_published_envelope(&update);
     assert_eq!(update["result"]["changed"], true);
     assert_eq!(update["result"]["written"], true);
-    assert!(workflow.exists());
+    assert!(fs::exists(&workflow));
 
     let check = binary()
         .current_dir(temp.path())
@@ -167,7 +164,7 @@ fn init_refuses_a_release_table_that_sets_another_schema_and_leaves_it_alone() {
     init_repository(temp.path());
     let manifest = temp.path().join("gleam.toml");
     let source = schema_two_manifest().replace("schema = 2", "schema = 1");
-    std::fs::write(&manifest, &source).unwrap();
+    fs::write(&manifest, &source);
 
     let output = binary()
         .current_dir(temp.path())
@@ -193,13 +190,10 @@ fn init_refuses_a_release_table_that_sets_another_schema_and_leaves_it_alone() {
         message.contains("`[tools.release-glz]` requires `schema = 2`, but it sets `schema = 1`"),
         "{message}"
     );
-    assert_eq!(std::fs::read_to_string(&manifest).unwrap(), source);
-    assert!(
-        !temp
-            .path()
-            .join(".github/workflows/release-glz.yml")
-            .exists()
-    );
+    assert_eq!(fs::read_to_string(&manifest), source);
+    assert!(!fs::exists(
+        temp.path().join(".github/workflows/release-glz.yml")
+    ));
 }
 
 #[test]
@@ -207,7 +201,7 @@ fn every_command_that_reads_the_manifest_names_another_schema_as_its_reason() {
     let temp = tempfile::tempdir().unwrap();
     init_repository(temp.path());
     let source = schema_two_manifest().replace("schema = 2", "schema = 1");
-    std::fs::write(temp.path().join("gleam.toml"), source).unwrap();
+    fs::write(temp.path().join("gleam.toml"), source);
 
     for command in [
         &["plan"][..],

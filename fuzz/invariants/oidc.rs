@@ -287,14 +287,16 @@ fn discovery(data: &[u8]) -> bool {
     true
 }
 
-/// The bytes of a base64url value without leading zero bytes, which name the same RSA integer.
-fn integer(value: &str) -> Option<Vec<u8>> {
-    let bytes = URL_SAFE_NO_PAD.decode(value).ok()?;
+/// The bytes of a base64url value without leading zero bytes, which name the same RSA integer, or why the value isn't base64url.
+fn integer(value: &str) -> Result<Vec<u8>, String> {
+    let bytes = URL_SAFE_NO_PAD
+        .decode(value)
+        .map_err(|error| error.to_string())?;
     let start = bytes
         .iter()
         .position(|byte| *byte != 0)
         .unwrap_or(bytes.len());
-    Some(bytes.split_at(start).1.to_vec())
+    Ok(bytes.split_at(start).1.to_vec())
 }
 
 fn key_set(data: &[u8]) -> bool {

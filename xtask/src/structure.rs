@@ -169,8 +169,6 @@ pub const DEBT: &[&str] = &[
     "src/release.rs: core-rule-copy: `LiveReleaseTarget::apply` spells \"uploaded\"",
     "src/release.rs: core-rule-copy: `LiveReleaseTarget::observe` spells \"uploaded\"",
     // The root crate adopts the lint baseline.
-    "Cargo.toml: lint-exception: [lints.clippy] allows disallowed_methods",
-    "Cargo.toml: lint-exception: [lints.clippy] allows disallowed_types",
     "Cargo.toml: lint-exception: [lints.clippy] allows enum_variant_names",
     "Cargo.toml: lint-exception: [lints.clippy] allows too_many_arguments",
     // The core adopts the lint baseline together with the Kani harnesses it moves.

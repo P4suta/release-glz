@@ -3,7 +3,6 @@
 //! A Candidate binds one committed source SHA, the exact package and documentation bytes built from it, the policy that applies, and the hook evidence collected along the way.
 //! `release` publishes these bytes; it never rebuilds them from a checkout.
 
-use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
@@ -23,6 +22,7 @@ use crate::config::{
     validate_relative_path,
 };
 use crate::failure::{Refusal, RefusalReason, refused};
+use crate::fs;
 use crate::hooks::SidecarArtifact;
 use crate::refuse;
 use crate::sidecar::{
@@ -434,12 +434,12 @@ impl SealedPolicy {
     ) -> Result<Self> {
         let release = manifest.release()?;
         let registry = &release.registry;
-        let release_notes = fs::read_to_string(package_dir.join(&release.changelog.path))
-            .ok()
-            .and_then(|source| {
-                crate::changelog::release_section(&source, &manifest.version.to_string())
-            })
-            .unwrap_or_default();
+        let release_notes =
+            crate::changelog::read_if_present(&package_dir.join(&release.changelog.path))?
+                .and_then(|source| {
+                    crate::changelog::release_section(&source, &manifest.version.to_string())
+                })
+                .unwrap_or_default();
         Ok(Self {
             package: manifest.package.clone(),
             version: manifest.version.clone(),
@@ -672,7 +672,7 @@ impl Candidate {
         input: CandidateInput,
         prepared: Option<CandidateArtifacts>,
     ) -> Result<CandidateManifest> {
-        if directory.exists() {
+        if fs::kind(directory)? != fs::Kind::Absent {
             refuse!(
                 CandidateDestinationExists,
                 "candidate destination `{}` already exists; sealed candidates are never replaced",
@@ -1137,13 +1137,13 @@ fn read_regular_limited(path: &Path, limit: u64, description: &str) -> Result<Ve
             path.display()
         );
     }
-    let file = fs::File::open(path)
+    let file = fs::open(path)
         .with_context(|| format!("failed to open {description} `{}`", path.display()))?;
     read_opened_regular(file, limit, &format!("{description} `{}`", path.display()))
 }
 
 /// Read an opened file that must still be a regular file of at most `limit` bytes.
-fn read_opened_regular(file: fs::File, limit: u64, name: &str) -> Result<Vec<u8>> {
+fn read_opened_regular(file: std::fs::File, limit: u64, name: &str) -> Result<Vec<u8>> {
     let metadata = file
         .metadata()
         .with_context(|| format!("failed to inspect {name}"))?;
@@ -1169,7 +1169,8 @@ fn read_at_most(reader: impl Read, limit: u64) -> std::io::Result<Option<Vec<u8>
     reader
         .take(limit.saturating_add(1))
         .read_to_end(&mut bytes)?;
-    Ok((u64::try_from(bytes.len()).unwrap_or(u64::MAX) <= limit).then_some(bytes))
+    let read = u64::try_from(bytes.len()).map_err(std::io::Error::other)?;
+    Ok((read <= limit).then_some(bytes))
 }
 
 fn validate_candidate_inventory(directory: &Path, manifest: &CandidateManifest) -> Result<()> {
@@ -1221,18 +1222,16 @@ fn collect_candidate_inventory(
     files: &mut std::collections::BTreeSet<String>,
     directories: &mut std::collections::BTreeSet<String>,
 ) -> Result<()> {
-    let mut entries = fs::read_dir(directory)?.collect::<std::io::Result<Vec<_>>>()?;
-    entries.sort_by_key(|entry| entry.file_name());
-    for entry in entries {
+    for entry in fs::read_dir(directory)? {
         let path = entry.path();
         let relative = path
             .strip_prefix(root)?
             .to_string_lossy()
             .replace('\\', "/");
-        let file_type = entry.file_type()?;
+        let file_type = entry.file_type();
         if file_type.is_dir() {
             directories.insert(relative);
-            collect_candidate_inventory(root, &path, files, directories)?;
+            collect_candidate_inventory(root, path, files, directories)?;
         } else if file_type.is_file() {
             files.insert(relative);
         } else {
@@ -1243,15 +1242,7 @@ fn collect_candidate_inventory(
 }
 
 fn write_new(path: PathBuf, bytes: &[u8]) -> Result<()> {
-    use std::io::Write;
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&path)
-        .with_context(|| format!("refusing to replace `{}`", path.display()))?;
-    file.write_all(bytes)?;
-    file.sync_all()?;
-    Ok(())
+    fs::write_new(&path, bytes).with_context(|| format!("refusing to replace `{}`", path.display()))
 }
 
 fn validate_descriptor_path(descriptor: &SealedArtifact, expected: &str) -> Result<()> {

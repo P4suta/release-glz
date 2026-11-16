@@ -1,6 +1,6 @@
-use std::fs;
 use std::path::Path;
 
+use release_glz_test_support::fs;
 use release_glz_test_support::write_tar_name;
 
 #[path = "../fuzz/invariants/api_interface.rs"]
@@ -56,12 +56,12 @@ fn fuzz_directory() -> &'static Path {
 fn replay<T>(target: &str, check: fn(&[u8]) -> Vec<T>) -> Vec<Vec<T>> {
     let corpus = fuzz_directory().join("corpus").join(target);
     let mut verdicts = Vec::new();
-    for entry in fs::read_dir(&corpus)
+    for entry in std::fs::read_dir(&corpus)
         .unwrap_or_else(|error| panic!("cannot read {}: {error}", corpus.display()))
     {
         let path = entry.unwrap().path();
-        assert!(path.is_file(), "{} isn't a seed file", path.display());
-        verdicts.push(check(&fs::read(&path).unwrap()));
+        assert!(fs::is_file(&path), "{} isn't a seed file", path.display());
+        verdicts.push(check(&fs::read(&path)));
     }
     assert!(!verdicts.is_empty(), "the {target} corpus has no seed");
     verdicts
@@ -78,7 +78,6 @@ fn refused<T>(verdicts: &[Vec<T>]) -> bool {
 #[test]
 fn every_fuzz_target_runs_shared_invariants_that_this_suite_replays() {
     let manifest = fs::read_to_string(fuzz_directory().join("Cargo.toml"))
-        .unwrap()
         .parse::<toml_edit::DocumentMut>()
         .unwrap();
     let mut targets: Vec<_> = manifest["bin"]
@@ -90,8 +89,7 @@ fn every_fuzz_target_runs_shared_invariants_that_this_suite_replays() {
     targets.sort();
     assert_eq!(targets, REPLAYED_TARGETS);
     for target in REPLAYED_TARGETS {
-        let source =
-            fs::read_to_string(fuzz_directory().join(format!("fuzz_targets/{target}.rs"))).unwrap();
+        let source = fs::read_to_string(fuzz_directory().join(format!("fuzz_targets/{target}.rs")));
         assert!(
             source.contains(&format!("invariants::{target}::check(data)")),
             "the {target} target doesn't run its shared invariants through the fuzz library"
@@ -100,11 +98,9 @@ fn every_fuzz_target_runs_shared_invariants_that_this_suite_replays() {
             !source.contains("#[path"),
             "the {target} target includes a module by path"
         );
-        assert!(
-            fuzz_directory()
-                .join(format!("invariants/{target}.rs"))
-                .is_file()
-        );
+        assert!(fs::is_file(
+            fuzz_directory().join(format!("invariants/{target}.rs"))
+        ));
     }
 }
 
@@ -172,10 +168,14 @@ fn the_archive_corpus_holds_a_built_seed_for_each_unportable_path_form() {
     for (name, bytes) in unportable_archive_seeds() {
         let path = fuzz_directory().join("corpus/archive").join(name);
         if std::env::var_os("RELEASE_GLZ_WRITE_CORPUS").is_some() {
-            fs::write(&path, &bytes).unwrap();
+            fs::write(&path, &bytes);
         }
+        assert!(
+            fs::exists(&path),
+            "{name} is missing; build it with RELEASE_GLZ_WRITE_CORPUS=1"
+        );
         assert_eq!(
-            fs::read(&path).unwrap_or_default(),
+            fs::read(&path),
             bytes,
             "{name} differs from its builder; rebuild it with RELEASE_GLZ_WRITE_CORPUS=1"
         );
@@ -275,7 +275,7 @@ fn git_record(sha: &str, subject: &str, body: &str) -> String {
 
 /// The sealed manifest seed with two sidecars whose sizes add up past the largest number.
 fn overflowing_sidecars_seed() -> Vec<u8> {
-    let sealed = fs::read(fuzz_directory().join("corpus/candidate/sealed-manifest")).unwrap();
+    let sealed = fs::read(fuzz_directory().join("corpus/candidate/sealed-manifest"));
     let mut manifest: serde_json::Value = serde_json::from_slice(&sealed).unwrap();
     let sidecar = |name: &str, size: u64| {
         serde_json::json!({
@@ -398,9 +398,9 @@ fn every_invariant_holds_on_the_seeds_of_every_target() {
         ("prerelease", |data| drop(prerelease::check(data))),
     ];
     for target in REPLAYED_TARGETS {
-        for entry in fs::read_dir(fuzz_directory().join("corpus").join(target)).unwrap() {
+        for entry in std::fs::read_dir(fuzz_directory().join("corpus").join(target)).unwrap() {
             let path = entry.unwrap().path();
-            let seed = fs::read(&path).unwrap();
+            let seed = fs::read(&path);
             for (invariant, check) in checks {
                 let held = std::panic::catch_unwind(|| check(&seed));
                 assert!(
@@ -418,10 +418,14 @@ fn every_built_seed_matches_its_builder() {
     for (target, name, bytes) in built_seeds() {
         let path = fuzz_directory().join("corpus").join(target).join(name);
         if std::env::var_os("RELEASE_GLZ_WRITE_CORPUS").is_some() {
-            fs::write(&path, &bytes).unwrap();
+            fs::write(&path, &bytes);
         }
+        assert!(
+            fs::exists(&path),
+            "{target}/{name} is missing; build it with RELEASE_GLZ_WRITE_CORPUS=1"
+        );
         assert_eq!(
-            fs::read(&path).unwrap_or_default(),
+            fs::read(&path),
             bytes,
             "{target}/{name} differs from its builder; rebuild it with RELEASE_GLZ_WRITE_CORPUS=1"
         );

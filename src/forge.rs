@@ -20,6 +20,7 @@ use sha2::{Digest, Sha256};
 
 use crate::changelog::{category_of, default_category};
 use crate::config::{url_is_http_loopback, uses_trusted_transport};
+use crate::environment::variable;
 use crate::failure::{Refusal, RefusalReason, refused};
 use crate::git::Commit;
 use crate::model::{Bump, ChangeEntry, ReleasePlan, bump_name};
@@ -738,13 +739,13 @@ impl GitHubClient {
 
     /// Build a client from the ambient GitHub Actions environment.
     pub fn from_environment(repository: GitHubRepository) -> Result<Self> {
-        let token = std::env::var("GITHUB_TOKEN")
-            .or_else(|_| std::env::var("GH_TOKEN"))
-            .ok();
-        let api_url =
-            std::env::var("GITHUB_API_URL").unwrap_or_else(|_| DEFAULT_GITHUB_API_URL.into());
-        let graphql_url = std::env::var("GITHUB_GRAPHQL_URL")
-            .unwrap_or_else(|_| DEFAULT_GITHUB_GRAPHQL_URL.into());
+        let token = match variable("GITHUB_TOKEN")? {
+            Some(token) => Some(token),
+            None => variable("GH_TOKEN")?,
+        };
+        let api_url = variable("GITHUB_API_URL")?.unwrap_or_else(|| DEFAULT_GITHUB_API_URL.into());
+        let graphql_url =
+            variable("GITHUB_GRAPHQL_URL")?.unwrap_or_else(|| DEFAULT_GITHUB_GRAPHQL_URL.into());
         Self::new(repository, api_url, graphql_url, token)
     }
 
@@ -2225,6 +2226,10 @@ fn parse_marker(body: &str) -> Option<ManagedMarker> {
         .strip_prefix(MARKER_PREFIX)?
         .strip_suffix(MARKER_SUFFIX)?;
     let values = release_glz_core::marker_values(fields.split_whitespace().map(str::as_bytes))?;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "each value is a field of UTF-8 text after its ASCII key, so it decodes, and one that didn't would make no managed marker"
+    )]
     let [package, branch, head, digest, version, intent] =
         values.map(|value| std::str::from_utf8(value).ok());
     let (package, branch, head, digest, version, intent) =

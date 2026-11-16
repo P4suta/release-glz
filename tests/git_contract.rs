@@ -1,8 +1,8 @@
-use std::fs;
 use std::path::Path;
 use std::process::Command;
 
 use release_glz::git::GitRepo;
+use release_glz_test_support::fs;
 
 #[test]
 fn default_branch_prefers_remote_then_current_then_main_fallback() {
@@ -37,7 +37,7 @@ fn commits_resolution_and_bounded_history_have_exact_edges() {
     let work = temp.path().join("work");
     init_repo(&work, "main");
     let first = git_stdout(&work, &["rev-parse", "HEAD"]);
-    fs::write(work.join("file.txt"), "second").unwrap();
+    fs::write(work.join("file.txt"), "second");
     run_git(&work, &["add", "file.txt"]);
     commit_index(
         &work,
@@ -73,7 +73,11 @@ fn local_and_remote_tag_state_never_conflates_lightweight_and_annotated_tags() {
     let work = temp.path().join("work");
     let bare = temp.path().join("remote.git");
     init_repo(&work, "main");
-    run_command(Command::new("git").args(["init", "--bare"]).arg(&bare));
+    run_command(
+        release_glz_test_support::new_command("git")
+            .args(["init", "--bare"])
+            .arg(&bare),
+    );
     run_git(&work, &["remote", "add", "origin", bare.to_str().unwrap()]);
     let repo = GitRepo::discover(&work).unwrap();
     let head = repo.head().unwrap();
@@ -156,42 +160,46 @@ fn git_snapshot_resolves_safe_long_paths_from_the_committed_tree() {
     run_git(&work, &["config", "core.autocrlf", "true"]);
     let relative_git = format!("src/{}/module.gleam", "a".repeat(120));
     let relative = Path::new(&relative_git);
-    fs::create_dir_all(work.join(relative.parent().unwrap())).unwrap();
-    fs::write(work.join(relative), "pub fn value() { 1 }\n").unwrap();
+    fs::create_dir_all(work.join(relative.parent().unwrap()));
+    fs::write(work.join(relative), "pub fn value() { 1 }\n");
     run_git(&work, &["add", relative.to_str().unwrap()]);
     commit_index(&work, "feat: add deeply nested module", None);
     let object = format!("HEAD:{relative_git}");
     let committed = git_bytes(&work, &["show", &object]);
-    fs::write(work.join(relative), "dirty working tree").unwrap();
+    fs::write(work.join(relative), "dirty working tree");
 
     let repo = GitRepo::discover(&work).unwrap();
     let destination = temp.path().join("snapshot");
     repo.archive(&repo.head().unwrap(), &destination).unwrap();
 
-    assert_eq!(fs::read(destination.join(relative)).unwrap(), committed);
+    assert_eq!(fs::read(destination.join(relative)), committed);
 }
 
 fn init_repo(path: &Path, branch: &str) {
-    fs::create_dir_all(path).unwrap();
-    run_command(Command::new("git").args(["init", "-b", branch]).arg(path));
+    fs::create_dir_all(path);
+    run_command(
+        release_glz_test_support::new_command("git")
+            .args(["init", "-b", branch])
+            .arg(path),
+    );
     run_git(path, &["config", "user.name", "Release Test"]);
     run_git(path, &["config", "user.email", "release@example.com"]);
     run_git(path, &["config", "commit.gpgsign", "false"]);
     run_git(path, &["config", "tag.gpgSign", "false"]);
-    fs::write(path.join("file.txt"), "first").unwrap();
+    fs::write(path.join("file.txt"), "first");
     run_git(path, &["add", "file.txt"]);
     commit_index(path, "fix: first", None);
 }
 
 fn commit_index(path: &Path, subject: &str, body: Option<&str>) {
     let tree = git_stdout(path, &["write-tree"]);
-    let parent = Command::new("git")
+    let parent = release_glz_test_support::new_command("git")
         .arg("-C")
         .arg(path)
         .args(["rev-parse", "--verify", "HEAD"])
         .output()
         .unwrap();
-    let mut command = Command::new("git");
+    let mut command = release_glz_test_support::new_command("git");
     command.arg("-C").arg(path).args(["commit-tree", &tree]);
     if parent.status.success() {
         command
@@ -207,15 +215,25 @@ fn commit_index(path: &Path, subject: &str, body: Option<&str>) {
 }
 
 fn run_git(path: &Path, args: &[&str]) {
-    run_command(Command::new("git").arg("-C").arg(path).args(args));
+    run_command(
+        release_glz_test_support::new_command("git")
+            .arg("-C")
+            .arg(path)
+            .args(args),
+    );
 }
 
 fn git_stdout(path: &Path, args: &[&str]) -> String {
-    command_output(Command::new("git").arg("-C").arg(path).args(args))
+    command_output(
+        release_glz_test_support::new_command("git")
+            .arg("-C")
+            .arg(path)
+            .args(args),
+    )
 }
 
 fn git_bytes(path: &Path, args: &[&str]) -> Vec<u8> {
-    let output = Command::new("git")
+    let output = release_glz_test_support::new_command("git")
         .arg("-C")
         .arg(path)
         .args(args)

@@ -7,6 +7,7 @@ use std::path::Path;
 use std::process::{Command, Output};
 
 pub mod fake_tool;
+pub mod fs;
 pub mod http;
 pub mod oidc;
 pub mod property;
@@ -41,11 +42,12 @@ fn fail(message: std::fmt::Arguments<'_>) -> ! {
     panic!("{message}")
 }
 
+/// A command that inherits the whole environment, for a test whose child needs what [`isolated_command`] withholds.
 #[expect(
     clippy::disallowed_methods,
     reason = "the test support starts every child in this one place, from a program that its caller names"
 )]
-fn new_command(program: impl AsRef<OsStr>) -> Command {
+pub fn new_command(program: impl AsRef<OsStr>) -> Command {
     Command::new(program)
 }
 

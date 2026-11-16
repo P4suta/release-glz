@@ -1,12 +1,12 @@
 use std::collections::BTreeMap;
-use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use release_glz::config::HookConfig;
 use release_glz::failure::{RefusalReason, refusal_reason};
 use release_glz::hooks::{HookContext, HookRunner};
 use release_glz_test_support::fake_tool::{self, Action, Behavior, Condition, Rule, Stream};
+use release_glz_test_support::fs;
 use semver::Version;
 
 /// Seconds a hook that exits by itself may run, which leave a loaded machine time to start it.
@@ -25,7 +25,7 @@ const BAD: &str = r#"{"schema":"hook/v1","success":true,"summary":"bad","evidenc
 async fn verify_hook_uses_json_stdio_and_records_v1_evidence() {
     let temp = tempfile::tempdir().unwrap();
     let tools = tempfile::tempdir().unwrap();
-    fs::write(temp.path().join("source.gleam"), "pub fn main() { Nil }\n").unwrap();
+    fs::write(temp.path().join("source.gleam"), "pub fn main() { Nil }\n");
     let hook = fake_tool::install(
         tools.path(),
         "verify",
@@ -64,7 +64,7 @@ async fn verify_hook_uses_json_stdio_and_records_v1_evidence() {
 async fn a_later_verify_hook_cannot_mutate_the_snapshot_either() {
     let temp = tempfile::tempdir().unwrap();
     let tools = tempfile::tempdir().unwrap();
-    fs::write(temp.path().join("source.gleam"), "before").unwrap();
+    fs::write(temp.path().join("source.gleam"), "before");
     let quiet = printing(tools.path(), "quiet", OK);
     let mutator = mutating(tools.path(), "late-mutate", BAD);
     let error = HookRunner::default()
@@ -89,7 +89,7 @@ async fn a_later_verify_hook_cannot_mutate_the_snapshot_either() {
 async fn a_later_sidecar_hook_cannot_mutate_the_snapshot_either() {
     let temp = tempfile::tempdir().unwrap();
     let tools = tempfile::tempdir().unwrap();
-    fs::write(temp.path().join("source.gleam"), "before").unwrap();
+    fs::write(temp.path().join("source.gleam"), "before");
     let quiet = printing(tools.path(), "quiet-sidecar", OK);
     let mutator = mutating(tools.path(), "late-mutate-sidecar", BAD);
     let error = HookRunner::default()
@@ -114,7 +114,7 @@ async fn a_later_sidecar_hook_cannot_mutate_the_snapshot_either() {
 async fn verify_hook_cannot_mutate_the_snapshot() {
     let temp = tempfile::tempdir().unwrap();
     let tools = tempfile::tempdir().unwrap();
-    fs::write(temp.path().join("source.gleam"), "before").unwrap();
+    fs::write(temp.path().join("source.gleam"), "before");
     let hook = mutating(tools.path(), "mutate", BAD);
     let error = HookRunner::default()
         .run_verify(
@@ -135,18 +135,19 @@ async fn verify_hook_cannot_mutate_the_snapshot() {
 async fn required_hook_timeout_is_bounded_and_fails_closed() {
     let temp = tempfile::tempdir().unwrap();
     let tools = tempfile::tempdir().unwrap();
-    fs::write(temp.path().join("source.gleam"), "before").unwrap();
+    fs::write(temp.path().join("source.gleam"), "before");
     let hook = fake_tool::install(
         tools.path(),
         "slow",
         &Behavior::always(vec![Action::Sleep(60)]),
     );
-    let started = Instant::now();
-    let error = HookRunner::default()
-        .run_verify(&[required("slow", &hook, 1)], temp.path(), &context())
-        .await
-        .unwrap_err();
-    assert!(started.elapsed() < Duration::from_secs(30));
+    let error = tokio::time::timeout(
+        Duration::from_secs(30),
+        HookRunner::default().run_verify(&[required("slow", &hook, 1)], temp.path(), &context()),
+    )
+    .await
+    .expect("the hook timeout ends the run within 30 seconds")
+    .unwrap_err();
     assert_eq!(refusal_reason(&error), Some(RefusalReason::HookTimedOut));
     assert!(error.to_string().contains("timed out"));
 }
@@ -156,7 +157,7 @@ async fn required_hook_timeout_is_bounded_and_fails_closed() {
 async fn hook_timeout_ends_the_whole_process_tree_that_holds_its_pipes() {
     let temp = tempfile::tempdir().unwrap();
     let tools = tempfile::tempdir().unwrap();
-    fs::write(temp.path().join("source.gleam"), "before").unwrap();
+    fs::write(temp.path().join("source.gleam"), "before");
     let pid_file = tools.path().join("grandchild.pid");
     let lingering = fake_tool::install(
         tools.path(),
@@ -177,30 +178,29 @@ async fn hook_timeout_ends_the_whole_process_tree_that_holds_its_pipes() {
             ),
         ]),
     );
-    let started = Instant::now();
-    let error = HookRunner::default()
-        .run_verify(
+    let error = tokio::time::timeout(
+        Duration::from_secs(60),
+        HookRunner::default().run_verify(
             &[required("inherited-pipe", &hook, STARTS_ITS_CHILD)],
             temp.path(),
             &context(),
-        )
-        .await
-        .unwrap_err();
-    assert!(started.elapsed() < Duration::from_secs(60));
+        ),
+    )
+    .await
+    .expect("the hook timeout ends the run within 60 seconds")
+    .unwrap_err();
     assert_eq!(refusal_reason(&error), Some(RefusalReason::HookTimedOut));
     let error = error.to_string();
     assert!(error.contains("timed out"), "{error}");
 
-    let grandchild =
-        fs::read_to_string(&pid_file).expect("the hook started its child before the timeout");
-    let deadline = Instant::now() + Duration::from_secs(30);
-    while process_is_alive(&grandchild) {
-        assert!(
-            Instant::now() < deadline,
-            "grandchild {grandchild} outlived the timed-out hook"
-        );
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    let grandchild = fs::read_to_string(&pid_file);
+    tokio::time::timeout(Duration::from_secs(30), async {
+        while process_is_alive(&grandchild) {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("grandchild {grandchild} outlived the timed-out hook"));
 }
 
 /// Whether a process still runs, checked without an external `kill` program.
@@ -211,12 +211,20 @@ fn process_is_alive(pid: &str) -> bool {
         return false;
     }
     // A killed process stays a zombie until its new parent reaps it, and a container's first process may never do that.
+    // A process reaped after the signal check leaves no state to read, and the next poll's signal check finds it gone.
     #[cfg(target_os = "linux")]
-    if let Ok(stat) = fs::read_to_string(format!("/proc/{}/stat", pid.as_raw_nonzero())) {
-        return stat
-            .rsplit_once(')')
-            .and_then(|(_, fields)| fields.split_whitespace().next())
-            != Some("Z");
+    {
+        use std::io::Read as _;
+        let mut stat = String::new();
+        if std::fs::File::open(format!("/proc/{}/stat", pid.as_raw_nonzero()))
+            .and_then(|mut file| file.read_to_string(&mut stat))
+            .is_ok()
+        {
+            return stat
+                .rsplit_once(')')
+                .and_then(|(_, fields)| fields.split_whitespace().next())
+                != Some("Z");
+        }
     }
     true
 }
@@ -227,7 +235,7 @@ fn process_is_alive(pid: &str) -> bool {
     let tasklist = PathBuf::from(std::env::var_os("SystemRoot").expect("Windows sets SystemRoot"))
         .join("System32")
         .join("tasklist.exe");
-    let output = std::process::Command::new(tasklist)
+    let output = release_glz_test_support::new_command(tasklist)
         .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
         .output()
         .unwrap();
@@ -255,7 +263,7 @@ async fn optional_notify_execution_errors_are_observed_as_incomplete() {
 async fn undeclared_environment_is_not_forwarded() {
     let temp = tempfile::tempdir().unwrap();
     let tools = tempfile::tempdir().unwrap();
-    fs::write(temp.path().join("source.gleam"), "before").unwrap();
+    fs::write(temp.path().join("source.gleam"), "before");
     let record = tools.path().join("environment.json");
     let hook = fake_tool::install(
         tools.path(),
@@ -273,8 +281,7 @@ async fn undeclared_environment_is_not_forwarded() {
         .run_verify(&[required("env", &hook, FINISHES)], temp.path(), &context())
         .await
         .unwrap();
-    let recorded: BTreeMap<String, String> =
-        serde_json::from_slice(&fs::read(&record).unwrap()).unwrap();
+    let recorded: BTreeMap<String, String> = serde_json::from_slice(&fs::read(&record)).unwrap();
     assert!(recorded.is_empty(), "{recorded:?}");
 }
 
@@ -282,7 +289,7 @@ async fn undeclared_environment_is_not_forwarded() {
 async fn protected_authorization_environment_is_rejected_at_the_runner_boundary() {
     let temp = tempfile::tempdir().unwrap();
     let tools = tempfile::tempdir().unwrap();
-    fs::write(temp.path().join("source.gleam"), "before").unwrap();
+    fs::write(temp.path().join("source.gleam"), "before");
     let hook = printing(tools.path(), "protected-env", OK);
     let mut configured = required("protected-env", &hook, FINISHES);
     configured.env = vec!["GITHUB_TOKEN".into()];
@@ -365,7 +372,7 @@ async fn notify_hooks_have_separate_idempotent_observe_and_apply_phases() {
 async fn sidecar_hooks_return_bounded_artifacts_without_mutating_the_snapshot() {
     let temp = tempfile::tempdir().unwrap();
     let tools = tempfile::tempdir().unwrap();
-    fs::write(temp.path().join("source.gleam"), "before").unwrap();
+    fs::write(temp.path().join("source.gleam"), "before");
     let hook = fake_tool::install(
         tools.path(),
         "sidecar",
@@ -398,7 +405,7 @@ async fn sidecar_hooks_return_bounded_artifacts_without_mutating_the_snapshot() 
     assert_eq!(result.artifacts[0].bytes, br#"{"bom":"ok"}"#);
     assert!(result.artifacts[0].public);
     assert_eq!(
-        fs::read_to_string(temp.path().join("source.gleam")).unwrap(),
+        fs::read_to_string(temp.path().join("source.gleam")),
         "before"
     );
 }
@@ -407,7 +414,7 @@ async fn sidecar_hooks_return_bounded_artifacts_without_mutating_the_snapshot() 
 async fn sidecar_asset_names_must_be_publishable_basenames() {
     let temp = tempfile::tempdir().unwrap();
     let tools = tempfile::tempdir().unwrap();
-    fs::write(temp.path().join("source.gleam"), "before").unwrap();
+    fs::write(temp.path().join("source.gleam"), "before");
     let hook = printing(
         tools.path(),
         "nested-sidecar",
@@ -434,7 +441,7 @@ async fn sidecar_asset_names_must_be_publishable_basenames() {
 async fn sidecar_protocol_rejects_unknown_evidence_and_artifact_fields() {
     let temp = tempfile::tempdir().unwrap();
     let tools = tempfile::tempdir().unwrap();
-    fs::write(temp.path().join("source.gleam"), "before").unwrap();
+    fs::write(temp.path().join("source.gleam"), "before");
     let cases = [
         (
             "evidence-field",
@@ -470,7 +477,7 @@ async fn sidecar_protocol_rejects_unknown_evidence_and_artifact_fields() {
 async fn verify_failures_preserve_required_and_optional_policy() {
     let temp = tempfile::tempdir().unwrap();
     let tools = tempfile::tempdir().unwrap();
-    fs::write(temp.path().join("source.gleam"), "before").unwrap();
+    fs::write(temp.path().join("source.gleam"), "before");
     let reported = printing(
         tools.path(),
         "reported-failure",
@@ -527,7 +534,7 @@ async fn verify_failures_preserve_required_and_optional_policy() {
 async fn hook_output_protocol_is_strict_at_every_field() {
     let temp = tempfile::tempdir().unwrap();
     let tools = tempfile::tempdir().unwrap();
-    fs::write(temp.path().join("source.gleam"), "before").unwrap();
+    fs::write(temp.path().join("source.gleam"), "before");
     let cases = [
         ("invalid", "not-json", "invalid JSON"),
         (
@@ -616,8 +623,8 @@ async fn hook_output_protocol_is_strict_at_every_field() {
 async fn declared_environment_reaches_a_hook_over_a_nested_snapshot() {
     let temp = tempfile::tempdir().unwrap();
     let tools = tempfile::tempdir().unwrap();
-    fs::create_dir_all(temp.path().join("nested/deeper")).unwrap();
-    fs::write(temp.path().join("nested/deeper/source.gleam"), "before").unwrap();
+    fs::create_dir_all(temp.path().join("nested/deeper"));
+    fs::write(temp.path().join("nested/deeper/source.gleam"), "before");
     let hook = declared_environment_hook(tools.path());
     let mut configured = required("declared", &hook, FINISHES);
     configured.env = vec!["CARGO_MANIFEST_DIR".into()];
@@ -633,8 +640,8 @@ async fn declared_environment_reaches_a_hook_over_a_nested_snapshot() {
 async fn a_symbolic_link_in_the_snapshot_is_refused_as_a_non_regular_entry() {
     let temp = tempfile::tempdir().unwrap();
     let tools = tempfile::tempdir().unwrap();
-    fs::create_dir_all(temp.path().join("nested/deeper")).unwrap();
-    fs::write(temp.path().join("nested/deeper/source.gleam"), "before").unwrap();
+    fs::create_dir_all(temp.path().join("nested/deeper"));
+    fs::write(temp.path().join("nested/deeper/source.gleam"), "before");
     let hook = declared_environment_hook(tools.path());
     std::os::unix::fs::symlink(
         "nested/deeper/source.gleam",
@@ -678,7 +685,7 @@ fn declared_environment_hook(tools: &Path) -> PathBuf {
 async fn stdout_and_stderr_are_streamed_but_strictly_bounded() {
     let temp = tempfile::tempdir().unwrap();
     let tools = tempfile::tempdir().unwrap();
-    fs::write(temp.path().join("source.gleam"), "before").unwrap();
+    fs::write(temp.path().join("source.gleam"), "before");
     let stdout = fake_tool::install(
         tools.path(),
         "large-stdout",
@@ -718,7 +725,7 @@ async fn stdout_and_stderr_are_streamed_but_strictly_bounded() {
 async fn sidecar_failures_preserve_policy_and_snapshot_immutability() {
     let temp = tempfile::tempdir().unwrap();
     let tools = tempfile::tempdir().unwrap();
-    fs::write(temp.path().join("source.gleam"), "before").unwrap();
+    fs::write(temp.path().join("source.gleam"), "before");
     let reported = printing(
         tools.path(),
         "sidecar-reported",
@@ -787,7 +794,7 @@ async fn sidecar_failures_preserve_policy_and_snapshot_immutability() {
 async fn sidecar_artifact_protocol_rejects_every_unsafe_shape() {
     let temp = tempfile::tempdir().unwrap();
     let tools = tempfile::tempdir().unwrap();
-    fs::write(temp.path().join("source.gleam"), "before").unwrap();
+    fs::write(temp.path().join("source.gleam"), "before");
     let cases = [
         (
             "shape",

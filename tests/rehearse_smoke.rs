@@ -1,6 +1,4 @@
-use std::fs;
 use std::path::Path;
-use std::process::Command;
 
 use anyhow::{Result, bail, ensure};
 use release_glz::artifact::normalize_hex_tarball;
@@ -8,6 +6,7 @@ use release_glz::candidate::Candidate;
 use release_glz::failure::{RefusalReason, refusal_reason};
 use release_glz::rehearse::{Rehearsal, RehearseOptions};
 use release_glz::release::SourceBoundCandidate;
+use release_glz_test_support::fs;
 use release_glz_test_support::require_gleam;
 
 #[tokio::test]
@@ -15,7 +14,7 @@ async fn rehearsal_builds_only_the_requested_commit_and_seals_it() -> Result<()>
     let gleam_version = require_gleam();
     let temp = tempfile::tempdir()?;
     let repository = temp.path().join("repo");
-    fs::create_dir_all(repository.join("src"))?;
+    fs::create_dir_all(repository.join("src"));
     fs::write(
         repository.join("gleam.toml"),
         format!(
@@ -48,16 +47,16 @@ environment = "release"
 manual_refs = ["refs/heads/main"]
 "#
         ),
-    )?;
-    fs::write(repository.join("README.md"), "# Rehearse fixture\n")?;
+    );
+    fs::write(repository.join("README.md"), "# Rehearse fixture\n");
     fs::write(
         repository.join("CHANGELOG.md"),
         "# Changelog\n\n## [1.0.0]\n\n- The first committed release.\n",
-    )?;
+    );
     fs::write(
         repository.join("src/rehearse_fixture.gleam"),
         "pub fn committed() -> Int { 1 }\n",
-    )?;
+    );
     git(&repository, &["init", "--initial-branch=main"])?;
     git(&repository, &["config", "core.hooksPath", ".git/no-hooks"])?;
     git(
@@ -74,7 +73,7 @@ manual_refs = ["refs/heads/main"]
     fs::write(
         repository.join("src/rehearse_fixture.gleam"),
         "pub fn dirty() -> Int { 999 }\n",
-    )?;
+    );
     let output = temp.path().join("candidate");
     let manifest = Rehearsal::default()
         .run(&RehearseOptions {
@@ -103,7 +102,7 @@ manual_refs = ["refs/heads/main"]
     ensure!(files["src/rehearse_fixture.gleam"] == b"pub fn committed() -> Int { 1 }\n");
     ensure!(!String::from_utf8_lossy(&files["src/rehearse_fixture.gleam"]).contains("dirty"));
     ensure!(
-        !repository.join("build").exists(),
+        !fs::exists(repository.join("build")),
         "rehearse dirtied the checkout"
     );
     Ok(())
@@ -143,7 +142,7 @@ async fn rehearsal_rejects_noncanonical_source_identifiers_before_creating_outpu
         let error = error.to_string();
         assert!(error.contains("full lowercase commit SHA"), "{error}");
         assert!(error.contains(reason), "{error}");
-        assert!(!output.exists());
+        assert!(!fs::exists(&output));
     }
 }
 
@@ -151,12 +150,11 @@ async fn rehearsal_rejects_noncanonical_source_identifiers_before_creating_outpu
 async fn rehearsal_refuses_a_sha256_repository_before_building() {
     let temp = tempfile::tempdir().unwrap();
     let repository = temp.path().join("repo");
-    fs::create_dir_all(&repository).unwrap();
+    fs::create_dir_all(&repository);
     fs::write(
         repository.join("gleam.toml"),
         "name = \"sha256_fixture\"\nversion = \"1.0.0\"\n",
-    )
-    .unwrap();
+    );
     release_glz_test_support::git(
         &repository,
         &["init", "--object-format=sha256", "--initial-branch=main"],
@@ -185,7 +183,7 @@ async fn rehearsal_refuses_a_sha256_repository_before_building() {
         );
         let error = error.to_string();
         assert!(error.contains("`sha256`"), "{error}");
-        assert!(!output.exists());
+        assert!(!fs::exists(&output));
     }
 }
 
@@ -194,15 +192,15 @@ async fn rehearsal_rejects_missing_symbolic_unconfigured_and_wrong_compiler_sour
 -> Result<()> {
     let temp = tempfile::tempdir()?;
     let repository = temp.path().join("repo");
-    fs::create_dir_all(repository.join("src"))?;
+    fs::create_dir_all(repository.join("src"));
     fs::write(
         repository.join("gleam.toml"),
         "name = \"rehearse_guard\"\nversion = \"1.0.0\"\n",
-    )?;
+    );
     fs::write(
         repository.join("src/rehearse_guard.gleam"),
         "pub fn value() -> Int { 1 }\n",
-    )?;
+    );
     init_git(&repository)?;
     let sha = git_stdout(&repository, &["rev-parse", "HEAD"])?;
     let manifest_path = repository.join("gleam.toml");
@@ -222,7 +220,7 @@ async fn rehearsal_rejects_missing_symbolic_unconfigured_and_wrong_compiler_sour
         missing.contains("source commit does not exist"),
         "{missing}"
     );
-    ensure!(!missing_output.exists());
+    ensure!(!fs::exists(&missing_output));
 
     // A SHA-256 object ID in a SHA-1 repository names no commit that GitHub serves.
     let sha256_output = temp.path().join("sha256-candidate");
@@ -240,7 +238,7 @@ async fn rehearsal_rejects_missing_symbolic_unconfigured_and_wrong_compiler_sour
         sha256.contains("a SHA-256 object ID isn't a GitHub commit ID"),
         "{sha256}"
     );
-    ensure!(!sha256_output.exists());
+    ensure!(!fs::exists(&sha256_output));
 
     // An annotated tag's object ID is a full object ID that peels to a different commit ID, which the guard against symbolic refs refuses.
     git(
@@ -261,7 +259,7 @@ async fn rehearsal_rejects_missing_symbolic_unconfigured_and_wrong_compiler_sour
     ensure!(refusal_reason(&symbolic) == Some(RefusalReason::SourceCommitUnresolved));
     let symbolic = symbolic.to_string();
     ensure!(symbolic.contains("exact full commit SHA"), "{symbolic}");
-    ensure!(!symbolic_output.exists());
+    ensure!(!fs::exists(&symbolic_output));
 
     let unconfigured_output = temp.path().join("unconfigured-candidate");
     let unconfigured = Rehearsal::default()
@@ -278,13 +276,13 @@ async fn rehearsal_rejects_missing_symbolic_unconfigured_and_wrong_compiler_sour
         unconfigured.contains("[tools.release-glz]") && unconfigured.contains("release-glz init"),
         "{unconfigured}"
     );
-    ensure!(!unconfigured_output.exists());
+    ensure!(!fs::exists(&unconfigured_output));
 
     require_gleam();
     fs::write(
         &manifest_path,
         v2_manifest("rehearse_guard", "99.0.0", "hexpm", None, true),
-    )?;
+    );
     git(&repository, &["add", "gleam.toml"])?;
     git(
         &repository,
@@ -306,7 +304,7 @@ async fn rehearsal_rejects_missing_symbolic_unconfigured_and_wrong_compiler_sour
         wrong.contains("configured Gleam compiler 99.0.0"),
         "{wrong}"
     );
-    ensure!(!wrong_output.exists());
+    ensure!(!fs::exists(&wrong_output));
     Ok(())
 }
 
@@ -324,16 +322,16 @@ async fn rehearsal_marks_both_organization_and_compatible_registries_private() -
             .tempdir_in(env!("CARGO_TARGET_TMPDIR"))?;
         let package = temp.path();
         let package_name = format!("private_fixture_{index}");
-        fs::create_dir_all(package.join("src"))?;
+        fs::create_dir_all(package.join("src"));
         fs::write(
             package.join("gleam.toml"),
             v2_manifest(&package_name, &gleam_version, provider, repository, false),
-        )?;
-        fs::write(package.join("README.md"), "# Private fixture\n")?;
+        );
+        fs::write(package.join("README.md"), "# Private fixture\n");
         fs::write(
             package.join(format!("src/{package_name}.gleam")),
             "pub fn value() -> Int { 1 }\n",
-        )?;
+        );
         init_git(package)?;
         let sha = git_stdout(package, &["rev-parse", "HEAD"])?;
         let relative_manifest = package
@@ -423,7 +421,7 @@ fn git(directory: &Path, args: &[&str]) -> Result<()> {
 }
 
 fn git_stdout(directory: &Path, args: &[&str]) -> Result<String> {
-    let output = Command::new("git")
+    let output = release_glz_test_support::new_command("git")
         .arg("-C")
         .arg(directory)
         .args(args)

@@ -366,6 +366,7 @@ Reason codes are stable, and a code is never reused for another refusal:
 | `hook_env_invalid` | 2 | A hook allows an environment variable whose name is invalid. |
 | `hook_env_protected` | 2 | A hook allows a credential or a GitHub control file that no hook may receive. |
 | `credential_env_invalid` | 2 | The registry credential setting isn't the name of an environment variable. |
+| `environment_value_not_unicode` | 2 | An environment variable that release-glz reads as a setting holds a value that isn't Unicode. |
 | `registry_repository_invalid` | 2 | The Hex organization isn't a safe single path segment. |
 | `url_malformed` | 2 | A configured URL isn't a well-formed URL. |
 | `url_credentials` | 2 | A configured URL carries credentials. |
@@ -463,6 +464,7 @@ Reason codes are stable, and a code is never reused for another refusal:
 | `explicit_version_refused` | 2 | An explicit version is below the version that the changes require, or doesn't belong to the configured prerelease train. |
 | `version_not_after_published` | 2 | The selected version doesn't follow the published version, so there is nothing new to release. |
 | `changelog_notes_layout_invalid` | 1 | The structured changelog notes path isn't a directory, holds more note files than the limit, or holds a note that isn't a regular file within the size limit. |
+| `changelog_unreadable` | 2 | The configured changelog is there but can't be read as UTF-8 text. |
 | `changelog_note_invalid` | 1 | A structured changelog note has an unsafe id or one other than its filename, text other than one trimmed line within the length limit, or a zero pull request. |
 | `gleam_compiler_unsupported` | 2 | The installed Gleam compiler is older than the oldest one that release-glz supports. |
 | `gleam_repository_invalid` | 2 | The package `repository` names an unsupported type, or lacks the user, repository, host, or URL that its type needs. |

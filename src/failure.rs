@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 /// Each discriminant is the class's exit status, a public contract documented in the README; callers branch on it, so a code can never be reused for another class.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-#[repr(i32)]
+#[repr(u8)]
 pub enum FailureClass {
     /// A defect, or a boundary error that carries no more precise class.
     Internal = 1,
@@ -46,6 +46,11 @@ impl FailureClass {
     /// The process exit status for this class.
     pub const fn exit_code(self) -> i32 {
         self as i32
+    }
+
+    /// The exit status that a process ending with this class returns from `main`.
+    pub fn exit_status(self) -> std::process::ExitCode {
+        std::process::ExitCode::from(self as u8)
     }
 
     /// The stable diagnostic code emitted in `command/v1` output.
@@ -128,6 +133,8 @@ refusal_reasons! {
     HookEnvProtected => "hook_env_protected", UsageOrConfig;
     /// The registry credential setting isn't the name of an environment variable.
     CredentialEnvInvalid => "credential_env_invalid", UsageOrConfig;
+    /// An environment variable that release-glz reads as a setting holds a value that isn't Unicode.
+    EnvironmentValueNotUnicode => "environment_value_not_unicode", UsageOrConfig;
     /// The Hex organization isn't a safe single path segment.
     RegistryRepositoryInvalid => "registry_repository_invalid", UsageOrConfig;
     /// A configured URL isn't a well-formed URL.
@@ -322,6 +329,8 @@ refusal_reasons! {
     VersionNotAfterPublished => "version_not_after_published", UsageOrConfig;
     /// The structured changelog notes path isn't a directory, holds more note files than the limit, or holds a note that isn't a regular file within the size limit.
     ChangelogNotesLayoutInvalid => "changelog_notes_layout_invalid", Internal;
+    /// The configured changelog is there but can't be read as UTF-8 text.
+    ChangelogUnreadable => "changelog_unreadable", UsageOrConfig;
     /// A structured changelog note has an unsafe id or one other than its filename, text other than one trimmed line within the length limit, or a zero pull request.
     ChangelogNoteInvalid => "changelog_note_invalid", Internal;
     /// The installed Gleam compiler is older than the oldest one that release-glz supports.

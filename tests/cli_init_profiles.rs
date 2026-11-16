@@ -4,20 +4,19 @@ use std::path::{Path, PathBuf};
 use release_glz::config::{AuthKind, Manifest, RegistryProvider};
 use release_glz_test_support::fake_tool::{self, Behavior};
 use release_glz_test_support::schema::assert_published_envelope;
-use release_glz_test_support::{git, init_repository, isolated_command};
+use release_glz_test_support::{fs, git, init_repository, isolated_command};
 
 const ACTION_SHA: &str = "abcdef0123456789abcdef0123456789abcdef01";
 
 fn package(version: &str) -> (tempfile::TempDir, OsString) {
     let temp = tempfile::tempdir().unwrap();
     git(temp.path(), &["init", "--initial-branch=trunk"]);
-    std::fs::write(
+    fs::write(
         temp.path().join("gleam.toml"),
         format!(
             "name = \"widget\"\nversion = \"{version}\"\n\n[repository]\ntype = \"github\"\nuser = \"acme\"\nrepo = \"widget\"\n"
         ),
-    )
-    .unwrap();
+    );
     let gleam = fake_gleam(temp.path());
     (temp, gleam)
 }
@@ -48,19 +47,13 @@ fn init(root: &Path, gleam: &OsStr, arguments: &[&str]) -> std::process::Output 
 fn public_profile_check_then_update_generates_complete_schema_two_configuration() {
     let (temp, gleam) = package("1.0.0");
     let manifest_path = temp.path().join("gleam.toml");
-    let original = std::fs::read_to_string(&manifest_path).unwrap();
+    let original = fs::read_to_string(&manifest_path);
     let check = init(temp.path(), &gleam, &["--profile", "public", "--check"]);
     assert_eq!(check.status.code(), Some(3));
-    assert_eq!(
-        std::fs::read_to_string(temp.path().join("gleam.toml")).unwrap(),
-        original
-    );
-    assert!(
-        !temp
-            .path()
-            .join(".github/workflows/release-glz.yml")
-            .exists()
-    );
+    assert_eq!(fs::read_to_string(temp.path().join("gleam.toml")), original);
+    assert!(!fs::exists(
+        temp.path().join(".github/workflows/release-glz.yml")
+    ));
     let envelope: serde_json::Value = serde_json::from_slice(&check.stdout).unwrap();
     assert_eq!(envelope["result"]["manifest_changed"], true);
     assert_eq!(
@@ -89,8 +82,7 @@ fn public_profile_check_then_update_generates_complete_schema_two_configuration(
     assert_eq!(release.compiler.to_string(), "1.18.1");
     assert_eq!(release.registry, Default::default());
     assert_eq!(release.approval.manual_refs, ["refs/heads/trunk"]);
-    let workflow =
-        std::fs::read_to_string(temp.path().join(".github/workflows/release-glz.yml")).unwrap();
+    let workflow = fs::read_to_string(temp.path().join(".github/workflows/release-glz.yml"));
     assert!(workflow.contains(&format!("P4suta/release-glz@{ACTION_SHA}")));
 }
 
@@ -112,11 +104,7 @@ fn update_keeps_the_unix_permission_bits_of_the_manifest() {
         String::from_utf8_lossy(&update.stdout),
         String::from_utf8_lossy(&update.stderr)
     );
-    assert!(
-        std::fs::read_to_string(&manifest_path)
-            .unwrap()
-            .contains("\nschema = 2\n")
-    );
+    assert!(fs::read_to_string(&manifest_path).contains("\nschema = 2\n"));
     assert_eq!(
         std::fs::metadata(&manifest_path)
             .unwrap()
@@ -148,11 +136,7 @@ fn organization_and_private_profiles_require_exact_non_secret_inputs() {
         ],
     );
     assert_eq!(unsafe_name.status.code(), Some(2));
-    assert!(
-        !std::fs::read_to_string(organization.path().join("gleam.toml"))
-            .unwrap()
-            .contains("release-glz")
-    );
+    assert!(!fs::read_to_string(organization.path().join("gleam.toml")).contains("release-glz"));
     let check = init(
         organization.path(),
         &gleam,
@@ -411,12 +395,11 @@ fn manifest_paths_with_spaces_remain_single_canonical_argv_elements() {
     let temp = tempfile::tempdir().unwrap();
     init_repository(temp.path());
     let package = temp.path().join("package with space");
-    std::fs::create_dir(&package).unwrap();
-    std::fs::write(
+    fs::create_dir(&package);
+    fs::write(
         package.join("gleam.toml"),
         "name = \"widget\"\nversion = \"1.0.0\"\n",
-    )
-    .unwrap();
+    );
     let gleam = fake_gleam(temp.path());
     let relative = "package with space/gleam.toml";
     let check = isolated_command(env!("CARGO_BIN_EXE_release-glz"))
@@ -452,12 +435,11 @@ fn init_reports_the_manifest_path_relative_to_the_repository_from_any_directory(
     let temp = tempfile::tempdir().unwrap();
     init_repository(temp.path());
     let package = temp.path().join("packages/widget");
-    std::fs::create_dir_all(&package).unwrap();
-    std::fs::write(
+    fs::create_dir_all(&package);
+    fs::write(
         package.join("gleam.toml"),
         "name = \"widget\"\nversion = \"1.0.0\"\n",
-    )
-    .unwrap();
+    );
     let gleam = fake_gleam(temp.path());
     let absolute = package.join("gleam.toml");
     for (directory, manifest) in [

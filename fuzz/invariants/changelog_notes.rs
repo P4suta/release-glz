@@ -42,10 +42,17 @@ fn note_path(id: &str) -> PathBuf {
 }
 
 /// The id that the text states, which names the file it is read from so that a valid note can be accepted.
+///
+/// Text that isn't TOML, or states no id that can name a file, is read from the fallback file.
 fn stated_id(text: &str) -> String {
-    text.parse::<DocumentMut>()
-        .ok()
-        .and_then(|document| Some(document.get("id")?.as_str()?.to_owned()))
+    let stated = match text.parse::<DocumentMut>() {
+        Ok(document) => document
+            .get("id")
+            .and_then(|id| id.as_str())
+            .map(str::to_owned),
+        Err(_) => None,
+    };
+    stated
         .filter(|id| !id.contains(['/', '\\', '\0']) && !id.is_empty())
         .unwrap_or_else(|| FALLBACK_ID.to_owned())
 }

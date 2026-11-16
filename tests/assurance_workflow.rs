@@ -1,13 +1,13 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
 use std::path::Path;
+
+use release_glz_test_support::fs;
 
 /// The one compiler release whose Windows Hex export the compatibility fallback recovers from, which shipping assurance keeps running natively.
 const WINDOWS_HEX_TARBALL_REGRESSION: &str = "1.18.1";
 
 fn pinned_tool(tool: &str) -> String {
     let manifest = fs::read_to_string("mise.toml")
-        .unwrap()
         .parse::<toml_edit::DocumentMut>()
         .unwrap();
     let pin = &manifest["tools"][tool];
@@ -19,7 +19,7 @@ fn pinned_tool(tool: &str) -> String {
 
 #[test]
 fn routine_ci_uses_one_selected_linux_gate_without_shipping_campaigns() {
-    let yaml = fs::read_to_string(".github/workflows/ci.yml").unwrap();
+    let yaml = fs::read_to_string(".github/workflows/ci.yml");
     let parsed: serde_norway::Value = serde_norway::from_str(&yaml).unwrap();
     let triggers = parsed["on"].as_mapping().unwrap();
     assert!(triggers.contains_key("pull_request"));
@@ -42,7 +42,7 @@ fn routine_ci_uses_one_selected_linux_gate_without_shipping_campaigns() {
 
 #[test]
 fn assurance_workflow_has_fixed_fail_closed_shipping_gates() {
-    let yaml = fs::read_to_string(".github/workflows/assurance.yml").unwrap();
+    let yaml = fs::read_to_string(".github/workflows/assurance.yml");
     serde_norway::from_str::<serde_norway::Value>(&yaml).unwrap();
     for required in [
         "cargo-deny --version 0.20.2",
@@ -106,7 +106,7 @@ fn assurance_workflow_has_fixed_fail_closed_shipping_gates() {
         !yaml.contains("--file crates/"),
         "the mutation job lists a file it can't mutate"
     );
-    assert!(Path::new("tests/fixtures/workflow/gleam.toml").is_file());
+    assert!(fs::is_file(Path::new("tests/fixtures/workflow/gleam.toml")));
 
     let triggers = yaml
         .split_once("permissions:")
@@ -140,7 +140,7 @@ fn assurance_workflow_has_fixed_fail_closed_shipping_gates() {
 
 #[test]
 fn mutation_gate_uses_four_explicit_fail_closed_shards() {
-    let yaml = fs::read_to_string(".github/workflows/assurance.yml").unwrap();
+    let yaml = fs::read_to_string(".github/workflows/assurance.yml");
     let parsed: serde_norway::Value = serde_norway::from_str(&yaml).unwrap();
     let mutation = &parsed["jobs"]["mutation"];
     let shards = mutation["strategy"]["matrix"]["shard"]
@@ -176,7 +176,6 @@ fn mutation_gate_uses_four_explicit_fail_closed_shards() {
 
 fn fuzz_targets() -> Vec<String> {
     fs::read_to_string("fuzz/Cargo.toml")
-        .unwrap()
         .parse::<toml_edit::DocumentMut>()
         .unwrap()["bin"]
         .as_array_of_tables()
@@ -190,7 +189,7 @@ fn fuzz_targets() -> Vec<String> {
 #[test]
 fn routine_ci_runs_the_one_fast_gate() {
     let parsed: serde_norway::Value =
-        serde_norway::from_str(&fs::read_to_string(".github/workflows/ci.yml").unwrap()).unwrap();
+        serde_norway::from_str(&fs::read_to_string(".github/workflows/ci.yml")).unwrap();
     let commands: Vec<_> = parsed["jobs"]["checks"]["steps"]
         .as_sequence()
         .unwrap()
@@ -642,13 +641,13 @@ fn src_sources() -> BTreeMap<String, String> {
     let mut sources = BTreeMap::new();
     let mut pending = vec![Path::new("src").to_path_buf()];
     while let Some(directory) = pending.pop() {
-        for entry in fs::read_dir(&directory).unwrap() {
+        for entry in std::fs::read_dir(&directory).unwrap() {
             let path = entry.unwrap().path();
-            if path.is_dir() {
+            if fs::is_dir(&path) {
                 pending.push(path);
             } else if path.extension().is_some_and(|extension| extension == "rs") {
                 let shown = path.to_str().unwrap().replace('\\', "/");
-                sources.insert(shown, fs::read_to_string(&path).unwrap());
+                sources.insert(shown, fs::read_to_string(&path));
             }
         }
     }
@@ -657,18 +656,14 @@ fn src_sources() -> BTreeMap<String, String> {
 
 /// Whether a fuzz target has its invariant module and at least one seed.
 fn target_is_complete(target: &str) -> bool {
-    Path::new(&format!("fuzz/invariants/{target}.rs")).is_file()
-        && fs::read_dir(format!("fuzz/corpus/{target}"))
-            .is_ok_and(|mut seeds| seeds.next().is_some())
+    let seeds = Path::new("fuzz/corpus").join(target);
+    fs::is_file(format!("fuzz/invariants/{target}.rs"))
+        && fs::is_dir(&seeds)
+        && std::fs::read_dir(&seeds).unwrap().next().is_some()
 }
 
 fn parser_inventory() -> ParserInventory {
-    ParserInventory::of(
-        &fs::read_to_string("fuzz/Cargo.toml")
-            .unwrap()
-            .parse()
-            .unwrap(),
-    )
+    ParserInventory::of(&fs::read_to_string("fuzz/Cargo.toml").parse().unwrap())
 }
 
 /// Every function in `src` that deserializes bytes has a fuzz target, or an exemption that says why it needs none.
@@ -679,7 +674,7 @@ fn every_untrusted_parser_has_a_fuzz_target_with_invariants_and_seeds() {
     let inventory = parser_inventory();
     let targets: BTreeSet<_> = fuzz_targets().into_iter().collect();
     let sources = src_sources();
-    let read = |file: &str| fs::read_to_string(file).ok();
+    let read = |file: &str| fs::read_to_string_if_present(file);
     let findings = inventory_findings(&inventory, &targets, &sources, read, target_is_complete);
     assert!(findings.is_empty(), "{}", findings.join("\n"));
 
@@ -875,7 +870,7 @@ fn the_parser_inventory_follows_imported_names_and_tells_methods_of_two_types_ap
 
 #[test]
 fn fuzz_smoke_uses_fixed_run_counts_and_seeds() {
-    let yaml = fs::read_to_string(".github/workflows/assurance.yml").unwrap();
+    let yaml = fs::read_to_string(".github/workflows/assurance.yml");
     let parsed: serde_norway::Value = serde_norway::from_str(&yaml).unwrap();
     let steps = parsed["jobs"]["fuzz"]["steps"].as_sequence().unwrap();
     for target in fuzz_targets() {
@@ -888,10 +883,9 @@ fn fuzz_smoke_uses_fixed_run_counts_and_seeds() {
         for flag in ["-runs=", "-seed="] {
             let value = command
                 .split_whitespace()
-                .find_map(|word| word.strip_prefix(flag))
-                .and_then(|value| value.parse::<u32>().ok());
+                .find_map(|word| word.strip_prefix(flag));
             assert!(
-                value.is_some_and(|value| value > 0),
+                value.is_some_and(|value| value.parse::<u32>().is_ok_and(|value| value > 0)),
                 "{target} requires a fixed positive {flag}"
             );
         }
@@ -901,7 +895,7 @@ fn fuzz_smoke_uses_fixed_run_counts_and_seeds() {
 
 #[test]
 fn dependency_policy_is_explicit_and_deny_by_default() {
-    let policy = fs::read_to_string("deny.toml").unwrap();
+    let policy = fs::read_to_string("deny.toml");
     assert!(policy.contains("unknown-registry = \"deny\""));
     assert!(policy.contains("unknown-git = \"deny\""));
     assert!(policy.contains("wildcards = \"deny\""));
@@ -911,7 +905,7 @@ fn dependency_policy_is_explicit_and_deny_by_default() {
 /// A dependency that breaks the license, ban, or source policy fails the pull request that adds it, with the cargo-deny release the release gate runs.
 #[test]
 fn the_fast_gate_enforces_the_dependency_policy_that_the_release_gate_enforces() {
-    let assurance = fs::read_to_string(".github/workflows/assurance.yml").unwrap();
+    let assurance = fs::read_to_string(".github/workflows/assurance.yml");
     let version = assurance
         .split_once("cargo install --locked cargo-deny --version ")
         .and_then(|(_, rest)| rest.split_whitespace().next())
@@ -922,9 +916,9 @@ fn the_fast_gate_enforces_the_dependency_policy_that_the_release_gate_enforces()
 
 #[test]
 fn release_assurance_covers_native_platforms_and_gleam_versions() {
-    let yaml = fs::read_to_string(".github/workflows/ci.yml").unwrap();
+    let yaml = fs::read_to_string(".github/workflows/ci.yml");
     let parsed: serde_norway::Value = serde_norway::from_str(&yaml).unwrap();
-    let assurance = fs::read_to_string(".github/workflows/assurance.yml").unwrap();
+    let assurance = fs::read_to_string(".github/workflows/assurance.yml");
     let shipping: serde_norway::Value = serde_norway::from_str(&assurance).unwrap();
     let current = parsed["jobs"]["checks"]["steps"]
         .as_sequence()
@@ -994,7 +988,7 @@ fn release_assurance_covers_native_platforms_and_gleam_versions() {
 
 #[test]
 fn every_job_that_runs_compiler_tests_installs_the_pinned_gleam() {
-    let yaml = fs::read_to_string(".github/workflows/assurance.yml").unwrap();
+    let yaml = fs::read_to_string(".github/workflows/assurance.yml");
     let parsed: serde_norway::Value = serde_norway::from_str(&yaml).unwrap();
     for job in ["coverage", "mutation"] {
         let steps = parsed["jobs"][job]["steps"].as_sequence().unwrap();
@@ -1025,7 +1019,7 @@ fn every_job_that_runs_compiler_tests_installs_the_pinned_gleam() {
 #[test]
 fn local_tool_pins_match_the_versions_ci_installs() {
     let pin = pinned_tool;
-    let ci = fs::read_to_string(".github/workflows/ci.yml").unwrap();
+    let ci = fs::read_to_string(".github/workflows/ci.yml");
     let parsed: serde_norway::Value = serde_norway::from_str(&ci).unwrap();
     let steps = |job: &str| parsed["jobs"][job]["steps"].as_sequence().unwrap().clone();
     let with = |job: &str, action: &str, input: &str| {
@@ -1061,7 +1055,6 @@ fn local_tool_pins_match_the_versions_ci_installs() {
     }
     let rust = pin("rust");
     let manifest = fs::read_to_string("Cargo.toml")
-        .unwrap()
         .parse::<toml_edit::DocumentMut>()
         .unwrap();
     let minimum = manifest["package"]["rust-version"].as_str().unwrap();
@@ -1077,7 +1070,7 @@ fn local_tool_pins_match_the_versions_ci_installs() {
         with("checks", "erlef/setup-beam@", "otp-version"),
         pin("erlang")
     );
-    let assurance = fs::read_to_string(".github/workflows/assurance.yml").unwrap();
+    let assurance = fs::read_to_string(".github/workflows/assurance.yml");
     assert!(
         assurance.contains(&format!(
             "install --locked zizmor --version {}",
@@ -1089,7 +1082,7 @@ fn local_tool_pins_match_the_versions_ci_installs() {
 
 #[test]
 fn every_repository_workflow_is_valid_yaml_and_includes_assurance() {
-    let paths = fs::read_dir(".github/workflows")
+    let paths = std::fs::read_dir(".github/workflows")
         .unwrap()
         .collect::<std::io::Result<Vec<_>>>()
         .unwrap();
@@ -1097,7 +1090,7 @@ fn every_repository_workflow_is_valid_yaml_and_includes_assurance() {
     for entry in paths {
         let path = entry.path();
         if path.extension().is_some_and(|extension| extension == "yml") {
-            let source = fs::read_to_string(&path).unwrap();
+            let source = fs::read_to_string(&path);
             serde_norway::from_str::<serde_norway::Value>(&source)
                 .unwrap_or_else(|error| panic!("invalid {}: {error}", path.display()));
             names.push(path.file_name().unwrap().to_string_lossy().into_owned());
@@ -1109,7 +1102,7 @@ fn every_repository_workflow_is_valid_yaml_and_includes_assurance() {
 
 #[test]
 fn local_assurance_outputs_cannot_be_committed_accidentally() {
-    let ignore = fs::read_to_string(".gitignore").unwrap();
+    let ignore = fs::read_to_string(".gitignore");
     let patterns = ignore.lines().collect::<std::collections::HashSet<_>>();
 
     for required in ["/coverage.json", "/mutants.out*/"] {

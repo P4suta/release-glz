@@ -1,7 +1,7 @@
-use std::fs;
 use std::path::{Path, PathBuf};
 
 use release_glz::git::GitRepo;
+use release_glz_test_support::fs;
 use release_glz_test_support::{git, init_repository};
 
 fn commit(repository: &Path, message: &str) -> String {
@@ -16,7 +16,7 @@ fn commit(repository: &Path, message: &str) -> String {
 fn repository_with_remote(root: &Path) -> (PathBuf, PathBuf) {
     let remote = root.join("remote.git");
     let work = root.join("work");
-    fs::create_dir(&work).unwrap();
+    fs::create_dir(&work);
     git(
         root,
         &["init", "--quiet", "--bare", remote.to_str().unwrap()],

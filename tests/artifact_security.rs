@@ -1,5 +1,4 @@
 use std::collections::BTreeMap;
-use std::fs;
 use std::io::Write;
 
 use flate2::{Compression, write::GzEncoder};
@@ -9,6 +8,7 @@ use release_glz::artifact::{
     validate_hex_tarball,
 };
 use release_glz::failure::{RefusalReason, refusal_reason};
+use release_glz_test_support::fs;
 use release_glz_test_support::write_tar_name;
 use sha2::{Digest, Sha256};
 
@@ -32,7 +32,7 @@ fn hex_v3_builder_is_deterministic_bounded_and_rejects_unsafe_paths() {
     let temp = tempfile::tempdir().unwrap();
     unpack_hex_source(&first, temp.path()).unwrap();
     assert_eq!(
-        fs::read(temp.path().join("src/x.gleam")).unwrap(),
+        fs::read(temp.path().join("src/x.gleam")),
         files["src/x.gleam"]
     );
 
@@ -507,11 +507,8 @@ fn unpacking_uses_only_validated_relative_regular_files() {
     let destination = temp.path().join("out");
     let archive = tar(&[("nested/file.txt", b"ok"), ("root.txt", b"root")]);
     unpack_tar_bytes(&archive, &destination, ArchiveLimits::default()).unwrap();
-    assert_eq!(
-        fs::read(destination.join("nested/file.txt")).unwrap(),
-        b"ok"
-    );
-    assert_eq!(fs::read(destination.join("root.txt")).unwrap(), b"root");
+    assert_eq!(fs::read(destination.join("nested/file.txt")), b"ok");
+    assert_eq!(fs::read(destination.join("root.txt")), b"root");
 
     let exact_destination = temp.path().join("exact");
     unpack_tar_bytes(
@@ -523,10 +520,7 @@ fn unpacking_uses_only_validated_relative_regular_files() {
         },
     )
     .unwrap();
-    assert_eq!(
-        fs::read(exact_destination.join("nested/file.txt")).unwrap(),
-        b"ok"
-    );
+    assert_eq!(fs::read(exact_destination.join("nested/file.txt")), b"ok");
 
     let limit = ArchiveLimits {
         max_archive_bytes: archive.len() as u64 - 1,
@@ -537,7 +531,7 @@ fn unpacking_uses_only_validated_relative_regular_files() {
         RefusalReason::ArchiveLimitExceeded,
         "byte limit",
     );
-    assert!(!temp.path().join("blocked").exists());
+    assert!(!fs::exists(temp.path().join("blocked")));
 }
 
 #[test]
@@ -554,19 +548,19 @@ fn validated_hex_source_unpacking_omits_generated_erlang_but_keeps_native_ffi() 
 
     unpack_hex_source(&package, &destination).unwrap();
     assert_eq!(
-        fs::read(destination.join("gleam.toml")).unwrap(),
+        fs::read(destination.join("gleam.toml")),
         b"name = \"x\"\nversion = \"1.0.0\"\n"
     );
     assert_eq!(
-        fs::read(destination.join("src/x.gleam")).unwrap(),
+        fs::read(destination.join("src/x.gleam")),
         b"pub fn value() { 1 }\n"
     );
     assert!(
-        !destination.join("src/x.erl").exists(),
+        !fs::exists(destination.join("src/x.erl")),
         "paired compiler output must not clash when the source is rebuilt"
     );
     assert_eq!(
-        fs::read(destination.join("src/x_ffi.erl")).unwrap(),
+        fs::read(destination.join("src/x_ffi.erl")),
         b"% package-authored native Erlang\n"
     );
 }
@@ -574,24 +568,23 @@ fn validated_hex_source_unpacking_omits_generated_erlang_but_keeps_native_ffi() 
 #[test]
 fn package_directory_normalization_includes_only_publishable_inputs() {
     let temp = tempfile::tempdir().unwrap();
-    fs::create_dir_all(temp.path().join("src/nested")).unwrap();
-    fs::create_dir_all(temp.path().join("priv/assets")).unwrap();
-    fs::create_dir_all(temp.path().join("test")).unwrap();
-    fs::create_dir_all(temp.path().join("build")).unwrap();
+    fs::create_dir_all(temp.path().join("src/nested"));
+    fs::create_dir_all(temp.path().join("priv/assets"));
+    fs::create_dir_all(temp.path().join("test"));
+    fs::create_dir_all(temp.path().join("build"));
     fs::write(
         temp.path().join("gleam.toml"),
         "name = \"x\"\nversion = \"1.2.3\"\n",
-    )
-    .unwrap();
-    fs::write(temp.path().join("README.txt"), "read me").unwrap();
-    fs::write(temp.path().join("NOTICE.md"), "notice").unwrap();
-    fs::write(temp.path().join("ignored.txt"), "ignored").unwrap();
-    fs::write(temp.path().join("src/nested/x.gleam"), "pub fn x() { 1 }").unwrap();
-    fs::write(temp.path().join("src/nested/x.mjs"), "export const x = 1;").unwrap();
-    fs::write(temp.path().join("src/nested/secret.txt"), "not publishable").unwrap();
-    fs::write(temp.path().join("priv/assets/data"), "private asset").unwrap();
-    fs::write(temp.path().join("test/x.gleam"), "ignored").unwrap();
-    fs::write(temp.path().join("build/output"), "ignored").unwrap();
+    );
+    fs::write(temp.path().join("README.txt"), "read me");
+    fs::write(temp.path().join("NOTICE.md"), "notice");
+    fs::write(temp.path().join("ignored.txt"), "ignored");
+    fs::write(temp.path().join("src/nested/x.gleam"), "pub fn x() { 1 }");
+    fs::write(temp.path().join("src/nested/x.mjs"), "export const x = 1;");
+    fs::write(temp.path().join("src/nested/secret.txt"), "not publishable");
+    fs::write(temp.path().join("priv/assets/data"), "private asset");
+    fs::write(temp.path().join("test/x.gleam"), "ignored");
+    fs::write(temp.path().join("build/output"), "ignored");
 
     let publish_inputs = package_publish_inputs(temp.path()).unwrap();
     assert!(
@@ -623,8 +616,8 @@ fn package_directory_normalization_rejects_symlink_publish_inputs() {
     use std::os::unix::fs::symlink;
 
     let temp = tempfile::tempdir().unwrap();
-    fs::create_dir(temp.path().join("src")).unwrap();
-    fs::write(temp.path().join("outside"), "secret").unwrap();
+    fs::create_dir(temp.path().join("src"));
+    fs::write(temp.path().join("outside"), "secret");
     symlink("../outside", temp.path().join("src/leak.gleam")).unwrap();
     assert_error_contains(
         normalize_package_dir(temp.path()),

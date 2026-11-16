@@ -1,9 +1,8 @@
-use std::fs;
-
+use release_glz_test_support::fs;
 use serde_json::{Value, json};
 
 fn load(path: &str) -> Value {
-    serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap()
+    serde_json::from_str(&fs::read_to_string(path)).unwrap()
 }
 
 fn rule<'a>(ruleset: &'a Value, kind: &str) -> &'a Value {
@@ -69,7 +68,7 @@ fn the_required_check_is_the_ci_job_that_aggregates_every_selected_check() {
         .map(|check| check["context"].as_str().unwrap().to_owned())
         .collect::<Vec<_>>();
     let ci: serde_norway::Value =
-        serde_norway::from_str(&fs::read_to_string(".github/workflows/ci.yml").unwrap()).unwrap();
+        serde_norway::from_str(&fs::read_to_string(".github/workflows/ci.yml")).unwrap();
     let job_names = ci["jobs"]
         .as_mapping()
         .unwrap()
@@ -103,11 +102,11 @@ fn release_tags_are_immutable_after_creation() {
 
 #[test]
 fn repository_policy_records_the_solo_review_tradeoff_and_real_checksum_path() {
-    let policy = fs::read_to_string("docs/repository-rulesets.md").unwrap();
+    let policy = fs::read_to_string("docs/repository-rulesets.md");
     assert!(policy.contains("## Accepted solo-maintainer risk"));
     assert!(policy.contains("no independent human approval"));
 
-    let readiness = fs::read_to_string("docs/release-readiness.md").unwrap();
+    let readiness = fs::read_to_string("docs/release-readiness.md");
     assert!(readiness.contains("`action/checksums.json` contains"));
     assert!(!readiness.contains("`action-checksums.json` contains"));
 }

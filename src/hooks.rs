@@ -2,7 +2,6 @@
 //!
 //! Hooks are processes described by an argv array, never shell strings, and credentials and GitHub control files are withheld from them even when a manifest names those variables.
 
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
 use std::time::Duration;
@@ -20,6 +19,7 @@ use crate::candidate::{HookEvidence, HookKind};
 use crate::canonical::{canonical_json_bytes, finalize_sha256, sha256};
 use crate::config::{HookConfig, validate_hook_config};
 use crate::failure::{Refusal, RefusalReason, refused};
+use crate::fs;
 use crate::process::{SPAWN_ATTEMPTS, retryable_spawn_error, spawn_retry_delay};
 use crate::refuse;
 use crate::sidecar::{
@@ -611,11 +611,16 @@ impl HookProcess {
     #[cfg(unix)]
     fn spawn(command: &mut HookCommand) -> std::io::Result<Self> {
         let child = command.spawn()?;
-        let group = child
+        let id = child
             .id()
-            .and_then(|id| i32::try_from(id).ok())
-            .and_then(rustix::process::Pid::from_raw)
             .ok_or_else(|| std::io::Error::other("started hook has no process id"))?;
+        let group = i32::try_from(id)
+            .map_err(std::io::Error::other)
+            .and_then(|id| {
+                rustix::process::Pid::from_raw(id).ok_or_else(|| {
+                    std::io::Error::other(format!("started hook has process id {id}"))
+                })
+            })?;
         Ok(Self { child, group })
     }
 
@@ -728,19 +733,17 @@ fn tree_digest(root: &Path) -> Result<Sha256Digest> {
 }
 
 fn collect_tree(root: &Path, directory: &Path, output: &mut Vec<(String, PathBuf)>) -> Result<()> {
-    let mut entries: Vec<_> = fs::read_dir(directory)?.collect::<std::io::Result<_>>()?;
-    entries.sort_by_key(|entry| entry.file_name());
-    for entry in entries {
+    for entry in fs::read_dir(directory)? {
         let path = entry.path();
-        let kind = entry.file_type()?;
+        let kind = entry.file_type();
         if kind.is_dir() {
-            collect_tree(root, &path, output)?;
+            collect_tree(root, path, output)?;
         } else if kind.is_file() {
             output.push((
                 path.strip_prefix(root)?
                     .to_string_lossy()
                     .replace('\\', "/"),
-                path,
+                path.to_path_buf(),
             ));
         } else {
             refuse!(

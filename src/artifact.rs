@@ -3,7 +3,6 @@
 //! Every archive read here is bounded before it is expanded, and every archive written is byte-reproducible, because the artifact digests in a Candidate are only meaningful if both hold.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
 use std::io::{Cursor, Read};
 use std::path::Path;
 
@@ -17,6 +16,7 @@ use toml_edit::{DocumentMut, Item, value};
 
 use crate::canonical::{finalize_sha256, sha256};
 use crate::failure::{Refusal, RefusalReason, refused};
+use crate::fs;
 use crate::refuse;
 use crate::units::MIB;
 
@@ -775,18 +775,17 @@ fn collect_publish_inputs(
     output: &mut NormalizedArtifact,
 ) -> Result<()> {
     for entry in fs::read_dir(directory)? {
-        let entry = entry?;
         let path = entry.path();
         let relative = path
             .strip_prefix(root)?
             .to_string_lossy()
             .replace('\\', "/");
-        let file_type = entry.file_type()?;
+        let file_type = entry.file_type();
         let in_source = relative == "src" || relative.starts_with("src/");
         let in_private = relative == "priv" || relative.starts_with("priv/");
         if file_type.is_dir() {
             if in_source || in_private {
-                collect_publish_inputs(root, &path, output)?;
+                collect_publish_inputs(root, path, output)?;
             }
             continue;
         }
