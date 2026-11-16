@@ -7,6 +7,7 @@ use release_glz::candidate::{
     RegistryIdentity, SealedArtifact,
 };
 use release_glz::config::{ApprovalConfig, AuthKind, OutputConfig, RegistryProvider};
+use release_glz::failure::{FailureClass, RefusalReason};
 use release_glz::model::{
     ApiDiff, Baseline, BaselineSource, Bump, CommandEnvelope, ReleasePlan, ReleaseStage,
     ReleaseState,
@@ -380,12 +381,65 @@ fn every_result_schema_refuses_what_its_command_never_prints() {
             "command-envelope.schema.json",
             with(&envelope, "/ok", json!(true)),
         ),
+        (
+            "a failure whose code names neither a class nor a reason",
+            "command-envelope.schema.json",
+            with(
+                &envelope,
+                "/diagnostics/0/code",
+                json!("approval_missing_somehow"),
+            ),
+        ),
     ];
     for (case, file, value) in refused {
         assert!(
             !violations(file, &value).is_empty(),
             "{file} accepted {case}"
         );
+    }
+}
+
+/// The envelope schema lists exactly the class codes and reason codes that the error diagnostic of a failed command carries, in declaration order.
+#[test]
+fn the_envelope_schema_lists_every_failure_class_and_refusal_reason() {
+    let schemas = published_schemas();
+    let definitions = &schemas["command-envelope.schema.json"]["$defs"];
+    let listed = |name: &str| {
+        definitions[name]["enum"]
+            .as_array()
+            .unwrap_or_else(|| panic!("`$defs/{name}` lists no codes"))
+            .iter()
+            .map(|code| code.as_str().unwrap())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        listed("failureClass"),
+        FailureClass::ALL.map(FailureClass::diagnostic_code)
+    );
+    assert_eq!(
+        listed("refusalReason"),
+        RefusalReason::ALL
+            .iter()
+            .map(|reason| reason.code())
+            .collect::<Vec<_>>()
+    );
+
+    let failure = |code: &str| {
+        json!({
+            "schema": "command/v1",
+            "ok": false,
+            "command": "release",
+            "result": null,
+            "diagnostics": [{"code": code, "level": "error", "message": "refused", "detail": null}],
+            "next_actions": [],
+        })
+    };
+    for code in FailureClass::ALL
+        .map(FailureClass::diagnostic_code)
+        .into_iter()
+        .chain(RefusalReason::ALL.iter().map(|reason| reason.code()))
+    {
+        assert_published_envelope(&failure(code));
     }
 }
 

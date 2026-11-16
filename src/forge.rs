@@ -18,8 +18,10 @@ use sha2::{Digest, Sha256};
 
 use crate::changelog::default_category;
 use crate::config::{url_is_http_loopback, uses_trusted_transport};
+use crate::failure::{Refusal, RefusalReason, refused};
 use crate::git::Commit;
 use crate::model::{ChangeEntry, ReleasePlan, bump_name};
+use crate::refuse;
 use crate::units::GIB;
 
 /// REST API version this client pins its requests to.
@@ -95,9 +97,12 @@ pub struct GitHubRepository {
 impl GitHubRepository {
     /// Parse an `owner/name` slug, rejecting anything unsafe in a URL path.
     pub fn parse(value: &str) -> Result<Self> {
-        let (owner, name) = value
-            .split_once('/')
-            .context("GitHub repository must be `owner/name`")?;
+        let (owner, name) = value.split_once('/').ok_or_else(|| {
+            refused(
+                RefusalReason::GithubRepositoryInvalid,
+                "GitHub repository must be `owner/name`",
+            )
+        })?;
         let owner_valid = (1..=MAX_OWNER_LEN).contains(&owner.len())
             && owner
                 .bytes()
@@ -117,7 +122,10 @@ impl GitHubRepository {
                 .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
             && !matches!(name, "." | "..");
         if !owner_valid || !name_valid {
-            bail!("GitHub repository must be `owner/name`");
+            refuse!(
+                GithubRepositoryInvalid,
+                "GitHub repository must be `owner/name`"
+            );
         }
         Ok(Self {
             owner: owner.to_owned(),
@@ -491,15 +499,22 @@ impl CandidateRun {
         ) {
             Ok(run) => Ok(run.into()),
             Err(RunRefusal::PushFromAnotherRun) => {
-                bail!("a push publishes only the Candidate that its own run prepared")
+                refuse!(
+                    CandidateRunFromAnotherPush,
+                    "a push publishes only the Candidate that its own run prepared"
+                )
             }
             Err(RunRefusal::PromotionOfItsOwnRun) => {
-                bail!(
+                refuse!(
+                    CandidateRunPromotesItself,
                     "manual promotion must consume a Candidate from a completed prior prepare run"
                 )
             }
             Err(RunRefusal::OtherEvent) => {
-                bail!("only a push or a manual promotion publishes a Candidate, not `{event_name}`")
+                refuse!(
+                    CandidateRunEventUnsupported,
+                    "only a push or a manual promotion publishes a Candidate, not `{event_name}`"
+                )
             }
         }
     }
@@ -766,11 +781,17 @@ impl GitHubClient {
     /// `doctor --online` reports these so a missing protection is found before a release depends on it.
     pub async fn environment_audit(&self, environment: &str) -> Result<GitHubEnvironmentAudit> {
         if environment.is_empty() {
-            bail!("GitHub Environment name must not be empty");
+            refuse!(
+                GithubEnvironmentEmpty,
+                "GitHub Environment name must not be empty"
+            );
         }
         let repository: RepositoryResponse = self.get("").await?;
         if repository.default_branch.is_empty() {
-            bail!("GitHub repository has no default branch");
+            refuse!(
+                GithubDefaultBranchMissing,
+                "GitHub repository has no default branch"
+            );
         }
         let environment: EnvironmentResponse = self
             .get(&format!("environments/{}", encode_segment(environment)))
@@ -816,21 +837,39 @@ impl GitHubClient {
         expected_source_sha: &str,
         run_state: CandidateRun,
     ) -> Result<VerifiedActionsArtifact> {
-        self.require_token()?;
-        if artifact_id == 0 || !valid_sha256(expected_sha256) {
-            bail!("GitHub Actions artifact identity is invalid");
+        // Without a token the release approval can't be verified, which is a policy failure rather than a failed GitHub write.
+        if self.token.is_none() {
+            refuse!(
+                ApprovalGithubTokenMissing,
+                "GITHUB_TOKEN or GH_TOKEN is required for this command"
+            );
         }
-        let expected_run_number = expected_run_id
-            .parse::<u64>()
-            .context("GitHub Actions run ID is invalid")?;
+        if artifact_id == 0 || !valid_sha256(expected_sha256) {
+            refuse!(
+                ActionsArtifactIdentityInvalid,
+                "GitHub Actions artifact identity is invalid"
+            );
+        }
+        let expected_run_number = expected_run_id.parse::<u64>().with_context(|| {
+            Refusal::new(
+                RefusalReason::ActionsRunIdInvalid,
+                "GitHub Actions run ID is invalid",
+            )
+        })?;
         if expected_run_number.to_string() != expected_run_id {
-            bail!("GitHub Actions run ID is not canonical");
+            refuse!(
+                ActionsRunIdInvalid,
+                "GitHub Actions run ID is not canonical"
+            );
         }
         let artifact: ActionsArtifactResponse = self
             .get(&format!("actions/artifacts/{artifact_id}"))
             .await?;
         if artifact.expired {
-            bail!("GitHub Actions Candidate artifact has expired");
+            refuse!(
+                ActionsArtifactExpired,
+                "GitHub Actions Candidate artifact has expired"
+            );
         }
         if artifact.id != artifact_id
             || artifact.name
@@ -844,7 +883,8 @@ impl GitHubClient {
             || artifact.workflow_run.id != expected_run_number
             || artifact.workflow_run.head_sha != expected_source_sha
         {
-            bail!(
+            refuse!(
+                ActionsArtifactMismatch,
                 "GitHub Actions Candidate artifact does not match its sealed run, source, and digest"
             );
         }
@@ -856,7 +896,8 @@ impl GitHubClient {
             || run.head_sha != expected_source_sha
             || !run_state.admits(&run.status, run.conclusion.as_deref())
         {
-            bail!(
+            refuse!(
+                ActionsRunMismatch,
                 "GitHub Actions Candidate run does not match the repository, managed workflow, source, and successful conclusion"
             );
         }
@@ -1193,18 +1234,27 @@ impl GitHubClient {
                 && pull.merged_at.is_none()
                 && pull.merge_commit_sha.is_none();
             if !describes_candidate {
-                bail!("the managed Release PR at the Candidate head describes another release");
+                refuse!(
+                    ReleasePrMarkerMismatch,
+                    "the managed Release PR at the Candidate head describes another release"
+                );
             }
             if self.generated_commit_digest(head_sha).await?.as_deref()
                 != Some(marker.digest.as_str())
             {
-                bail!("managed Release PR head is not the server-verified generated commit");
+                refuse!(
+                    ReleasePrHeadUnverified,
+                    "managed Release PR head is not the server-verified generated commit"
+                );
             }
             if let Some(existing) = &marker.intent_digest {
                 if existing == intent_digest {
                     return Ok(IntentBinding::Bound { url: pull.html_url });
                 }
-                bail!("managed Release PR is already bound to a different Candidate intent");
+                refuse!(
+                    ReleasePrIntentConflict,
+                    "managed Release PR is already bound to a different Candidate intent"
+                );
             }
             marker.intent_digest = Some(intent_digest.to_owned());
             let body = replace_managed_marker(
@@ -1219,7 +1269,8 @@ impl GitHubClient {
                 return Ok(IntentBinding::Superseded);
             }
             if current.body != pull.body {
-                bail!(
+                refuse!(
+                    ReleasePrChanged,
                     "the managed Release PR changed while its intent was being bound; the next run binds it"
                 );
             }
@@ -1278,14 +1329,20 @@ impl GitHubClient {
                     ))
                     .await?;
                 if tag_object.object.kind != "commit" {
-                    bail!("GitHub annotated tag does not directly target a commit");
+                    refuse!(
+                        GithubTagTargetNotCommit,
+                        "GitHub annotated tag does not directly target a commit"
+                    );
                 }
                 Ok(Some(GitHubTagState {
                     target_sha: tag_object.object.sha,
                     annotated: true,
                 }))
             }
-            kind => bail!("GitHub tag ref has unsupported object type `{kind}`"),
+            kind => refuse!(
+                GithubTagObjectUnsupported,
+                "GitHub tag ref has unsupported object type `{kind}`"
+            ),
         }
     }
 
@@ -1304,7 +1361,10 @@ impl GitHubClient {
             )
             .await?;
         if object.sha.is_empty() || object.object.kind != "commit" || object.object.sha != sha {
-            bail!("GitHub created an unexpected annotated tag object");
+            refuse!(
+                GithubTagCreationUnexpected,
+                "GitHub created an unexpected annotated tag object"
+            );
         }
         self.post_empty(
             "git/refs",
@@ -1340,9 +1400,9 @@ impl GitHubClient {
             if complete {
                 return match found.len() {
                     0 | 1 => Ok(found.pop().map(Into::into)),
-                    count => Err(crate::failure::classified(
-                        crate::failure::FailureClass::ImmutableStateConflict,
-                        format!(
+                    count => Err(refused(
+                        RefusalReason::GithubReleaseTagAmbiguous,
+                        format_args!(
                             "{count} GitHub Releases have the tag `{tag}`, so the Candidate's Release is ambiguous"
                         ),
                     )),
@@ -1408,7 +1468,10 @@ impl GitHubClient {
     ) -> Result<GitHubReleaseAsset> {
         self.require_token()?;
         if !release.draft {
-            bail!("GitHub Release assets may only be added to the sealed draft");
+            refuse!(
+                ReleaseAssetDraftRequired,
+                "GitHub Release assets may only be added to the sealed draft"
+            );
         }
         validate_release_asset_identity(name, media_type)?;
         let mut upload_url = validate_release_upload_url(
@@ -1439,7 +1502,10 @@ impl GitHubClient {
             || uploaded.size != bytes.len() as u64
             || uploaded.sha256.as_deref() != Some(expected_sha256.as_str())
         {
-            bail!("GitHub uploaded a Release asset with an unexpected immutable identity");
+            refuse!(
+                ReleaseAssetUploadUnexpected,
+                "GitHub uploaded a Release asset with an unexpected immutable identity"
+            );
         }
         Ok(uploaded)
     }
@@ -1455,23 +1521,34 @@ impl GitHubClient {
     ) -> Result<()> {
         self.require_token()?;
         if !release.draft {
-            bail!(
+            refuse!(
+                ReleaseAssetOnPublishedRelease,
                 "GitHub Release asset `{name}` belongs to a published Release, which stays as it is"
             );
         }
         let mut found = release.assets.iter().filter(|asset| asset.name == name);
         let asset = match (found.next(), found.next()) {
             (Some(asset), None) => asset,
-            (Some(_), Some(_)) => bail!("GitHub Release contains duplicate asset `{name}`"),
-            (None, _) => bail!("GitHub Release has no asset `{name}` to delete"),
+            (Some(_), Some(_)) => refuse!(
+                ReleaseAssetDuplicate,
+                "GitHub Release contains duplicate asset `{name}`"
+            ),
+            (None, _) => refuse!(
+                ReleaseAssetMissing,
+                "GitHub Release has no asset `{name}` to delete"
+            ),
         };
         if asset.state == "uploaded" {
-            bail!(
+            refuse!(
+                ReleaseAssetUploaded,
                 "GitHub Release asset `{name}` is uploaded, and a release never deletes an uploaded asset"
             );
         }
         if asset.id == 0 {
-            bail!("GitHub Release asset `{name}` has no id");
+            refuse!(
+                ReleaseAssetIdMissing,
+                "GitHub Release asset `{name}` has no id"
+            );
         }
         let url = self.url(&format!("releases/assets/{}", asset.id));
         checked(self.request(Method::DELETE, &url).send().await?, &url).await?;
@@ -1700,7 +1777,10 @@ impl GitHubClient {
 
     fn require_token(&self) -> Result<()> {
         if self.token.is_none() {
-            bail!("GITHUB_TOKEN or GH_TOKEN is required for this command");
+            refuse!(
+                GithubTokenMissing,
+                "GITHUB_TOKEN or GH_TOKEN is required for this command"
+            );
         }
         Ok(())
     }
@@ -1815,16 +1895,28 @@ impl GitHubClient {
 fn validate_github_url(raw: &str) -> Result<()> {
     let url = reqwest::Url::parse(raw).context("invalid GitHub API URL")?;
     if url.host_str().is_none() || url.cannot_be_a_base() {
-        bail!("GitHub API URL must be an absolute hierarchical URL");
+        refuse!(
+            UrlNotHierarchical,
+            "GitHub API URL must be an absolute hierarchical URL"
+        );
     }
     if url.query().is_some() || url.fragment().is_some() {
-        bail!("GitHub API URL must not contain a query or fragment");
+        refuse!(
+            UrlQueryOrFragment,
+            "GitHub API URL must not contain a query or fragment"
+        );
     }
     if !uses_trusted_transport(&url) {
-        bail!("GitHub API URLs must use HTTPS, or HTTP to a numeric loopback address");
+        refuse!(
+            UrlTransportUntrusted,
+            "GitHub API URLs must use HTTPS, or HTTP to a numeric loopback address"
+        );
     }
     if !url.username().is_empty() || url.password().is_some() {
-        bail!("GitHub API URLs must not contain credentials");
+        refuse!(
+            UrlCredentials,
+            "GitHub API URLs must not contain credentials"
+        );
     }
     Ok(())
 }
@@ -1836,7 +1928,10 @@ fn validate_release_asset_identity(name: &str, media_type: &str) -> Result<()> {
         || name == ".."
         || name.contains(['/', '\\', '\n', '\r', '\0'])
     {
-        bail!("GitHub Release asset name is unsafe");
+        refuse!(
+            ReleaseAssetNameUnsafe,
+            "GitHub Release asset name is unsafe"
+        );
     }
     if media_type.is_empty()
         || media_type.len() > MAX_MEDIA_TYPE_LEN
@@ -1845,7 +1940,10 @@ fn validate_release_asset_identity(name: &str, media_type: &str) -> Result<()> {
             .bytes()
             .all(|byte| byte.is_ascii_graphic() && byte != b'"' && byte != b'\\')
     {
-        bail!("GitHub Release asset media type is invalid");
+        refuse!(
+            ReleaseAssetMediaTypeInvalid,
+            "GitHub Release asset media type is invalid"
+        );
     }
     Ok(())
 }
@@ -1856,11 +1954,15 @@ fn validate_release_upload_url(
     repository: &GitHubRepository,
     release_id: u64,
 ) -> Result<reqwest::Url> {
-    let raw = raw
-        .strip_suffix("{?name,label}")
-        .context("GitHub Release upload URL has an unexpected template")?;
+    let raw = raw.strip_suffix("{?name,label}").ok_or_else(|| {
+        refused(
+            RefusalReason::ReleaseUploadUrlMalformed,
+            "GitHub Release upload URL has an unexpected template",
+        )
+    })?;
     let url = reqwest::Url::parse(raw).context("invalid GitHub Release upload URL")?;
-    validate_github_url(url.as_str())?;
+    validate_github_url(url.as_str())
+        .map_err(|error| refused(RefusalReason::ReleaseUploadUrlMalformed, error))?;
     let api = reqwest::Url::parse(api_url).context("invalid configured GitHub API URL")?;
     let same_origin = url.scheme() == api.scheme()
         && url.host_str() == api.host_str()
@@ -1871,14 +1973,20 @@ fn validate_release_upload_url(
         && url.host_str() == Some("uploads.github.com")
         && url.port_or_known_default() == Some(HTTPS_PORT);
     if !same_origin && !github_upload_origin {
-        bail!("GitHub Release upload URL has an untrusted origin");
+        refuse!(
+            ReleaseUploadUrlUntrusted,
+            "GitHub Release upload URL has an untrusted origin"
+        );
     }
     let expected_path = format!(
         "/repos/{}/{}/releases/{release_id}/assets",
         repository.owner, repository.name
     );
     if url.path() != expected_path {
-        bail!("GitHub Release upload URL does not match the sealed repository and release");
+        refuse!(
+            ReleaseUploadUrlMismatch,
+            "GitHub Release upload URL does not match the sealed repository and release"
+        );
     }
     Ok(url)
 }
@@ -2065,8 +2173,12 @@ fn parse_candidate_digest(body: &str) -> Option<String> {
 }
 
 fn replace_managed_marker(body: &str, marker: &ManagedMarker) -> Result<String> {
-    let start = trailing_marker_start(body)
-        .context("managed Release PR body does not end in exactly one marker")?;
+    let start = trailing_marker_start(body).ok_or_else(|| {
+        refused(
+            RefusalReason::ReleasePrMarkerNotTrailing,
+            "managed Release PR body does not end in exactly one marker",
+        )
+    })?;
     let output = format!("{}{}", &body[..start], format_marker(marker));
     if parse_marker(&output).as_ref() != Some(marker) {
         bail!("the updated Release PR body does not carry exactly its own marker");
@@ -2154,7 +2266,14 @@ mod tests {
         let replaced = replace_managed_marker(&body, &bound).unwrap();
         assert!(replaced.starts_with("Release notes\n\n"));
         assert_eq!(parse_marker(&replaced), Some(bound));
-        assert!(replace_managed_marker("no marker", &marker(None)).is_err());
+        let error = replace_managed_marker("no marker", &marker(None)).unwrap_err();
+        assert_eq!(
+            (crate::failure::refusal_reason(&error), error.to_string()),
+            (
+                Some(RefusalReason::ReleasePrMarkerNotTrailing),
+                "managed Release PR body does not end in exactly one marker".to_owned()
+            )
+        );
     }
 
     #[test]

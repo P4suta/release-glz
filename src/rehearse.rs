@@ -4,15 +4,17 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 
 use crate::candidate::{
     Candidate, CandidateInput, CandidateManifest, CandidateSource, SealedPolicy,
 };
 use crate::config::Manifest;
+use crate::failure::{RefusalReason, refused};
 use crate::git::GitRepo;
 use crate::gleam::Gleam;
 use crate::hooks::{HookContext, HookRunner};
+use crate::refuse;
 
 /// Inputs for one rehearsal.
 #[derive(Debug, Clone)]
@@ -39,11 +41,15 @@ impl Rehearsal {
         validate_full_sha(&options.source_ref)?;
         let (repo, relative_manifest) = locate_manifest(&options.manifest_path)?;
         let package_relative = relative_manifest.parent().unwrap_or_else(|| Path::new(""));
-        let resolved = repo
-            .resolve(&options.source_ref)?
-            .context("requested source commit does not exist")?;
+        let resolved = repo.resolve(&options.source_ref)?.ok_or_else(|| {
+            refused(
+                RefusalReason::SourceCommitUnresolved,
+                "requested source commit does not exist",
+            )
+        })?;
         if resolved != options.source_ref {
-            bail!(
+            refuse!(
+                SourceCommitUnresolved,
                 "rehearse requires the exact full commit SHA, not an abbreviated or symbolic ref"
             );
         }
@@ -55,7 +61,8 @@ impl Rehearsal {
         let release = manifest.release()?;
         let compiler = self.gleam.ensure_supported()?;
         if compiler != release.compiler {
-            bail!(
+            refuse!(
+                GleamCompilerMismatch,
                 "configured Gleam compiler {} is required; found {compiler}",
                 release.compiler
             );
@@ -199,7 +206,10 @@ fn absolute(path: &Path) -> Result<PathBuf> {
 
 fn validate_full_sha(value: &str) -> Result<()> {
     if !release_glz_core::is_commit_id(value.as_bytes()) {
-        bail!("--ref must be a full lowercase commit SHA");
+        refuse!(
+            CandidateSourceCommitInvalid,
+            "--ref must be a full lowercase commit SHA"
+        );
     }
     Ok(())
 }

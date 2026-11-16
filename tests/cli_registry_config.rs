@@ -178,7 +178,10 @@ fn a_version_below_the_automatic_minimum_is_a_policy_exit_not_an_internal_failur
     assert_published_envelope(&envelope);
     assert_eq!(envelope["schema"], "command/v1");
     assert_eq!(envelope["ok"], false);
-    assert_eq!(envelope["diagnostics"][0]["code"], "policy_or_approval");
+    assert_eq!(
+        envelope["diagnostics"][0]["code"],
+        "version_lowering_forbidden"
+    );
     assert_eq!(
         std::fs::read(temp.path().join("gleam.toml")).unwrap(),
         before
@@ -1019,15 +1022,17 @@ fn a_release_without_a_verifiable_approval_stops_before_it_asks_github_for_anyth
         ("RELEASE_GLZ_ACTIONS_RUN_ID", "42"),
     ];
 
-    for (case, overrides, message) in [
+    for (case, overrides, code, message) in [
         (
             "outside an Actions job",
             vec![("ACTIONS_ID_TOKEN_REQUEST_URL", None)],
+            "approval_request_incomplete",
             "release approval requires GitHub Actions OIDC request URL",
         ),
         (
             "an artifact ID that isn't a number",
             vec![("RELEASE_GLZ_ACTIONS_ARTIFACT_ID", Some("seven"))],
+            "actions_artifact_identity_invalid",
             "release approval Actions artifact ID is invalid",
         ),
     ] {
@@ -1053,7 +1058,7 @@ fn a_release_without_a_verifiable_approval_stops_before_it_asks_github_for_anyth
         let envelope = json(&release);
         assert_published_envelope(&envelope);
         let diagnostic = &envelope["diagnostics"][0];
-        assert_eq!(diagnostic["code"], "policy_or_approval", "{case}");
+        assert_eq!(diagnostic["code"], code, "{case}");
         assert!(
             diagnostic.to_string().contains(message),
             "{case}: {diagnostic}"

@@ -6,6 +6,7 @@ use anyhow::{Context, Result};
 
 use crate::authorization::{GithubOidcVerifier, OidcExpectation};
 use crate::candidate::CandidateManifest;
+use crate::failure::{Refusal, RefusalReason, refused};
 use crate::forge::{CandidateRun, GitHubClient};
 use crate::reconciler::ApprovalEvidence;
 use crate::workflow::WORKFLOW_PATH;
@@ -44,7 +45,12 @@ impl ApprovalRequest {
     /// The request that `variable` describes, using the names of the generated publish job.
     pub fn from_variables(variable: impl Fn(&str) -> Option<String>) -> Result<Self> {
         let required = |name: &str, purpose: &str| {
-            variable(name).with_context(|| format!("release approval requires {purpose}"))
+            variable(name).ok_or_else(|| {
+                refused(
+                    RefusalReason::ApprovalRequestIncomplete,
+                    format_args!("release approval requires {purpose}"),
+                )
+            })
         };
         Ok(Self {
             oidc_request_url: required(
@@ -61,7 +67,12 @@ impl ApprovalRequest {
                 "the immutable Actions artifact ID",
             )?
             .parse()
-            .context("release approval Actions artifact ID is invalid")?,
+            .with_context(|| {
+                Refusal::new(
+                    RefusalReason::ActionsArtifactIdentityInvalid,
+                    "release approval Actions artifact ID is invalid",
+                )
+            })?,
             artifact_digest: required(
                 "RELEASE_GLZ_ACTIONS_ARTIFACT_DIGEST",
                 "the Actions artifact digest",
@@ -135,9 +146,12 @@ pub async fn verify_approval(
                     &manifest.release_branch_prefix,
                 )
                 .await?
-                .context(
-                    "release approval requires a server-verified merged managed Release PR for this Candidate",
-                )?
+                .ok_or_else(|| {
+                    refused(
+                        RefusalReason::ApprovalReleasePrMissing,
+                        "release approval requires a server-verified merged managed Release PR for this Candidate",
+                    )
+                })?
                 .intent_digest
         }
         "workflow_dispatch" => Some(manifest.intent_digest.clone()),

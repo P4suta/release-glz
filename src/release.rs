@@ -12,7 +12,7 @@ use sha2::{Digest, Sha256};
 use crate::candidate::{Candidate, CandidateManifest, SealedPolicy};
 use crate::canonical::SHA256_HEX_LEN;
 use crate::config::{Manifest, RegistryConfig};
-use crate::failure::{FailureClass, classified};
+use crate::failure::{RefusalReason, refused};
 use crate::forge::{GitHubClient, GitHubRelease, GitHubReleaseAsset, GitHubRepository};
 use crate::git::GitRepo;
 use crate::gleam::Gleam;
@@ -121,8 +121,8 @@ impl SourceBoundCandidate {
     pub fn bind(manifest: CandidateManifest, manifest_path: &Path) -> Result<Self> {
         let (repo, relative_manifest) = crate::rehearse::locate_manifest(manifest_path)?;
         if repo.head()? != manifest.source.commit_sha {
-            return Err(classified(
-                FailureClass::ImmutableStateConflict,
+            return Err(refused(
+                RefusalReason::CandidateSourceMismatch,
                 "checked-out commit does not match the sealed Candidate source",
             ));
         }
@@ -139,9 +139,9 @@ impl SourceBoundCandidate {
         )?;
         let differences = SealedPolicy::of(&manifest).differences(&source);
         if !differences.is_empty() {
-            return Err(classified(
-                FailureClass::ImmutableStateConflict,
-                format!(
+            return Err(refused(
+                RefusalReason::CandidatePolicyDiffers,
+                format_args!(
                     "the Candidate's policy differs from the configuration at its source commit in: {}",
                     differences.join(", ")
                 ),
@@ -172,10 +172,13 @@ impl LiveReleaseTarget {
             auth: manifest.registry.auth,
         };
         if manifest.private && std::env::var_os(&registry_config.credential_env).is_none() {
-            bail!(
-                "private registry credential environment `{}` is not set",
-                registry_config.credential_env
-            );
+            return Err(refused(
+                RefusalReason::RegistryCredentialMissing,
+                format_args!(
+                    "private registry credential environment `{}` is not set",
+                    registry_config.credential_env
+                ),
+            ));
         }
         let registry = HexRegistry::from_environment(&registry_config)?;
         Ok(Self {
@@ -293,7 +296,7 @@ impl ReleaseTarget for LiveReleaseTarget {
                 }
                 if asset.state != "uploaded" {
                     if let Some(refusal) = unfinished_asset_refusal(release, asset, intent) {
-                        return Err(classified(FailureClass::ImmutableStateConflict, refusal));
+                        return Err(refused(RefusalReason::ReleaseAssetUnfinished, refusal));
                     }
                     unfinished_release_assets.insert(asset.name.clone());
                     continue;
@@ -462,9 +465,9 @@ impl ReleaseTarget for LiveReleaseTarget {
                         );
                     }
                     if !candidate_release(&release, intent) {
-                        return Err(classified(
-                            FailureClass::ImmutableStateConflict,
-                            format!(
+                        return Err(refused(
+                            RefusalReason::ReleaseAssetUnfinished,
+                            format_args!(
                                 "GitHub Release asset `{name}` is unfinished on a Release that the Candidate didn't draft"
                             ),
                         ));
@@ -580,6 +583,11 @@ impl ReleaseRunError {
     pub fn failure_class(&self) -> crate::failure::FailureClass {
         self.class
     }
+
+    /// The reason of the typed refusal that stopped the run, if one did.
+    pub fn refusal_reason(&self) -> Option<crate::failure::RefusalReason> {
+        crate::failure::refusal_reason(&self.source)
+    }
 }
 
 impl std::fmt::Display for ReleaseRunError {
@@ -639,7 +647,7 @@ where
         let manifest = Candidate::verify(candidate_directory).map_err(|source| {
             run_error(
                 ReleaseState::Blocked,
-                crate::failure::classified(
+                crate::failure::classified_keeping_reason(
                     crate::failure::FailureClass::ImmutableStateConflict,
                     source,
                 ),

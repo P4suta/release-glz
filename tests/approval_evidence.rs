@@ -9,6 +9,7 @@ use release_glz::candidate::{
     CandidateArtifacts, CandidateManifest, CandidateSource, RegistryIdentity, SealedArtifact,
 };
 use release_glz::config::{ApprovalConfig, AuthKind, OutputConfig, RegistryProvider};
+use release_glz::failure::{RefusalReason, refusal_reason};
 use release_glz::forge::{GitHubClient, GitHubRepository, files_digest};
 use release_glz::model::ReleaseState;
 use release_glz::reconciler::{ApprovalEvidence, ExternalReleaseState, ReleaseIntent, reconcile};
@@ -88,6 +89,10 @@ async fn a_merged_release_pr_without_a_bound_intent_never_approves_a_push() {
 async fn a_push_without_a_merged_release_pr_has_no_approval() {
     let github = FakeGithub::start(Event::Push, ReleasePr::Absent);
     let error = github.verify(push_variables(&github)).await.unwrap_err();
+    assert_eq!(
+        refusal_reason(&error),
+        Some(RefusalReason::ApprovalReleasePrMissing)
+    );
     assert!(
         format!("{error:#}").contains("merged managed Release PR"),
         "{error:#}"
@@ -114,6 +119,10 @@ async fn the_environment_of_an_approval_is_the_one_github_signed() {
         "staging",
     );
     let error = staging.verify(push_variables(&staging)).await.unwrap_err();
+    assert_eq!(
+        refusal_reason(&error),
+        Some(RefusalReason::OidcClaimsMismatch)
+    );
     assert!(
         format!("{error:#}").contains("OIDC verification failed"),
         "{error:#}"
@@ -191,11 +200,20 @@ fn a_request_names_every_object_that_approval_checks() {
         let mut missing = variables.clone();
         missing.remove(name);
         let error = ApprovalRequest::from_variables(lookup(&missing)).unwrap_err();
+        assert_eq!(
+            refusal_reason(&error),
+            Some(RefusalReason::ApprovalRequestIncomplete),
+            "{name}"
+        );
         assert!(error.to_string().contains(message), "{name}: {error}");
     }
     let mut invalid = variables;
     invalid.insert("RELEASE_GLZ_ACTIONS_ARTIFACT_ID".into(), "seven".into());
     let error = ApprovalRequest::from_variables(lookup(&invalid)).unwrap_err();
+    assert_eq!(
+        refusal_reason(&error),
+        Some(RefusalReason::ActionsArtifactIdentityInvalid)
+    );
     assert!(
         error.to_string().contains("artifact ID is invalid"),
         "{error}"

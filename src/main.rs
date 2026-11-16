@@ -23,7 +23,7 @@ use release_glz::doctor::{
     DoctorInput, DoctorReport, assess as assess_doctor, assess_local as assess_doctor_local,
     assess_unconfigured as assess_doctor_unconfigured,
 };
-use release_glz::failure::{FailureClass, classified};
+use release_glz::failure::{FailureClass, RefusalReason, classified, refused};
 use release_glz::forge::{GitHubClient, GitHubRepository, IntentBinding, MAX_ATTRIBUTED_COMMITS};
 use release_glz::git::GitRepo;
 use release_glz::gleam::Gleam;
@@ -403,7 +403,7 @@ fn exit_code(error: &anyhow::Error) -> i32 {
 }
 
 fn error_code(error: &anyhow::Error) -> &'static str {
-    release_glz::failure::classify(error).diagnostic_code()
+    release_glz::failure::diagnostic_code(error)
 }
 
 async fn run(cli: Cli) -> Result<i32> {
@@ -532,9 +532,8 @@ async fn run(cli: Cli) -> Result<i32> {
                     ));
                 }
                 let github = GitHubClient::from_environment(
-                    GitHubRepository::parse(&sealed.github_repository).map_err(|error| {
-                        default_failure_class(error, FailureClass::ImmutableStateConflict)
-                    })?,
+                    GitHubRepository::parse(&sealed.github_repository)
+                        .map_err(|error| classified(FailureClass::ImmutableStateConflict, error))?,
                 )
                 .map_err(|error| classified(FailureClass::UsageOrConfig, error))?;
                 let merged = github
@@ -1399,9 +1398,9 @@ fn manifest_planner(manifest_path: &Path) -> Result<Planner<HexRegistry>> {
 /// A path that isn't a directory is a mistyped argument, and only a Candidate that fails its own checks is a conflict.
 fn verified_candidate(directory: &Path) -> Result<release_glz::candidate::CandidateManifest> {
     if !directory.is_dir() {
-        return Err(classified(
-            FailureClass::UsageOrConfig,
-            format!("`{}` is not a Candidate directory", directory.display()),
+        return Err(refused(
+            RefusalReason::CandidateNotDirectory,
+            format_args!("`{}` is not a Candidate directory", directory.display()),
         ));
     }
     Candidate::verify(directory)
@@ -1430,8 +1429,9 @@ async fn online_candidate_report(
     candidate: SourceBoundCandidate,
     run: OnlineRun,
 ) -> Result<ReleaseReport> {
+    // Adapters that can't be built from the Candidate are a policy failure, whatever class a refusal's reason names.
     let target = LiveReleaseTarget::from_candidate(candidate)
-        .map_err(|error| default_failure_class(error, FailureClass::PolicyOrApproval))?;
+        .map_err(|error| classified(FailureClass::PolicyOrApproval, error))?;
     let runner = CandidateReleaseRunner::new(target);
     match run {
         OnlineRun::Inspect => runner.inspect(candidate_directory).await,
@@ -1448,7 +1448,8 @@ async fn approval_from_environment(
     manifest: &release_glz::candidate::CandidateManifest,
 ) -> Result<ApprovalEvidence> {
     let request = ApprovalRequest::from_environment()?;
-    let repository = GitHubRepository::parse(&manifest.github_repository)?;
+    let repository = GitHubRepository::parse(&manifest.github_repository)
+        .map_err(|error| classified(FailureClass::PolicyOrApproval, error))?;
     let github = GitHubClient::from_environment(repository)
         .map_err(|error| classified(FailureClass::UsageOrConfig, error))?;
     verify_approval(
@@ -1936,6 +1937,9 @@ mod tests {
         }
         let misleading = anyhow::anyhow!("hook approval conflict connection must be fixed");
         assert_eq!(exit_code(&misleading), 1);
+        let missing = anyhow::Error::new(release_glz::config::MissingReleaseConfig);
+        assert_eq!(exit_code(&missing), 2);
+        assert_eq!(error_code(&missing), "config_missing");
     }
 
     #[test]

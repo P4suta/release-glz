@@ -196,6 +196,39 @@ fn the_guide_states_the_plan_file_limit_the_reader_enforces() {
     );
 }
 
+/// The guide lists every refusal reason once, in declaration order, with the exit code its class decides.
+#[test]
+fn the_guide_lists_every_refusal_reason_with_the_exit_code_of_its_class() {
+    let guide = fs::read_to_string("docs/README.md").unwrap();
+    let rows = guide
+        .lines()
+        .skip_while(|line| *line != "| Reason code | Exit code | Meaning |")
+        .skip(2)
+        .take_while(|line| line.starts_with('|'))
+        .map(|row| {
+            let cells = row.split('|').map(str::trim).collect::<Vec<_>>();
+            let [_, code, exit, meaning, _] = cells.as_slice() else {
+                panic!("a reason row doesn't have three cells: {row}");
+            };
+            assert!(!meaning.is_empty(), "{row}");
+            (
+                code.strip_prefix('`')
+                    .and_then(|code| code.strip_suffix('`'))
+                    .unwrap_or_else(|| panic!("a reason code isn't code: {row}"))
+                    .to_owned(),
+                exit.parse::<i32>().unwrap(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        rows,
+        release_glz::failure::RefusalReason::ALL
+            .iter()
+            .map(|reason| (reason.code().to_owned(), reason.class().exit_code()))
+            .collect::<Vec<_>>()
+    );
+}
+
 #[test]
 fn threat_model_documents_the_narrow_gleam_windows_packaging_fallback() {
     let threat = fs::read_to_string("docs/threat-model.md").unwrap();

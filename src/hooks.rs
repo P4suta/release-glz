@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
 use std::time::Duration;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use base64::Engine;
 use semver::Version;
 use serde::{Deserialize, Serialize};
@@ -18,7 +18,9 @@ use tokio::process::{ChildStderr, ChildStdin, ChildStdout};
 use crate::candidate::{HookEvidence, HookKind};
 use crate::canonical::canonical_json_bytes;
 use crate::config::{HookConfig, validate_hook_config};
+use crate::failure::{Refusal, RefusalReason, refused};
 use crate::process::{SPAWN_ATTEMPTS, retryable_spawn_error, spawn_retry_delay};
+use crate::refuse;
 use crate::sidecar::{
     MAX_ARTIFACT_BYTES as SIDECAR_ARTIFACT_LIMIT, MAX_COUNT as SIDECAR_COUNT_LIMIT,
     MAX_TOTAL_BYTES as SIDECAR_TOTAL_LIMIT, validate_media_type, validate_name,
@@ -176,7 +178,11 @@ impl HookRunner {
             let result = self.run_one(hook, snapshot, "verify", context).await;
             let after = tree_digest(snapshot)?;
             if before != after {
-                bail!("verify hook `{}` modified the source snapshot", hook.id);
+                refuse!(
+                    HookSnapshotModified,
+                    "verify hook `{}` modified the source snapshot",
+                    hook.id
+                );
             }
             unchanged = Some(after);
             match result {
@@ -184,7 +190,11 @@ impl HookRunner {
                 Ok(item) if !hook.required => {
                     evidence.push(item.as_evidence(hook, HookKind::Verify))
                 }
-                Ok(_) => bail!("required verify hook `{}` reported failure", hook.id),
+                Ok(_) => refuse!(
+                    HookReportedFailure,
+                    "required verify hook `{}` reported failure",
+                    hook.id
+                ),
                 Err(error) if !hook.required => evidence.push(HookEvidence {
                     schema: "hook/v1".into(),
                     id: hook.id.clone(),
@@ -220,24 +230,35 @@ impl HookRunner {
             let result = self.run_one(hook, snapshot, "sidecar", context).await;
             let after = tree_digest(snapshot)?;
             if before != after {
-                bail!("sidecar hook `{}` modified the source snapshot", hook.id);
+                refuse!(
+                    HookSnapshotModified,
+                    "sidecar hook `{}` modified the source snapshot",
+                    hook.id
+                );
             }
             unchanged = Some(after);
             match result {
                 Ok(item) if item.success => {
                     let output: SidecarOutput = serde_json::from_value(item.evidence.clone())
                         .with_context(|| {
-                            format!("sidecar hook `{}` returned invalid artifacts", hook.id)
+                            Refusal::new(
+                                RefusalReason::SidecarArtifactsInvalid,
+                                format!("sidecar hook `{}` returned invalid artifacts", hook.id),
+                            )
                         })?;
                     for artifact in output.artifacts {
                         if artifacts.len() >= SIDECAR_COUNT_LIMIT {
-                            bail!("sidecar hooks exceeded the artifact count limit");
+                            refuse!(
+                                SidecarArtifactsLimitExceeded,
+                                "sidecar hooks exceeded the artifact count limit"
+                            );
                         }
                         validate_name(&artifact.name)?;
                         validate_media_type(&artifact.media_type)?;
                         let key = format!("{}/{}", hook.id, artifact.name);
                         if !names.insert(key) {
-                            bail!(
+                            refuse!(
+                                SidecarArtifactsInvalid,
                                 "sidecar hook `{}` returned duplicate artifact `{}`",
                                 hook.id,
                                 artifact.name
@@ -246,16 +267,22 @@ impl HookRunner {
                         let bytes = base64::engine::general_purpose::STANDARD
                             .decode(&artifact.content_base64)
                             .with_context(|| {
-                                format!(
-                                    "sidecar hook `{}` artifact `{}` is not valid base64",
-                                    hook.id, artifact.name
+                                Refusal::new(
+                                    RefusalReason::SidecarArtifactsInvalid,
+                                    format!(
+                                        "sidecar hook `{}` artifact `{}` is not valid base64",
+                                        hook.id, artifact.name
+                                    ),
                                 )
                             })?;
                         let size = bytes.len() as u64;
                         if size > SIDECAR_ARTIFACT_LIMIT
                             || total_size.saturating_add(size) > SIDECAR_TOTAL_LIMIT
                         {
-                            bail!("sidecar hook artifacts exceed their size limit");
+                            refuse!(
+                                SidecarArtifactsLimitExceeded,
+                                "sidecar hook artifacts exceed their size limit"
+                            );
                         }
                         total_size += size;
                         artifacts.push(SidecarArtifact {
@@ -271,7 +298,11 @@ impl HookRunner {
                 Ok(item) if !hook.required => {
                     evidence.push(item.as_evidence(hook, HookKind::Sidecar));
                 }
-                Ok(_) => bail!("required sidecar hook `{}` reported failure", hook.id),
+                Ok(_) => refuse!(
+                    HookReportedFailure,
+                    "required sidecar hook `{}` reported failure",
+                    hook.id
+                ),
                 Err(error) if !hook.required => evidence.push(HookEvidence {
                     schema: "hook/v1".into(),
                     id: hook.id.clone(),
@@ -305,7 +336,8 @@ impl HookRunner {
         };
         if !output.success {
             if hook.required {
-                bail!(
+                refuse!(
+                    HookObservationFailed,
                     "required notify hook `{}` could not observe delivery",
                     hook.id
                 );
@@ -316,10 +348,13 @@ impl HookRunner {
             .evidence
             .get("complete")
             .and_then(serde_json::Value::as_bool)
-            .with_context(|| {
-                format!(
-                    "notify hook `{}` observe evidence must contain boolean `complete`",
-                    hook.id
+            .ok_or_else(|| {
+                refused(
+                    RefusalReason::HookOutputInvalid,
+                    format_args!(
+                        "notify hook `{}` observe evidence must contain boolean `complete`",
+                        hook.id
+                    ),
                 )
             })
     }
@@ -333,7 +368,11 @@ impl HookRunner {
     ) -> Result<()> {
         let output = self.run_one(hook, directory, "apply", context).await?;
         if !output.success {
-            bail!("notify hook `{}` reported apply failure", hook.id);
+            refuse!(
+                HookReportedFailure,
+                "notify hook `{}` reported apply failure",
+                hook.id
+            );
         }
         Ok(())
     }
@@ -397,13 +436,19 @@ impl HookRunner {
                     hook.id, hook.timeout_seconds
                 );
                 return Err(match child.terminate().await {
-                    Ok(()) => anyhow::anyhow!(timed_out),
-                    Err(error) => error.context(timed_out),
+                    Ok(()) => refused(RefusalReason::HookTimedOut, timed_out),
+                    Err(error) => {
+                        error.context(Refusal::new(RefusalReason::HookTimedOut, timed_out))
+                    }
                 });
             }
         };
         if stdout_exceeded || stderr_exceeded {
-            bail!("hook `{}` exceeded its output limit", hook.id);
+            refuse!(
+                HookOutputLimitExceeded,
+                "hook `{}` exceeded its output limit",
+                hook.id
+            );
         }
         let output_sha256 = crate::hex::lower(&Sha256::digest(&stdout));
         if !status.success() {
@@ -413,20 +458,33 @@ impl HookRunner {
                 evidence: serde_json::json!({}),
             });
         }
-        let output: HookOutput = serde_json::from_slice(&stdout)
-            .with_context(|| format!("hook `{}` returned invalid JSON", hook.id))?;
+        let output: HookOutput = serde_json::from_slice(&stdout).with_context(|| {
+            Refusal::new(
+                RefusalReason::HookOutputInvalid,
+                format!("hook `{}` returned invalid JSON", hook.id),
+            )
+        })?;
         if output.schema != "hook/v1" {
-            bail!(
+            refuse!(
+                HookOutputInvalid,
                 "hook `{}` returned unsupported schema `{}`",
                 hook.id,
                 output.schema
             );
         }
         if output.summary.trim().is_empty() {
-            bail!("hook `{}` returned an empty summary", hook.id);
+            refuse!(
+                HookOutputInvalid,
+                "hook `{}` returned an empty summary",
+                hook.id
+            );
         }
         if !output.evidence.is_object() {
-            bail!("hook `{}` evidence must be a JSON object", hook.id);
+            refuse!(
+                HookOutputInvalid,
+                "hook `{}` evidence must be a JSON object",
+                hook.id
+            );
         }
         Ok(ExecutedHook {
             success: output.success,
@@ -635,7 +693,11 @@ fn collect_tree(root: &Path, directory: &Path, output: &mut Vec<(String, PathBuf
                 path,
             ));
         } else {
-            bail!("snapshot contains non-regular entry `{}`", path.display());
+            refuse!(
+                HookSnapshotEntryNotRegular,
+                "snapshot contains non-regular entry `{}`",
+                path.display()
+            );
         }
     }
     Ok(())

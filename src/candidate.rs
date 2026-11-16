@@ -22,7 +22,9 @@ use crate::config::{
     validate_hook_config, validate_package_name, validate_registry_repository,
     validate_relative_path,
 };
+use crate::failure::{Refusal, RefusalReason, refused};
 use crate::hooks::SidecarArtifact;
+use crate::refuse;
 use crate::sidecar::{
     MAX_ARTIFACT_BYTES as MAX_SIDECAR_BYTES, MAX_COUNT as MAX_SIDECAR_COUNT,
     MAX_TOTAL_BYTES as MAX_TOTAL_SIDECAR_BYTES, validate_hook_id as validate_sidecar_hook_id,
@@ -599,7 +601,8 @@ impl Candidate {
         prepared: Option<CandidateArtifacts>,
     ) -> Result<CandidateManifest> {
         if directory.exists() {
-            bail!(
+            refuse!(
+                CandidateDestinationExists,
                 "candidate destination `{}` already exists; sealed candidates are never replaced",
                 directory.display()
             );
@@ -715,9 +718,18 @@ impl Candidate {
             "candidate manifest",
         )?;
         let manifest: CandidateManifest =
-            serde_json::from_slice(&manifest_bytes).context("invalid candidate manifest")?;
+            serde_json::from_slice(&manifest_bytes).with_context(|| {
+                Refusal::new(
+                    RefusalReason::CandidateManifestInvalid,
+                    "invalid candidate manifest",
+                )
+            })?;
         if manifest.schema != "candidate/v1" {
-            bail!("unsupported candidate schema `{}`", manifest.schema);
+            refuse!(
+                CandidateSchemaUnsupported,
+                "unsupported candidate schema `{}`",
+                manifest.schema
+            );
         }
         validate_package_name(&manifest.package)?;
         validate_source(&manifest.source)?;
@@ -785,19 +797,28 @@ impl Candidate {
         if semantic_package != manifest.artifacts.package.semantic_sha256
             || semantic_interface != manifest.artifacts.package_interface.semantic_sha256
         {
-            bail!("candidate semantic checksum mismatch");
+            refuse!(
+                CandidateSemanticChecksumMismatch,
+                "candidate semantic checksum mismatch"
+            );
         }
         if let (Some(fingerprint), Some(descriptor)) = (&docs_fingerprint, &manifest.artifacts.docs)
             && fingerprint != &descriptor.semantic_sha256
         {
-            bail!("candidate documentation semantic checksum mismatch");
+            refuse!(
+                CandidateSemanticChecksumMismatch,
+                "candidate documentation semantic checksum mismatch"
+            );
         }
         let intent = intent_digest(Intent::from_manifest(&manifest))?;
         if intent != manifest.intent_digest {
-            bail!("candidate intent digest mismatch");
+            refuse!(
+                CandidateIntentDigestMismatch,
+                "candidate intent digest mismatch"
+            );
         }
         if candidate_digest(&manifest)? != manifest.candidate_digest {
-            bail!("candidate digest mismatch");
+            refuse!(CandidateDigestMismatch, "candidate digest mismatch");
         }
         Ok(manifest)
     }
@@ -974,7 +995,10 @@ fn core_artifacts(input: &CandidateInput) -> Result<CandidateArtifacts> {
         .map(|docs| validate_and_fingerprint_docs_tarball(docs, ArchiveLimits::default()))
         .transpose()?;
     if input.package_interface.len() as u64 > max_sealed_artifact_bytes() {
-        bail!("package interface exceeds its size limit");
+        refuse!(
+            CandidateInterfaceTooLarge,
+            "package interface exceeds its size limit"
+        );
     }
     let interface: serde_json::Value = serde_json::from_slice(&input.package_interface)
         .context("package interface is not valid JSON")?;
@@ -998,7 +1022,8 @@ fn core_artifacts(input: &CandidateInput) -> Result<CandidateArtifacts> {
 
 fn validate_output_artifacts(outputs: &OutputConfig, docs_present: bool) -> Result<()> {
     if outputs.docs != docs_present {
-        bail!(
+        refuse!(
+            CandidateDocsPolicyMismatch,
             "candidate documentation artifact does not match outputs.docs policy (expected {}, found {})",
             outputs.docs,
             docs_present
@@ -1031,7 +1056,8 @@ fn sidecar_descriptor(artifact: &SidecarArtifact) -> Result<SealedSidecarArtifac
 
 fn verify_file(directory: &Path, descriptor: &SealedArtifact) -> Result<Vec<u8>> {
     if descriptor.size > max_sealed_artifact_bytes() {
-        bail!(
+        refuse!(
+            CandidateFileTooLarge,
             "candidate artifact `{}` exceeds its size limit",
             descriptor.path
         );
@@ -1044,7 +1070,11 @@ fn verify_file(directory: &Path, descriptor: &SealedArtifact) -> Result<Vec<u8>>
     if bytes.len() as u64 != descriptor.size
         || crate::hex::lower(&Sha256::digest(&bytes)) != descriptor.sha256
     {
-        bail!("candidate checksum mismatch for `{}`", descriptor.path);
+        refuse!(
+            CandidateChecksumMismatch,
+            "candidate checksum mismatch for `{}`",
+            descriptor.path
+        );
     }
     Ok(bytes)
 }
@@ -1058,7 +1088,11 @@ fn verify_sidecar_file(directory: &Path, descriptor: &SealedSidecarArtifact) -> 
     if bytes.len() as u64 != descriptor.size
         || crate::hex::lower(&Sha256::digest(&bytes)) != descriptor.sha256
     {
-        bail!("candidate checksum mismatch for `{}`", descriptor.path);
+        refuse!(
+            CandidateChecksumMismatch,
+            "candidate checksum mismatch for `{}`",
+            descriptor.path
+        );
     }
     Ok(bytes)
 }
@@ -1077,7 +1111,11 @@ fn read_regular_limited(path: &Path, limit: u64, description: &str) -> Result<Ve
     let metadata = fs::symlink_metadata(path)
         .with_context(|| format!("missing {description} `{}`", path.display()))?;
     if !metadata.file_type().is_file() {
-        bail!("{description} `{}` is not a regular file", path.display());
+        refuse!(
+            CandidateFileNotRegular,
+            "{description} `{}` is not a regular file",
+            path.display()
+        );
     }
     let file = fs::File::open(path)
         .with_context(|| format!("failed to open {description} `{}`", path.display()))?;
@@ -1090,14 +1128,19 @@ fn read_opened_regular(file: fs::File, limit: u64, name: &str) -> Result<Vec<u8>
         .metadata()
         .with_context(|| format!("failed to inspect {name}"))?;
     if !metadata.is_file() {
-        bail!("{name} is not a regular file");
+        refuse!(CandidateFileNotRegular, "{name} is not a regular file");
     }
     if metadata.len() > limit {
-        bail!("{name} exceeds its size limit");
+        refuse!(CandidateFileTooLarge, "{name} exceeds its size limit");
     }
     read_at_most(file, limit)
         .with_context(|| format!("failed to read {name}"))?
-        .with_context(|| format!("{name} exceeds its size limit"))
+        .ok_or_else(|| {
+            refused(
+                RefusalReason::CandidateFileTooLarge,
+                format_args!("{name} exceeds its size limit"),
+            )
+        })
 }
 
 /// All of `reader` when it holds at most `limit` bytes, reading no more than one byte past the limit.
@@ -1144,7 +1187,10 @@ fn validate_candidate_inventory(directory: &Path, manifest: &CandidateManifest) 
         &mut actual_directories,
     )?;
     if actual_files != expected_files || actual_directories != expected_directories {
-        bail!("Candidate inventory differs from the sealed manifest");
+        refuse!(
+            CandidateInventoryMismatch,
+            "Candidate inventory differs from the sealed manifest"
+        );
     }
     Ok(())
 }
@@ -1190,7 +1236,8 @@ fn write_new(path: PathBuf, bytes: &[u8]) -> Result<()> {
 
 fn validate_descriptor_path(descriptor: &SealedArtifact, expected: &str) -> Result<()> {
     if descriptor.path != expected {
-        bail!(
+        refuse!(
+            CandidateArtifactPathUnexpected,
             "candidate artifact path `{}` must be `{expected}`",
             descriptor.path
         );
@@ -1201,7 +1248,10 @@ fn validate_descriptor_path(descriptor: &SealedArtifact, expected: &str) -> Resu
 
 fn validate_source(source: &CandidateSource) -> Result<()> {
     if !release_glz_core::is_commit_id(source.commit_sha.as_bytes()) {
-        bail!("candidate source commit must be a full lowercase SHA");
+        refuse!(
+            CandidateSourceCommitInvalid,
+            "candidate source commit must be a full lowercase SHA"
+        );
     }
     validate_relative_path(
         Path::new(&source.manifest_path),
@@ -1211,7 +1261,10 @@ fn validate_source(source: &CandidateSource) -> Result<()> {
 
 fn validate_registry_identity(registry: &RegistryIdentity) -> Result<()> {
     if !valid_env_name(&registry.credential_env) {
-        bail!("candidate registry credential_env is not a safe environment variable name");
+        refuse!(
+            CredentialEnvInvalid,
+            "candidate registry credential_env is not a safe environment variable name"
+        );
     }
     validate_registry_repository(registry.provider, registry.repository.as_deref())
         .context("invalid Candidate registry repository")?;
@@ -1223,13 +1276,26 @@ fn validate_registry_identity(registry: &RegistryIdentity) -> Result<()> {
         let url = reqwest::Url::parse(raw)
             .with_context(|| format!("candidate registry {field} is invalid"))?;
         if url.host_str().is_none() || url.cannot_be_a_base() {
-            bail!("candidate registry {field} must be an absolute hierarchical URL");
+            refuse!(
+                UrlNotHierarchical,
+                "candidate registry {field} must be an absolute hierarchical URL"
+            );
         }
         if url.query().is_some() || url.fragment().is_some() {
-            bail!("candidate registry {field} must not contain a query or fragment");
+            refuse!(
+                UrlQueryOrFragment,
+                "candidate registry {field} must not contain a query or fragment"
+            );
         }
-        if !uses_trusted_transport(&url) || !url.username().is_empty() || url.password().is_some() {
-            bail!(
+        if !url.username().is_empty() || url.password().is_some() {
+            refuse!(
+                UrlCredentials,
+                "candidate registry {field} must be credential-free HTTPS, or HTTP to a numeric loopback address"
+            );
+        }
+        if !uses_trusted_transport(&url) {
+            refuse!(
+                UrlTransportUntrusted,
                 "candidate registry {field} must be credential-free HTTPS, or HTTP to a numeric loopback address"
             );
         }
@@ -1240,10 +1306,16 @@ fn validate_registry_identity(registry: &RegistryIdentity) -> Result<()> {
 fn validate_candidate_tag(tag: &str, version: &Version) -> Result<()> {
     validate_git_ref(tag, "candidate.tag")?;
     if tag.starts_with("refs/") || tag.ends_with("^{}") {
-        bail!("candidate.tag contains a dangerous git ref form");
+        refuse!(
+            CandidateTagUnsafe,
+            "candidate.tag contains a dangerous git ref form"
+        );
     }
     if !tag.ends_with(&format!("v{version}")) {
-        bail!("candidate.tag must end with the Candidate version `v{version}`");
+        refuse!(
+            CandidateTagVersionMismatch,
+            "candidate.tag must end with the Candidate version `v{version}`"
+        );
     }
     Ok(())
 }
@@ -1256,7 +1328,10 @@ fn validate_github_repository(repository: &str) -> Result<()> {
 fn validate_release_branch_prefix(prefix: &str) -> Result<()> {
     if prefix.is_empty() || prefix.starts_with("refs/") || prefix.contains(['\n', '\r', '\0', ' '])
     {
-        bail!("candidate release branch prefix is unsafe");
+        refuse!(
+            GitRefPrefixUnsafe,
+            "candidate release branch prefix is unsafe"
+        );
     }
     validate_git_ref(
         &format!("{prefix}candidate"),
@@ -1266,36 +1341,54 @@ fn validate_release_branch_prefix(prefix: &str) -> Result<()> {
 
 fn validate_release_notes(notes: &str) -> Result<()> {
     if notes.len() > MAX_RELEASE_NOTES_BYTES || notes.contains('\0') {
-        bail!("candidate release notes are invalid or exceed 1 MiB");
+        refuse!(
+            CandidateReleaseNotesInvalid,
+            "candidate release notes are invalid or exceed 1 MiB"
+        );
     }
     Ok(())
 }
 
 fn validate_approval(approval: &ApprovalConfig) -> Result<()> {
     if approval.environment.is_empty() || approval.environment.contains(['\n', '\r', '\0']) {
-        bail!("candidate approval environment is invalid");
+        refuse!(
+            ApprovalEnvironmentInvalid,
+            "candidate approval environment is invalid"
+        );
     }
     if approval.normal != crate::config::ApprovalMode::ReleasePrAndEnvironment
         || approval.manual != crate::config::ApprovalMode::Environment
     {
-        bail!("candidate approval modes are invalid");
+        refuse!(ApprovalModeFixed, "candidate approval modes are invalid");
     }
     if let Some(fallback) = &approval.private_repository_fallback
         && fallback != "workflow-dispatch-digest"
     {
-        bail!("candidate approval fallback is unsupported");
+        refuse!(
+            ApprovalFallbackUnsupported,
+            "candidate approval fallback is unsupported"
+        );
     }
     if approval.manual_refs.is_empty() {
-        bail!("candidate manual approval ref policy is empty");
+        refuse!(
+            ManualRefsEmpty,
+            "candidate manual approval ref policy is empty"
+        );
     }
     let mut refs = std::collections::BTreeSet::new();
     for git_ref in &approval.manual_refs {
         if !(git_ref.starts_with("refs/heads/") || git_ref.starts_with("refs/tags/")) {
-            bail!("candidate manual approval ref policy contains a non-release ref");
+            refuse!(
+                ManualRefKindUnsupported,
+                "candidate manual approval ref policy contains a non-release ref"
+            );
         }
         crate::config::validate_git_ref(git_ref, "candidate approval.manual_refs")?;
         if !refs.insert(git_ref) {
-            bail!("candidate manual approval ref policy contains duplicates");
+            refuse!(
+                ManualRefDuplicate,
+                "candidate manual approval ref policy contains duplicates"
+            );
         }
     }
     Ok(())
@@ -1305,14 +1398,26 @@ fn validate_hook_evidence(evidence: &[HookEvidence]) -> Result<()> {
     let mut ids = std::collections::BTreeSet::new();
     for item in evidence {
         if item.schema != "hook/v1" {
-            bail!("unsupported hook evidence schema `{}`", item.schema);
+            refuse!(
+                CandidateHookEvidenceInvalid,
+                "unsupported hook evidence schema `{}`",
+                item.schema
+            );
         }
         if item.id.is_empty() || !ids.insert((&item.kind, &item.id)) {
-            bail!("invalid or duplicate hook evidence id `{}`", item.id);
+            refuse!(
+                CandidateHookEvidenceInvalid,
+                "invalid or duplicate hook evidence id `{}`",
+                item.id
+            );
         }
         validate_sha256(&item.output_sha256, "hook evidence checksum")?;
         if item.required && !item.success {
-            bail!("required hook `{}` did not succeed", item.id);
+            refuse!(
+                CandidateHookFailed,
+                "required hook `{}` did not succeed",
+                item.id
+            );
         }
     }
     Ok(())
@@ -1332,13 +1437,14 @@ fn validate_candidate_hook_definitions(
             .iter()
             .any(|name| crate::config::protected_hook_environment(name, registry_credential_env))
         {
-            bail!(
+            refuse!(
+                HookEnvProtected,
                 "sealed hook `{}` may not receive release-glz authorization or registry credentials",
                 hook.id
             );
         }
         if !ids.insert(&hook.id) {
-            bail!("duplicate sealed hook id `{}`", hook.id);
+            refuse!(HookIdDuplicate, "duplicate sealed hook id `{}`", hook.id);
         }
     }
     Ok(())
@@ -1351,7 +1457,10 @@ fn validate_evidenced_hooks(
     sidecars: &[SealedSidecarArtifact],
 ) -> Result<()> {
     if evidence.len() != verify.len() + sidecar.len() {
-        bail!("sealed hook evidence does not match the configured verify and sidecar hooks");
+        refuse!(
+            CandidateHookEvidenceMismatch,
+            "sealed hook evidence does not match the configured verify and sidecar hooks"
+        );
     }
     for (index, hook) in verify.iter().enumerate() {
         validate_hook_evidence_binding(&evidence[index], hook, HookKind::Verify)?;
@@ -1366,7 +1475,10 @@ fn validate_evidenced_hooks(
     if sidecars.iter().any(|artifact| {
         artifact.hook_id != BUILT_IN_HOOK_ID && !sidecar_ids.contains(artifact.hook_id.as_str())
     }) {
-        bail!("candidate sidecar artifact was produced by an undeclared hook");
+        refuse!(
+            CandidateSidecarProducerUndeclared,
+            "candidate sidecar artifact was produced by an undeclared hook"
+        );
     }
     Ok(())
 }
@@ -1377,7 +1489,8 @@ fn validate_hook_evidence_binding(
     kind: HookKind,
 ) -> Result<()> {
     if evidence.id != hook.id || evidence.kind != kind || evidence.required != hook.required {
-        bail!(
+        refuse!(
+            CandidateHookEvidenceMismatch,
             "sealed hook evidence does not match hook definition `{}`",
             hook.id
         );
@@ -1387,7 +1500,10 @@ fn validate_hook_evidence_binding(
 
 fn validate_sidecars(sidecars: &[SealedSidecarArtifact]) -> Result<()> {
     if sidecars.len() > MAX_SIDECAR_COUNT {
-        bail!("candidate contains too many sidecar artifacts");
+        refuse!(
+            CandidateSidecarsTooMany,
+            "candidate contains too many sidecar artifacts"
+        );
     }
     let mut paths = std::collections::BTreeSet::new();
     let mut total = 0_u64;
@@ -1395,14 +1511,20 @@ fn validate_sidecars(sidecars: &[SealedSidecarArtifact]) -> Result<()> {
         validate_sidecar_identity(&sidecar.hook_id, &sidecar.name, &sidecar.media_type)?;
         let expected_path = format!("sidecars/{}/{}", sidecar.hook_id, sidecar.name);
         if sidecar.path != expected_path || !paths.insert(&sidecar.path) {
-            bail!("candidate sidecar path is invalid or duplicated");
+            refuse!(
+                CandidateSidecarPathInvalid,
+                "candidate sidecar path is invalid or duplicated"
+            );
         }
         validate_sha256(&sidecar.sha256, "sidecar checksum")?;
         total = total
             .checked_add(sidecar.size)
             .context("candidate sidecar total size overflow")?;
         if sidecar.size > MAX_SIDECAR_BYTES || total > MAX_TOTAL_SIDECAR_BYTES {
-            bail!("candidate sidecar artifacts exceed their size limit");
+            refuse!(
+                CandidateSidecarsTooLarge,
+                "candidate sidecar artifacts exceed their size limit"
+            );
         }
     }
     Ok(())
@@ -1416,17 +1538,22 @@ fn validate_sidecar_output_policy(
     let public = sidecars.iter().filter(|artifact| artifact.public);
     let public_count = public.clone().count();
     if public_count > 0 && !outputs.github_release {
-        bail!("public sidecar artifacts require outputs.github_release");
+        refuse!(
+            CandidateSidecarReleaseDisabled,
+            "public sidecar artifacts require outputs.github_release"
+        );
     }
     if public_count > 0 && private && !outputs.allow_private_evidence_upload {
-        bail!(
+        refuse!(
+            CandidateSidecarPrivateUploadForbidden,
             "public sidecar artifacts for a private package require outputs.allow_private_evidence_upload"
         );
     }
     let mut names = std::collections::BTreeSet::new();
     for artifact in public {
         if !names.insert(&artifact.name) {
-            bail!(
+            refuse!(
+                CandidateSidecarNameDuplicate,
                 "duplicate public GitHub Release asset name `{}`",
                 artifact.name
             );
@@ -1454,14 +1581,23 @@ fn validate_standard_output_artifacts(
         artifact.name == provenance_name && artifact.media_type == "application/vnd.in-toto+json"
     });
     if sbom.count() != usize::from(outputs.sbom) {
-        bail!("Candidate SBOM artifacts do not match outputs.sbom policy");
+        refuse!(
+            CandidateEvidencePolicyMismatch,
+            "Candidate SBOM artifacts do not match outputs.sbom policy"
+        );
     }
     if provenance.count() != usize::from(outputs.provenance) {
-        bail!("Candidate provenance artifacts do not match outputs.provenance policy");
+        refuse!(
+            CandidateEvidencePolicyMismatch,
+            "Candidate provenance artifacts do not match outputs.provenance policy"
+        );
     }
     let expected_builtin = usize::from(outputs.sbom) + usize::from(outputs.provenance);
     if built_in.len() != expected_builtin {
-        bail!("Candidate contains an unsupported built-in evidence artifact");
+        refuse!(
+            CandidateEvidencePolicyMismatch,
+            "Candidate contains an unsupported built-in evidence artifact"
+        );
     }
     if outputs.signature
         && !sidecars.iter().any(|artifact| {
@@ -1469,7 +1605,10 @@ fn validate_standard_output_artifacts(
                 || artifact.media_type == "application/vnd.dev.sigstore.bundle+json"
         })
     {
-        bail!("outputs.signature requires a sealed signature sidecar artifact");
+        refuse!(
+            CandidateSignatureMissing,
+            "outputs.signature requires a sealed signature sidecar artifact"
+        );
     }
     Ok(())
 }
@@ -1485,7 +1624,10 @@ fn validate_notify_hooks(hooks: &[String]) -> Result<()> {
     let mut ids = std::collections::BTreeSet::new();
     for id in hooks {
         if id.is_empty() || !ids.insert(id) {
-            bail!("invalid or duplicate notify hook id `{id}`");
+            refuse!(
+                NotifyHookIdInvalid,
+                "invalid or duplicate notify hook id `{id}`"
+            );
         }
     }
     Ok(())
@@ -1498,7 +1640,10 @@ fn validate_notify_hook_definitions(ids: &[String], hooks: &[HookConfig]) -> Res
             .zip(hooks)
             .any(|(expected, hook)| expected != &hook.id)
     {
-        bail!("sealed notify hook definitions do not match the ordered hook ids");
+        refuse!(
+            NotifyHooksMismatch,
+            "sealed notify hook definitions do not match the ordered hook ids"
+        );
     }
     for hook in hooks {
         validate_hook_config(hook)?;
@@ -1508,7 +1653,10 @@ fn validate_notify_hook_definitions(ids: &[String], hooks: &[HookConfig]) -> Res
 
 fn validate_sha256(value: &str, field: &str) -> Result<()> {
     if !release_glz_core::is_sha256_hex(value.as_bytes()) {
-        bail!("{field} is not a lowercase SHA-256 digest");
+        refuse!(
+            CandidateChecksumMalformed,
+            "{field} is not a lowercase SHA-256 digest"
+        );
     }
     Ok(())
 }

@@ -5,7 +5,7 @@ use release_glz::config::{
     SeparationMode, valid_env_name, validate_git_ref, validate_hook_config, validate_package_name,
     validate_relative_path,
 };
-use release_glz::failure::{FailureClass, classify};
+use release_glz::failure::{FailureClass, RefusalReason, classify, refusal_reason};
 
 fn complete_config(extra: &str) -> String {
     format!(
@@ -99,10 +99,9 @@ fn a_manifest_without_a_release_table_names_init_and_is_a_usage_failure() {
         refusal.to_string(),
         "the manifest has no `[tools.release-glz]` configuration; run `release-glz init` to write it"
     );
-    assert_eq!(
-        classify(&anyhow::Error::new(refusal)),
-        FailureClass::UsageOrConfig
-    );
+    let refusal = anyhow::Error::new(refusal);
+    assert_eq!(classify(&refusal), FailureClass::UsageOrConfig);
+    assert_eq!(refusal_reason(&refusal), Some(RefusalReason::ConfigMissing));
 }
 
 #[test]
@@ -121,19 +120,27 @@ fn a_manifest_named_without_a_directory_lives_in_the_current_directory() {
     }
 }
 
+/// The reason that `Manifest::parse` refuses `source` with, which panics when it accepts the source.
+fn refusal(source: String) -> Option<RefusalReason> {
+    refusal_reason(&Manifest::parse(PathBuf::from("gleam.toml"), source).unwrap_err())
+}
+
 #[test]
 fn schema_two_rejects_unknown_keys_and_wrong_types() {
     let unknown = complete_config("[tools.release-glz.typo]\nenabled = true");
+    let error = Manifest::parse(PathBuf::from("gleam.toml"), unknown).unwrap_err();
+    assert_eq!(
+        refusal_reason(&error),
+        Some(RefusalReason::ConfigTableInvalid)
+    );
     assert!(
-        Manifest::parse(PathBuf::from("gleam.toml"), unknown)
-            .unwrap_err()
-            .to_string()
-            .contains("unknown")
+        error.to_string().contains("unknown field `typo`"),
+        "{error}"
     );
 
     let wrong_type =
         complete_config("").replace("timeout_seconds = 45", "timeout_seconds = \"45\"");
-    assert!(Manifest::parse(PathBuf::from("gleam.toml"), wrong_type).is_err());
+    assert_eq!(refusal(wrong_type), Some(RefusalReason::ConfigTableInvalid));
 }
 
 #[test]
@@ -147,11 +154,13 @@ fn release_configuration_refuses_every_schema_but_two() {
         ("", "no `schema`"),
     ] {
         let source = complete_config("").replace("schema = 2\n", schema);
-        let error = Manifest::parse(PathBuf::from("gleam.toml"), source)
-            .unwrap_err()
-            .to_string();
+        let error = Manifest::parse(PathBuf::from("gleam.toml"), source).unwrap_err();
         assert_eq!(
-            error,
+            refusal_reason(&error),
+            Some(RefusalReason::ConfigSchemaUnsupported)
+        );
+        assert_eq!(
+            error.to_string(),
             format!("`[tools.release-glz]` requires `schema = 2`, but it sets {found}")
         );
     }
@@ -172,19 +181,21 @@ fn a_release_table_with_only_top_level_keys_still_needs_schema_two() {
         } else {
             format!("name = \"widget\"\nversion = \"1.0.0\"\n\n[tools.release-glz]\n{table}")
         };
-        let error = Manifest::parse(PathBuf::from("gleam.toml"), source)
-            .unwrap_err()
-            .to_string();
+        let error = Manifest::parse(PathBuf::from("gleam.toml"), source).unwrap_err();
         assert_eq!(
-            error,
+            refusal_reason(&error),
+            Some(RefusalReason::ConfigSchemaUnsupported)
+        );
+        assert_eq!(
+            error.to_string(),
             format!("`[tools.release-glz]` requires `schema = 2`, but it sets {found}")
         );
     }
     let inline = "name = \"widget\"\nversion = \"1.0.0\"\ntools = { release-glz = { prerelease = \"rc\" } }\n";
-    let error = Manifest::parse(PathBuf::from("gleam.toml"), inline.into())
-        .unwrap_err()
-        .to_string();
-    assert!(error.contains("requires `schema = 2`"), "{error}");
+    assert_eq!(
+        refusal(inline.into()),
+        Some(RefusalReason::ConfigSchemaUnsupported)
+    );
 }
 
 #[test]
@@ -197,10 +208,18 @@ fn schema_two_refuses_the_keys_that_its_tables_replace() {
             "release_branch_prefix = \"release-glz/\"",
             &format!("release_branch_prefix = \"release-glz/\"\n{key} = {value}"),
         );
-        let error = Manifest::parse(PathBuf::from("gleam.toml"), source)
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains(&format!("unknown field `{key}`")), "{error}");
+        let error = Manifest::parse(PathBuf::from("gleam.toml"), source).unwrap_err();
+        assert_eq!(
+            refusal_reason(&error),
+            Some(RefusalReason::ConfigTableInvalid),
+            "{key}"
+        );
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("unknown field `{key}`")),
+            "{error}"
+        );
     }
 }
 
@@ -211,11 +230,15 @@ fn the_registry_has_no_key_that_loosens_its_transport() {
             "auth = \"hex-token\"",
             &format!("auth = \"hex-token\"\nallow_http_loopback = {value}"),
         );
-        let error = Manifest::parse(PathBuf::from("gleam.toml"), source)
-            .unwrap_err()
-            .to_string();
+        let error = Manifest::parse(PathBuf::from("gleam.toml"), source).unwrap_err();
+        assert_eq!(
+            refusal_reason(&error),
+            Some(RefusalReason::ConfigTableInvalid)
+        );
         assert!(
-            error.contains("unknown field `allow_http_loopback`"),
+            error
+                .to_string()
+                .contains("unknown field `allow_http_loopback`"),
             "{error}"
         );
     }
@@ -230,19 +253,28 @@ fn schema_two_refuses_malformed_channels_and_baseline_refs() {
                 "release_branch_prefix = \"releases/\"\nprerelease = \"beta\"",
             );
     Manifest::parse(PathBuf::from("gleam.toml"), valid.clone()).unwrap();
-    for invalid in [
-        valid.replace(
-            "\"1.0.0\" = \"refs/tags/v1.0.0\"",
-            "\"bad\" = \"refs/tags/v1\"",
+    for (invalid, reason) in [
+        (
+            valid.replace(
+                "\"1.0.0\" = \"refs/tags/v1.0.0\"",
+                "\"bad\" = \"refs/tags/v1\"",
+            ),
+            RefusalReason::ConfigTableInvalid,
         ),
-        valid.replace("\"refs/tags/v1.0.0\"", "1"),
-        valid.replace("\"refs/tags/v1.0.0\"", "\"refs/tags/../bad\""),
-        valid.replace("prerelease = \"beta\"", "prerelease = \"preview\""),
+        (
+            valid.replace("\"refs/tags/v1.0.0\"", "1"),
+            RefusalReason::ConfigTableInvalid,
+        ),
+        (
+            valid.replace("\"refs/tags/v1.0.0\"", "\"refs/tags/../bad\""),
+            RefusalReason::GitRefUnsafe,
+        ),
+        (
+            valid.replace("prerelease = \"beta\"", "prerelease = \"preview\""),
+            RefusalReason::ConfigTableInvalid,
+        ),
     ] {
-        assert!(
-            Manifest::parse(PathBuf::from("gleam.toml"), invalid.clone()).is_err(),
-            "{invalid}"
-        );
+        assert_eq!(refusal(invalid.clone()), Some(reason), "{invalid}");
     }
 }
 
@@ -265,23 +297,30 @@ fn schema_two_does_not_silently_enable_zero_major_versions() {
 
 #[test]
 fn paths_refs_and_hook_ids_are_safe() {
-    for (from, to) in [
-        ("path = \"CHANGELOG.md\"", "path = \"../CHANGELOG.md\""),
+    for (from, to, reason) in [
+        (
+            "path = \"CHANGELOG.md\"",
+            "path = \"../CHANGELOG.md\"",
+            RefusalReason::PathOutsideRepository,
+        ),
         (
             "notes_dir = \".release-glz/notes\"",
             "notes_dir = \"/tmp/notes\"",
+            RefusalReason::PathOutsideRepository,
         ),
         (
             "release_branch_prefix = \"release-glz/\"",
             "release_branch_prefix = \"refs/heads/main\"",
+            RefusalReason::GitRefPrefixUnsafe,
         ),
-        ("id = \"policy\"", "id = \"policy/../../x\""),
+        (
+            "id = \"policy\"",
+            "id = \"policy/../../x\"",
+            RefusalReason::HookIdUnsafe,
+        ),
     ] {
         let source = complete_config("").replace(from, to);
-        assert!(
-            Manifest::parse(PathBuf::from("gleam.toml"), source).is_err(),
-            "accepted {to}"
-        );
+        assert_eq!(refusal(source), Some(reason), "{to}");
     }
 }
 
@@ -294,6 +333,11 @@ fn no_hook_may_take_the_id_of_release_glz_evidence() {
         let Err(error) = Manifest::parse(PathBuf::from("gleam.toml"), source) else {
             panic!("a {phase} hook named release-glz was accepted");
         };
+        assert_eq!(
+            refusal_reason(&error),
+            Some(RefusalReason::HookIdReserved),
+            "{phase}"
+        );
         let error = format!("{error:#}");
         assert!(
             error.contains("hook id `release-glz` is reserved"),
@@ -315,23 +359,41 @@ fn registry_requires_https_or_http_to_a_numeric_loopback_address() {
         Manifest::parse(PathBuf::from("gleam.toml"), loopback).unwrap();
     }
 
-    for unsafe_url in [
-        "http://hex.pm/api",
-        "http://localhost:8080/api",
-        "http://192.0.2.1/api",
-        "http://[::ffff:127.0.0.1]/api",
-        "http://127.0.0.1.example.test/api",
-        "https://hex.pm/api?redirect=https://evil.test",
-        "https://hex.pm/api#fragment",
-        "https://user:password@hex.pm/api",
-        "http://user:password@127.0.0.1:8080/api",
-        "ftp://hex.pm/api",
+    for (unsafe_url, reason) in [
+        ("http://hex.pm/api", RefusalReason::UrlTransportUntrusted),
+        (
+            "http://localhost:8080/api",
+            RefusalReason::UrlTransportUntrusted,
+        ),
+        ("http://192.0.2.1/api", RefusalReason::UrlTransportUntrusted),
+        (
+            "http://[::ffff:127.0.0.1]/api",
+            RefusalReason::UrlTransportUntrusted,
+        ),
+        (
+            "http://127.0.0.1.example.test/api",
+            RefusalReason::UrlTransportUntrusted,
+        ),
+        (
+            "https://hex.pm/api?redirect=https://evil.test",
+            RefusalReason::UrlQueryOrFragment,
+        ),
+        (
+            "https://hex.pm/api#fragment",
+            RefusalReason::UrlQueryOrFragment,
+        ),
+        (
+            "https://user:password@hex.pm/api",
+            RefusalReason::UrlCredentials,
+        ),
+        (
+            "http://user:password@127.0.0.1:8080/api",
+            RefusalReason::UrlCredentials,
+        ),
+        ("ftp://hex.pm/api", RefusalReason::UrlTransportUntrusted),
     ] {
         let source = complete_config("").replace("https://hex.pm/api", unsafe_url);
-        assert!(
-            Manifest::parse(PathBuf::from("gleam.toml"), source).is_err(),
-            "accepted registry URL {unsafe_url}"
-        );
+        assert_eq!(refusal(source), Some(reason), "{unsafe_url}");
     }
 }
 
@@ -342,9 +404,10 @@ fn hex_organization_repository_is_a_safe_single_path_segment() {
             "repository = \"acme\"",
             &format!("repository = \"{invalid}\""),
         );
-        assert!(
-            Manifest::parse(PathBuf::from("gleam.toml"), source).is_err(),
-            "accepted unsafe Hex organization {invalid:?}"
+        assert_eq!(
+            refusal(source),
+            Some(RefusalReason::RegistryRepositoryInvalid),
+            "{invalid:?}"
         );
     }
 
@@ -369,7 +432,11 @@ fn credential_configuration_names_an_environment_variable_not_a_secret() {
         "GITHUB_TOKEN=secret",
     ] {
         let source = complete_config("").replace("HEXPM_API_KEY", invalid);
-        assert!(Manifest::parse(PathBuf::from("gleam.toml"), source).is_err());
+        assert_eq!(
+            refusal(source),
+            Some(RefusalReason::CredentialEnvInvalid),
+            "{invalid}"
+        );
     }
 
     let custom_credential = complete_config("")
@@ -378,8 +445,9 @@ fn credential_configuration_names_an_environment_variable_not_a_secret() {
             "credential_env = \"PRIVATE_REGISTRY_TOKEN\"",
         )
         .replace("env = [\"CI\"]", "env = [\"PRIVATE_REGISTRY_TOKEN\"]");
-    assert!(
-        Manifest::parse(PathBuf::from("gleam.toml"), custom_credential).is_err(),
+    assert_eq!(
+        refusal(custom_credential),
+        Some(RefusalReason::HookEnvProtected),
         "hooks must not receive the configured publication credential"
     );
 }
@@ -397,9 +465,10 @@ fn package_environment_hook_path_and_ref_lexers_cover_every_boundary() {
         "widget-name",
         "widget/name",
     ] {
-        assert!(
-            validate_package_name(invalid).is_err(),
-            "accepted {invalid:?}"
+        assert_eq!(
+            refusal_reason(&validate_package_name(invalid).unwrap_err()),
+            Some(RefusalReason::PackageNameInvalid),
+            "{invalid:?}"
         );
     }
 
@@ -428,25 +497,56 @@ fn package_environment_hook_path_and_ref_lexers_cover_every_boundary() {
             required: true,
             env: vec![],
         };
-        assert!(validate_hook_config(&hook).is_err(), "accepted hook {id:?}");
+        assert_eq!(
+            refusal_reason(&validate_hook_config(&hook).unwrap_err()),
+            Some(RefusalReason::HookIdUnsafe),
+            "{id:?}"
+        );
     }
-    for (argv, timeout, env) in [
-        (vec![], 30, vec![]),
-        (vec![String::new()], 30, vec![]),
-        (vec!["bad\0arg".into()], 30, vec![]),
-        (vec!["program".into()], 0, vec![]),
-        (vec!["program".into()], 3_601, vec![]),
-        (vec!["program".into()], 30, vec!["bad-name".into()]),
+    for (argv, timeout, env, reason) in [
+        (vec![], 30, vec![], RefusalReason::HookArgvInvalid),
+        (
+            vec![String::new()],
+            30,
+            vec![],
+            RefusalReason::HookArgvInvalid,
+        ),
+        (
+            vec!["bad\0arg".into()],
+            30,
+            vec![],
+            RefusalReason::HookArgvInvalid,
+        ),
+        (
+            vec!["program".into()],
+            0,
+            vec![],
+            RefusalReason::HookTimeoutOutOfRange,
+        ),
+        (
+            vec!["program".into()],
+            3_601,
+            vec![],
+            RefusalReason::HookTimeoutOutOfRange,
+        ),
+        (
+            vec!["program".into()],
+            30,
+            vec!["bad-name".into()],
+            RefusalReason::HookEnvInvalid,
+        ),
     ] {
-        assert!(
-            validate_hook_config(&HookConfig {
-                id: "policy".into(),
-                argv,
-                timeout_seconds: timeout,
-                required: false,
-                env,
-            })
-            .is_err()
+        let hook = HookConfig {
+            id: "policy".into(),
+            argv,
+            timeout_seconds: timeout,
+            required: false,
+            env,
+        };
+        assert_eq!(
+            refusal_reason(&validate_hook_config(&hook).unwrap_err()),
+            Some(reason),
+            "{hook:?}"
         );
     }
     for protected in [
@@ -462,15 +562,16 @@ fn package_environment_hook_path_and_ref_lexers_cover_every_boundary() {
         "GITHUB_STATE",
         "GITHUB_STEP_SUMMARY",
     ] {
-        assert!(
-            validate_hook_config(&HookConfig {
-                id: "protected".into(),
-                argv: vec!["program".into()],
-                timeout_seconds: 30,
-                required: true,
-                env: vec![protected.into()],
-            })
-            .is_err(),
+        let hook = HookConfig {
+            id: "protected".into(),
+            argv: vec!["program".into()],
+            timeout_seconds: 30,
+            required: true,
+            env: vec![protected.into()],
+        };
+        assert_eq!(
+            refusal_reason(&validate_hook_config(&hook).unwrap_err()),
+            Some(RefusalReason::HookEnvProtected),
             "hook accepted protected environment {protected}"
         );
     }
@@ -478,10 +579,20 @@ fn package_environment_hook_path_and_ref_lexers_cover_every_boundary() {
     for valid in ["CHANGELOG.md", ".release-glz/notes", "a/b"] {
         validate_relative_path(std::path::Path::new(valid), "test").unwrap();
     }
-    for invalid in ["", "/tmp/x", "../x", ".", "a/../b", "a\\b"] {
-        assert!(
-            validate_relative_path(std::path::Path::new(invalid), "test").is_err(),
-            "accepted path {invalid:?}"
+    for (invalid, reason) in [
+        ("", RefusalReason::PathNotRelative),
+        ("/tmp/x", RefusalReason::PathOutsideRepository),
+        ("../x", RefusalReason::PathOutsideRepository),
+        (".", RefusalReason::PathOutsideRepository),
+        ("a/../b", RefusalReason::PathOutsideRepository),
+        ("a\\b", RefusalReason::PathNotRelative),
+    ] {
+        assert_eq!(
+            refusal_reason(
+                &validate_relative_path(std::path::Path::new(invalid), "test").unwrap_err()
+            ),
+            Some(reason),
+            "{invalid:?}"
         );
     }
 
@@ -516,37 +627,42 @@ fn package_environment_hook_path_and_ref_lexers_cover_every_boundary() {
         "refs/heads/x\u{1f}y",
         "refs/heads/x\u{7f}y",
     ] {
-        assert!(
-            validate_git_ref(invalid, "test").is_err(),
-            "accepted ref {invalid:?}"
+        assert_eq!(
+            refusal_reason(&validate_git_ref(invalid, "test").unwrap_err()),
+            Some(RefusalReason::GitRefUnsafe),
+            "{invalid:?}"
         );
     }
 }
 
 #[test]
 fn approval_and_registry_variants_are_strict_but_cover_supported_forms() {
-    for (from, to) in [
-        ("environment = \"release\"", "environment = \"\""),
+    for (from, to, reason) in [
+        (
+            "environment = \"release\"",
+            "environment = \"\"",
+            RefusalReason::ApprovalEnvironmentInvalid,
+        ),
         (
             "environment = \"release\"",
             "environment = \"release\\nproduction\"",
+            RefusalReason::ApprovalEnvironmentInvalid,
         ),
         (
             "manual_refs = [\"refs/heads/main\"]",
             "manual_refs = [\"refs/heads/main\", \"refs/heads/main\"]",
+            RefusalReason::ManualRefDuplicate,
         ),
         (
             "manual_refs = [\"refs/heads/main\"]",
             "manual_refs = [\"refs/notes/release\"]",
+            RefusalReason::ManualRefKindUnsupported,
         ),
     ] {
-        assert!(
-            Manifest::parse(
-                PathBuf::from("gleam.toml"),
-                complete_config("").replace(from, to),
-            )
-            .is_err(),
-            "accepted {to}"
+        assert_eq!(
+            refusal(complete_config("").replace(from, to)),
+            Some(reason),
+            "{to}"
         );
     }
 
@@ -559,7 +675,10 @@ fn approval_and_registry_variants_are_strict_but_cover_supported_forms() {
         "manual_refs = [\"refs/heads/main\"]",
         "manual_refs = [\"refs/heads/main\"]\nprivate_repository_fallback = \"weaken-gate\"",
     );
-    assert!(Manifest::parse(PathBuf::from("gleam.toml"), bad_fallback).is_err());
+    assert_eq!(
+        refusal(bad_fallback),
+        Some(RefusalReason::ApprovalFallbackUnsupported)
+    );
 
     let custom = complete_config("")
         .replace("provider = \"hexpm\"", "provider = \"hex-compatible\"")
@@ -587,7 +706,10 @@ fn approval_and_registry_variants_are_strict_but_cover_supported_forms() {
     );
 
     let non_hierarchical = complete_config("").replace("https://hex.pm/api", "file:///api");
-    assert!(Manifest::parse(PathBuf::from("gleam.toml"), non_hierarchical).is_err());
+    assert_eq!(
+        refusal(non_hierarchical),
+        Some(RefusalReason::UrlNotHierarchical)
+    );
 }
 
 #[test]
@@ -596,31 +718,42 @@ fn approval_paths_have_fixed_non_substitutable_modes() {
         "normal = \"release-pr-and-environment\"",
         "normal = \"environment\"",
     );
-    assert!(Manifest::parse(PathBuf::from("gleam.toml"), wrong_normal).is_err());
+    assert_eq!(
+        refusal(wrong_normal),
+        Some(RefusalReason::ApprovalModeFixed)
+    );
 
     let wrong_manual = complete_config("").replace(
         "manual = \"environment\"",
         "manual = \"release-pr-and-environment\"",
     );
-    assert!(Manifest::parse(PathBuf::from("gleam.toml"), wrong_manual).is_err());
+    assert_eq!(
+        refusal(wrong_manual),
+        Some(RefusalReason::ApprovalModeFixed)
+    );
 }
 
 #[test]
 fn manual_release_policy_requires_explicit_safe_full_refs() {
     let missing = complete_config("").replace("manual_refs = [\"refs/heads/main\"]\n", "");
-    assert!(Manifest::parse(PathBuf::from("gleam.toml"), missing).is_err());
+    let error = Manifest::parse(PathBuf::from("gleam.toml"), missing).unwrap_err();
+    assert_eq!(
+        refusal_reason(&error),
+        Some(RefusalReason::ConfigTableInvalid)
+    );
+    assert!(
+        error.to_string().contains("missing field `manual_refs`"),
+        "{error}"
+    );
 
-    for unsafe_ref in [
-        "main",
-        "refs/heads/../main",
-        "refs/pull/1/head",
-        "refs/heads/*",
+    for (unsafe_ref, reason) in [
+        ("main", RefusalReason::ManualRefKindUnsupported),
+        ("refs/heads/../main", RefusalReason::GitRefUnsafe),
+        ("refs/pull/1/head", RefusalReason::ManualRefKindUnsupported),
+        ("refs/heads/*", RefusalReason::GitRefUnsafe),
     ] {
         let source = complete_config("").replace("refs/heads/main", unsafe_ref);
-        assert!(
-            Manifest::parse(PathBuf::from("gleam.toml"), source).is_err(),
-            "accepted {unsafe_ref}"
-        );
+        assert_eq!(refusal(source), Some(reason), "{unsafe_ref}");
     }
 }
 
@@ -638,9 +771,10 @@ expires = "2999-12-31"
     assert_eq!(exceptions.len(), 1);
     assert_eq!(exceptions[0].version, "1.2.3".parse().unwrap());
 
-    for (name, expected, invalid) in [
+    for (name, reason, expected, invalid) in [
         (
             "empty reason",
+            RefusalReason::ApiExceptionReasonMissing,
             "requires a reason",
             exception.replace(
                 "reason = \"The historical compiler is unavailable\"",
@@ -649,6 +783,7 @@ expires = "2999-12-31"
         ),
         (
             "unsafe baseline",
+            RefusalReason::GitRefUnsafe,
             "api_exceptions.baseline contains an unsafe git ref",
             exception.replace(
                 "baseline = \"refs/tags/v1.2.3\"",
@@ -657,18 +792,20 @@ expires = "2999-12-31"
         ),
         (
             "invalid expiry",
+            RefusalReason::ApiExceptionExpiryInvalid,
             "must use YYYY-MM-DD",
             exception.replace("expires = \"2999-12-31\"", "expires = \"tomorrow\""),
         ),
         (
             "duplicate version",
+            RefusalReason::ApiExceptionDuplicate,
             "duplicate API exception",
             format!("{exception}{exception}"),
         ),
     ] {
-        let error = Manifest::parse(PathBuf::from("gleam.toml"), complete_config(&invalid))
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains(expected), "{name}: {error}");
+        let error =
+            Manifest::parse(PathBuf::from("gleam.toml"), complete_config(&invalid)).unwrap_err();
+        assert_eq!(refusal_reason(&error), Some(reason), "{name}");
+        assert!(error.to_string().contains(expected), "{name}: {error}");
     }
 }

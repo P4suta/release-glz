@@ -15,7 +15,7 @@ use release_glz::candidate::{
     Candidate, CandidateInput, CandidateSource, HookEvidence, HookKind, RegistryIdentity,
 };
 use release_glz::config::{HookConfig, RegistryProvider};
-use release_glz::failure::FailureClass;
+use release_glz::failure::{FailureClass, RefusalReason};
 use release_glz::hooks::SidecarArtifact;
 use release_glz::model::ReleaseState;
 use release_glz::reconciler::{
@@ -188,6 +188,10 @@ async fn an_invalid_candidate_and_an_existing_checksum_conflict_keep_their_exact
         .unwrap_err();
     assert_eq!(error.state(), ReleaseState::Blocked);
     assert_eq!(error.failure_class(), FailureClass::ImmutableStateConflict);
+    assert_eq!(
+        error.refusal_reason(),
+        Some(RefusalReason::CandidateChecksumMismatch)
+    );
     assert!(error.to_string().contains("release blocked"));
     assert!(error.to_string().contains("checksum"));
 

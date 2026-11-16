@@ -12,7 +12,9 @@ use semver::Version;
 use serde::{Deserialize, Serialize};
 use toml_edit::{DocumentMut, Item, TableLike, value};
 
+use crate::failure::{Refusal, RefusalReason, refused};
 use crate::model::PrereleaseChannel;
+use crate::refuse;
 
 /// Base URL of the hex.pm publish API.
 const HEXPM_API_URL: &str = "https://hex.pm/api";
@@ -554,7 +556,10 @@ notes_dir = \".release-glz/notes\"\n\n\
         let current = fs::read_to_string(&self.path)
             .with_context(|| format!("failed to re-read `{}`", self.path.display()))?;
         if current != self.source {
-            bail!("manifest changed after initialization was prepared; refusing to replace it");
+            refuse!(
+                ManifestChanged,
+                "manifest changed after initialization was prepared; refusing to replace it"
+            );
         }
         if rendered == self.source {
             return Ok(());
@@ -703,7 +708,10 @@ fn check_schema(schema: Option<&Item>) -> Result<()> {
         Some(_) => "a `schema` table".to_owned(),
         None => "no `schema`".to_owned(),
     };
-    bail!("`[tools.release-glz]` requires `schema = {RELEASE_CONFIG_SCHEMA}`, but it sets {found}")
+    refuse!(
+        ConfigSchemaUnsupported,
+        "`[tools.release-glz]` requires `schema = {RELEASE_CONFIG_SCHEMA}`, but it sets {found}"
+    )
 }
 
 #[derive(Debug, Deserialize)]
@@ -749,8 +757,12 @@ fn default_release_branch_prefix() -> String {
 }
 
 fn deserialize_release_table(source: &str) -> Result<ReleaseConfig> {
-    let root: ManifestTables = toml_edit::de::from_str(source)
-        .map_err(|error| anyhow::anyhow!("invalid `[tools.release-glz]` configuration: {error}"))?;
+    let root: ManifestTables = toml_edit::de::from_str(source).map_err(|error| {
+        refused(
+            RefusalReason::ConfigTableInvalid,
+            format_args!("invalid `[tools.release-glz]` configuration: {error}"),
+        )
+    })?;
     let raw = root.tools.release_glz;
     let output = ReleaseConfig {
         compiler: raw.compiler,
@@ -778,19 +790,26 @@ fn validate_release_config(config: &ReleaseConfig) -> Result<()> {
     if config.approval.environment.is_empty()
         || config.approval.environment.contains(['\n', '\r', '\0'])
     {
-        bail!("approval.environment must be a non-empty single-line name");
+        refuse!(
+            ApprovalEnvironmentInvalid,
+            "approval.environment must be a non-empty single-line name"
+        );
     }
     if config.approval.normal != ApprovalMode::ReleasePrAndEnvironment
         || config.approval.manual != ApprovalMode::Environment
     {
-        bail!(
+        refuse!(
+            ApprovalModeFixed,
             "approval modes are fixed: normal must be `release-pr-and-environment` and manual must be `environment`"
         );
     }
     if let Some(fallback) = &config.approval.private_repository_fallback
         && fallback != "workflow-dispatch-digest"
     {
-        bail!("approval.private_repository_fallback must be `workflow-dispatch-digest` when set");
+        refuse!(
+            ApprovalFallbackUnsupported,
+            "approval.private_repository_fallback must be `workflow-dispatch-digest` when set"
+        );
     }
     if config.approval.manual_refs.is_empty() {
         bail!("approval.manual_refs must contain at least one explicit full ref");
@@ -798,11 +817,17 @@ fn validate_release_config(config: &ReleaseConfig) -> Result<()> {
     let mut manual_refs = BTreeSet::new();
     for git_ref in &config.approval.manual_refs {
         if !(git_ref.starts_with("refs/heads/") || git_ref.starts_with("refs/tags/")) {
-            bail!("approval.manual_refs entries must start with `refs/heads/` or `refs/tags/`");
+            refuse!(
+                ManualRefKindUnsupported,
+                "approval.manual_refs entries must start with `refs/heads/` or `refs/tags/`"
+            );
         }
         validate_git_ref(git_ref, "approval.manual_refs")?;
         if !manual_refs.insert(git_ref) {
-            bail!("approval.manual_refs contains duplicate `{git_ref}`");
+            refuse!(
+                ManualRefDuplicate,
+                "approval.manual_refs contains duplicate `{git_ref}`"
+            );
         }
     }
 
@@ -820,7 +845,8 @@ fn validate_release_config(config: &ReleaseConfig) -> Result<()> {
             .iter()
             .any(|name| protected_hook_environment(name, &config.registry.credential_env))
         {
-            bail!(
+            refuse!(
+                HookEnvProtected,
                 "hook `{}` may not receive release-glz authorization or registry credentials",
                 hook.id
             );
@@ -832,16 +858,27 @@ fn validate_release_config(config: &ReleaseConfig) -> Result<()> {
     let mut exception_versions = BTreeSet::new();
     for exception in &config.api_exceptions {
         if !exception_versions.insert(&exception.version) {
-            bail!("duplicate API exception for version {}", exception.version);
+            refuse!(
+                ApiExceptionDuplicate,
+                "duplicate API exception for version {}",
+                exception.version
+            );
         }
         if exception.reason.trim().is_empty() {
-            bail!("API exception for {} requires a reason", exception.version);
+            refuse!(
+                ApiExceptionReasonMissing,
+                "API exception for {} requires a reason",
+                exception.version
+            );
         }
         validate_git_ref(&exception.baseline, "api_exceptions.baseline")?;
         chrono::NaiveDate::parse_from_str(&exception.expires, "%Y-%m-%d").with_context(|| {
-            format!(
-                "API exception expiry `{}` must use YYYY-MM-DD",
-                exception.expires
+            Refusal::new(
+                RefusalReason::ApiExceptionExpiryInvalid,
+                format!(
+                    "API exception expiry `{}` must use YYYY-MM-DD",
+                    exception.expires
+                ),
             )
         })?;
     }
@@ -853,7 +890,8 @@ fn validate_release_config(config: &ReleaseConfig) -> Result<()> {
 
 fn validate_registry(registry: &RegistryConfig) -> Result<()> {
     if !valid_env_name(&registry.credential_env) {
-        bail!(
+        refuse!(
+            CredentialEnvInvalid,
             "registry.credential_env must name an uppercase environment variable, not contain a credential"
         );
     }
@@ -866,16 +904,28 @@ fn validate_registry(registry: &RegistryConfig) -> Result<()> {
         let url = reqwest::Url::parse(value)
             .with_context(|| format!("registry.{name} is not a valid URL"))?;
         if !url.username().is_empty() || url.password().is_some() {
-            bail!("registry.{name} must not contain credentials");
+            refuse!(
+                UrlCredentials,
+                "registry.{name} must not contain credentials"
+            );
         }
         if url.host_str().is_none() || url.cannot_be_a_base() {
-            bail!("registry.{name} must be an absolute hierarchical URL");
+            refuse!(
+                UrlNotHierarchical,
+                "registry.{name} must be an absolute hierarchical URL"
+            );
         }
         if url.query().is_some() || url.fragment().is_some() {
-            bail!("registry.{name} must not contain a query or fragment");
+            refuse!(
+                UrlQueryOrFragment,
+                "registry.{name} must not contain a query or fragment"
+            );
         }
         if !uses_trusted_transport(&url) {
-            bail!("registry.{name} must use HTTPS, or HTTP to a numeric loopback address");
+            refuse!(
+                UrlTransportUntrusted,
+                "registry.{name} must use HTTPS, or HTTP to a numeric loopback address"
+            );
         }
     }
     Ok(())
@@ -920,7 +970,10 @@ pub fn validate_registry_repository(
                 _ => false,
             });
     if !valid || repository.is_empty() {
-        bail!("registry.repository must be a safe Hex organization name");
+        refuse!(
+            RegistryRepositoryInvalid,
+            "registry.repository must be a safe Hex organization name"
+        );
     }
     Ok(())
 }
@@ -936,10 +989,11 @@ pub fn validate_hook_config(hook: &HookConfig) -> Result<()> {
             _ => false,
         });
     if !valid_id {
-        bail!("hook id `{}` is unsafe", hook.id);
+        refuse!(HookIdUnsafe, "hook id `{}` is unsafe", hook.id);
     }
     if hook.id == BUILT_IN_HOOK_ID {
-        bail!(
+        refuse!(
+            HookIdReserved,
             "hook id `{BUILT_IN_HOOK_ID}` is reserved for the evidence that release-glz builds itself"
         );
     }
@@ -949,16 +1003,22 @@ pub fn validate_hook_config(hook: &HookConfig) -> Result<()> {
             .iter()
             .any(|arg| arg.is_empty() || arg.contains('\0'))
     {
-        bail!("hook `{}` must have a non-empty NUL-free argv", hook.id);
+        refuse!(
+            HookArgvInvalid,
+            "hook `{}` must have a non-empty NUL-free argv",
+            hook.id
+        );
     }
     if !(MIN_HOOK_TIMEOUT_SECONDS..=MAX_HOOK_TIMEOUT_SECONDS).contains(&hook.timeout_seconds) {
-        bail!(
+        refuse!(
+            HookTimeoutOutOfRange,
             "hook `{}` timeout_seconds must be between {MIN_HOOK_TIMEOUT_SECONDS} and {MAX_HOOK_TIMEOUT_SECONDS}",
             hook.id
         );
     }
     if hook.env.iter().any(|name| !valid_env_name(name)) {
-        bail!(
+        refuse!(
+            HookEnvInvalid,
             "hook `{}` contains an invalid allowed environment name",
             hook.id
         );
@@ -968,7 +1028,8 @@ pub fn validate_hook_config(hook: &HookConfig) -> Result<()> {
         .iter()
         .any(|name| protected_hook_environment(name, ""))
     {
-        bail!(
+        refuse!(
+            HookEnvProtected,
             "hook `{}` may not receive release-glz authorization credentials or GitHub control files",
             hook.id
         );
@@ -1014,7 +1075,10 @@ pub fn validate_package_name(value: &str) -> Result<()> {
         _ => false,
     });
     if value.is_empty() || !valid {
-        bail!("package name must start with a lowercase letter and contain only a-z, 0-9, or _");
+        refuse!(
+            PackageNameInvalid,
+            "package name must start with a lowercase letter and contain only a-z, 0-9, or _"
+        );
     }
     Ok(())
 }
@@ -1022,13 +1086,19 @@ pub fn validate_package_name(value: &str) -> Result<()> {
 /// Reject a path that escapes the repository or is not `/`-separated.
 pub fn validate_relative_path(path: &Path, field: &str) -> Result<()> {
     if path.as_os_str().is_empty() || path.to_string_lossy().contains('\\') {
-        bail!("{field} must be a non-empty repository-relative `/` path");
+        refuse!(
+            PathNotRelative,
+            "{field} must be a non-empty repository-relative `/` path"
+        );
     }
     if path
         .components()
         .any(|component| !matches!(component, std::path::Component::Normal(_)))
     {
-        bail!("{field} must stay within the repository");
+        refuse!(
+            PathOutsideRepository,
+            "{field} must stay within the repository"
+        );
     }
     Ok(())
 }
@@ -1038,7 +1108,10 @@ fn validate_ref_prefix(value: &str, field: &str, empty_allowed: bool) -> Result<
         return Ok(());
     }
     if value.is_empty() || value.starts_with(['/', '-', '.']) || value.starts_with("refs/") {
-        bail!("{field} contains an unsafe git ref prefix");
+        refuse!(
+            GitRefPrefixUnsafe,
+            "{field} contains an unsafe git ref prefix"
+        );
     }
     validate_git_ref(&format!("{value}release-glz"), field)?;
     Ok(())
@@ -1067,7 +1140,7 @@ pub fn validate_git_ref(value: &str, field: &str) -> Result<()> {
             .split('/')
             .any(|component| component.starts_with('.') || component.ends_with(".lock"))
     {
-        bail!("{field} contains an unsafe git ref");
+        refuse!(GitRefUnsafe, "{field} contains an unsafe git ref");
     }
     Ok(())
 }
@@ -1287,6 +1360,10 @@ prerelease = ""
             })
             .unwrap_err();
         assert_eq!(
+            crate::failure::refusal_reason(&error),
+            Some(crate::failure::RefusalReason::UrlTransportUntrusted)
+        );
+        assert_eq!(
             error.to_string(),
             "registry.api_url must use HTTPS, or HTTP to a numeric loopback address"
         );
@@ -1329,7 +1406,10 @@ prerelease = ""
 
         let concurrent = "name = \"x\"\nversion = \"1.0.0\"\n# concurrent edit\n";
         fs::write(&path, concurrent).unwrap();
-        assert!(manifest.write().is_err());
+        assert_eq!(
+            crate::failure::refusal_reason(&manifest.write().unwrap_err()),
+            Some(crate::failure::RefusalReason::ManifestChanged)
+        );
         assert_eq!(fs::read_to_string(&path).unwrap(), concurrent);
 
         let mut current = Manifest::load(&path).unwrap();

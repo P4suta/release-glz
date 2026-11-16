@@ -18,6 +18,8 @@ use crate::config::{
     AuthKind, RegistryConfig, url_is_http_loopback, uses_trusted_transport,
     validate_registry_repository,
 };
+use crate::failure::{Refusal, RefusalReason, refused};
+use crate::refuse;
 use crate::units::MIB;
 
 /// Size a JSON response may reach before it is refused.
@@ -356,19 +358,35 @@ impl HexRegistry {
                 let location = response
                     .headers()
                     .get(reqwest::header::LOCATION)
-                    .context("registry redirect has no Location header")?
+                    .ok_or_else(|| {
+                        refused(
+                            RefusalReason::RegistryRedirectLocationInvalid,
+                            "registry redirect has no Location header",
+                        )
+                    })?
                     .to_str()
-                    .context("registry redirect Location is not ASCII")?;
+                    .with_context(|| {
+                        Refusal::new(
+                            RefusalReason::RegistryRedirectLocationInvalid,
+                            "registry redirect Location is not ASCII",
+                        )
+                    })?;
                 let next = current.join(location)?;
                 if !same_origin(&current, &next) {
-                    bail!("refusing cross-origin registry redirect from {current} to {next}");
+                    refuse!(
+                        RegistryRedirectCrossOrigin,
+                        "refusing cross-origin registry redirect from {current} to {next}"
+                    );
                 }
                 current = next;
                 continue;
             }
             return classify_audit_status(response.status(), retry_after(response.headers()));
         }
-        bail!("too many same-origin redirects during registry credential audit")
+        Err(refused(
+            RefusalReason::RegistryRedirectLimitExceeded,
+            "too many same-origin redirects during registry credential audit",
+        ))
     }
 
     async fn get_bytes(&self, url: Url, optional: bool, limit: u64) -> Result<Option<Vec<u8>>> {
@@ -404,12 +422,25 @@ impl HexRegistry {
                 let location = response
                     .headers()
                     .get(reqwest::header::LOCATION)
-                    .context("registry redirect has no Location header")?
+                    .ok_or_else(|| {
+                        refused(
+                            RefusalReason::RegistryRedirectLocationInvalid,
+                            "registry redirect has no Location header",
+                        )
+                    })?
                     .to_str()
-                    .context("registry redirect Location is not ASCII")?;
+                    .with_context(|| {
+                        Refusal::new(
+                            RefusalReason::RegistryRedirectLocationInvalid,
+                            "registry redirect Location is not ASCII",
+                        )
+                    })?;
                 let next = current.join(location)?;
                 if !same_origin(&current, &next) {
-                    bail!("refusing cross-origin registry redirect from {current} to {next}");
+                    refuse!(
+                        RegistryRedirectCrossOrigin,
+                        "refusing cross-origin registry redirect from {current} to {next}"
+                    );
                 }
                 current = next;
                 continue;
@@ -429,18 +460,27 @@ impl HexRegistry {
                 .content_length()
                 .is_some_and(|length| length > limit)
             {
-                bail!("registry response from {current} exceeds the download limit");
+                refuse!(
+                    RegistryResponseTooLarge,
+                    "registry response from {current} exceeds the download limit"
+                );
             }
             let mut bytes = Vec::new();
             while let Some(chunk) = response.chunk().await? {
                 if bytes.len() as u64 + chunk.len() as u64 > limit {
-                    bail!("registry response from {current} exceeds the download limit");
+                    refuse!(
+                        RegistryResponseTooLarge,
+                        "registry response from {current} exceeds the download limit"
+                    );
                 }
                 bytes.extend_from_slice(&chunk);
             }
             return Ok(GetResult::Value(Some(bytes)));
         }
-        bail!("too many same-origin redirects from {current}")
+        Err(refused(
+            RefusalReason::RegistryRedirectLimitExceeded,
+            format_args!("too many same-origin redirects from {current}"),
+        ))
     }
 
     fn authenticated(&self, request: reqwest::RequestBuilder) -> Result<reqwest::RequestBuilder> {
@@ -522,7 +562,10 @@ impl HexRegistry {
                 AfterPoll::TimedOut => break,
             }
         }
-        bail!("timed out waiting for {package} {version} to appear on the registry")
+        refuse!(
+            RegistryReleaseNotVisible,
+            "timed out waiting for {package} {version} to appear on the registry"
+        )
     }
 }
 
@@ -594,12 +637,19 @@ impl Registry for HexRegistry {
         let Some(bytes) = self.get_bytes(url, true, JSON_LIMIT).await? else {
             return Ok(None);
         };
-        let package: ApiPackage =
-            serde_json::from_slice(&bytes).context("invalid registry package response")?;
+        let package: ApiPackage = serde_json::from_slice(&bytes).with_context(|| {
+            Refusal::new(
+                RefusalReason::RegistryPackageInvalid,
+                "invalid registry package response",
+            )
+        })?;
         let mut releases = Vec::new();
         for release in package.releases {
             let version: Version = release.version.parse().with_context(|| {
-                format!("registry returned invalid version `{}`", release.version)
+                Refusal::new(
+                    RefusalReason::RegistryPackageInvalid,
+                    format!("registry returned invalid version `{}`", release.version),
+                )
             })?;
             releases.push(HexRelease {
                 retired: package.retirements.contains_key(&release.version),
@@ -615,14 +665,23 @@ impl Registry for HexRegistry {
         let Some(bytes) = self.get_bytes(url, true, JSON_LIMIT).await? else {
             return Ok(None);
         };
-        let release: ApiReleaseDetail =
-            serde_json::from_slice(&bytes).context("invalid registry release response")?;
-        let parsed: Version = release
-            .version
-            .parse()
-            .context("registry release has an invalid version")?;
+        let release: ApiReleaseDetail = serde_json::from_slice(&bytes).with_context(|| {
+            Refusal::new(
+                RefusalReason::RegistryReleaseInvalid,
+                "invalid registry release response",
+            )
+        })?;
+        let parsed: Version = release.version.parse().with_context(|| {
+            Refusal::new(
+                RefusalReason::RegistryReleaseInvalid,
+                "registry release has an invalid version",
+            )
+        })?;
         if &parsed != version {
-            bail!("registry returned release {parsed} while observing {version}");
+            refuse!(
+                RegistryReleaseInvalid,
+                "registry returned release {parsed} while observing {version}"
+            );
         }
         validate_checksum(&release.checksum)?;
         Ok(Some(RegistryRelease {
@@ -680,16 +739,28 @@ fn append_segments(base: &Url, segments: &[&str]) -> Result<Url> {
 fn parse_base_url(raw: &str, field: &str) -> Result<Url> {
     let url = Url::parse(raw).with_context(|| format!("registry.{field} is invalid"))?;
     if !uses_trusted_transport(&url) {
-        bail!("registry.{field} must use HTTPS, or HTTP to a numeric loopback address");
+        refuse!(
+            UrlTransportUntrusted,
+            "registry.{field} must use HTTPS, or HTTP to a numeric loopback address"
+        );
     }
     if !url.username().is_empty() {
-        bail!("registry.{field} must not contain credentials");
+        refuse!(
+            UrlCredentials,
+            "registry.{field} must not contain credentials"
+        );
     }
     if url.password().is_some() {
-        bail!("registry.{field} must not contain credentials");
+        refuse!(
+            UrlCredentials,
+            "registry.{field} must not contain credentials"
+        );
     }
     if url.query().is_some() || url.fragment().is_some() {
-        bail!("registry.{field} must not contain a query or fragment");
+        refuse!(
+            UrlQueryOrFragment,
+            "registry.{field} must not contain a query or fragment"
+        );
     }
     Ok(url)
 }
@@ -709,7 +780,10 @@ fn retry_after(headers: &reqwest::header::HeaderMap) -> Option<u64> {
 
 fn validate_checksum(value: &str) -> Result<()> {
     if value.len() != SHA256_HEX_LEN || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        bail!("registry release checksum is not SHA-256");
+        refuse!(
+            RegistryReleaseInvalid,
+            "registry release checksum is not SHA-256"
+        );
     }
     Ok(())
 }
@@ -718,6 +792,7 @@ fn validate_checksum(value: &str) -> Result<()> {
 mod tests {
     use super::*;
     use crate::config::RegistryProvider;
+    use crate::failure::{RefusalReason, refusal_reason};
 
     #[derive(Clone)]
     struct ReadOnlyRegistry {
@@ -801,12 +876,21 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
-        assert!(registry.publish_package(b"bytes").await.is_err());
-        assert!(
+        assert_eq!(
+            registry
+                .publish_package(b"bytes")
+                .await
+                .unwrap_err()
+                .to_string(),
+            "registry adapter does not support publishing"
+        );
+        assert_eq!(
             registry
                 .publish_docs("widget", &target, b"docs")
                 .await
-                .is_err()
+                .unwrap_err()
+                .to_string(),
+            "registry adapter does not support documentation publishing"
         );
 
         let missing = ReadOnlyRegistry { state: None };
@@ -902,7 +986,13 @@ mod tests {
             classify_audit_status(StatusCode::INTERNAL_SERVER_ERROR, delay).unwrap(),
             AuditRequest::Retry(actual) if actual == delay
         ));
-        assert!(classify_audit_status(StatusCode::BAD_REQUEST, delay).is_err());
+        let Err(error) = classify_audit_status(StatusCode::BAD_REQUEST, delay) else {
+            panic!("a 400 audit answer was not a failure");
+        };
+        assert_eq!(
+            error.to_string(),
+            "registry credential audit failed with 400 Bad Request"
+        );
     }
 
     #[test]
@@ -910,16 +1000,44 @@ mod tests {
         assert!(parse_base_url("https://example.test/api", "api_url").is_ok());
         assert!(parse_base_url("http://127.0.0.1:8080/api", "api_url").is_ok());
         assert!(parse_base_url("http://[::1]:8080/api", "api_url").is_ok());
-        assert!(parse_base_url("http://localhost:8080/api", "api_url").is_err());
-        assert!(parse_base_url("http://example.test/api", "api_url").is_err());
-        assert!(parse_base_url("http://192.0.2.1/api", "api_url").is_err());
-        assert!(parse_base_url("https://user@example.test/api", "api_url").is_err());
-        assert!(parse_base_url("https://:pass@example.test/api", "api_url").is_err());
-        assert!(parse_base_url("http://user@127.0.0.1:8080/api", "api_url").is_err());
-        assert!(parse_base_url("https://", "api_url").is_err());
-        assert!(parse_base_url("https://example.test/api?q=1", "api_url").is_err());
-        assert!(parse_base_url("http://127.0.0.1:8080/api?q=1", "api_url").is_err());
-        assert!(parse_base_url("https://example.test/api#frag", "api_url").is_err());
+        let transport = (
+            Some(RefusalReason::UrlTransportUntrusted),
+            "registry.api_url must use HTTPS, or HTTP to a numeric loopback address",
+        );
+        let credentials = (
+            Some(RefusalReason::UrlCredentials),
+            "registry.api_url must not contain credentials",
+        );
+        let query = (
+            Some(RefusalReason::UrlQueryOrFragment),
+            "registry.api_url must not contain a query or fragment",
+        );
+        for (url, (reason, message)) in [
+            ("http://localhost:8080/api", transport),
+            ("http://example.test/api", transport),
+            ("http://192.0.2.1/api", transport),
+            ("https://user@example.test/api", credentials),
+            ("https://:pass@example.test/api", credentials),
+            ("http://user@127.0.0.1:8080/api", credentials),
+            ("https://", (None, "registry.api_url is invalid")),
+            ("https://example.test/api?q=1", query),
+            ("http://127.0.0.1:8080/api?q=1", query),
+            ("https://example.test/api#frag", query),
+        ] {
+            let error = parse_base_url(url, "api_url").unwrap_err();
+            assert_eq!(
+                (refusal_reason(&error), error.to_string()),
+                (reason, message.to_owned()),
+                "{url}"
+            );
+        }
+        assert_eq!(
+            format!("{:#}", parse_base_url("https://", "api_url").unwrap_err()),
+            format!(
+                "registry.api_url is invalid: {}",
+                Url::parse("https://").unwrap_err()
+            )
+        );
     }
 
     #[test]
@@ -973,8 +1091,17 @@ mod tests {
 
         assert!(validate_checksum(&"a".repeat(64)).is_ok());
         assert!(validate_checksum(&"A".repeat(64)).is_ok());
-        assert!(validate_checksum(&"a".repeat(63)).is_err());
-        assert!(validate_checksum(&"g".repeat(64)).is_err());
+        for malformed in ["a".repeat(63), "g".repeat(64)] {
+            let error = validate_checksum(&malformed).unwrap_err();
+            assert_eq!(
+                (refusal_reason(&error), error.to_string()),
+                (
+                    Some(RefusalReason::RegistryReleaseInvalid),
+                    "registry release checksum is not SHA-256".to_owned()
+                ),
+                "{malformed}"
+            );
+        }
     }
 
     #[test]
@@ -1009,6 +1136,13 @@ mod tests {
     async fn byte_downloads_never_fabricate_a_value_after_a_transport_error() {
         let registry = HexRegistry::new("http://127.0.0.1:9/api", "http://127.0.0.1:9/repository");
         let unsupported = Url::parse("file:///release-glz-must-not-be-read").unwrap();
-        assert!(registry.get_bytes(unsupported, false, 16).await.is_err());
+        let error = registry
+            .get_bytes(unsupported, false, 16)
+            .await
+            .unwrap_err();
+        assert!(
+            error.downcast_ref::<reqwest::Error>().is_some(),
+            "{error:#}"
+        );
     }
 }

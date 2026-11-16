@@ -12,6 +12,8 @@ use sha2::{Digest, Sha256};
 
 use crate::config::{validate_git_ref, validate_relative_path, validate_release_branch_prefix};
 use crate::diff::unified_diff;
+use crate::failure::{RefusalReason, refused};
+use crate::refuse;
 
 /// Repository-relative path of the managed release workflow.
 pub const WORKFLOW_PATH: &str = ".github/workflows/release-glz.yml";
@@ -115,7 +117,10 @@ pub fn render_configured(
 ) -> Result<String> {
     validate_git_ref(default_branch, "workflow default branch")?;
     if default_branch.starts_with("refs/") {
-        bail!("workflow default branch must be a branch name, not a full ref");
+        refuse!(
+            WorkflowInputUnsafe,
+            "workflow default branch must be a branch name, not a full ref"
+        );
     }
     validate_relative_path(manifest_path, "workflow manifest path")?;
     validate_release_branch_prefix(release_branch_prefix)?;
@@ -490,7 +495,10 @@ jobs:
 /// Reject a release-glz pin that is not a full lowercase commit SHA.
 pub fn validate_action_sha(action_sha: &str) -> Result<()> {
     if !release_glz_core::is_object_id(action_sha.as_bytes()) {
-        bail!("release-glz Action must be pinned to a full lowercase commit SHA");
+        refuse!(
+            ActionShaInvalid,
+            "release-glz Action must be pinned to a full lowercase commit SHA"
+        );
     }
     Ok(())
 }
@@ -524,7 +532,10 @@ fn validate_environment_name(value: &str, field: &str) -> Result<()> {
             _ => false,
         });
     if !valid {
-        bail!("{field} must be an uppercase environment variable name");
+        refuse!(
+            CredentialEnvInvalid,
+            "{field} must be an uppercase environment variable name"
+        );
     }
     Ok(())
 }
@@ -535,7 +546,10 @@ fn validate_manifest_scalar(value: &str) -> Result<()> {
             !(byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'/' | b' '))
         })
     {
-        bail!("manifest path contains characters that are unsafe in generated workflow YAML");
+        refuse!(
+            WorkflowInputUnsafe,
+            "manifest path contains characters that are unsafe in generated workflow YAML"
+        );
     }
     Ok(())
 }
@@ -548,7 +562,10 @@ fn validate_scalar(value: &str, field: &str, slash_allowed: bool) -> Result<()> 
                 || (slash_allowed && byte == b'/'))
         })
     {
-        bail!("{field} contains characters that are unsafe in generated workflow YAML");
+        refuse!(
+            WorkflowInputUnsafe,
+            "{field} contains characters that are unsafe in generated workflow YAML"
+        );
     }
     Ok(())
 }
@@ -606,17 +623,21 @@ pub fn sync(
             let state: WorkflowStateFile = fs::read(&state_path)
                 .ok()
                 .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-                .with_context(|| {
-                    format!(
-                        "`{}` exists without a valid managed-state record; refusing to overwrite a modified workflow",
-                        path.display()
+                .ok_or_else(|| {
+                    refused(
+                        RefusalReason::WorkflowModified,
+                        format_args!(
+                            "`{}` exists without a valid managed-state record; refusing to overwrite a modified workflow",
+                            path.display()
+                        ),
                     )
                 })?;
             if state.schema != "workflow-state/v1"
                 || state.path != WORKFLOW_PATH
                 || state.sha256 != digest(current.as_bytes())
             {
-                bail!(
+                refuse!(
+                    WorkflowModified,
                     "`{}` was modified after generation; refusing to overwrite it",
                     path.display()
                 );
@@ -664,6 +685,17 @@ fn digest(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::failure::{RefusalReason, refusal_reason};
+
+    /// The reason and message of `error`.
+    fn refusal(error: &anyhow::Error) -> (Option<RefusalReason>, String) {
+        (refusal_reason(error), error.to_string())
+    }
+
+    /// A refusal with `reason` and `message`.
+    fn refused_with(reason: RefusalReason, message: &str) -> (Option<RefusalReason>, String) {
+        (Some(reason), message.to_owned())
+    }
 
     #[test]
     fn workflow_has_secretless_candidate_and_environment_scoped_publish_jobs() {
@@ -843,26 +875,56 @@ mod tests {
     #[test]
     fn configured_workflow_rejects_paths_and_refs_that_change_repository_scope() {
         let valid_sha = "abcdef0123456789abcdef0123456789abcdef01";
-        for (branch, manifest, prefix) in [
-            ("main", "/tmp/gleam.toml", "release-glz/"),
-            ("main", "../gleam.toml", "release-glz/"),
-            ("main", "packages/../gleam.toml", "release-glz/"),
-            ("refs/heads/main", "gleam.toml", "release-glz/"),
-            ("main", "gleam.toml", "refs/heads/release/"),
-            ("main", "gleam.toml", "release/../other/"),
+        let outside = refused_with(
+            RefusalReason::PathOutsideRepository,
+            "workflow manifest path must stay within the repository",
+        );
+        for (branch, manifest, prefix, expected) in [
+            ("main", "/tmp/gleam.toml", "release-glz/", outside.clone()),
+            ("main", "../gleam.toml", "release-glz/", outside.clone()),
+            ("main", "packages/../gleam.toml", "release-glz/", outside),
+            (
+                "refs/heads/main",
+                "gleam.toml",
+                "release-glz/",
+                refused_with(
+                    RefusalReason::WorkflowInputUnsafe,
+                    "workflow default branch must be a branch name, not a full ref",
+                ),
+            ),
+            (
+                "main",
+                "gleam.toml",
+                "refs/heads/release/",
+                refused_with(
+                    RefusalReason::GitRefPrefixUnsafe,
+                    "release_branch_prefix contains an unsafe git ref prefix",
+                ),
+            ),
+            (
+                "main",
+                "gleam.toml",
+                "release/../other/",
+                refused_with(
+                    RefusalReason::GitRefUnsafe,
+                    "release_branch_prefix contains an unsafe git ref",
+                ),
+            ),
         ] {
-            assert!(
-                render_configured(
-                    branch,
-                    Path::new(manifest),
-                    "1.18.1",
-                    "release",
-                    "HEXPM_API_KEY",
-                    prefix,
-                    valid_sha,
-                )
-                .is_err(),
-                "accepted branch={branch:?}, manifest={manifest:?}, prefix={prefix:?}"
+            let error = render_configured(
+                branch,
+                Path::new(manifest),
+                "1.18.1",
+                "release",
+                "HEXPM_API_KEY",
+                prefix,
+                valid_sha,
+            )
+            .unwrap_err();
+            assert_eq!(
+                refusal(&error),
+                expected,
+                "branch={branch:?}, manifest={manifest:?}, prefix={prefix:?}"
             );
         }
     }
@@ -893,7 +955,16 @@ mod tests {
         let mut newer = settings.clone();
         newer.compiler = "1.18.2".into();
         let error = sync(temp.path(), &newer, WorkflowMode::Update).unwrap_err();
-        assert!(error.to_string().contains("modified"));
+        assert_eq!(
+            refusal(&error),
+            refused_with(
+                RefusalReason::WorkflowModified,
+                &format!(
+                    "`{}` was modified after generation; refusing to overwrite it",
+                    path.display()
+                )
+            )
+        );
         assert!(fs::read_to_string(path).unwrap().contains("# user edit"));
     }
 
@@ -902,41 +973,97 @@ mod tests {
         for valid in ["A", "_TOKEN", "TOKEN_2"] {
             validate_environment_name(valid, "test").unwrap();
         }
+        let not_env_name = refused_with(
+            RefusalReason::CredentialEnvInvalid,
+            "test must be an uppercase environment variable name",
+        );
         for invalid in ["", "0TOKEN", "token", "TOKEN-NAME", "TOKEN NAME"] {
-            assert!(validate_environment_name(invalid, "test").is_err());
+            assert_eq!(
+                refusal(&validate_environment_name(invalid, "test").unwrap_err()),
+                not_env_name,
+                "{invalid:?}"
+            );
         }
+        let unsafe_scalar = refused_with(
+            RefusalReason::WorkflowInputUnsafe,
+            "test contains characters that are unsafe in generated workflow YAML",
+        );
         validate_scalar("packages/widget", "test", true).unwrap();
         validate_scalar("release-prod", "test", false).unwrap();
-        assert!(validate_scalar("release/prod", "test", false).is_err());
+        assert_eq!(
+            refusal(&validate_scalar("release/prod", "test", false).unwrap_err()),
+            unsafe_scalar
+        );
         for invalid in ["", "unsafe value", "value:\nsecret", "å"] {
-            assert!(validate_scalar(invalid, "test", true).is_err());
+            assert_eq!(
+                refusal(&validate_scalar(invalid, "test", true).unwrap_err()),
+                unsafe_scalar,
+                "{invalid:?}"
+            );
         }
 
         let valid_sha = "abcdef0123456789abcdef0123456789abcdef01";
-        for (compiler, environment, credential, action_sha) in [
-            ("latest", "release", "HEXPM_API_KEY", valid_sha),
-            ("1.18.1", "release/prod", "HEXPM_API_KEY", valid_sha),
-            ("1.18.1", "release", "hex_token", valid_sha),
-            ("1.18.1", "release", "HEXPM_API_KEY", "abc"),
+        let unpinned = refused_with(
+            RefusalReason::ActionShaInvalid,
+            "release-glz Action must be pinned to a full lowercase commit SHA",
+        );
+        for (compiler, environment, credential, action_sha, expected) in [
+            (
+                "latest",
+                "release",
+                "HEXPM_API_KEY",
+                valid_sha,
+                (
+                    None,
+                    "workflow compiler must be an exact semantic version".to_owned(),
+                ),
+            ),
+            (
+                "1.18.1",
+                "release/prod",
+                "HEXPM_API_KEY",
+                valid_sha,
+                refused_with(
+                    RefusalReason::WorkflowInputUnsafe,
+                    "approval environment contains characters that are unsafe in generated workflow YAML",
+                ),
+            ),
+            (
+                "1.18.1",
+                "release",
+                "hex_token",
+                valid_sha,
+                refused_with(
+                    RefusalReason::CredentialEnvInvalid,
+                    "registry credential environment must be an uppercase environment variable name",
+                ),
+            ),
+            (
+                "1.18.1",
+                "release",
+                "HEXPM_API_KEY",
+                "abc",
+                unpinned.clone(),
+            ),
             (
                 "1.18.1",
                 "release",
                 "HEXPM_API_KEY",
                 "gggggggggggggggggggggggggggggggggggggggg",
+                unpinned,
             ),
         ] {
-            assert!(
-                render_configured(
-                    "main",
-                    Path::new("gleam.toml"),
-                    compiler,
-                    environment,
-                    credential,
-                    "release-glz/",
-                    action_sha,
-                )
-                .is_err()
-            );
+            let error = render_configured(
+                "main",
+                Path::new("gleam.toml"),
+                compiler,
+                environment,
+                credential,
+                "release-glz/",
+                action_sha,
+            )
+            .unwrap_err();
+            assert_eq!(refusal(&error), expected, "{error:#}");
         }
     }
 
@@ -950,7 +1077,17 @@ mod tests {
         init(temp.path(), Path::new("gleam.toml"), "main", false).unwrap();
         assert!(path.exists());
         let original = fs::read(&path).unwrap();
-        assert!(init(temp.path(), Path::new("gleam.toml"), "main", false).is_err());
+        let error = init(temp.path(), Path::new("gleam.toml"), "main", false).unwrap_err();
+        assert_eq!(
+            refusal(&error),
+            (
+                None,
+                format!(
+                    "`{}` already exists; release-glz will not overwrite it",
+                    path.display()
+                )
+            )
+        );
         assert_eq!(fs::read(path).unwrap(), original);
     }
 
@@ -1016,9 +1153,19 @@ mod tests {
             }
             let mut changed = settings;
             changed.compiler = "1.18.2".into();
-            assert!(
-                sync(temp.path(), &changed, WorkflowMode::Update).is_err(),
-                "accepted invalid workflow state {case}"
+            let workflow = temp.path().join(WORKFLOW_PATH).display().to_string();
+            let message = if matches!(case, "missing" | "malformed") {
+                format!(
+                    "`{workflow}` exists without a valid managed-state record; refusing to overwrite a modified workflow"
+                )
+            } else {
+                format!("`{workflow}` was modified after generation; refusing to overwrite it")
+            };
+            let error = sync(temp.path(), &changed, WorkflowMode::Update).unwrap_err();
+            assert_eq!(
+                refusal(&error),
+                refused_with(RefusalReason::WorkflowModified, &message),
+                "{case}"
             );
         }
     }

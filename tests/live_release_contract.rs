@@ -241,6 +241,10 @@ async fn an_unfinished_asset_on_a_published_release_is_left_to_a_person() {
         error.failure_class(),
         release_glz::failure::FailureClass::ImmutableStateConflict
     );
+    assert_eq!(
+        error.refusal_reason(),
+        Some(release_glz::failure::RefusalReason::ReleaseAssetUnfinished)
+    );
     let message = error.to_string();
     assert!(message.contains("published Release"), "{message}");
     assert!(
@@ -270,6 +274,10 @@ async fn an_unfinished_asset_outside_the_candidate_is_left_to_a_person() {
     assert_eq!(
         error.failure_class(),
         release_glz::failure::FailureClass::ImmutableStateConflict
+    );
+    assert_eq!(
+        error.refusal_reason(),
+        Some(release_glz::failure::RefusalReason::ReleaseAssetUnfinished)
     );
     let message = error.to_string();
     assert!(
@@ -355,6 +363,10 @@ async fn two_drafts_with_the_tag_stop_the_release_in_a_conflict() {
     assert_eq!(
         error.failure_class(),
         release_glz::failure::FailureClass::ImmutableStateConflict
+    );
+    assert_eq!(
+        error.refusal_reason(),
+        Some(release_glz::failure::RefusalReason::GithubReleaseTagAmbiguous)
     );
     assert!(
         error.to_string().contains("2 GitHub Releases have the tag"),

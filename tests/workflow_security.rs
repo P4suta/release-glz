@@ -51,9 +51,24 @@ fn distribution_is_attested_and_uploaded_to_a_draft_exactly_once() {
     // GitHub's tag endpoint answers only with a published Release, so it can't find the draft.
     assert!(!yaml.contains("releases/tags/"));
     assert!(yaml.contains("gh release view \"$TAG\" --json databaseId"));
-    assert!(yaml.contains("permissions: {}"));
-    assert!(yaml.contains("id-token: write"));
-    assert!(yaml.contains("attestations: write"));
+    let workflow: serde_norway::Value = serde_norway::from_str(&yaml).unwrap();
+    assert_eq!(
+        workflow["permissions"]
+            .as_mapping()
+            .map(serde_norway::Mapping::len),
+        Some(0),
+        "the workflow grants no default permission"
+    );
+    let jobs = workflow["jobs"].as_mapping().unwrap();
+    assert!(jobs.contains_key("release"));
+    for (name, job) in jobs {
+        let name = name.as_str().unwrap();
+        let writes = |scope: &str| job["permissions"][scope].as_str() == Some("write");
+        // Only the job that attests and publishes the release signs with the run's OIDC token.
+        let attests = name == "release";
+        assert_eq!(writes("id-token"), attests, "{name}: id-token");
+        assert_eq!(writes("attestations"), attests, "{name}: attestations");
+    }
     assert!(
         pinned_to_a_commit(&yaml, "actions/attest"),
         "attestation must run from an action pinned to a full commit SHA"
