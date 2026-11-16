@@ -595,7 +595,7 @@ pub fn notification_key(candidate_digest: &str, hook_id: &str) -> String {
     {
         digest.update(part);
     }
-    crate::hex::lower(&digest.finalize())
+    crate::canonical::finalize_sha256(digest).into()
 }
 
 fn conflict<T>(message: String) -> Result<T, ReconcileError> {

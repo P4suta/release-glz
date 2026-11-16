@@ -6,12 +6,15 @@
 use anyhow::{Result, bail};
 use base64::Engine;
 use release_glz_core::{OidcUrlKind, OriginRefusal, TokenTimes, WindowRefusal};
+use release_glz_domain::CommitId;
 use reqwest::{Client, StatusCode, Url};
 use ring::signature;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 use crate::config::host_is_loopback_ip;
+use crate::failure::{RefusalReason, refused};
+use crate::refuse;
 use crate::units::{KIB, MIB};
 
 /// The only issuer whose GitHub Actions tokens are accepted.
@@ -207,13 +210,24 @@ impl GithubOidcVerifier {
 }
 
 fn validate_oidc_url(raw: &str, allow_http_loopback: bool, kind: OidcUrlKind) -> Result<Url> {
-    let url = Url::parse(raw).map_err(|_| anyhow::anyhow!("GitHub OIDC URL is invalid"))?;
+    let url = Url::parse(raw).map_err(|_| {
+        refused(
+            RefusalReason::OidcUrlUntrusted,
+            "GitHub OIDC URL is invalid",
+        )
+    })?;
     if !url.username().is_empty() || url.password().is_some() || url.fragment().is_some() {
-        bail!("GitHub OIDC URL contains forbidden credentials or fragments");
+        refuse!(
+            OidcUrlUntrusted,
+            "GitHub OIDC URL contains forbidden credentials or fragments"
+        );
     }
-    let host = url
-        .host_str()
-        .ok_or_else(|| anyhow::anyhow!("GitHub OIDC URL has no host"))?;
+    let host = url.host_str().ok_or_else(|| {
+        refused(
+            RefusalReason::OidcUrlUntrusted,
+            "GitHub OIDC URL has no host",
+        )
+    })?;
     match release_glz_core::oidc_origin(
         kind,
         url.scheme().as_bytes(),
@@ -222,8 +236,12 @@ fn validate_oidc_url(raw: &str, allow_http_loopback: bool, kind: OidcUrlKind) ->
         allow_http_loopback,
     ) {
         Ok(()) => Ok(url),
-        Err(OriginRefusal::NotHttps) => bail!("GitHub OIDC URLs must use HTTPS"),
-        Err(OriginRefusal::UntrustedHost) => bail!("GitHub OIDC URL origin is not trusted"),
+        Err(OriginRefusal::NotHttps) => {
+            refuse!(OidcUrlUntrusted, "GitHub OIDC URLs must use HTTPS")
+        }
+        Err(OriginRefusal::UntrustedHost) => {
+            refuse!(OidcUrlUntrusted, "GitHub OIDC URL origin is not trusted")
+        }
     }
 }
 
@@ -402,48 +420,80 @@ fn validate_github_claims(
     now_unix_seconds: i64,
 ) -> Result<VerifiedGithubOidc> {
     if claims.issuer != GITHUB_OIDC_ISSUER {
-        bail!("GitHub OIDC issuer is not trusted");
+        refuse!(OidcClaimsMismatch, "GitHub OIDC issuer is not trusted");
     }
     if !claims.audience.contains(RELEASE_GLZ_AUDIENCE) {
-        bail!("GitHub OIDC audience is not release-glz");
+        refuse!(
+            OidcClaimsMismatch,
+            "GitHub OIDC audience is not release-glz"
+        );
     }
     if claims.repository != expected.repository {
-        bail!("GitHub OIDC repository does not match the sealed Candidate");
+        refuse!(
+            OidcClaimsMismatch,
+            "GitHub OIDC repository does not match the sealed Candidate"
+        );
     }
     if claims.environment.as_deref() != Some(expected.environment.as_str()) {
-        bail!("GitHub OIDC environment does not match the sealed Candidate");
+        refuse!(
+            OidcClaimsMismatch,
+            "GitHub OIDC environment does not match the sealed Candidate"
+        );
     }
     let expected_subject = format!(
         "repo:{}:environment:{}",
         expected.repository, expected.environment
     );
     if claims.subject != expected_subject {
-        bail!("GitHub OIDC subject is not the approved Environment");
+        refuse!(
+            OidcClaimsMismatch,
+            "GitHub OIDC subject is not the approved Environment"
+        );
     }
     let workflow_prefix = format!("{}/{}@", expected.repository, expected.workflow_path);
     if !(claims.git_ref.starts_with("refs/heads/") || claims.git_ref.starts_with("refs/tags/"))
         || crate::config::validate_git_ref(&claims.git_ref, "GitHub OIDC ref").is_err()
     {
-        bail!("GitHub OIDC ref is not an allowed full branch or tag ref");
+        refuse!(
+            OidcClaimsMismatch,
+            "GitHub OIDC ref is not an allowed full branch or tag ref"
+        );
     }
     if claims.workflow_ref != format!("{workflow_prefix}{}", claims.git_ref) {
-        bail!("GitHub OIDC workflow is not the managed release workflow");
+        refuse!(
+            OidcClaimsMismatch,
+            "GitHub OIDC workflow is not the managed release workflow"
+        );
     }
-    if claims.source_sha != expected.source_sha || !is_full_sha(&claims.source_sha) {
-        bail!("GitHub OIDC source SHA does not match the sealed Candidate");
+    if claims.source_sha != expected.source_sha || CommitId::parse(&claims.source_sha).is_err() {
+        refuse!(
+            OidcClaimsMismatch,
+            "GitHub OIDC source SHA does not match the sealed Candidate"
+        );
     }
     if !release_glz_core::is_run_id(claims.run_id.as_bytes()) {
-        bail!("GitHub OIDC run ID is invalid");
+        refuse!(OidcClaimsMismatch, "GitHub OIDC run ID is invalid");
     }
     if let Some(expected_run) = &expected.run_id
         && &claims.run_id != expected_run
     {
-        bail!("GitHub OIDC run ID does not match the publishing run");
+        refuse!(
+            OidcClaimsMismatch,
+            "GitHub OIDC run ID does not match the publishing run"
+        );
     }
-    let run_attempt = release_glz_core::run_attempt(claims.run_attempt.as_bytes())
-        .ok_or_else(|| anyhow::anyhow!("GitHub OIDC run attempt is invalid"))?;
+    let run_attempt =
+        release_glz_core::run_attempt(claims.run_attempt.as_bytes()).ok_or_else(|| {
+            refused(
+                RefusalReason::OidcClaimsMismatch,
+                "GitHub OIDC run attempt is invalid",
+            )
+        })?;
     if !matches!(claims.event_name.as_str(), "push" | "workflow_dispatch") {
-        bail!("GitHub OIDC event is not an authorized release trigger");
+        refuse!(
+            OidcClaimsMismatch,
+            "GitHub OIDC event is not an authorized release trigger"
+        );
     }
     let times = TokenTimes {
         issued_at: claims.issued_at,
@@ -452,9 +502,19 @@ fn validate_github_claims(
     };
     match release_glz_core::token_window(times, now_unix_seconds) {
         Ok(()) => {}
-        Err(WindowRefusal::Expired) => bail!("GitHub OIDC token has expired"),
-        Err(WindowRefusal::IssuedInFuture) => bail!("GitHub OIDC token was issued in the future"),
-        Err(WindowRefusal::NotYetValid) => bail!("GitHub OIDC token is not valid yet"),
+        Err(WindowRefusal::Expired) => {
+            refuse!(OidcTokenOutsideValidity, "GitHub OIDC token has expired")
+        }
+        Err(WindowRefusal::IssuedInFuture) => refuse!(
+            OidcTokenOutsideValidity,
+            "GitHub OIDC token was issued in the future"
+        ),
+        Err(WindowRefusal::NotYetValid) => {
+            refuse!(
+                OidcTokenOutsideValidity,
+                "GitHub OIDC token is not valid yet"
+            )
+        }
     }
 
     Ok(VerifiedGithubOidc {
@@ -482,26 +542,23 @@ pub fn verify_github_oidc_token(
     validate_github_claims(claims, expected, now_unix_seconds)
 }
 
-fn is_full_sha(value: &str) -> bool {
-    release_glz_core::is_object_id(value.as_bytes())
-}
-
 fn verify_rs256_signature(
     signing_input: &[u8],
     signature_base64: &str,
     modulus_base64: &str,
     exponent_base64: &str,
 ) -> Result<()> {
+    let unverified = |message| refused(RefusalReason::OidcTokenUnverified, message);
     let decoder = base64::engine::general_purpose::URL_SAFE_NO_PAD;
     let signature = decoder
         .decode(signature_base64)
-        .map_err(|_| anyhow::anyhow!("OIDC JWT signature is not valid base64url"))?;
+        .map_err(|_| unverified("OIDC JWT signature is not valid base64url"))?;
     let modulus = decoder
         .decode(modulus_base64)
-        .map_err(|_| anyhow::anyhow!("OIDC JWK modulus is not valid base64url"))?;
+        .map_err(|_| unverified("OIDC JWK modulus is not valid base64url"))?;
     let exponent = decoder
         .decode(exponent_base64)
-        .map_err(|_| anyhow::anyhow!("OIDC JWK exponent is not valid base64url"))?;
+        .map_err(|_| unverified("OIDC JWK exponent is not valid base64url"))?;
     signature::RsaPublicKeyComponents {
         n: &modulus,
         e: &exponent,
@@ -511,49 +568,59 @@ fn verify_rs256_signature(
         signing_input,
         &signature,
     )
-    .map_err(|_| anyhow::anyhow!("GitHub OIDC JWT signature is invalid"))
+    .map_err(|_| unverified("GitHub OIDC JWT signature is invalid"))
 }
 
 fn verify_compact_rs256(token: &str, keys: &JwkSet) -> Result<Vec<u8>> {
+    let unverified = |message| refused(RefusalReason::OidcTokenUnverified, message);
     if token.len() > MAX_COMPACT_JWT_BYTES {
-        bail!("GitHub OIDC JWT exceeds the size limit");
+        refuse!(
+            OidcTokenUnverified,
+            "GitHub OIDC JWT exceeds the size limit"
+        );
     }
     let mut parts = token.split('.');
     let header_part = parts
         .next()
         .filter(|part| !part.is_empty())
-        .ok_or_else(|| anyhow::anyhow!("GitHub OIDC JWT has no protected header"))?;
+        .ok_or_else(|| unverified("GitHub OIDC JWT has no protected header"))?;
     let payload_part = parts
         .next()
         .filter(|part| !part.is_empty())
-        .ok_or_else(|| anyhow::anyhow!("GitHub OIDC JWT has no payload"))?;
+        .ok_or_else(|| unverified("GitHub OIDC JWT has no payload"))?;
     let signature_part = parts
         .next()
         .filter(|part| !part.is_empty())
-        .ok_or_else(|| anyhow::anyhow!("GitHub OIDC JWT has no signature"))?;
+        .ok_or_else(|| unverified("GitHub OIDC JWT has no signature"))?;
     if parts.next().is_some()
         || header_part.len() > MAX_JWT_PART_BYTES
         || payload_part.len() > MAX_JWT_PART_BYTES
         || signature_part.len() > MAX_JWT_PART_BYTES
     {
-        bail!("GitHub OIDC JWT compact serialization is invalid");
+        refuse!(
+            OidcTokenUnverified,
+            "GitHub OIDC JWT compact serialization is invalid"
+        );
     }
 
     let decoder = base64::engine::general_purpose::URL_SAFE_NO_PAD;
     let header_bytes = decoder
         .decode(header_part)
-        .map_err(|_| anyhow::anyhow!("GitHub OIDC JWT header is not valid base64url"))?;
+        .map_err(|_| unverified("GitHub OIDC JWT header is not valid base64url"))?;
     let header: JwtHeader = serde_json::from_slice(&header_bytes)
-        .map_err(|_| anyhow::anyhow!("GitHub OIDC JWT header is invalid"))?;
+        .map_err(|_| unverified("GitHub OIDC JWT header is invalid"))?;
     if header.alg != "RS256" {
-        bail!("GitHub OIDC JWT must use RS256");
+        refuse!(OidcTokenUnverified, "GitHub OIDC JWT must use RS256");
     }
     if header
         .crit
         .as_ref()
         .is_some_and(|values| !values.is_empty())
     {
-        bail!("GitHub OIDC JWT uses unsupported critical headers");
+        refuse!(
+            OidcTokenUnverified,
+            "GitHub OIDC JWT uses unsupported critical headers"
+        );
     }
 
     let matching = keys
@@ -570,7 +637,10 @@ fn verify_compact_rs256(token: &str, keys: &JwkSet) -> Result<Vec<u8>> {
         })
         .collect::<Vec<_>>();
     let [key] = matching.as_slice() else {
-        bail!("GitHub OIDC JWT key selection is missing or ambiguous");
+        refuse!(
+            OidcTokenUnverified,
+            "GitHub OIDC JWT key selection is missing or ambiguous"
+        );
     };
     let signing_input = format!("{header_part}.{payload_part}");
     verify_rs256_signature(
@@ -581,12 +651,24 @@ fn verify_compact_rs256(token: &str, keys: &JwkSet) -> Result<Vec<u8>> {
     )?;
     decoder
         .decode(payload_part)
-        .map_err(|_| anyhow::anyhow!("GitHub OIDC JWT payload is not valid base64url"))
+        .map_err(|_| unverified("GitHub OIDC JWT payload is not valid base64url"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::failure::{RefusalReason, refusal_reason};
+
+    /// The reason and message of the refusal that verifying `token` against `keys` ends in.
+    fn token_refusal(token: &str, keys: &JwkSet) -> (Option<RefusalReason>, String) {
+        let error = verify_compact_rs256(token, keys).unwrap_err();
+        (refusal_reason(&error), error.to_string())
+    }
+
+    /// An unverified-token refusal with `message`.
+    fn unverified(message: &str) -> (Option<RefusalReason>, String) {
+        (Some(RefusalReason::OidcTokenUnverified), message.to_owned())
+    }
 
     // RFC 7515 Appendix A.2 RS256 validation vector.
     const SIGNING_INPUT: &str = concat!(
@@ -627,14 +709,16 @@ mod tests {
     #[test]
     fn rs256_signature_is_verified_before_claims_are_used() {
         verify_rs256_signature(SIGNING_INPUT.as_bytes(), SIGNATURE, MODULUS, "AQAB").unwrap();
-        assert!(
-            verify_rs256_signature(
-                format!("{SIGNING_INPUT}x").as_bytes(),
-                SIGNATURE,
-                MODULUS,
-                "AQAB"
-            )
-            .is_err()
+        let error = verify_rs256_signature(
+            format!("{SIGNING_INPUT}x").as_bytes(),
+            SIGNATURE,
+            MODULUS,
+            "AQAB",
+        )
+        .unwrap_err();
+        assert_eq!(
+            (refusal_reason(&error), error.to_string()),
+            unverified("GitHub OIDC JWT signature is invalid")
         );
     }
 
@@ -648,19 +732,31 @@ mod tests {
 
         let mut tampered = token.clone();
         tampered.replace_range(30..31, "A");
-        assert!(verify_compact_rs256(&tampered, &rfc_key_set()).is_err());
-        assert!(verify_compact_rs256(&"x".repeat(32_769), &rfc_key_set()).is_err());
+        assert_eq!(
+            token_refusal(&tampered, &rfc_key_set()),
+            unverified("GitHub OIDC JWT signature is invalid")
+        );
+        assert_eq!(
+            token_refusal(&"x".repeat(32_769), &rfc_key_set()),
+            unverified("GitHub OIDC JWT exceeds the size limit")
+        );
     }
 
     #[test]
     fn algorithm_and_key_selection_fail_closed() {
         let unsigned = "eyJhbGciOiJub25lIn0.e30.";
-        assert!(verify_compact_rs256(unsigned, &rfc_key_set()).is_err());
+        assert_eq!(
+            token_refusal(unsigned, &rfc_key_set()),
+            unverified("GitHub OIDC JWT has no signature")
+        );
 
         let token = format!("{SIGNING_INPUT}.{SIGNATURE}");
         let mut ambiguous = rfc_key_set();
         ambiguous.keys.push(ambiguous.keys[0].clone());
-        assert!(verify_compact_rs256(&token, &ambiguous).is_err());
+        assert_eq!(
+            token_refusal(&token, &ambiguous),
+            unverified("GitHub OIDC JWT key selection is missing or ambiguous")
+        );
     }
 
     #[test]
@@ -690,41 +786,42 @@ mod tests {
             validate_oidc_url(url, true, OidcUrlKind::Discovery).unwrap();
         }
 
-        for (url, allow_loopback, kind) in [
-            ("not a URL", false, OidcUrlKind::Discovery),
+        let credentials = "GitHub OIDC URL contains forbidden credentials or fragments";
+        let not_https = "GitHub OIDC URLs must use HTTPS";
+        let untrusted = "GitHub OIDC URL origin is not trusted";
+        for (url, allow_loopback, message) in [
+            ("not a URL", false, "GitHub OIDC URL is invalid"),
             (
                 "https://user@token.actions.githubusercontent.com/path",
                 false,
-                OidcUrlKind::Discovery,
+                credentials,
             ),
             (
                 "https://:password@token.actions.githubusercontent.com/path",
                 false,
-                OidcUrlKind::Discovery,
+                credentials,
             ),
             (
                 "https://token.actions.githubusercontent.com/path#fragment",
                 false,
-                OidcUrlKind::Discovery,
+                credentials,
             ),
-            ("file:///tmp/token", false, OidcUrlKind::Discovery),
-            ("http://127.0.0.1:8080/path", false, OidcUrlKind::Discovery),
-            ("http://localhost:8080/path", true, OidcUrlKind::Discovery),
-            ("http://192.0.2.1/path", true, OidcUrlKind::Discovery),
-            (
-                "https://evil.example/discovery",
-                false,
-                OidcUrlKind::Discovery,
-            ),
+            ("file:///tmp/token", false, "GitHub OIDC URL has no host"),
+            ("http://127.0.0.1:8080/path", false, not_https),
+            ("http://localhost:8080/path", true, not_https),
+            ("http://192.0.2.1/path", true, not_https),
+            ("https://evil.example/discovery", false, untrusted),
             (
                 "https://actions.githubusercontent.com/discovery",
                 false,
-                OidcUrlKind::Discovery,
+                untrusted,
             ),
         ] {
-            assert!(
-                validate_oidc_url(url, allow_loopback, kind).is_err(),
-                "accepted untrusted OIDC URL {url}"
+            let error = validate_oidc_url(url, allow_loopback, OidcUrlKind::Discovery).unwrap_err();
+            assert_eq!(
+                (refusal_reason(&error), error.to_string()),
+                (Some(RefusalReason::OidcUrlUntrusted), message.to_owned()),
+                "{url}"
             );
         }
     }
@@ -732,29 +829,59 @@ mod tests {
     #[test]
     fn compact_jwt_parser_rejects_each_malformed_part_independently() {
         let valid = format!("{SIGNING_INPUT}.{SIGNATURE}");
-        for token in [
-            "".to_owned(),
-            ".payload.signature".to_owned(),
-            "header..signature".to_owned(),
-            "header.payload.".to_owned(),
-            "header.payload.signature.extra".to_owned(),
-            format!("{}.e30.x", "A".repeat(MAX_JWT_PART_BYTES + 1)),
-            format!("e30.{}.x", "A".repeat(MAX_JWT_PART_BYTES + 1)),
-            format!("e30.e30.{}", "A".repeat(MAX_JWT_PART_BYTES + 1)),
-            "%.e30.x".to_owned(),
-            format!("{}.e30.x", encode_json(&serde_json::json!("not an object"))),
-            format!(
-                "{}.e30.x",
-                encode_json(&serde_json::json!({"alg": "HS256"}))
+        let no_header = "GitHub OIDC JWT has no protected header";
+        let compact = "GitHub OIDC JWT compact serialization is invalid";
+        for (token, message) in [
+            ("".to_owned(), no_header),
+            (".payload.signature".to_owned(), no_header),
+            (
+                "header..signature".to_owned(),
+                "GitHub OIDC JWT has no payload",
             ),
-            format!(
-                "{}.e30.x",
-                encode_json(&serde_json::json!({"alg": "RS256", "crit": ["exp"]}))
+            (
+                "header.payload.".to_owned(),
+                "GitHub OIDC JWT has no signature",
+            ),
+            ("header.payload.signature.extra".to_owned(), compact),
+            (
+                format!("{}.e30.x", "A".repeat(MAX_JWT_PART_BYTES + 1)),
+                compact,
+            ),
+            (
+                format!("e30.{}.x", "A".repeat(MAX_JWT_PART_BYTES + 1)),
+                compact,
+            ),
+            (
+                format!("e30.e30.{}", "A".repeat(MAX_JWT_PART_BYTES + 1)),
+                compact,
+            ),
+            (
+                "%.e30.x".to_owned(),
+                "GitHub OIDC JWT header is not valid base64url",
+            ),
+            (
+                format!("{}.e30.x", encode_json(&serde_json::json!("not an object"))),
+                "GitHub OIDC JWT header is invalid",
+            ),
+            (
+                format!(
+                    "{}.e30.x",
+                    encode_json(&serde_json::json!({"alg": "HS256"}))
+                ),
+                "GitHub OIDC JWT must use RS256",
+            ),
+            (
+                format!(
+                    "{}.e30.x",
+                    encode_json(&serde_json::json!({"alg": "RS256", "crit": ["exp"]}))
+                ),
+                "GitHub OIDC JWT uses unsupported critical headers",
             ),
         ] {
-            assert!(
-                verify_compact_rs256(&token, &rfc_key_set()).is_err(),
-                "accepted malformed token with length {}",
+            assert_eq!(
+                token_refusal(&token, &rfc_key_set()),
+                unverified(message),
+                "malformed token with length {}",
                 token.len()
             );
         }
@@ -764,6 +891,7 @@ mod tests {
     #[test]
     fn compact_jwt_key_filters_and_key_material_fail_closed_independently() {
         let token = format!("{SIGNING_INPUT}.{SIGNATURE}");
+        let unselected = unverified("GitHub OIDC JWT key selection is missing or ambiguous");
         for mutate in [
             |key: &mut RsaJwk| key.key_type = "EC".into(),
             |key: &mut RsaJwk| key.algorithm = Some("RS512".into()),
@@ -771,7 +899,7 @@ mod tests {
         ] {
             let mut keys = rfc_key_set();
             mutate(&mut keys.keys[0]);
-            assert!(verify_compact_rs256(&token, &keys).is_err());
+            assert_eq!(token_refusal(&token, &keys), unselected);
         }
 
         for clear_optional in [
@@ -787,25 +915,35 @@ mod tests {
         let kid_token = format!("{kid_header}.e30.eA");
         let mut matching = rfc_key_set();
         matching.keys[0].key_id = Some("wanted".into());
-        assert!(verify_compact_rs256(&kid_token, &matching).is_err());
+        assert_eq!(
+            token_refusal(&kid_token, &matching),
+            unverified("GitHub OIDC JWT signature is invalid")
+        );
         matching.keys[0].key_id = Some("other".into());
-        assert!(verify_compact_rs256(&kid_token, &matching).is_err());
+        assert_eq!(token_refusal(&kid_token, &matching), unselected);
 
         for case in ["signature", "modulus", "exponent"] {
             let mut keys = rfc_key_set();
-            let candidate = match case {
-                "signature" => format!("{SIGNING_INPUT}.%"),
+            let (candidate, message) = match case {
+                "signature" => (
+                    format!("{SIGNING_INPUT}.%"),
+                    "OIDC JWT signature is not valid base64url",
+                ),
                 "modulus" => {
                     keys.keys[0].modulus = "%".into();
-                    token.clone()
+                    (token.clone(), "OIDC JWK modulus is not valid base64url")
                 }
                 "exponent" => {
                     keys.keys[0].exponent = "%".into();
-                    token.clone()
+                    (token.clone(), "OIDC JWK exponent is not valid base64url")
                 }
                 _ => unreachable!(),
             };
-            assert!(verify_compact_rs256(&candidate, &keys).is_err());
+            assert_eq!(
+                token_refusal(&candidate, &keys),
+                unverified(message),
+                "{case}"
+            );
         }
     }
 

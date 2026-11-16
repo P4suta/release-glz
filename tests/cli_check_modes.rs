@@ -184,7 +184,10 @@ fn init_refuses_a_release_table_that_sets_another_schema_and_leaves_it_alone() {
     assert_eq!(output.status.code(), Some(2));
     let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_published_envelope(&envelope);
-    assert_eq!(envelope["diagnostics"][0]["code"], "usage_or_config");
+    assert_eq!(
+        envelope["diagnostics"][0]["code"],
+        "config_schema_unsupported"
+    );
     let message = envelope["diagnostics"][0]["message"].as_str().unwrap();
     assert!(
         message.contains("`[tools.release-glz]` requires `schema = 2`, but it sets `schema = 1`"),
@@ -197,6 +200,35 @@ fn init_refuses_a_release_table_that_sets_another_schema_and_leaves_it_alone() {
             .join(".github/workflows/release-glz.yml")
             .exists()
     );
+}
+
+#[test]
+fn every_command_that_reads_the_manifest_names_another_schema_as_its_reason() {
+    let temp = tempfile::tempdir().unwrap();
+    init_repository(temp.path());
+    let source = schema_two_manifest().replace("schema = 2", "schema = 1");
+    std::fs::write(temp.path().join("gleam.toml"), source).unwrap();
+
+    for command in [
+        &["plan"][..],
+        &["status"],
+        &["set-version", "1.0.1"],
+        &["doctor"],
+    ] {
+        let output = binary()
+            .current_dir(temp.path())
+            .args(["--output", "json"])
+            .args(command)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2), "{command:?}: {output:?}");
+        let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_published_envelope(&envelope);
+        assert_eq!(
+            envelope["diagnostics"][0]["code"], "config_schema_unsupported",
+            "{command:?}"
+        );
+    }
 }
 
 fn schema_two_manifest() -> &'static str {

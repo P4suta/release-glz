@@ -2,6 +2,7 @@
 //!
 //! Reads are separated from publication so that planning and verification never need a credential.
 
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::time::Duration;
@@ -9,15 +10,17 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use release_glz_core::{AfterPoll, Answer, Next, REGISTRY_RETRIES};
+use release_glz_domain::Sha256Digest;
 use reqwest::{StatusCode, Url};
 use semver::Version;
 use serde::Deserialize;
 
-use crate::canonical::SHA256_HEX_LEN;
 use crate::config::{
     AuthKind, RegistryConfig, url_is_http_loopback, uses_trusted_transport,
     validate_registry_repository,
 };
+use crate::failure::{Refusal, RefusalReason, refused};
+use crate::refuse;
 use crate::units::MIB;
 
 /// Size a JSON response may reach before it is refused.
@@ -80,7 +83,7 @@ pub struct RegistryRelease {
     /// Whether the release has been retired.
     pub retired: bool,
     /// Outer tarball checksum, when the registry exposes one.
-    pub outer_checksum: Option<String>,
+    pub outer_checksum: Option<Sha256Digest>,
 }
 
 /// What a publish request established.
@@ -119,19 +122,21 @@ pub struct PackageState {
 }
 
 impl PackageState {
-    /// Highest published version, prereleases included.
-    pub fn latest(&self) -> Option<&HexRelease> {
-        self.releases
-            .iter()
-            .max_by(|a, b| a.version.cmp(&b.version))
+    /// Release of the highest precedence, prereleases included.
+    ///
+    /// Refuses when two releases share that precedence and differ in build metadata.
+    pub fn latest(&self) -> Result<Option<&HexRelease>> {
+        highest(self.releases.iter(), "latest")
     }
 
-    /// Highest published version that is not a prerelease.
-    pub fn latest_stable(&self) -> Option<&HexRelease> {
-        self.releases
-            .iter()
-            .filter(|release| release.version.pre.is_empty())
-            .max_by(|a, b| a.version.cmp(&b.version))
+    /// Release of the highest precedence that is not a prerelease, refused like [`PackageState::latest`].
+    pub fn latest_stable(&self) -> Result<Option<&HexRelease>> {
+        highest(
+            self.releases
+                .iter()
+                .filter(|release| release.version.pre.is_empty()),
+            "latest stable",
+        )
     }
 
     /// One exact release, if it is published.
@@ -140,6 +145,46 @@ impl PackageState {
             .iter()
             .find(|release| &release.version == version)
     }
+}
+
+/// The release of the highest precedence among `releases`, which the core decides without build metadata.
+///
+/// Two releases that share the highest precedence and differ in build metadata are refused, since semantic versioning orders neither first.
+/// A tie below the highest precedence is accepted, since it can't change the result.
+fn highest<'a>(
+    releases: impl Iterator<Item = &'a HexRelease>,
+    which: &str,
+) -> Result<Option<&'a HexRelease>> {
+    let mut highest: Option<&HexRelease> = None;
+    let mut tied: Option<&HexRelease> = None;
+    for release in releases {
+        let Some(current) = highest else {
+            highest = Some(release);
+            continue;
+        };
+        match release_glz_core::compare(
+            &crate::version::view(&release.version),
+            &crate::version::view(&current.version),
+        ) {
+            Ordering::Greater => {
+                highest = Some(release);
+                tied = None;
+            }
+            Ordering::Equal if tied.is_none() && release.version != current.version => {
+                tied = Some(release);
+            }
+            Ordering::Equal | Ordering::Less => {}
+        }
+    }
+    if let (Some(highest), Some(tied)) = (highest, tied) {
+        refuse!(
+            RegistryReleasePrecedenceTie,
+            "the registry lists {} and {}, which share the highest precedence, so neither is the {which} release",
+            highest.version,
+            tied.version
+        );
+    }
+    Ok(highest)
 }
 
 /// Read access to a package registry.
@@ -356,19 +401,35 @@ impl HexRegistry {
                 let location = response
                     .headers()
                     .get(reqwest::header::LOCATION)
-                    .context("registry redirect has no Location header")?
+                    .ok_or_else(|| {
+                        refused(
+                            RefusalReason::RegistryRedirectLocationInvalid,
+                            "registry redirect has no Location header",
+                        )
+                    })?
                     .to_str()
-                    .context("registry redirect Location is not ASCII")?;
+                    .with_context(|| {
+                        Refusal::new(
+                            RefusalReason::RegistryRedirectLocationInvalid,
+                            "registry redirect Location is not ASCII",
+                        )
+                    })?;
                 let next = current.join(location)?;
                 if !same_origin(&current, &next) {
-                    bail!("refusing cross-origin registry redirect from {current} to {next}");
+                    refuse!(
+                        RegistryRedirectCrossOrigin,
+                        "refusing cross-origin registry redirect from {current} to {next}"
+                    );
                 }
                 current = next;
                 continue;
             }
             return classify_audit_status(response.status(), retry_after(response.headers()));
         }
-        bail!("too many same-origin redirects during registry credential audit")
+        Err(refused(
+            RefusalReason::RegistryRedirectLimitExceeded,
+            "too many same-origin redirects during registry credential audit",
+        ))
     }
 
     async fn get_bytes(&self, url: Url, optional: bool, limit: u64) -> Result<Option<Vec<u8>>> {
@@ -404,12 +465,25 @@ impl HexRegistry {
                 let location = response
                     .headers()
                     .get(reqwest::header::LOCATION)
-                    .context("registry redirect has no Location header")?
+                    .ok_or_else(|| {
+                        refused(
+                            RefusalReason::RegistryRedirectLocationInvalid,
+                            "registry redirect has no Location header",
+                        )
+                    })?
                     .to_str()
-                    .context("registry redirect Location is not ASCII")?;
+                    .with_context(|| {
+                        Refusal::new(
+                            RefusalReason::RegistryRedirectLocationInvalid,
+                            "registry redirect Location is not ASCII",
+                        )
+                    })?;
                 let next = current.join(location)?;
                 if !same_origin(&current, &next) {
-                    bail!("refusing cross-origin registry redirect from {current} to {next}");
+                    refuse!(
+                        RegistryRedirectCrossOrigin,
+                        "refusing cross-origin registry redirect from {current} to {next}"
+                    );
                 }
                 current = next;
                 continue;
@@ -429,18 +503,27 @@ impl HexRegistry {
                 .content_length()
                 .is_some_and(|length| length > limit)
             {
-                bail!("registry response from {current} exceeds the download limit");
+                refuse!(
+                    RegistryResponseTooLarge,
+                    "registry response from {current} exceeds the download limit"
+                );
             }
             let mut bytes = Vec::new();
             while let Some(chunk) = response.chunk().await? {
                 if bytes.len() as u64 + chunk.len() as u64 > limit {
-                    bail!("registry response from {current} exceeds the download limit");
+                    refuse!(
+                        RegistryResponseTooLarge,
+                        "registry response from {current} exceeds the download limit"
+                    );
                 }
                 bytes.extend_from_slice(&chunk);
             }
             return Ok(GetResult::Value(Some(bytes)));
         }
-        bail!("too many same-origin redirects from {current}")
+        Err(refused(
+            RefusalReason::RegistryRedirectLimitExceeded,
+            format_args!("too many same-origin redirects from {current}"),
+        ))
     }
 
     fn authenticated(&self, request: reqwest::RequestBuilder) -> Result<reqwest::RequestBuilder> {
@@ -522,7 +605,10 @@ impl HexRegistry {
                 AfterPoll::TimedOut => break,
             }
         }
-        bail!("timed out waiting for {package} {version} to appear on the registry")
+        refuse!(
+            RegistryReleaseNotVisible,
+            "timed out waiting for {package} {version} to appear on the registry"
+        )
     }
 }
 
@@ -594,12 +680,19 @@ impl Registry for HexRegistry {
         let Some(bytes) = self.get_bytes(url, true, JSON_LIMIT).await? else {
             return Ok(None);
         };
-        let package: ApiPackage =
-            serde_json::from_slice(&bytes).context("invalid registry package response")?;
+        let package: ApiPackage = serde_json::from_slice(&bytes).with_context(|| {
+            Refusal::new(
+                RefusalReason::RegistryPackageInvalid,
+                "invalid registry package response",
+            )
+        })?;
         let mut releases = Vec::new();
         for release in package.releases {
             let version: Version = release.version.parse().with_context(|| {
-                format!("registry returned invalid version `{}`", release.version)
+                Refusal::new(
+                    RefusalReason::RegistryPackageInvalid,
+                    format!("registry returned invalid version `{}`", release.version),
+                )
             })?;
             releases.push(HexRelease {
                 retired: package.retirements.contains_key(&release.version),
@@ -615,21 +708,30 @@ impl Registry for HexRegistry {
         let Some(bytes) = self.get_bytes(url, true, JSON_LIMIT).await? else {
             return Ok(None);
         };
-        let release: ApiReleaseDetail =
-            serde_json::from_slice(&bytes).context("invalid registry release response")?;
-        let parsed: Version = release
-            .version
-            .parse()
-            .context("registry release has an invalid version")?;
+        let release: ApiReleaseDetail = serde_json::from_slice(&bytes).with_context(|| {
+            Refusal::new(
+                RefusalReason::RegistryReleaseInvalid,
+                "invalid registry release response",
+            )
+        })?;
+        let parsed: Version = release.version.parse().with_context(|| {
+            Refusal::new(
+                RefusalReason::RegistryReleaseInvalid,
+                "registry release has an invalid version",
+            )
+        })?;
         if &parsed != version {
-            bail!("registry returned release {parsed} while observing {version}");
+            refuse!(
+                RegistryReleaseInvalid,
+                "registry returned release {parsed} while observing {version}"
+            );
         }
-        validate_checksum(&release.checksum)?;
+        let checksum = parse_checksum(&release.checksum)?;
         Ok(Some(RegistryRelease {
             version: parsed,
             has_docs: release.has_docs,
             retired: release.retirement.is_some(),
-            outer_checksum: Some(release.checksum.to_ascii_lowercase()),
+            outer_checksum: Some(checksum),
         }))
     }
 
@@ -680,16 +782,28 @@ fn append_segments(base: &Url, segments: &[&str]) -> Result<Url> {
 fn parse_base_url(raw: &str, field: &str) -> Result<Url> {
     let url = Url::parse(raw).with_context(|| format!("registry.{field} is invalid"))?;
     if !uses_trusted_transport(&url) {
-        bail!("registry.{field} must use HTTPS, or HTTP to a numeric loopback address");
+        refuse!(
+            UrlTransportUntrusted,
+            "registry.{field} must use HTTPS, or HTTP to a numeric loopback address"
+        );
     }
     if !url.username().is_empty() {
-        bail!("registry.{field} must not contain credentials");
+        refuse!(
+            UrlCredentials,
+            "registry.{field} must not contain credentials"
+        );
     }
     if url.password().is_some() {
-        bail!("registry.{field} must not contain credentials");
+        refuse!(
+            UrlCredentials,
+            "registry.{field} must not contain credentials"
+        );
     }
     if url.query().is_some() || url.fragment().is_some() {
-        bail!("registry.{field} must not contain a query or fragment");
+        refuse!(
+            UrlQueryOrFragment,
+            "registry.{field} must not contain a query or fragment"
+        );
     }
     Ok(url)
 }
@@ -707,17 +821,21 @@ fn retry_after(headers: &reqwest::header::HeaderMap) -> Option<u64> {
         .and_then(|value| release_glz_core::delay_seconds(value.as_bytes()))
 }
 
-fn validate_checksum(value: &str) -> Result<()> {
-    if value.len() != SHA256_HEX_LEN || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        bail!("registry release checksum is not SHA-256");
-    }
-    Ok(())
+/// The outer checksum of a registry release, which the registry may spell in either case.
+fn parse_checksum(value: &str) -> Result<Sha256Digest> {
+    Sha256Digest::from_wire(value).with_context(|| {
+        Refusal::new(
+            RefusalReason::RegistryReleaseInvalid,
+            "registry release checksum is not SHA-256",
+        )
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::RegistryProvider;
+    use crate::failure::{RefusalReason, refusal_reason};
 
     #[derive(Clone)]
     struct ReadOnlyRegistry {
@@ -755,8 +873,146 @@ mod tests {
                 },
             ],
         };
-        assert_eq!(state.latest().unwrap().version, "1.1.0".parse().unwrap());
-        assert!(state.latest().unwrap().retired);
+        let latest = state.latest().unwrap().unwrap();
+        assert_eq!(latest.version, "1.1.0".parse().unwrap());
+        assert!(latest.retired);
+    }
+
+    fn listing(versions: &[&str]) -> PackageState {
+        PackageState {
+            releases: versions
+                .iter()
+                .map(|version| HexRelease {
+                    version: version.parse().unwrap(),
+                    has_docs: false,
+                    retired: false,
+                })
+                .collect(),
+        }
+    }
+
+    /// Every order of `versions`, so no outcome can depend on the order that the registry lists releases in.
+    fn every_order<'a>(versions: &[&'a str]) -> Vec<Vec<&'a str>> {
+        if versions.is_empty() {
+            return vec![Vec::new()];
+        }
+        (0..versions.len())
+            .flat_map(|first| {
+                let mut rest = versions.to_vec();
+                let head = rest.remove(first);
+                every_order(&rest).into_iter().map(move |mut order| {
+                    order.insert(0, head);
+                    order
+                })
+            })
+            .collect()
+    }
+
+    /// The version that a lookup returns, or the reason that it refuses with.
+    type Outcome = Result<Option<String>, Option<RefusalReason>>;
+
+    const TIE: Outcome = Err(Some(RefusalReason::RegistryReleasePrecedenceTie));
+
+    const NONE: Outcome = Ok(None);
+
+    fn found(version: &str) -> Outcome {
+        Ok(Some(version.to_owned()))
+    }
+
+    fn outcome(release: Result<Option<&HexRelease>>) -> Outcome {
+        match release {
+            Ok(release) => Ok(release.map(|release| release.version.to_string())),
+            Err(error) => Err(refusal_reason(&error)),
+        }
+    }
+
+    /// Asserts the latest and the latest stable release of every order of `versions`.
+    fn assert_every_order(versions: &[&str], latest: &Outcome, latest_stable: &Outcome) {
+        for order in every_order(versions) {
+            let state = listing(&order);
+            assert_eq!(
+                (&outcome(state.latest()), &outcome(state.latest_stable())),
+                (latest, latest_stable),
+                "{order:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_build_metadata_tie_at_the_highest_precedence_is_refused_in_every_order() {
+        for (first, second) in [("1.0.0+a", "1.0.0+b"), ("1.0.0+b", "1.0.0+a")] {
+            let state = listing(&[first, second]);
+            for (which, release) in [
+                ("latest", state.latest()),
+                ("latest stable", state.latest_stable()),
+            ] {
+                let error = release.unwrap_err();
+                assert_eq!(
+                    (refusal_reason(&error), error.to_string()),
+                    (
+                        Some(RefusalReason::RegistryReleasePrecedenceTie),
+                        format!(
+                            "the registry lists {first} and {second}, which share the highest precedence, so neither is the {which} release"
+                        )
+                    )
+                );
+            }
+        }
+        assert_every_order(&["1.0.0+a", "1.0.0+b", "0.9.0"], &TIE, &TIE);
+        assert_every_order(&["1.0.0+a", "1.0.0+b", "1.0.0+a"], &TIE, &TIE);
+        assert_every_order(
+            &["1.0.0-rc.2+a", "1.0.0-rc.2+b", "1.0.0-rc.1", "0.9.0"],
+            &TIE,
+            &found("0.9.0"),
+        );
+        assert_every_order(
+            &["1.0.0+a", "1.0.0+b", "1.0.1-rc.1"],
+            &found("1.0.1-rc.1"),
+            &TIE,
+        );
+    }
+
+    /// Only the highest precedence decides, since a tie below it can't change the latest release.
+    #[test]
+    fn a_build_metadata_tie_below_the_highest_precedence_is_accepted_in_every_order() {
+        assert_every_order(&["1.0.0+a", "1.1.0"], &found("1.1.0"), &found("1.1.0"));
+        assert_every_order(
+            &["1.0.0+a", "1.0.0+b", "1.1.0+c"],
+            &found("1.1.0+c"),
+            &found("1.1.0+c"),
+        );
+        assert_every_order(
+            &["0.9.0", "1.0.0-rc.1+a", "1.0.0-rc.1+b", "1.0.0"],
+            &found("1.0.0"),
+            &found("1.0.0"),
+        );
+        assert_every_order(
+            &["1.0.0+a", "1.0.0+a"],
+            &found("1.0.0+a"),
+            &found("1.0.0+a"),
+        );
+    }
+
+    #[test]
+    fn releases_order_by_precedence_and_the_stable_latest_skips_prereleases() {
+        assert_every_order(&["1.0.0-rc.2", "1.0.0"], &found("1.0.0"), &found("1.0.0"));
+        assert_every_order(&["1.0.0-rc.2", "1.0.0-rc.10"], &found("1.0.0-rc.10"), &NONE);
+        assert_every_order(
+            &["1.0.0-alpha.9", "1.0.0-beta.1", "0.9.9"],
+            &found("1.0.0-beta.1"),
+            &found("0.9.9"),
+        );
+        assert_every_order(
+            &["1.0.0-rc", "1.0.0-rc.1", "1.0.0-rc.1.1"],
+            &found("1.0.0-rc.1.1"),
+            &NONE,
+        );
+        assert_every_order(
+            &["2.0.0-alpha.1", "1.10.0", "1.9.0"],
+            &found("2.0.0-alpha.1"),
+            &found("1.10.0"),
+        );
+        assert_every_order(&[], &NONE, &NONE);
     }
 
     #[tokio::test]
@@ -782,10 +1038,10 @@ mod tests {
             ],
         };
         assert_eq!(
-            state.latest().unwrap().version,
+            state.latest().unwrap().unwrap().version,
             "1.3.0-alpha.1".parse().unwrap()
         );
-        assert_eq!(state.latest_stable().unwrap().version, target);
+        assert_eq!(state.latest_stable().unwrap().unwrap().version, target);
         assert!(state.release(&Version::new(9, 9, 9)).is_none());
 
         let registry = ReadOnlyRegistry { state: Some(state) };
@@ -801,12 +1057,21 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
-        assert!(registry.publish_package(b"bytes").await.is_err());
-        assert!(
+        assert_eq!(
+            registry
+                .publish_package(b"bytes")
+                .await
+                .unwrap_err()
+                .to_string(),
+            "registry adapter does not support publishing"
+        );
+        assert_eq!(
             registry
                 .publish_docs("widget", &target, b"docs")
                 .await
-                .is_err()
+                .unwrap_err()
+                .to_string(),
+            "registry adapter does not support documentation publishing"
         );
 
         let missing = ReadOnlyRegistry { state: None };
@@ -902,7 +1167,13 @@ mod tests {
             classify_audit_status(StatusCode::INTERNAL_SERVER_ERROR, delay).unwrap(),
             AuditRequest::Retry(actual) if actual == delay
         ));
-        assert!(classify_audit_status(StatusCode::BAD_REQUEST, delay).is_err());
+        let Err(error) = classify_audit_status(StatusCode::BAD_REQUEST, delay) else {
+            panic!("a 400 audit answer was not a failure");
+        };
+        assert_eq!(
+            error.to_string(),
+            "registry credential audit failed with 400 Bad Request"
+        );
     }
 
     #[test]
@@ -910,16 +1181,44 @@ mod tests {
         assert!(parse_base_url("https://example.test/api", "api_url").is_ok());
         assert!(parse_base_url("http://127.0.0.1:8080/api", "api_url").is_ok());
         assert!(parse_base_url("http://[::1]:8080/api", "api_url").is_ok());
-        assert!(parse_base_url("http://localhost:8080/api", "api_url").is_err());
-        assert!(parse_base_url("http://example.test/api", "api_url").is_err());
-        assert!(parse_base_url("http://192.0.2.1/api", "api_url").is_err());
-        assert!(parse_base_url("https://user@example.test/api", "api_url").is_err());
-        assert!(parse_base_url("https://:pass@example.test/api", "api_url").is_err());
-        assert!(parse_base_url("http://user@127.0.0.1:8080/api", "api_url").is_err());
-        assert!(parse_base_url("https://", "api_url").is_err());
-        assert!(parse_base_url("https://example.test/api?q=1", "api_url").is_err());
-        assert!(parse_base_url("http://127.0.0.1:8080/api?q=1", "api_url").is_err());
-        assert!(parse_base_url("https://example.test/api#frag", "api_url").is_err());
+        let transport = (
+            Some(RefusalReason::UrlTransportUntrusted),
+            "registry.api_url must use HTTPS, or HTTP to a numeric loopback address",
+        );
+        let credentials = (
+            Some(RefusalReason::UrlCredentials),
+            "registry.api_url must not contain credentials",
+        );
+        let query = (
+            Some(RefusalReason::UrlQueryOrFragment),
+            "registry.api_url must not contain a query or fragment",
+        );
+        for (url, (reason, message)) in [
+            ("http://localhost:8080/api", transport),
+            ("http://example.test/api", transport),
+            ("http://192.0.2.1/api", transport),
+            ("https://user@example.test/api", credentials),
+            ("https://:pass@example.test/api", credentials),
+            ("http://user@127.0.0.1:8080/api", credentials),
+            ("https://", (None, "registry.api_url is invalid")),
+            ("https://example.test/api?q=1", query),
+            ("http://127.0.0.1:8080/api?q=1", query),
+            ("https://example.test/api#frag", query),
+        ] {
+            let error = parse_base_url(url, "api_url").unwrap_err();
+            assert_eq!(
+                (refusal_reason(&error), error.to_string()),
+                (reason, message.to_owned()),
+                "{url}"
+            );
+        }
+        assert_eq!(
+            format!("{:#}", parse_base_url("https://", "api_url").unwrap_err()),
+            format!(
+                "registry.api_url is invalid: {}",
+                Url::parse("https://").unwrap_err()
+            )
+        );
     }
 
     #[test]
@@ -971,10 +1270,28 @@ mod tests {
             );
         }
 
-        assert!(validate_checksum(&"a".repeat(64)).is_ok());
-        assert!(validate_checksum(&"A".repeat(64)).is_ok());
-        assert!(validate_checksum(&"a".repeat(63)).is_err());
-        assert!(validate_checksum(&"g".repeat(64)).is_err());
+        for spelled in [
+            "a".repeat(64),
+            "A".repeat(64),
+            format!("A{}", "a".repeat(63)),
+        ] {
+            assert_eq!(
+                parse_checksum(&spelled).unwrap().as_str(),
+                "a".repeat(64),
+                "{spelled}"
+            );
+        }
+        for malformed in ["a".repeat(63), "g".repeat(64)] {
+            let error = parse_checksum(&malformed).unwrap_err();
+            assert_eq!(
+                (refusal_reason(&error), error.to_string()),
+                (
+                    Some(RefusalReason::RegistryReleaseInvalid),
+                    "registry release checksum is not SHA-256".to_owned()
+                ),
+                "{malformed}"
+            );
+        }
     }
 
     #[test]
@@ -1009,6 +1326,13 @@ mod tests {
     async fn byte_downloads_never_fabricate_a_value_after_a_transport_error() {
         let registry = HexRegistry::new("http://127.0.0.1:9/api", "http://127.0.0.1:9/repository");
         let unsupported = Url::parse("file:///release-glz-must-not-be-read").unwrap();
-        assert!(registry.get_bytes(unsupported, false, 16).await.is_err());
+        let error = registry
+            .get_bytes(unsupported, false, 16)
+            .await
+            .unwrap_err();
+        assert!(
+            error.downcast_ref::<reqwest::Error>().is_some(),
+            "{error:#}"
+        );
     }
 }

@@ -16,7 +16,7 @@ Kani proves `release-glz-core`, and one mutation receipt covers both proof crate
 ## Decision
 
 Every release decision lives in `release-glz-core`, which takes borrowed bytes or fact enums and returns a decision or a named refusal, with no owned type outside `cfg(kani)`.
-Owned checked types live in an unproved `release-glz-domain`, whose constructors call core predicates.
+Owned checked types live in an unproved `release-glz-domain`, whose constructors yield only values that a core predicate accepts.
 `cargo xtask structure` refuses breaches, and its `DEBT` list shrinks with each change.
 
 ## Alternatives

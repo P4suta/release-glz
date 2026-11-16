@@ -7,11 +7,13 @@ use release_glz::candidate::{
     RegistryIdentity, SealedArtifact,
 };
 use release_glz::config::{ApprovalConfig, AuthKind, OutputConfig, RegistryProvider};
+use release_glz::failure::{FailureClass, RefusalReason};
 use release_glz::model::{
     ApiDiff, Baseline, BaselineSource, Bump, CommandEnvelope, ReleasePlan, ReleaseStage,
     ReleaseState,
 };
 use release_glz::reconciler::ExternalReleaseState;
+use release_glz_domain::CommitId;
 use release_glz_test_support::schema::{
     RESULT_SCHEMAS, assert_matches, assert_published_envelope, published_schemas, violations,
 };
@@ -380,12 +382,149 @@ fn every_result_schema_refuses_what_its_command_never_prints() {
             "command-envelope.schema.json",
             with(&envelope, "/ok", json!(true)),
         ),
+        (
+            "a failure whose code names neither a class nor a reason",
+            "command-envelope.schema.json",
+            with(
+                &envelope,
+                "/diagnostics/0/code",
+                json!("approval_missing_somehow"),
+            ),
+        ),
     ];
     for (case, file, value) in refused {
         assert!(
             !violations(file, &value).is_empty(),
             "{file} accepted {case}"
         );
+    }
+}
+
+/// Every commit ID that a schema or the generated workflow checks has the length of a [`CommitId`], so what one of them accepts, every other accepts.
+#[test]
+fn every_commit_id_pattern_names_the_length_of_a_commit_id() {
+    let pattern = format!("^[0-9a-f]{{{}}}$", CommitId::LEN);
+    let schemas = published_schemas();
+    let commit_ids = [
+        (
+            "candidate.schema.json",
+            "/$defs/source/properties/commit_sha/pattern",
+        ),
+        ("init-outcome.schema.json", "/properties/action_sha/pattern"),
+        (
+            "release-plan.schema.json",
+            "/properties/release_pr_head/anyOf/0/pattern",
+        ),
+        (
+            "release-plan.schema.json",
+            "/$defs/baseline/properties/sha/anyOf/0/pattern",
+        ),
+        (
+            "release-state.schema.json",
+            "/$defs/tag/properties/target_sha/pattern",
+        ),
+        (
+            "release-state.schema.json",
+            "/$defs/githubRelease/properties/target_sha/pattern",
+        ),
+    ];
+    for (file, pointer) in commit_ids {
+        assert_eq!(
+            schemas[file].pointer(pointer).and_then(Value::as_str),
+            Some(pattern.as_str()),
+            "{file}#{pointer}"
+        );
+    }
+    // A pattern elsewhere that counts 40 of something is a commit ID that the list above misses.
+    let mut counted = BTreeSet::new();
+    for (file, schema) in &schemas {
+        forty_count_patterns(file, "", schema, &mut counted);
+    }
+    assert_eq!(
+        counted,
+        commit_ids
+            .iter()
+            .map(|(file, pointer)| format!("{file}#{pointer}"))
+            .collect::<BTreeSet<_>>()
+    );
+
+    let workflow = release_glz::workflow::render_configured(
+        "main",
+        Path::new("gleam.toml"),
+        "1.18.1",
+        "release",
+        "HEXPM_API_KEY",
+        "release-glz/",
+        &"a".repeat(CommitId::LEN),
+    )
+    .unwrap();
+    let checks = format!(r#"[[ "$SOURCE_SHA" =~ {pattern} ]]"#);
+    assert_eq!(workflow.matches(&checks).count(), 2);
+    assert_eq!(workflow.matches("{40}").count(), 2);
+}
+
+/// Each `pattern` under `value` at `pointer` that counts 40 of something, as `file#pointer`.
+fn forty_count_patterns(file: &str, pointer: &str, value: &Value, found: &mut BTreeSet<String>) {
+    match value {
+        Value::Object(members) => {
+            for (key, member) in members {
+                let path = format!("{pointer}/{key}");
+                if key == "pattern" && member.as_str().is_some_and(|text| text.contains("{40}")) {
+                    found.insert(format!("{file}#{path}"));
+                }
+                forty_count_patterns(file, &path, member, found);
+            }
+        }
+        Value::Array(items) => {
+            for (index, item) in items.iter().enumerate() {
+                forty_count_patterns(file, &format!("{pointer}/{index}"), item, found);
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+    }
+}
+
+/// The envelope schema lists exactly the class codes and reason codes that the error diagnostic of a failed command carries, in declaration order.
+#[test]
+fn the_envelope_schema_lists_every_failure_class_and_refusal_reason() {
+    let schemas = published_schemas();
+    let definitions = &schemas["command-envelope.schema.json"]["$defs"];
+    let listed = |name: &str| {
+        definitions[name]["enum"]
+            .as_array()
+            .unwrap_or_else(|| panic!("`$defs/{name}` lists no codes"))
+            .iter()
+            .map(|code| code.as_str().unwrap())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        listed("failureClass"),
+        FailureClass::ALL.map(FailureClass::diagnostic_code)
+    );
+    assert_eq!(
+        listed("refusalReason"),
+        RefusalReason::ALL
+            .iter()
+            .map(|reason| reason.code())
+            .collect::<Vec<_>>()
+    );
+
+    let failure = |code: &str| {
+        json!({
+            "schema": "command/v1",
+            "ok": false,
+            "command": "release",
+            "result": null,
+            "diagnostics": [{"code": code, "level": "error", "message": "refused", "detail": null}],
+            "next_actions": [],
+        })
+    };
+    for code in FailureClass::ALL
+        .map(FailureClass::diagnostic_code)
+        .into_iter()
+        .chain(RefusalReason::ALL.iter().map(|reason| reason.code()))
+    {
+        assert_published_envelope(&failure(code));
     }
 }
 

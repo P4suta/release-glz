@@ -56,7 +56,7 @@
       "additionalProperties": false,
       "required": ["commit_sha", "manifest_path"],
       "properties": {
-        "commit_sha": { "type": "string", "pattern": "^[0-9a-f]{40}$|^[0-9a-f]{64}$" },
+        "commit_sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
         "manifest_path": { "type": "string", "minLength": 1 }
       }
     },

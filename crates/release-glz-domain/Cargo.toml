@@ -1,0 +1,18 @@
+[package]
+name = "release-glz-domain"
+description = "Owned checked types of release-glz, each holding only values that a predicate of the proved core accepts"
+version = "0.0.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+rust-version = "1.100"
+
+[dependencies]
+release-glz-core = { path = "../release-glz-core", version = "0.0.0" }
+serde = { version = "1.0.228", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1.0.154"
+
+[lints]
+workspace = true

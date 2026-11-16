@@ -1,3 +1,4 @@
+use release_glz::failure::{RefusalReason, refusal_reason};
 use release_glz::model::{
     CommandEnvelope, Diagnostic, DiagnosticLevel, NextAction, ReleaseStage, ReleaseState,
 };
@@ -30,14 +31,17 @@ fn prerelease_channels_only_move_forward_on_the_same_core() {
         .unwrap(),
         v("1.2.0-beta.1")
     );
-    assert!(
-        next_prerelease_with_core(
-            &v("1.2.0-rc.2"),
-            &v("1.2.0"),
-            PrereleaseChannel::Beta,
-            false,
-        )
-        .is_err()
+    let backward = next_prerelease_with_core(
+        &v("1.2.0-rc.2"),
+        &v("1.2.0"),
+        PrereleaseChannel::Beta,
+        false,
+    )
+    .unwrap_err();
+    assert_eq!(
+        refusal_reason(&backward),
+        Some(RefusalReason::PrereleaseTrainBackward),
+        "{backward:#}"
     );
     assert_eq!(
         next_prerelease_with_core(

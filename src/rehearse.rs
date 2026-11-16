@@ -4,15 +4,21 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
+use release_glz_domain::{CommitId, CommitIdRefusal};
 
 use crate::candidate::{
     Candidate, CandidateInput, CandidateManifest, CandidateSource, SealedPolicy,
 };
 use crate::config::Manifest;
+use crate::failure::{RefusalReason, refused};
 use crate::git::GitRepo;
 use crate::gleam::Gleam;
 use crate::hooks::{HookContext, HookRunner};
+use crate::refuse;
+
+/// The object format of a repository whose commits GitHub serves.
+const SHA1_OBJECT_FORMAT: &str = "sha1";
 
 /// Inputs for one rehearsal.
 #[derive(Debug, Clone)]
@@ -36,26 +42,45 @@ impl Rehearsal {
     ///
     /// The configured compiler must match the installed one exactly, so the bytes a reviewer approved are the bytes that can later be published.
     pub async fn run(&self, options: &RehearseOptions) -> Result<CandidateManifest> {
-        validate_full_sha(&options.source_ref)?;
+        let source = CommitId::parse(&options.source_ref);
+        // A SHA-256 object ID most likely names a commit of a SHA-256 repository, which the repository's own refusal below names.
+        if let Err(refusal) = source
+            && refusal != CommitIdRefusal::Sha256ObjectId
+        {
+            return Err(source_refusal(refusal));
+        }
         let (repo, relative_manifest) = locate_manifest(&options.manifest_path)?;
+        let object_format = repo.object_format()?;
+        if object_format != SHA1_OBJECT_FORMAT {
+            refuse!(
+                RepositoryObjectFormatUnsupported,
+                "rehearse refuses a repository whose object format is `{object_format}`, because GitHub serves only commit IDs of `{SHA1_OBJECT_FORMAT}` repositories"
+            );
+        }
+        let source = source.map_err(source_refusal)?;
         let package_relative = relative_manifest.parent().unwrap_or_else(|| Path::new(""));
-        let resolved = repo
-            .resolve(&options.source_ref)?
-            .context("requested source commit does not exist")?;
-        if resolved != options.source_ref {
-            bail!(
+        let resolved = repo.resolve(source.as_str())?.ok_or_else(|| {
+            refused(
+                RefusalReason::SourceCommitUnresolved,
+                "requested source commit does not exist",
+            )
+        })?;
+        if resolved != source.as_str() {
+            refuse!(
+                SourceCommitUnresolved,
                 "rehearse requires the exact full commit SHA, not an abbreviated or symbolic ref"
             );
         }
 
         let snapshot = self
             .gleam
-            .snapshot_from_git(&repo, &resolved, package_relative)?;
+            .snapshot_from_git(&repo, source.as_str(), package_relative)?;
         let manifest = Manifest::load(snapshot.package_dir().join("gleam.toml"))?;
         let release = manifest.release()?;
         let compiler = self.gleam.ensure_supported()?;
         if compiler != release.compiler {
-            bail!(
+            refuse!(
+                GleamCompilerMismatch,
                 "configured Gleam compiler {} is required; found {compiler}",
                 release.compiler
             );
@@ -68,16 +93,14 @@ impl Rehearsal {
                 &HookContext {
                     package: manifest.package.clone(),
                     version: manifest.version.clone(),
-                    source_sha: resolved.clone(),
+                    source_sha: source.to_string(),
                     intent_digest: None,
                     candidate_digest: None,
                     idempotency_key: None,
                 },
             )
             .await
-            .map_err(|error| {
-                crate::failure::classified(crate::failure::FailureClass::Hook, error)
-            })?;
+            .map_err(hook_failure)?;
 
         let package_tarball = self.gleam.export_hex_tarball(snapshot.package_dir())?;
         let package_interface = self
@@ -117,7 +140,7 @@ impl Rehearsal {
             version,
             tag,
             source: CandidateSource {
-                commit_sha: resolved,
+                commit_sha: source.into(),
                 manifest_path,
             },
             compiler,
@@ -155,16 +178,22 @@ impl Rehearsal {
                 },
             )
             .await
-            .map_err(|error| {
-                crate::failure::classified(crate::failure::FailureClass::Hook, error)
-            })?;
+            .map_err(hook_failure)?;
         input.hook_evidence.extend(sidecars.evidence);
         input.sidecars = built_in_evidence;
         input.sidecars.extend(sidecars.artifacts);
         Candidate::seal_prepared(&options.output, input, Some(artifacts)).map_err(|error| {
-            crate::failure::classified(crate::failure::FailureClass::ImmutableStateConflict, error)
+            crate::failure::classified_keeping_reason(
+                crate::failure::FailureClass::ImmutableStateConflict,
+                error,
+            )
         })
     }
+}
+
+/// Classify a failure of the verify or sidecar hooks, keeping the reason of a refusal that is itself a hook failure.
+fn hook_failure(error: anyhow::Error) -> anyhow::Error {
+    crate::failure::classified_keeping_reason(crate::failure::FailureClass::Hook, error)
 }
 
 /// The repository that contains `manifest_path`, and the manifest's path relative to that repository's root.
@@ -197,31 +226,52 @@ fn absolute(path: &Path) -> Result<PathBuf> {
     }
 }
 
-fn validate_full_sha(value: &str) -> Result<()> {
-    if !release_glz_core::is_commit_id(value.as_bytes()) {
-        bail!("--ref must be a full lowercase commit SHA");
-    }
-    Ok(())
+fn source_refusal(refusal: CommitIdRefusal) -> anyhow::Error {
+    refused(
+        RefusalReason::CandidateSourceCommitInvalid,
+        format_args!("--ref must be a full lowercase commit SHA: {refusal}"),
+    )
 }
 
 #[cfg(test)]
 mod tests {
-    use super::validate_full_sha;
+    use super::hook_failure;
+    use crate::failure::{
+        FailureClass, Refusal, RefusalReason, classify, diagnostic_code, refused,
+    };
 
     #[test]
-    fn a_source_ref_is_a_full_lowercase_commit_id_of_either_object_format() {
-        for accepted in ["a".repeat(40), "0".repeat(64)] {
-            validate_full_sha(&accepted).unwrap();
-        }
-        for refused in [
-            "a".repeat(39),
-            "a".repeat(41),
-            "A".repeat(40),
-            "g".repeat(64),
-            "HEAD".to_owned(),
+    fn a_hook_failure_keeps_only_the_reason_of_a_hook_refusal() {
+        for (error, code) in [
+            (
+                refused(
+                    RefusalReason::HookSnapshotModified,
+                    "verify hook `lint` modified the source snapshot",
+                ),
+                "hook_snapshot_modified",
+            ),
+            (
+                anyhow::anyhow!("the hook process did not exit").context(Refusal::new(
+                    RefusalReason::HookTimedOut,
+                    "hook `lint` timed out after 5 seconds",
+                )),
+                "hook_timed_out",
+            ),
+            (
+                refused(
+                    RefusalReason::HookEnvProtected,
+                    "hook `lint` allows `GITHUB_TOKEN`",
+                ),
+                "hook_failure",
+            ),
+            (
+                anyhow::anyhow!("failed to start hook `lint`"),
+                "hook_failure",
+            ),
         ] {
-            let error = validate_full_sha(&refused).unwrap_err().to_string();
-            assert_eq!(error, "--ref must be a full lowercase commit SHA");
+            let failure = hook_failure(error);
+            assert_eq!(classify(&failure), FailureClass::Hook, "{code}");
+            assert_eq!(diagnostic_code(&failure), code);
         }
     }
 }

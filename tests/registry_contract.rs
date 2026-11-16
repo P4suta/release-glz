@@ -1,7 +1,9 @@
 use release_glz::config::{AuthKind, RegistryConfig, RegistryProvider};
+use release_glz::failure::{RefusalReason, refusal_reason};
 use release_glz::registry::{
     HexRegistry, PublishOutcome, Registry, RegistryCredentialAudit, VisibilityPoll,
 };
+use release_glz_domain::Sha256Digest;
 use release_glz_test_support::http::{FakeServer, Reply, Request, Response};
 use semver::Version;
 
@@ -17,7 +19,7 @@ async fn custom_registry_authenticates_reads_and_observes_outer_checksum() {
     let version = Version::new(1, 2, 3);
     assert!(registry.package("widget").await.unwrap().is_some());
     let release = registry.release("widget", &version).await.unwrap().unwrap();
-    assert_eq!(release.outer_checksum.unwrap(), "a".repeat(64));
+    assert_eq!(release.outer_checksum.unwrap().as_str(), "a".repeat(64));
     assert_eq!(
         registry.source_tarball("widget", &version).await.unwrap(),
         b"package-bytes"
@@ -106,40 +108,59 @@ async fn organization_registry_uses_repos_prefix_and_publishes_exact_bytes() {
 
 #[test]
 fn registry_adapter_rejects_every_unsafe_base_url_without_contacting_it() {
+    let untrusted = Some(RefusalReason::UrlTransportUntrusted);
     let cases = [
-        ("http", "http://example.test/api", "HTTPS"),
-        ("http-to-localhost", "http://localhost:9/api", "HTTPS"),
-        ("http-to-a-public-address", "http://192.0.2.1/api", "HTTPS"),
+        ("http", "http://example.test/api", untrusted, "HTTPS"),
+        (
+            "http-to-localhost",
+            "http://localhost:9/api",
+            untrusted,
+            "HTTPS",
+        ),
+        (
+            "http-to-a-public-address",
+            "http://192.0.2.1/api",
+            untrusted,
+            "HTTPS",
+        ),
         (
             "http-to-a-mapped-address",
             "http://[::ffff:127.0.0.1]:9/api",
+            untrusted,
             "HTTPS",
         ),
         (
             "credentials",
             "https://user:secret@example.test/api",
+            Some(RefusalReason::UrlCredentials),
             "credentials",
         ),
-        ("relative", "not-a-url", "invalid"),
+        // A URL that doesn't parse is no named refusal, so its exact message identifies it.
+        ("relative", "not-a-url", None, "registry.api_url is invalid"),
         (
             "query",
             "https://example.test/api?token=x",
+            Some(RefusalReason::UrlQueryOrFragment),
             "query or fragment",
         ),
         (
             "fragment",
             "https://example.test/api#x",
+            Some(RefusalReason::UrlQueryOrFragment),
             "query or fragment",
         ),
     ];
-    for (name, url, expected) in cases {
+    for (name, url, reason, expected) in cases {
         let config = RegistryConfig {
             api_url: url.into(),
             ..RegistryConfig::default()
         };
-        let error = HexRegistry::from_config(&config, Some("never-print-me"))
-            .unwrap_err()
-            .to_string();
+        let error = HexRegistry::from_config(&config, Some("never-print-me")).unwrap_err();
+        assert_eq!(refusal_reason(&error), reason, "{name}");
+        let error = error.to_string();
+        if reason.is_none() {
+            assert_eq!(error, expected, "{name}");
+        }
         assert!(error.contains(expected), "{name}: {error}");
         assert!(!error.contains("never-print-me"), "{name}: {error}");
     }
@@ -279,6 +300,10 @@ async fn get_retries_retry_after_but_refuses_cross_origin_redirects() {
         .source_tarball("widget", &Version::new(1, 2, 3))
         .await
         .unwrap_err();
+    assert_eq!(
+        refusal_reason(&error),
+        Some(RefusalReason::RegistryRedirectCrossOrigin)
+    );
     assert!(error.to_string().contains("cross-origin"));
     let seen = server.finish();
     assert!(
@@ -332,15 +357,72 @@ async fn registry_payloads_are_strictly_typed_and_release_checksums_are_exact() 
             .unwrap()
             .is_none()
     );
-    assert!(registry.package("widget").await.is_err());
-    assert!(registry.package("widget").await.is_err());
-    assert!(registry.release("widget", &version).await.is_err());
-    assert!(registry.release("widget", &version).await.is_err());
-    assert!(registry.release("widget", &version).await.is_err());
-    assert!(registry.release("widget", &version).await.is_err());
+    let refusal = |error: anyhow::Error| (refusal_reason(&error), error.to_string());
+    let not_json = registry.package("widget").await.unwrap_err();
+    assert!(
+        not_json.downcast_ref::<serde_json::Error>().is_some(),
+        "{not_json:#}"
+    );
+    assert_eq!(
+        refusal(not_json),
+        (
+            Some(RefusalReason::RegistryPackageInvalid),
+            "invalid registry package response".to_owned()
+        )
+    );
+    let not_semver = registry.package("widget").await.unwrap_err();
+    assert!(
+        not_semver.downcast_ref::<semver::Error>().is_some(),
+        "{not_semver:#}"
+    );
+    assert_eq!(
+        refusal(not_semver),
+        (
+            Some(RefusalReason::RegistryPackageInvalid),
+            "registry returned invalid version `not-semver`".to_owned()
+        )
+    );
+    let not_json = registry.release("widget", &version).await.unwrap_err();
+    assert!(
+        not_json.downcast_ref::<serde_json::Error>().is_some(),
+        "{not_json:#}"
+    );
+    assert_eq!(
+        refusal(not_json),
+        (
+            Some(RefusalReason::RegistryReleaseInvalid),
+            "invalid registry release response".to_owned()
+        )
+    );
+    let not_semver = registry.release("widget", &version).await.unwrap_err();
+    assert!(
+        not_semver.downcast_ref::<semver::Error>().is_some(),
+        "{not_semver:#}"
+    );
+    assert_eq!(
+        refusal(not_semver),
+        (
+            Some(RefusalReason::RegistryReleaseInvalid),
+            "registry release has an invalid version".to_owned()
+        )
+    );
+    assert_eq!(
+        refusal(registry.release("widget", &version).await.unwrap_err()),
+        (
+            Some(RefusalReason::RegistryReleaseInvalid),
+            "registry returned release 9.9.9 while observing 1.2.3".to_owned()
+        )
+    );
+    assert_eq!(
+        refusal(registry.release("widget", &version).await.unwrap_err()),
+        (
+            Some(RefusalReason::RegistryReleaseInvalid),
+            "registry release checksum is not SHA-256".to_owned()
+        )
+    );
     let release = registry.release("widget", &version).await.unwrap().unwrap();
     assert_eq!(
-        release.outer_checksum.as_deref(),
+        release.outer_checksum.as_ref().map(Sha256Digest::as_str),
         Some("a".repeat(64).as_str())
     );
     assert!(release.has_docs);
@@ -398,14 +480,12 @@ async fn same_origin_redirects_preserve_auth_while_missing_locations_fail_closed
     ]);
     let registry = HexRegistry::from_config(&custom_config(&base), Some("secret")).unwrap();
     assert!(registry.package("widget").await.unwrap().is_some());
-    assert!(
-        registry
-            .package("missing-location")
-            .await
-            .unwrap_err()
-            .to_string()
-            .contains("Location")
+    let missing = registry.package("missing-location").await.unwrap_err();
+    assert_eq!(
+        refusal_reason(&missing),
+        Some(RefusalReason::RegistryRedirectLocationInvalid)
     );
+    assert!(missing.to_string().contains("Location"), "{missing}");
     let requests = server.finish();
     assert_eq!(requests[0].target, "/api/packages/widget");
     assert_eq!(requests[1].target, "/api/redirected");
@@ -443,14 +523,23 @@ async fn get_and_credential_audit_retries_are_bounded_and_never_change_method() 
 async fn transport_failures_and_redirect_loops_exhaust_a_fixed_read_budget() {
     let (base, mut disconnect_server) = server(vec![Reply::Close, Reply::Close, Reply::Close]);
     let registry = HexRegistry::from_config(&custom_config(&base), Some("secret")).unwrap();
-    assert!(registry.package("widget").await.is_err());
+    let error = registry.package("widget").await.unwrap_err();
+    assert!(
+        error.downcast_ref::<reqwest::Error>().is_some(),
+        "{error:#}"
+    );
     let requests = disconnect_server.finish();
     assert!(requests.iter().all(|request| request.method == "GET"));
 
     let redirect = || -> Reply { Response::new(302).header("Location", "/api/loop").into() };
     let (base, mut redirect_server) = server((0..6).map(|_| redirect()).collect());
     let registry = HexRegistry::from_config(&custom_config(&base), Some("secret")).unwrap();
-    let error = registry.package("loop").await.unwrap_err().to_string();
+    let error = registry.package("loop").await.unwrap_err();
+    assert_eq!(
+        refusal_reason(&error),
+        Some(RefusalReason::RegistryRedirectLimitExceeded)
+    );
+    let error = error.to_string();
     assert!(error.contains("too many same-origin redirects"), "{error}");
     let requests = redirect_server.finish();
     assert_eq!(requests[0].target, "/api/packages/loop");
@@ -481,13 +570,14 @@ async fn registry_json_downloads_are_bounded_and_an_empty_credential_is_not_sent
         response(200, br#"{"releases":[],"retirements":{}}"#),
     ]);
     let with_token = HexRegistry::from_config(&custom_config(&base), Some("secret")).unwrap();
+    let oversized_error = with_token.package("oversized").await.unwrap_err();
+    assert_eq!(
+        refusal_reason(&oversized_error),
+        Some(RefusalReason::RegistryResponseTooLarge)
+    );
     assert!(
-        with_token
-            .package("oversized")
-            .await
-            .unwrap_err()
-            .to_string()
-            .contains("download limit")
+        oversized_error.to_string().contains("download limit"),
+        "{oversized_error}"
     );
     let without_token = HexRegistry::from_config(&custom_config(&base), Some("")).unwrap();
     assert!(without_token.package("public").await.unwrap().is_some());
@@ -509,18 +599,24 @@ async fn registry_download_limit_accepts_the_exact_boundary_and_counts_streamed_
     ]);
     let registry = HexRegistry::from_config(&custom_config(&base), None).unwrap();
 
-    let exact_error = registry.package("exact").await.unwrap_err().to_string();
+    let exact_error = registry.package("exact").await.unwrap_err();
+    assert_eq!(
+        refusal_reason(&exact_error),
+        Some(RefusalReason::RegistryPackageInvalid)
+    );
+    let exact_error = exact_error.to_string();
     assert!(
         exact_error.contains("invalid registry package response"),
         "{exact_error}"
     );
     assert!(!exact_error.contains("download limit"), "{exact_error}");
 
-    let oversized_error = registry
-        .package("streamed-oversized")
-        .await
-        .unwrap_err()
-        .to_string();
+    let oversized_error = registry.package("streamed-oversized").await.unwrap_err();
+    assert_eq!(
+        refusal_reason(&oversized_error),
+        Some(RefusalReason::RegistryResponseTooLarge)
+    );
+    let oversized_error = oversized_error.to_string();
     assert!(
         oversized_error.contains("download limit"),
         "{oversized_error}"
@@ -538,7 +634,12 @@ async fn credential_audit_refuses_cross_origin_redirects() {
             .into(),
     ]);
     let registry = HexRegistry::from_config(&custom_config(&base), Some("secret")).unwrap();
-    let error = registry.audit_credential().await.unwrap_err().to_string();
+    let error = registry.audit_credential().await.unwrap_err();
+    assert_eq!(
+        refusal_reason(&error),
+        Some(RefusalReason::RegistryRedirectCrossOrigin)
+    );
+    let error = error.to_string();
     assert!(error.contains("cross-origin"), "{error}");
     assert_eq!(
         server.finish()[0].target,
@@ -611,7 +712,14 @@ async fn wait_for_reports_its_timeout_without_sleeping_after_the_last_poll() {
     )
     .await
     .expect("the wait must not sleep after its last poll");
-    assert!(waited.is_err());
+    let error = waited.unwrap_err();
+    assert_eq!(
+        (refusal_reason(&error), error.to_string()),
+        (
+            Some(RefusalReason::RegistryReleaseNotVisible),
+            "timed out waiting for widget 1.2.3 to appear on the registry".to_owned()
+        )
+    );
     assert_eq!(server.finish().len(), 1);
 }
 
@@ -628,12 +736,14 @@ async fn wait_for_stops_after_its_attempts() {
     let error = registry
         .wait_for("widget", &Version::new(1, 2, 3), false)
         .await
-        .unwrap_err()
-        .to_string();
+        .unwrap_err();
 
     assert_eq!(
-        error,
-        "timed out waiting for widget 1.2.3 to appear on the registry"
+        (refusal_reason(&error), error.to_string()),
+        (
+            Some(RefusalReason::RegistryReleaseNotVisible),
+            "timed out waiting for widget 1.2.3 to appear on the registry".to_owned()
+        )
     );
     assert_eq!(server.finish().len(), 2);
 }

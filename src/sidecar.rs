@@ -1,5 +1,6 @@
-use anyhow::{Result, bail};
+use anyhow::Result;
 
+use crate::refuse;
 use crate::units::MIB;
 
 /// Sidecar artifacts one Candidate may carry.
@@ -25,7 +26,7 @@ pub(crate) fn validate_hook_id(hook_id: &str) -> Result<()> {
             _ => false,
         });
     if !valid {
-        bail!("sidecar artifact hook id is unsafe");
+        refuse!(SidecarHookIdUnsafe, "sidecar artifact hook id is unsafe");
     }
     Ok(())
 }
@@ -43,7 +44,8 @@ pub(crate) fn validate_name(name: &str) -> Result<()> {
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'));
     if !kept {
-        bail!(
+        refuse!(
+            SidecarNameUnsafe,
             "sidecar artifact name {name:?} is not a safe asset name, which GitHub keeps as it is: use 1 to {MAX_NAME_LEN} ASCII letters, digits, `.`, `-`, and `_`, with no `.` at either end"
         );
     }
@@ -58,7 +60,10 @@ pub(crate) fn validate_media_type(media_type: &str) -> Result<()> {
             .bytes()
             .all(|byte| byte.is_ascii_graphic() && byte != b'"' && byte != b'\\')
     {
-        bail!("sidecar artifact media type is invalid");
+        refuse!(
+            SidecarMediaTypeInvalid,
+            "sidecar artifact media type is invalid"
+        );
     }
     Ok(())
 }
@@ -69,15 +74,32 @@ mod tests {
 
     #[test]
     fn sidecar_identifiers_reject_every_path_and_character_boundary() {
+        use crate::failure::{RefusalReason, refusal_reason};
+
         assert!(validate_hook_id("Upper.case-1").is_ok());
-        assert!(validate_hook_id("bad id").is_err());
+        assert_eq!(
+            refusal_reason(&validate_hook_id("bad id").unwrap_err()),
+            Some(RefusalReason::SidecarHookIdUnsafe)
+        );
 
         for name in ["/absolute", ".."] {
-            assert!(validate_name(name).is_err(), "accepted {name:?}");
+            assert_eq!(
+                refusal_reason(&validate_name(name).unwrap_err()),
+                Some(RefusalReason::SidecarNameUnsafe),
+                "{name:?}"
+            );
         }
 
-        assert!(validate_media_type(&format!("application/{}", "x".repeat(128))).is_err());
-        assert!(validate_media_type("application/\u{7f}json").is_err());
+        for media_type in [
+            format!("application/{}", "x".repeat(128)),
+            "application/\u{7f}json".to_owned(),
+        ] {
+            assert_eq!(
+                refusal_reason(&validate_media_type(&media_type).unwrap_err()),
+                Some(RefusalReason::SidecarMediaTypeInvalid),
+                "{media_type:?}"
+            );
+        }
     }
 
     /// GitHub keeps these names, so an upload comes back under the name the Candidate seals.

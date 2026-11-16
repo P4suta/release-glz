@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use base64::Engine as _;
+use release_glz::failure::{RefusalReason, refusal_reason};
 use release_glz::forge::{
     CandidateRun, DefaultBranch, GitHubClient, GitHubRelease, GitHubReleaseAsset, GitHubRepository,
     IntentBinding, MAX_ATTRIBUTED_COMMITS, files_digest,
@@ -9,7 +10,6 @@ use release_glz::git::Commit;
 use release_glz::model::{ApiDiff, Baseline, BaselineSource, Bump, ReleasePlan, ReleaseState};
 use release_glz_test_support::http::{self, Reply, Response};
 use semver::Version;
-use sha2::Digest;
 
 #[test]
 fn github_repository_identity_cannot_change_api_paths_or_origins() {
@@ -32,7 +32,13 @@ fn github_repository_identity_cannot_change_api_paths_or_origins() {
         "/repo",
         "owner/",
     ] {
-        let error = GitHubRepository::parse(invalid).unwrap_err().to_string();
+        let error = GitHubRepository::parse(invalid).unwrap_err();
+        assert_eq!(
+            refusal_reason(&error),
+            Some(RefusalReason::GithubRepositoryInvalid),
+            "{invalid}"
+        );
+        let error = error.to_string();
         assert!(
             error.contains("owner/name"),
             "unexpected error for {invalid}: {error}"
@@ -40,8 +46,16 @@ fn github_repository_identity_cannot_change_api_paths_or_origins() {
         assert!(!error.contains("secret"));
     }
 
-    assert!(GitHubRepository::parse(&format!("{}/repo", "a".repeat(40))).is_err());
-    assert!(GitHubRepository::parse(&format!("owner/{}", "a".repeat(101))).is_err());
+    for oversized in [
+        format!("{}/repo", "a".repeat(40)),
+        format!("owner/{}", "a".repeat(101)),
+    ] {
+        assert_eq!(
+            refusal_reason(&GitHubRepository::parse(&oversized).unwrap_err()),
+            Some(RefusalReason::GithubRepositoryInvalid),
+            "{oversized}"
+        );
+    }
 }
 
 #[test]
@@ -57,9 +71,16 @@ fn github_api_base_urls_are_absolute_hierarchical_and_query_free() {
             "https://api.github.com/graphql".into(),
             Some("token".into()),
         )
-        .unwrap_err()
-        .to_string();
-        assert!(error.contains("query or fragment"), "{invalid}: {error}");
+        .unwrap_err();
+        assert_eq!(
+            refusal_reason(&error),
+            Some(RefusalReason::UrlQueryOrFragment),
+            "{invalid}"
+        );
+        assert!(
+            error.to_string().contains("query or fragment"),
+            "{invalid}: {error}"
+        );
     }
 }
 
@@ -86,8 +107,16 @@ fn github_api_base_urls_use_https_or_http_to_a_numeric_loopback_address() {
         "http://localhost:9",
         "http://192.0.2.1",
     ] {
-        let error = client(untrusted).unwrap_err().to_string();
-        assert!(error.contains("must use HTTPS"), "{untrusted}: {error}");
+        let error = client(untrusted).unwrap_err();
+        assert_eq!(
+            refusal_reason(&error),
+            Some(RefusalReason::UrlTransportUntrusted),
+            "{untrusted}"
+        );
+        assert!(
+            error.to_string().contains("must use HTTPS"),
+            "{untrusted}: {error}"
+        );
     }
 }
 
@@ -160,7 +189,7 @@ async fn draft_creation_binds_target_and_candidate_digest() {
 #[tokio::test]
 async fn release_asset_upload_is_content_addressed_and_never_uses_clobber() {
     let bytes = br#"{"bomFormat":"CycloneDX"}"#;
-    let digest = release_glz::hex::lower(&sha2::Sha256::digest(bytes));
+    let digest = String::from(release_glz::canonical::sha256(bytes));
     let response_body = format!(
         r#"{{"id":77,"name":"sbom.cdx.json","state":"uploaded","content_type":"application/vnd.cyclonedx+json","size":{},"digest":"sha256:{digest}"}}"#,
         bytes.len()
@@ -552,6 +581,11 @@ async fn a_release_pr_at_the_candidate_head_must_describe_the_candidate_release(
             .bind_release_pr_intent(&head, "widget", "1.2.3", "release-glz/", &"1".repeat(64))
             .await
             .unwrap_err();
+        assert_eq!(
+            refusal_reason(&error),
+            Some(RefusalReason::ReleasePrMarkerMismatch),
+            "{case}"
+        );
         assert!(
             error.to_string().contains("describes another release"),
             "{case}: {error:#}"
@@ -590,11 +624,19 @@ async fn an_intent_binds_only_to_a_verified_head_that_carries_no_other_intent() 
     let bind = || client.bind_release_pr_intent(&head, "widget", "1.2.3", "release-glz/", &intent);
 
     let error = bind().await.unwrap_err();
+    assert_eq!(
+        refusal_reason(&error),
+        Some(RefusalReason::ReleasePrHeadUnverified)
+    );
     assert!(
         error.to_string().contains("not the server-verified"),
         "{error:#}"
     );
     let error = bind().await.unwrap_err();
+    assert_eq!(
+        refusal_reason(&error),
+        Some(RefusalReason::ReleasePrIntentConflict)
+    );
     assert!(
         error.to_string().contains("different Candidate intent"),
         "{error:#}"
@@ -633,8 +675,16 @@ async fn a_binding_writes_nothing_over_a_release_pr_that_changed_after_it_was_re
         match case {
             "a newer head" => assert_eq!(result.unwrap(), IntentBinding::Superseded),
             _ => {
-                let error = result.unwrap_err().to_string();
-                assert!(error.contains("changed while"), "{case}: {error}");
+                let error = result.unwrap_err();
+                assert_eq!(
+                    refusal_reason(&error),
+                    Some(RefusalReason::ReleasePrChanged),
+                    "{case}"
+                );
+                assert!(
+                    error.to_string().contains("changed while"),
+                    "{case}: {error}"
+                );
             }
         }
         let requests = server.requests();
@@ -1497,6 +1547,10 @@ async fn an_amended_commit_neither_binds_an_intent_nor_loses_its_branch() {
         .bind_release_pr_intent(&head, "widget", "1.2.3", "release-glz/", &"1".repeat(64))
         .await
         .unwrap_err();
+    assert_eq!(
+        refusal_reason(&error),
+        Some(RefusalReason::ReleasePrHeadUnverified)
+    );
     assert!(
         error.to_string().contains("not the server-verified"),
         "{error:#}"
@@ -1542,10 +1596,12 @@ async fn a_blob_that_cannot_be_read_fails_the_check_instead_of_closing_the_relea
     );
     let mut generated = generated_commit_on(&files, &tip);
     let commit = generated.remove(0);
-    for (case, blob) in [
+    // GitHub's answer, not a rule of release-glz, fails each read, so the message names the answer that failed it.
+    for (case, blob, failure) in [
         (
             "a missing blob",
             response(404, r#"{"message":"Not Found"}"#),
+            "failed with 404 Not Found",
         ),
         (
             "an encoding other than base64",
@@ -1553,6 +1609,7 @@ async fn a_blob_that_cannot_be_read_fails_the_check_instead_of_closing_the_relea
                 200,
                 r#"{"content":"Changelog","encoding":"utf-8","size":9}"#,
             ),
+            "as `utf-8` instead of base64",
         ),
         (
             "content that isn't base64",
@@ -1560,6 +1617,7 @@ async fn a_blob_that_cannot_be_read_fails_the_check_instead_of_closing_the_relea
                 200,
                 r#"{"content":"not base64!","encoding":"base64","size":11}"#,
             ),
+            "with invalid base64 content",
         ),
     ] {
         let server = FakeServer::start(vec![
@@ -1581,7 +1639,8 @@ async fn a_blob_that_cannot_be_read_fails_the_check_instead_of_closing_the_relea
             )
             .await;
 
-        assert!(result.is_err(), "{case}");
+        let error = format!("{:#}", result.unwrap_err());
+        assert!(error.contains(failure), "{case}: {error}");
         let requests = server.requests();
         assert_eq!(requests.len(), 4, "{case}: {requests:#?}");
         assert!(
@@ -1764,6 +1823,7 @@ async fn commit_changes_prefer_merged_pr_metadata_and_deduplicate_pr_numbers() {
         response(200, &merged),
         response(200, &unmerged),
         response(200, "[]"),
+        response(200, "[]"),
     ]);
     let client = test_client(&server, Some("token"));
     let commits = [
@@ -1771,16 +1831,59 @@ async fn commit_changes_prefer_merged_pr_metadata_and_deduplicate_pr_numbers() {
         commit("b", "fix: duplicate fallback must not appear"),
         commit("c", "fix: unmerged fallback"),
         commit("d", "docs: no PR fallback"),
+        Commit {
+            body: "BREAKING CHANGE: drop the old API".into(),
+            ..commit("e", "feat: breaking fallback")
+        },
     ];
 
     let changes = client.changes_for_commits(&commits).await.unwrap();
-    assert_eq!(changes.len(), 3);
+    assert_eq!(changes.len(), 4);
     assert_eq!(changes[0].pull_request, Some(7));
     assert_eq!(changes[0].author.as_deref(), Some("contributor"));
     assert_eq!(changes[0].labels, ["feature"]);
     assert_eq!(changes[1].title, "fix: unmerged fallback");
     assert_eq!(changes[1].pull_request, None);
     assert_eq!(changes[2].title, "docs: no PR fallback");
+    assert_eq!(changes[3].title, "feat: breaking fallback");
+    assert_eq!(
+        changes
+            .iter()
+            .map(|change| change.category.as_str())
+            .collect::<Vec<_>>(),
+        ["Added", "Fixed", "Changed", "Removed"]
+    );
+}
+
+#[tokio::test]
+async fn a_pull_request_entry_takes_the_highest_release_step_of_its_commits() {
+    let merged = serde_json::json!([{
+        "number": 7,
+        "title": "fix: tidy the parser",
+        "body": null,
+        "html_url": "https://github.test/o/r/pull/7",
+        "merge_commit_sha": "b",
+        "merged_at": "2026-01-01T00:00:00Z",
+        "user": {"login": "contributor"},
+        "labels": [],
+        "head": {"ref": "parser", "sha": "b"}
+    }])
+    .to_string();
+    let server = FakeServer::start(vec![response(200, &merged), response(200, &merged)]);
+    let client = test_client(&server, Some("token"));
+    let commits = [
+        commit("a", "fix: tidy the parser"),
+        Commit {
+            body: "BREAKING CHANGE: the parser refuses tabs".into(),
+            ..commit("b", "refactor: drop tab support")
+        },
+    ];
+
+    let changes = client.changes_for_commits(&commits).await.unwrap();
+
+    assert_eq!(changes.len(), 1);
+    assert_eq!(changes[0].title, "fix: tidy the parser");
+    assert_eq!(changes[0].category, "Removed");
 }
 
 #[tokio::test]
@@ -2088,9 +2191,15 @@ async fn actions_artifact_run_requires_the_managed_successful_repository_source(
         let error = client
             .verify_actions_artifact(91, &digest, "42", &source, CandidateRun::Completed)
             .await
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("Candidate run does not match"), "{error}");
+            .unwrap_err();
+        assert_eq!(
+            refusal_reason(&error),
+            Some(RefusalReason::ActionsRunMismatch)
+        );
+        assert!(
+            error.to_string().contains("Candidate run does not match"),
+            "{error}"
+        );
     }
 }
 
@@ -2135,9 +2244,15 @@ async fn a_candidate_from_the_current_run_requires_that_run_to_be_in_progress() 
         let error = test_client(&server, Some("token"))
             .verify_actions_artifact(91, &digest, "42", &source, CandidateRun::Current)
             .await
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("Candidate run does not match"), "{error}");
+            .unwrap_err();
+        assert_eq!(
+            refusal_reason(&error),
+            Some(RefusalReason::ActionsRunMismatch)
+        );
+        assert!(
+            error.to_string().contains("Candidate run does not match"),
+            "{error}"
+        );
     }
 }
 
@@ -2151,20 +2266,32 @@ fn a_push_publishes_only_its_own_candidate_and_a_promotion_only_an_earlier_one()
         CandidateRun::for_event("workflow_dispatch", "43", "42").unwrap(),
         CandidateRun::Completed
     );
-    for (event, current, candidate, expected) in [
-        ("push", "43", "42", "its own run"),
+    for (event, current, candidate, reason, expected) in [
+        (
+            "push",
+            "43",
+            "42",
+            RefusalReason::CandidateRunFromAnotherPush,
+            "its own run",
+        ),
         (
             "workflow_dispatch",
             "42",
             "42",
+            RefusalReason::CandidateRunPromotesItself,
             "completed prior prepare run",
         ),
-        ("schedule", "42", "41", "push or a manual promotion"),
+        (
+            "schedule",
+            "42",
+            "41",
+            RefusalReason::CandidateRunEventUnsupported,
+            "push or a manual promotion",
+        ),
     ] {
-        let error = CandidateRun::for_event(event, current, candidate)
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains(expected), "{event}: {error}");
+        let error = CandidateRun::for_event(event, current, candidate).unwrap_err();
+        assert_eq!(refusal_reason(&error), Some(reason), "{event}");
+        assert!(error.to_string().contains(expected), "{event}: {error}");
     }
 }
 
@@ -2190,6 +2317,10 @@ async fn expired_or_mismatched_actions_artifact_is_not_approval_evidence() {
         .verify_actions_artifact(91, &"d".repeat(64), "42", &source, CandidateRun::Completed)
         .await
         .unwrap_err();
+    assert_eq!(
+        refusal_reason(&error),
+        Some(RefusalReason::ActionsArtifactExpired)
+    );
     assert!(error.to_string().contains("expired"));
 }
 
@@ -2202,16 +2333,43 @@ async fn actions_artifact_validation_checks_every_local_and_server_identity_fiel
     let error = without_token
         .verify_actions_artifact(91, &digest, "42", &source, CandidateRun::Completed)
         .await
-        .unwrap_err()
-        .to_string();
-    assert!(error.contains("GITHUB_TOKEN"), "{error}");
+        .unwrap_err();
+    assert_eq!(
+        refusal_reason(&error),
+        Some(RefusalReason::ApprovalGithubTokenMissing)
+    );
+    assert!(error.to_string().contains("GITHUB_TOKEN"), "{error}");
 
     let client = test_client(&empty_server, Some("token"));
-    for (id, expected_digest, run_id, expected) in [
-        (0, digest.as_str(), "42", "identity is invalid"),
-        (91, "not-a-digest", "42", "identity is invalid"),
-        (91, digest.as_str(), "not-a-run", "run ID is invalid"),
-        (91, digest.as_str(), "042", "run ID is not canonical"),
+    for (id, expected_digest, run_id, reason, expected) in [
+        (
+            0,
+            digest.as_str(),
+            "42",
+            RefusalReason::ActionsArtifactIdentityInvalid,
+            "identity is invalid",
+        ),
+        (
+            91,
+            "not-a-digest",
+            "42",
+            RefusalReason::ActionsArtifactIdentityInvalid,
+            "identity is invalid",
+        ),
+        (
+            91,
+            digest.as_str(),
+            "not-a-run",
+            RefusalReason::ActionsRunIdInvalid,
+            "run ID is invalid",
+        ),
+        (
+            91,
+            digest.as_str(),
+            "042",
+            RefusalReason::ActionsRunIdInvalid,
+            "run ID is not canonical",
+        ),
     ] {
         let error = client
             .verify_actions_artifact(
@@ -2222,9 +2380,12 @@ async fn actions_artifact_validation_checks_every_local_and_server_identity_fiel
                 CandidateRun::Completed,
             )
             .await
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains(expected), "{id}/{run_id}: {error}");
+            .unwrap_err();
+        assert_eq!(refusal_reason(&error), Some(reason), "{id}/{run_id}");
+        assert!(
+            error.to_string().contains(expected),
+            "{id}/{run_id}: {error}"
+        );
     }
 
     let mismatches = [
@@ -2268,9 +2429,16 @@ async fn actions_artifact_validation_checks_every_local_and_server_identity_fiel
         let error = client
             .verify_actions_artifact(91, &digest, "42", &source, CandidateRun::Completed)
             .await
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("does not match"), "case {index}: {error}");
+            .unwrap_err();
+        assert_eq!(
+            refusal_reason(&error),
+            Some(RefusalReason::ActionsArtifactMismatch),
+            "case {index}"
+        );
+        assert!(
+            error.to_string().contains("does not match"),
+            "case {index}: {error}"
+        );
     }
 }
 
@@ -2278,8 +2446,12 @@ async fn actions_artifact_validation_checks_every_local_and_server_identity_fiel
 async fn environment_audit_reports_empty_and_unprotected_configurations_exactly() {
     let empty_server = FakeServer::start(vec![]);
     let client = test_client(&empty_server, Some("token"));
-    let error = client.environment_audit("").await.unwrap_err().to_string();
-    assert!(error.contains("must not be empty"), "{error}");
+    let error = client.environment_audit("").await.unwrap_err();
+    assert_eq!(
+        refusal_reason(&error),
+        Some(RefusalReason::GithubEnvironmentEmpty)
+    );
+    assert!(error.to_string().contains("must not be empty"), "{error}");
 
     let missing_default = FakeServer::start(vec![response(
         200,
@@ -2288,9 +2460,12 @@ async fn environment_audit_reports_empty_and_unprotected_configurations_exactly(
     let error = test_client(&missing_default, Some("token"))
         .environment_audit("release")
         .await
-        .unwrap_err()
-        .to_string();
-    assert!(error.contains("no default branch"), "{error}");
+        .unwrap_err();
+    assert_eq!(
+        refusal_reason(&error),
+        Some(RefusalReason::GithubDefaultBranchMissing)
+    );
+    assert!(error.to_string().contains("no default branch"), "{error}");
 
     let unprotected = FakeServer::start(vec![
         response(
@@ -2345,13 +2520,26 @@ async fn tag_observation_distinguishes_missing_lightweight_and_invalid_objects()
     let lightweight = client.tag_state("v1").await.unwrap().unwrap();
     assert!(!lightweight.annotated);
     assert_eq!(lightweight.target_sha, lightweight_sha);
-    let error = client.tag_state("v2").await.unwrap_err().to_string();
+    let error = client.tag_state("v2").await.unwrap_err();
+    assert_eq!(
+        refusal_reason(&error),
+        Some(RefusalReason::GithubTagTargetNotCommit)
+    );
     assert!(
-        error.contains("does not directly target a commit"),
+        error
+            .to_string()
+            .contains("does not directly target a commit"),
         "{error}"
     );
-    let error = client.tag_state("v3").await.unwrap_err().to_string();
-    assert!(error.contains("unsupported object type"), "{error}");
+    let error = client.tag_state("v3").await.unwrap_err();
+    assert_eq!(
+        refusal_reason(&error),
+        Some(RefusalReason::GithubTagObjectUnsupported)
+    );
+    assert!(
+        error.to_string().contains("unsupported object type"),
+        "{error}"
+    );
 }
 
 #[tokio::test]
@@ -2375,10 +2563,14 @@ async fn annotated_tag_creation_rejects_every_unexpected_server_identity() {
         let error = test_client(&server, Some("token"))
             .create_annotated_tag("v1.2.3", &expected, "release")
             .await
-            .unwrap_err()
-            .to_string();
+            .unwrap_err();
+        assert_eq!(
+            refusal_reason(&error),
+            Some(RefusalReason::GithubTagCreationUnexpected),
+            "{name}"
+        );
         assert!(
-            error.contains("unexpected annotated tag"),
+            error.to_string().contains("unexpected annotated tag"),
             "{name}: {error}"
         );
         assert_eq!(server.requests().len(), 1, "{name}");
@@ -2402,10 +2594,14 @@ async fn release_asset_preflight_rejects_unpublishable_identity_and_untrusted_ur
     let error = client
         .upload_release_asset(&published, "evidence.json", "application/json", b"{}")
         .await
-        .unwrap_err()
-        .to_string();
-    assert!(error.contains("sealed draft"), "{error}");
+        .unwrap_err();
+    assert_eq!(
+        refusal_reason(&error),
+        Some(RefusalReason::ReleaseAssetDraftRequired)
+    );
+    assert!(error.to_string().contains("sealed draft"), "{error}");
 
+    let long_name = "x".repeat(257);
     for name in [
         "",
         ".",
@@ -2413,69 +2609,70 @@ async fn release_asset_preflight_rejects_unpublishable_identity_and_untrusted_ur
         "nested/evidence.json",
         "bad\\name",
         "bad\nname",
+        &long_name,
     ] {
         let error = client
             .upload_release_asset(&release, name, "application/json", b"{}")
             .await
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("name is unsafe"), "{name:?}: {error}");
+            .unwrap_err();
+        assert_eq!(
+            refusal_reason(&error),
+            Some(RefusalReason::ReleaseAssetNameUnsafe),
+            "{name:?}"
+        );
+        assert!(
+            error.to_string().contains("name is unsafe"),
+            "{name:?}: {error}"
+        );
     }
-    let long_name = "x".repeat(257);
-    assert!(
-        client
-            .upload_release_asset(&release, &long_name, "application/json", b"{}")
-            .await
-            .unwrap_err()
-            .to_string()
-            .contains("name is unsafe")
-    );
 
+    let long_media_type = format!("application/{}", "x".repeat(128));
     for media_type in [
         "",
         "json",
         "application/with quote\"",
         "application/bad\\type",
+        &long_media_type,
     ] {
         let error = client
             .upload_release_asset(&release, "evidence.json", media_type, b"{}")
             .await
-            .unwrap_err()
-            .to_string();
+            .unwrap_err();
+        assert_eq!(
+            refusal_reason(&error),
+            Some(RefusalReason::ReleaseAssetMediaTypeInvalid),
+            "{media_type:?}"
+        );
         assert!(
-            error.contains("media type is invalid"),
+            error.to_string().contains("media type is invalid"),
             "{media_type:?}: {error}"
         );
     }
-    let long_media_type = format!("application/{}", "x".repeat(128));
-    assert!(
-        client
-            .upload_release_asset(&release, "evidence.json", &long_media_type, b"{}")
-            .await
-            .unwrap_err()
-            .to_string()
-            .contains("media type is invalid")
-    );
 
-    for (url, expected) in [
+    for (url, reason, expected) in [
         (
             "https://api.github.com/repos/o/r/releases/42/assets",
+            RefusalReason::ReleaseUploadUrlMalformed,
             "unexpected template",
         ),
         (
             "https://api.github.com/repos/o/r/releases/42/assets?unexpected=1{?name,label}",
+            RefusalReason::ReleaseUploadUrlMalformed,
             "query or fragment",
         ),
         (
             "https://evil.example/repos/o/r/releases/42/assets{?name,label}",
+            RefusalReason::ReleaseUploadUrlUntrusted,
             "untrusted origin",
         ),
         (
             "https://uploads.github.com/wrong{?name,label}",
+            RefusalReason::ReleaseUploadUrlMismatch,
             "does not match",
         ),
         (
             "https://api.github.com/repos/o/other/releases/42/assets{?name,label}",
+            RefusalReason::ReleaseUploadUrlMismatch,
             "does not match",
         ),
     ] {
@@ -2487,16 +2684,16 @@ async fn release_asset_preflight_rejects_unpublishable_identity_and_untrusted_ur
                 b"{}",
             )
             .await
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains(expected), "{url}: {error}");
+            .unwrap_err();
+        assert_eq!(refusal_reason(&error), Some(reason), "{url}");
+        assert!(error.to_string().contains(expected), "{url}: {error}");
     }
 }
 
 #[tokio::test]
 async fn release_asset_response_must_match_every_uploaded_byte_identity() {
     let bytes = b"sealed evidence";
-    let digest = release_glz::hex::lower(&sha2::Sha256::digest(bytes));
+    let digest = String::from(release_glz::canonical::sha256(bytes));
     let valid = serde_json::json!({
         "id": 7,
         "name": "evidence.json",
@@ -2533,10 +2730,14 @@ async fn release_asset_response_must_match_every_uploaded_byte_identity() {
         let error = client
             .upload_release_asset(&release, "evidence.json", "application/json", bytes)
             .await
-            .unwrap_err()
-            .to_string();
+            .unwrap_err();
+        assert_eq!(
+            refusal_reason(&error),
+            Some(RefusalReason::ReleaseAssetUploadUnexpected),
+            "case {index}"
+        );
         assert!(
-            error.contains("unexpected immutable identity"),
+            error.to_string().contains("unexpected immutable identity"),
             "case {index}: {error}"
         );
     }
@@ -2589,23 +2790,26 @@ async fn only_an_unfinished_asset_of_a_draft_is_deleted() {
 
     let untouched = FakeServer::start(vec![]);
     let client = test_client(&untouched, Some("token"));
-    for (case, refused, name, expected) in [
+    for (case, refused, name, reason, expected) in [
         (
             "published",
             release(false, vec![asset(77, "evidence.json", "starter")]),
             "evidence.json",
+            RefusalReason::ReleaseAssetOnPublishedRelease,
             "published",
         ),
         (
             "uploaded",
             release(true, vec![asset(77, "evidence.json", "uploaded")]),
             "evidence.json",
+            RefusalReason::ReleaseAssetUploaded,
             "never deletes an uploaded asset",
         ),
         (
             "missing",
             release(true, vec![asset(77, "evidence.json", "starter")]),
             "other.json",
+            RefusalReason::ReleaseAssetMissing,
             "has no asset `other.json`",
         ),
         (
@@ -2618,28 +2822,33 @@ async fn only_an_unfinished_asset_of_a_draft_is_deleted() {
                 ],
             ),
             "evidence.json",
+            RefusalReason::ReleaseAssetDuplicate,
             "duplicate asset",
         ),
         (
             "anonymous",
             release(true, vec![asset(0, "evidence.json", "starter")]),
             "evidence.json",
+            RefusalReason::ReleaseAssetIdMissing,
             "no id",
         ),
     ] {
         let error = client
             .delete_unfinished_release_asset(&refused, name)
             .await
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains(expected), "{case}: {error}");
+            .unwrap_err();
+        assert_eq!(refusal_reason(&error), Some(reason), "{case}");
+        assert!(error.to_string().contains(expected), "{case}: {error}");
     }
     let error = test_client(&untouched, None)
         .delete_unfinished_release_asset(&unfinished, "evidence.json")
         .await
-        .unwrap_err()
-        .to_string();
-    assert!(error.contains("GITHUB_TOKEN"), "{error}");
+        .unwrap_err();
+    assert_eq!(
+        refusal_reason(&error),
+        Some(RefusalReason::GithubTokenMissing)
+    );
+    assert!(error.to_string().contains("GITHUB_TOKEN"), "{error}");
     assert!(untouched.requests().is_empty());
 }
 
@@ -2806,6 +3015,10 @@ async fn a_release_lookup_pages_through_the_list_and_refuses_an_ambiguous_tag() 
         .release_details_for_tag("v1.2.3")
         .await
         .unwrap_err();
+    assert_eq!(
+        refusal_reason(&error),
+        Some(RefusalReason::GithubReleaseTagAmbiguous)
+    );
     assert_eq!(
         release_glz::failure::classify(&error),
         release_glz::failure::FailureClass::ImmutableStateConflict

@@ -5,6 +5,7 @@ use std::process::Command;
 use anyhow::{Result, bail};
 use release_glz::artifact::normalize_hex_tarball;
 use release_glz::candidate::Candidate;
+use release_glz::failure::{RefusalReason, refusal_reason};
 use release_glz::rehearse::{Rehearsal, RehearseOptions};
 use release_glz::release::SourceBoundCandidate;
 use release_glz_test_support::require_gleam;
@@ -114,14 +115,22 @@ manual_refs = ["refs/heads/main"]
 #[tokio::test]
 async fn rehearsal_rejects_noncanonical_source_identifiers_before_creating_output() {
     let temp = tempfile::tempdir().unwrap();
-    for source_ref in [
-        "a".repeat(39),
-        "a".repeat(41),
-        "A".repeat(40),
-        "g".repeat(40),
-        format!("{}g", "a".repeat(39)),
-    ] {
-        let output = temp.path().join(format!("candidate-{}", source_ref.len()));
+    for (index, (source_ref, reason)) in [
+        ("a".repeat(39), "this value has 39 bytes"),
+        ("a".repeat(41), "this value has 41 bytes"),
+        ("g".repeat(64), "this value has 64 bytes"),
+        ("HEAD".to_owned(), "this value has 4 bytes"),
+        ("A".repeat(40), "only the lowercase hexadecimal digits"),
+        ("g".repeat(40), "only the lowercase hexadecimal digits"),
+        (
+            format!("{}g", "a".repeat(39)),
+            "only the lowercase hexadecimal digits",
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let output = temp.path().join(format!("candidate-{index}"));
         let error = Rehearsal::default()
             .run(&RehearseOptions {
                 manifest_path: temp.path().join("missing.toml"),
@@ -129,9 +138,56 @@ async fn rehearsal_rejects_noncanonical_source_identifiers_before_creating_outpu
                 output: output.clone(),
             })
             .await
-            .unwrap_err()
-            .to_string();
+            .unwrap_err();
+        assert_eq!(
+            refusal_reason(&error),
+            Some(RefusalReason::CandidateSourceCommitInvalid)
+        );
+        let error = error.to_string();
         assert!(error.contains("full lowercase commit SHA"), "{error}");
+        assert!(error.contains(reason), "{error}");
+        assert!(!output.exists());
+    }
+}
+
+#[tokio::test]
+async fn rehearsal_refuses_a_sha256_repository_before_building() {
+    let temp = tempfile::tempdir().unwrap();
+    let repository = temp.path().join("repo");
+    fs::create_dir_all(&repository).unwrap();
+    fs::write(
+        repository.join("gleam.toml"),
+        "name = \"sha256_fixture\"\nversion = \"1.0.0\"\n",
+    )
+    .unwrap();
+    release_glz_test_support::git(
+        &repository,
+        &["init", "--object-format=sha256", "--initial-branch=main"],
+    );
+    release_glz_test_support::git(&repository, &["add", "."]);
+    release_glz_test_support::git(&repository, &["commit", "-m", "test: fixture"]);
+    let head = release_glz_test_support::git(&repository, &["rev-parse", "HEAD"])
+        .trim()
+        .to_owned();
+    assert_eq!(head.len(), 64, "{head}");
+
+    // The repository decides, so a value that would be a commit ID of a SHA-1 repository is refused the same way.
+    for (index, source_ref) in [head, "a".repeat(40)].into_iter().enumerate() {
+        let output = temp.path().join(format!("candidate-{index}"));
+        let error = Rehearsal::default()
+            .run(&RehearseOptions {
+                manifest_path: repository.join("gleam.toml"),
+                source_ref,
+                output: output.clone(),
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(
+            refusal_reason(&error),
+            Some(RefusalReason::RepositoryObjectFormatUnsupported)
+        );
+        let error = error.to_string();
+        assert!(error.contains("`sha256`"), "{error}");
         assert!(!output.exists());
     }
 }
@@ -162,18 +218,46 @@ async fn rehearsal_rejects_missing_symbolic_unconfigured_and_wrong_compiler_sour
             output: missing_output.clone(),
         })
         .await
-        .unwrap_err()
-        .to_string();
+        .unwrap_err();
+    assert_eq!(
+        refusal_reason(&missing),
+        Some(RefusalReason::SourceCommitUnresolved)
+    );
+    let missing = missing.to_string();
     assert!(
         missing.contains("source commit does not exist"),
         "{missing}"
     );
     assert!(!missing_output.exists());
 
-    // In a SHA-1 repository, 40 hexadecimal characters are parsed as an object ID before DWIM ref lookup.
-    // A 64-character branch exercises the symbolic ref guard while remaining a valid full SHA for SHA-256 repositories.
-    let symbolic_ref = "a".repeat(64);
-    git(&repository, &["branch", &symbolic_ref])?;
+    // A SHA-256 object ID in a SHA-1 repository names no commit that GitHub serves.
+    let sha256_output = temp.path().join("sha256-candidate");
+    let sha256 = Rehearsal::default()
+        .run(&RehearseOptions {
+            manifest_path: manifest_path.clone(),
+            source_ref: "a".repeat(64),
+            output: sha256_output.clone(),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(
+        refusal_reason(&sha256),
+        Some(RefusalReason::CandidateSourceCommitInvalid)
+    );
+    let sha256 = sha256.to_string();
+    assert!(
+        sha256.contains("a SHA-256 object ID isn't a GitHub commit ID"),
+        "{sha256}"
+    );
+    assert!(!sha256_output.exists());
+
+    // An annotated tag's object ID is a full object ID that peels to a different commit ID, which the guard against symbolic refs refuses.
+    git(
+        &repository,
+        &["tag", "--annotate", "guard", "--message", "guard"],
+    )?;
+    let symbolic_ref = git_stdout(&repository, &["rev-parse", "refs/tags/guard"])?;
+    assert_ne!(symbolic_ref, sha);
     let symbolic_output = temp.path().join("symbolic-candidate");
     let symbolic = Rehearsal::default()
         .run(&RehearseOptions {
@@ -182,8 +266,12 @@ async fn rehearsal_rejects_missing_symbolic_unconfigured_and_wrong_compiler_sour
             output: symbolic_output.clone(),
         })
         .await
-        .unwrap_err()
-        .to_string();
+        .unwrap_err();
+    assert_eq!(
+        refusal_reason(&symbolic),
+        Some(RefusalReason::SourceCommitUnresolved)
+    );
+    let symbolic = symbolic.to_string();
     assert!(symbolic.contains("exact full commit SHA"), "{symbolic}");
     assert!(!symbolic_output.exists());
 
@@ -197,8 +285,8 @@ async fn rehearsal_rejects_missing_symbolic_unconfigured_and_wrong_compiler_sour
         .await
         .unwrap_err();
     assert_eq!(
-        release_glz::failure::classify(&unconfigured),
-        release_glz::failure::FailureClass::UsageOrConfig
+        refusal_reason(&unconfigured),
+        Some(RefusalReason::ConfigMissing)
     );
     let unconfigured = unconfigured.to_string();
     assert!(
@@ -226,8 +314,12 @@ async fn rehearsal_rejects_missing_symbolic_unconfigured_and_wrong_compiler_sour
             output: wrong_output.clone(),
         })
         .await
-        .unwrap_err()
-        .to_string();
+        .unwrap_err();
+    assert_eq!(
+        refusal_reason(&wrong),
+        Some(RefusalReason::GleamCompilerMismatch)
+    );
+    let wrong = wrong.to_string();
     assert!(
         wrong.contains("configured Gleam compiler 99.0.0"),
         "{wrong}"

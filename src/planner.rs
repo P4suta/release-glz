@@ -8,7 +8,7 @@ use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -17,7 +17,9 @@ use crate::api;
 use crate::artifact;
 use crate::changelog::{self, ReleaseNotesConfig};
 use crate::config::{ApprovalMode, Manifest, ReleaseConfig};
-use crate::failure::{FailureClass, classified, with_default_class};
+use crate::failure::{
+    FailureClass, Refusal, RefusalReason, classified, refused, with_default_class,
+};
 use crate::git::{Commit, GitRepo};
 use crate::gleam::Gleam;
 use crate::model::{
@@ -25,7 +27,8 @@ use crate::model::{
     ChangeEntry, Diagnostic, DiagnosticLevel, ReasonKind, ReleasePlan, ReleaseReason, ReleaseStage,
     ReleaseState,
 };
-use crate::registry::{HexRegistry, PackageState, Registry};
+use crate::refuse;
+use crate::registry::{HexRegistry, HexRelease, PackageState, Registry};
 use crate::version::{bump_between, effective_bump, follows, initial_version, select_version};
 
 const DEFAULT_BASELINE_SEARCH_LIMIT: usize = 2_048;
@@ -57,6 +60,29 @@ struct BaselineSearch<'a> {
     retired: bool,
     published: &'a artifact::NormalizedArtifact,
     published_fingerprint: &'a str,
+}
+
+/// The registry releases that a plan for an already published package starts from.
+struct Published {
+    latest: HexRelease,
+    latest_stable: Option<Version>,
+}
+
+impl Published {
+    /// The latest and latest stable releases of `state`, or `None` when it has no release.
+    ///
+    /// Both are resolved before any download, so a precedence tie refuses whether or not a release turns out to be required.
+    fn of(state: &PackageState) -> Result<Option<Self>> {
+        let Some(latest) = state.latest()? else {
+            return Ok(None);
+        };
+        Ok(Some(Self {
+            latest: latest.clone(),
+            latest_stable: state
+                .latest_stable()?
+                .map(|release| release.version.clone()),
+        }))
+    }
 }
 
 fn default_baseline_cache_dir() -> Option<PathBuf> {
@@ -162,7 +188,8 @@ impl<R: Registry> Planner<R> {
         let manifest = Manifest::load(committed.package_dir().join("gleam.toml"))?;
         let release = manifest.release()?;
         if compiler != release.compiler {
-            bail!(
+            refuse!(
+                GleamCompilerMismatch,
                 "configured Gleam compiler {} is required; found {compiler}",
                 release.compiler
             );
@@ -173,14 +200,22 @@ impl<R: Registry> Planner<R> {
             .await
             .map_err(|error| with_default_class(error, FailureClass::TemporaryExternal))?;
 
-        let mut plan = match package_state {
+        let published = match &package_state {
+            Some(state) => Published::of(state)?,
+            None => None,
+        };
+        let mut plan = match published {
             None => self.initial_plan(&manifest, release, &repo, options).await,
-            Some(state) if state.latest().is_none() => {
-                self.initial_plan(&manifest, release, &repo, options).await
-            }
-            Some(state) => {
-                self.existing_plan(&manifest, release, &repo, package_relative, state, options)
-                    .await
+            Some(published) => {
+                self.existing_plan(
+                    &manifest,
+                    release,
+                    &repo,
+                    package_relative,
+                    published,
+                    options,
+                )
+                .await
             }
         }?;
         plan.manifest_path = relative_manifest.to_string_lossy().replace('\\', "/");
@@ -246,22 +281,24 @@ impl<R: Registry> Planner<R> {
         release: &ReleaseConfig,
         repo: &GitRepo,
         package_relative: &std::path::Path,
-        state: PackageState,
+        published: Published,
         options: &PlanOptions,
     ) -> Result<ReleasePlan> {
-        let latest = state.latest().expect("checked above").clone();
+        let Published {
+            latest,
+            latest_stable,
+        } = published;
         let candidate = options
             .version_override
             .as_ref()
             .unwrap_or(&manifest.version);
         if follows(&latest.version, candidate) {
-            return Err(classified(
-                FailureClass::PolicyOrApproval,
-                format!(
-                    "manifest version {} is behind the latest Hex release {}; run `release-glz release-pr` or set a higher version",
-                    candidate, latest.version
-                ),
-            ));
+            refuse!(
+                ManifestVersionBehindPublished,
+                "manifest version {} is behind the latest Hex release {}; run `release-glz release-pr` or set a higher version",
+                candidate,
+                latest.version
+            );
         }
         // Validate the API exception before any potentially long artifact-fingerprint history scan.
         let api_exception = validated_api_exception(release, repo, &latest.version)?;
@@ -399,7 +436,7 @@ impl<R: Registry> Planner<R> {
         let selected = if release_required {
             select_version(
                 &latest.version,
-                state.latest_stable().map(|release| &release.version),
+                latest_stable.as_ref(),
                 required,
                 explicit,
                 configured_prerelease,
@@ -502,8 +539,11 @@ impl<R: Registry> Planner<R> {
         }
 
         if let Some(git_ref) = release.baseline_refs.get(version) {
-            let sha = repo.resolve(git_ref)?.with_context(|| {
-                format!("configured baseline ref `{git_ref}` cannot be resolved")
+            let sha = repo.resolve(git_ref)?.ok_or_else(|| {
+                refused(
+                    RefusalReason::BaselineRefUnresolved,
+                    format_args!("configured baseline ref `{git_ref}` cannot be resolved"),
+                )
             })?;
             return Ok(Baseline {
                 version: Some(version.clone()),
@@ -557,18 +597,16 @@ impl<R: Registry> Planner<R> {
         }
 
         if truncated {
-            return Err(classified(
-                FailureClass::PolicyOrApproval,
-                format!(
-                    "bounded artifact baseline search inspected {} commits without a match; add `[tools.release-glz.baseline_refs]` for {version} instead of expanding an unbounded history scan",
-                    self.baseline_search_limit
-                ),
-            ));
+            refuse!(
+                BaselineNotFound,
+                "bounded artifact baseline search inspected {} commits without a match; add `[tools.release-glz.baseline_refs]` for {version} instead of expanding an unbounded history scan",
+                self.baseline_search_limit
+            );
         }
 
-        Err(classified(
-            FailureClass::PolicyOrApproval,
-            format!(
+        Err(refused(
+            RefusalReason::BaselineNotFound,
+            format_args!(
                 "the Hex artifact for {version} does not match any commit and tag `{tag}` is missing; add `[tools.release-glz.baseline_refs]` with `\"{version}\" = \"<sha>\"`"
             ),
         ))
@@ -587,11 +625,10 @@ impl<R: Registry> Planner<R> {
         digest.update(search.version.to_string().as_bytes());
         digest.update(b"\0");
         digest.update(search.published_fingerprint.as_bytes());
-        Some(
-            root.join("release-glz")
-                .join("baselines")
-                .join(format!("{}.json", crate::hex::lower(&digest.finalize()))),
-        )
+        Some(root.join("release-glz").join("baselines").join(format!(
+            "{}.json",
+            crate::canonical::finalize_sha256(digest)
+        )))
     }
 
     fn validated_cached_baseline(
@@ -700,18 +737,19 @@ fn validated_api_exception(
     let expires = chrono::NaiveDate::parse_from_str(&exception.expires, "%Y-%m-%d")
         .expect("API exception dates are validated while parsing configuration");
     if expires < chrono::Utc::now().date_naive() {
-        return Err(classified(
-            FailureClass::PolicyOrApproval,
-            format!(
-                "API exception for {version} expired on {}; remove it or complete a newly reviewed exception",
-                exception.expires
-            ),
-        ));
+        refuse!(
+            ApiExceptionExpired,
+            "API exception for {version} expired on {}; remove it or complete a newly reviewed exception",
+            exception.expires
+        );
     }
-    repo.resolve(&exception.baseline)?.with_context(|| {
-        format!(
-            "API exception baseline `{}` for {version} cannot be resolved",
-            exception.baseline
+    repo.resolve(&exception.baseline)?.ok_or_else(|| {
+        refused(
+            RefusalReason::BaselineRefUnresolved,
+            format_args!(
+                "API exception baseline `{}` for {version} cannot be resolved",
+                exception.baseline
+            ),
         )
     })?;
     Ok(Some(format!(
@@ -800,7 +838,12 @@ pub fn prepare_release_files(
         .canonicalize()
         .or_else(|_| Ok::<_, std::io::Error>(manifest.path().to_path_buf()))?
         .strip_prefix(repo.root().canonicalize()?)
-        .context("manifest is outside git repository")?
+        .with_context(|| {
+            Refusal::new(
+                RefusalReason::ReleaseFileOutsideRepository,
+                "manifest is outside git repository",
+            )
+        })?
         .to_string_lossy()
         .replace('\\', "/");
     let changelog_relative = if changelog_path.exists() {
@@ -812,7 +855,12 @@ pub fn prepare_release_files(
             .join(&changelog_config.path)
     }
     .strip_prefix(repo.root().canonicalize()?)
-    .context("changelog is outside git repository")?
+    .with_context(|| {
+        Refusal::new(
+            RefusalReason::ReleaseFileOutsideRepository,
+            "changelog is outside git repository",
+        )
+    })?
     .to_string_lossy()
     .replace('\\', "/");
     Ok(BTreeMap::from([
@@ -871,13 +919,11 @@ fn first_version(
     if let Some(explicit) = &options.version_override
         && follows(&manifest.version, explicit)
     {
-        return Err(classified(
-            FailureClass::PolicyOrApproval,
-            format!(
-                "release policy forbids lowering the manifest version from {} to {explicit}",
-                manifest.version
-            ),
-        ));
+        refuse!(
+            VersionLoweringForbidden,
+            "release policy forbids lowering the manifest version from {} to {explicit}",
+            manifest.version
+        );
     }
     let requested = options
         .version_override
@@ -927,7 +973,9 @@ fn commit_entries(commits: &[Commit]) -> Vec<ChangeEntry> {
             author: Some(commit.author_name.clone()),
             url: None,
             labels: vec![],
-            category: changelog::default_category(&commit.subject),
+            category: changelog::default_category(&commit.subject, &commit.body)
+                .title()
+                .into(),
         })
         .collect()
 }
@@ -1113,16 +1161,20 @@ manual_refs = ["refs/heads/main"]
             commit("987654321", "perf: faster"),
             commit("short", "feat!: remove API"),
             commit("7654321", "docs: explain"),
+            Commit {
+                body: "BREAKING CHANGE: drop the old API".into(),
+                ..commit("1234567", "feat: replace API")
+            },
             commit("0000000", "chore(release): widget 1.2.3"),
         ];
         let entries = commit_entries(&commits);
-        assert_eq!(entries.len(), 5);
+        assert_eq!(entries.len(), 6);
         assert_eq!(
             entries
                 .iter()
                 .map(|entry| entry.category.as_str())
                 .collect::<Vec<_>>(),
-            ["Added", "Fixed", "Fixed", "Removed", "Changed"]
+            ["Added", "Fixed", "Fixed", "Removed", "Changed", "Removed"]
         );
         assert!(
             entries

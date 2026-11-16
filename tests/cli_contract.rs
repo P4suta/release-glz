@@ -195,7 +195,7 @@ fn commands_that_read_the_release_configuration_refuse_a_manifest_without_it() {
         assert_published_envelope(&value);
         assert_eq!(value["command"], command[0]);
         assert_eq!(value["ok"], false);
-        assert_eq!(value["diagnostics"][0]["code"], "usage_or_config");
+        assert_eq!(value["diagnostics"][0]["code"], "config_missing");
         let message = value["diagnostics"][0]["message"].as_str().unwrap();
         assert!(
             message.contains("[tools.release-glz]") && message.contains("release-glz init"),

@@ -11,7 +11,9 @@ use anyhow::{Context, Result};
 use chrono::{NaiveDate, Utc};
 use serde::Deserialize;
 
-use crate::model::ChangeEntry;
+use crate::git::conventional_bump;
+use crate::model::{Bump, ChangeEntry};
+use crate::refuse;
 use crate::units::KIB;
 
 /// Structured note files one package may carry at once.
@@ -68,19 +70,27 @@ pub struct Category {
     pub labels: BTreeSet<String>,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize)]
+/// A Keep a Changelog section, which a structured note names in lowercase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
-enum NoteCategory {
+pub enum NoteCategory {
+    /// New features.
     Added,
+    /// Changes in existing behavior.
     Changed,
+    /// Features that a later release removes.
     Deprecated,
+    /// Bug fixes.
     Fixed,
+    /// Removed features.
     Removed,
+    /// Fixed vulnerabilities.
     Security,
 }
 
 impl NoteCategory {
-    fn title(self) -> &'static str {
+    /// The section heading.
+    pub fn title(self) -> &'static str {
         match self {
             Self::Added => "Added",
             Self::Changed => "Changed",
@@ -174,7 +184,10 @@ pub fn load_structured_notes(
     }
     let metadata = fs::symlink_metadata(&directory)?;
     if !metadata.file_type().is_dir() {
-        anyhow::bail!("structured changelog notes path is not a directory");
+        refuse!(
+            ChangelogNotesLayoutInvalid,
+            "structured changelog notes path is not a directory"
+        );
     }
     let mut paths = fs::read_dir(&directory)?
         .collect::<std::io::Result<Vec<_>>>()?
@@ -187,7 +200,10 @@ pub fn load_structured_notes(
         .collect::<Vec<_>>();
     paths.sort();
     if paths.len() > MAX_NOTE_FILES {
-        anyhow::bail!("structured changelog notes exceed the {MAX_NOTE_FILES} file limit");
+        refuse!(
+            ChangelogNotesLayoutInvalid,
+            "structured changelog notes exceed the {MAX_NOTE_FILES} file limit"
+        );
     }
     let released = released_note_ids(existing_changelog);
     let mut ids = BTreeSet::new();
@@ -195,7 +211,8 @@ pub fn load_structured_notes(
     for path in paths {
         let metadata = fs::symlink_metadata(&path)?;
         if !metadata.file_type().is_file() || metadata.len() > MAX_NOTE_BYTES {
-            anyhow::bail!(
+            refuse!(
+                ChangelogNotesLayoutInvalid,
                 "structured changelog note must be a regular file under {} KiB",
                 MAX_NOTE_BYTES / KIB
             );
@@ -279,17 +296,26 @@ fn validate_note(note: &StructuredNote, path: &Path) -> Result<()> {
             _ => false,
         });
     if !valid_id || path.file_stem().and_then(|stem| stem.to_str()) != Some(note.id.as_str()) {
-        anyhow::bail!("structured changelog note id must be safe and match its filename");
+        refuse!(
+            ChangelogNoteInvalid,
+            "structured changelog note id must be safe and match its filename"
+        );
     }
     if note.text.is_empty()
         || note.text.len() > MAX_NOTE_TEXT_LEN
         || note.text.trim() != note.text
         || note.text.contains(['\n', '\r', '\0'])
     {
-        anyhow::bail!("structured changelog note text must be one non-empty trimmed line");
+        refuse!(
+            ChangelogNoteInvalid,
+            "structured changelog note text must be one non-empty trimmed line"
+        );
     }
     if note.pull_request == Some(0) {
-        anyhow::bail!("structured changelog note pull_request must be positive");
+        refuse!(
+            ChangelogNoteInvalid,
+            "structured changelog note pull_request must be positive"
+        );
     }
     Ok(())
 }
@@ -404,28 +430,50 @@ fn release_section_range(changelog: &str, version: &str) -> Option<Range<usize>>
     Some(start..end)
 }
 
-/// The section a Conventional Commit title belongs in by default.
-pub fn default_category(title: &str) -> String {
-    let kind = title
-        .split(':')
-        .next()
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    if kind.contains('!') {
-        "Removed"
-    } else if kind.starts_with("feat") {
-        "Added"
-    } else if kind.starts_with("fix") || kind.starts_with("perf") {
-        "Fixed"
-    } else {
-        "Changed"
+/// The section a Conventional Commit message belongs in by default, from the release step that the core assigns to its subject and body.
+pub fn default_category(subject: &str, body: &str) -> NoteCategory {
+    category_of(conventional_bump(subject, body))
+}
+
+/// The section for a change that asks for the release step `bump`.
+pub const fn category_of(bump: Bump) -> NoteCategory {
+    match bump {
+        Bump::Major => NoteCategory::Removed,
+        Bump::Minor => NoteCategory::Added,
+        Bump::Patch => NoteCategory::Fixed,
+        Bump::None => NoteCategory::Changed,
     }
-    .to_owned()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::failure::{RefusalReason, refusal_reason};
+
+    /// The reason and message of the refusal that loading the notes under `notes` of `package_root` ends in.
+    fn notes_refusal(package_root: &Path, notes: &str) -> (Option<RefusalReason>, String) {
+        let error = load_structured_notes(package_root, Path::new(notes), None).unwrap_err();
+        (refusal_reason(&error), error.to_string())
+    }
+
+    /// A refusal of the notes directory with `message`.
+    fn layout(message: &str) -> (Option<RefusalReason>, String) {
+        (
+            Some(RefusalReason::ChangelogNotesLayoutInvalid),
+            message.to_owned(),
+        )
+    }
+
+    /// A refusal of one note with `message`.
+    fn note(message: &str) -> (Option<RefusalReason>, String) {
+        (
+            Some(RefusalReason::ChangelogNoteInvalid),
+            message.to_owned(),
+        )
+    }
+
+    const NOTE_TEXT: &str = "structured changelog note text must be one non-empty trimmed line";
+    const NOTE_FILE: &str = "structured changelog note must be a regular file under 64 KiB";
 
     #[test]
     fn released_ids_agree_with_searching_for_each_marker() {
@@ -531,7 +579,10 @@ mod tests {
             "id = \"multiline\"\ncategory = \"changed\"\ntext = \"first\\nsecond\"\n",
         )
         .unwrap();
-        assert!(load_structured_notes(temp.path(), Path::new(".release-glz/notes"), None).is_err());
+        assert_eq!(
+            notes_refusal(temp.path(), ".release-glz/notes"),
+            note(NOTE_TEXT)
+        );
     }
 
     #[test]
@@ -543,8 +594,17 @@ mod tests {
                 .categories
                 .is_empty()
         );
-        fs::write(temp.path().join("invalid.yml"), "changelog: [").unwrap();
-        assert!(ReleaseNotesConfig::load(&temp.path().join("invalid.yml")).is_err());
+        let invalid = temp.path().join("invalid.yml");
+        fs::write(&invalid, "changelog: [").unwrap();
+        let error = ReleaseNotesConfig::load(&invalid).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!("invalid release notes config `{}`", invalid.display())
+        );
+        assert!(
+            error.downcast_ref::<serde_norway::Error>().is_some(),
+            "{error:#}"
+        );
 
         let source = r#"changelog:
   exclude:
@@ -624,21 +684,24 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("notes");
         fs::write(&path, "not a directory").unwrap();
-        assert!(load_structured_notes(temp.path(), Path::new("notes"), None).is_err());
+        assert_eq!(
+            notes_refusal(temp.path(), "notes"),
+            layout("structured changelog notes path is not a directory")
+        );
 
         fs::remove_file(&path).unwrap();
         fs::create_dir(&path).unwrap();
         fs::write(path.join("large.toml"), vec![b'x'; 64 * 1024 + 1]).unwrap();
-        assert!(load_structured_notes(temp.path(), Path::new("notes"), None).is_err());
+        assert_eq!(notes_refusal(temp.path(), "notes"), layout(NOTE_FILE));
 
         fs::remove_file(path.join("large.toml")).unwrap();
         for index in 0..=1_000 {
             fs::write(path.join(format!("{index}.toml")), "").unwrap();
         }
-        let error = load_structured_notes(temp.path(), Path::new("notes"), None)
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("1000 file limit"), "{error}");
+        assert_eq!(
+            notes_refusal(temp.path(), "notes"),
+            layout("structured changelog notes exceed the 1000 file limit")
+        );
     }
 
     #[cfg(unix)]
@@ -646,26 +709,32 @@ mod tests {
     fn structured_notes_reject_symlinks_and_validate_each_identity_and_text_boundary() {
         use std::os::unix::fs::symlink;
 
-        for (filename, source) in [
+        let id = "structured changelog note id must be safe and match its filename";
+        for (filename, source, message) in [
             (
                 "0numeric.toml",
                 "id = \"0numeric\"\ncategory = \"added\"\ntext = \"text\"\n",
+                id,
             ),
             (
                 "bad name.toml",
                 "id = \"bad name\"\ncategory = \"changed\"\ntext = \"text\"\n",
+                id,
             ),
             (
                 "mismatch.toml",
                 "id = \"other\"\ncategory = \"fixed\"\ntext = \"text\"\n",
+                id,
             ),
             (
                 "empty.toml",
                 "id = \"empty\"\ncategory = \"removed\"\ntext = \"\"\n",
+                NOTE_TEXT,
             ),
             (
                 "spaced.toml",
                 "id = \"spaced\"\ncategory = \"deprecated\"\ntext = \" text \"\n",
+                NOTE_TEXT,
             ),
             (
                 "long.toml",
@@ -673,19 +742,22 @@ mod tests {
                     "id = \"long\"\ncategory = \"security\"\ntext = \"{}\"\n",
                     "x".repeat(1_001)
                 ),
+                NOTE_TEXT,
             ),
             (
                 "zero-pr.toml",
                 "id = \"zero-pr\"\ncategory = \"fixed\"\ntext = \"text\"\npull_request = 0\n",
+                "structured changelog note pull_request must be positive",
             ),
         ] {
             let temp = tempfile::tempdir().unwrap();
             let notes = temp.path().join("notes");
             fs::create_dir(&notes).unwrap();
             fs::write(notes.join(filename), source).unwrap();
-            assert!(
-                load_structured_notes(temp.path(), Path::new("notes"), None).is_err(),
-                "accepted invalid note {filename}"
+            assert_eq!(
+                notes_refusal(temp.path(), "notes"),
+                note(message),
+                "{filename}"
             );
         }
 
@@ -698,7 +770,7 @@ mod tests {
         )
         .unwrap();
         symlink("target.toml", notes.join("linked.toml")).unwrap();
-        assert!(load_structured_notes(temp.path(), Path::new("notes"), None).is_err());
+        assert_eq!(notes_refusal(temp.path(), "notes"), layout(NOTE_FILE));
     }
 
     #[test]
@@ -765,19 +837,34 @@ mod tests {
             without_unreleased
         );
         assert!(!without_release_section(&without_unreleased, "2.0.0").contains("with number"));
+    }
 
-        for (title, category) in [
-            ("feat!: remove", "Removed"),
-            ("feat: add", "Added"),
-            ("fix: bug", "Fixed"),
-            ("perf: fast", "Fixed"),
-            ("docs: words", "Changed"),
-            ("", "Changed"),
-            ("Feat: add", "Added"),
-            ("FIX: bug", "Fixed"),
-            ("Perf(core): fast", "Fixed"),
-        ] {
-            assert_eq!(default_category(title), category, "{title}");
-        }
+    #[test]
+    fn the_default_category_follows_the_release_step_of_the_core() {
+        let footer = "details\n\nBREAKING CHANGE: y";
+        let disagreements = [
+            ("feat: x", "", Bump::Minor, NoteCategory::Added),
+            ("Feat: add", "", Bump::Minor, NoteCategory::Added),
+            ("FEAT: x", "", Bump::Minor, NoteCategory::Added),
+            ("feat(a!b): x", "", Bump::Minor, NoteCategory::Added),
+            ("fix: x", "", Bump::Patch, NoteCategory::Fixed),
+            ("FIX: bug", "", Bump::Patch, NoteCategory::Fixed),
+            ("perf: x", "", Bump::Patch, NoteCategory::Fixed),
+            ("Perf(core): fast", "", Bump::Patch, NoteCategory::Fixed),
+            ("feat!: x", "", Bump::Major, NoteCategory::Removed),
+            ("feat(scope)!: x", "", Bump::Major, NoteCategory::Removed),
+            ("feat: x", footer, Bump::Major, NoteCategory::Removed),
+            ("feature: x", "", Bump::None, NoteCategory::Changed),
+            ("chore: x", "", Bump::None, NoteCategory::Changed),
+            ("update the docs", "", Bump::None, NoteCategory::Changed),
+            ("", "", Bump::None, NoteCategory::Changed),
+        ]
+        .into_iter()
+        .filter(|&(subject, body, bump, category)| {
+            conventional_bump(subject, body) != bump || default_category(subject, body) != category
+        })
+        .map(|(subject, body, ..)| (subject, body, default_category(subject, body)))
+        .collect::<Vec<_>>();
+        assert_eq!(disagreements, []);
     }
 }

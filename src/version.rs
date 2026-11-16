@@ -3,11 +3,13 @@
 //! The decisions live in `release-glz-core`, where Kani proves them, and this module adapts `semver` versions to them and words their refusals.
 //! Precedence there ignores build metadata, as semantic versioning does.
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Result, anyhow};
 use release_glz_core::{Computed, Initial, Pre, Refusal, Selection, VersionCore};
 use semver::{Prerelease, Version};
 
+use crate::failure::RefusalReason;
 use crate::model::{Bump, PrereleaseChannel, bump_name};
+use crate::refuse;
 
 /// Drop the prerelease and build metadata, leaving `major.minor.patch`.
 pub fn core(version: &Version) -> Version {
@@ -42,7 +44,10 @@ pub fn follows(version: &Version, other: &Version) -> bool {
 pub fn apply_bump(version: &Version, bump: Bump) -> Result<Version> {
     let Some(next) = version_core(version).bumped(bump) else {
         let bump = bump_name(bump);
-        bail!("{version} has the largest {bump} number, so no {bump} release can follow it");
+        refuse!(
+            VersionNumberExhausted,
+            "{version} has the largest {bump} number, so no {bump} release can follow it"
+        );
     };
     Ok(Version::new(next.major, next.minor, next.patch))
 }
@@ -114,7 +119,8 @@ pub fn initial_version(
             initial.build = version.build.clone();
             Ok(initial)
         }
-        Err(Refusal::ExplicitOffTrain { channel }) => bail!(
+        Err(Refusal::ExplicitOffTrain { channel }) => refuse!(
+            ExplicitVersionRefused,
             "initial version {version} does not belong to the configured {} prerelease train",
             channel.label()
         ),
@@ -157,59 +163,88 @@ fn text(computed: Computed) -> String {
     }
 }
 
-/// The error that explains a refusal of the core crate.
+/// The typed refusal that explains a refusal of the core crate.
 fn refused(refusal: Refusal, published: &Version, explicit: Option<&Version>) -> anyhow::Error {
     let current = published.pre.as_str().split('.').next().unwrap_or_default();
     let core_text = |core: VersionCore| format!("{}.{}.{}", core.major, core.minor, core.patch);
     let explicit = explicit.map_or_else(String::new, ToString::to_string);
-    anyhow!(match refusal {
-        Refusal::StepOverflow { core, bump } => format!(
-            "{} has the largest {bump} number, so no {bump} release can follow it",
-            core_text(core),
-            bump = bump_name(bump)
+    let (reason, message) = match refusal {
+        Refusal::StepOverflow { core, bump } => (
+            RefusalReason::VersionNumberExhausted,
+            format!(
+                "{} has the largest {bump} number, so no {bump} release can follow it",
+                core_text(core),
+                bump = bump_name(bump)
+            ),
         ),
-        Refusal::BehindPublishedCore { target } => format!(
-            "prerelease core {} is behind published {}",
-            core_text(target),
-            core(published)
+        Refusal::BehindPublishedCore { target } => (
+            RefusalReason::PrereleaseTrainBackward,
+            format!(
+                "prerelease core {} is behind published {}",
+                core_text(target),
+                core(published)
+            ),
         ),
-        Refusal::BackwardOnPublishedCore { channel } => format!(
-            "cannot move prerelease channel backwards from {current} to {}; choose an explicitly higher core version",
-            channel.label()
+        Refusal::BackwardOnPublishedCore { channel } => (
+            RefusalReason::PrereleaseTrainBackward,
+            format!(
+                "cannot move prerelease channel backwards from {current} to {}; choose an explicitly higher core version",
+                channel.label()
+            ),
         ),
-        Refusal::BackwardWithoutExplicitCore { channel } => format!(
-            "moving prerelease channel backwards from {current} to {} requires an explicitly higher core version",
-            channel.label()
+        Refusal::BackwardWithoutExplicitCore { channel } => (
+            RefusalReason::PrereleaseTrainBackward,
+            format!(
+                "moving prerelease channel backwards from {current} to {} requires an explicitly higher core version",
+                channel.label()
+            ),
         ),
-        Refusal::TrainExhausted => format!(
-            "{published} has the largest {current} number, so choose an explicitly higher core version"
+        Refusal::TrainExhausted => (
+            RefusalReason::VersionNumberExhausted,
+            format!(
+                "{published} has the largest {current} number, so choose an explicitly higher core version"
+            ),
         ),
-        Refusal::TrainNotAfterPublished { next } => format!(
-            "selected prerelease {} does not sort after published {published}; choose an explicitly higher core version",
-            text(next)
+        Refusal::TrainNotAfterPublished { next } => (
+            RefusalReason::PrereleaseTrainBackward,
+            format!(
+                "selected prerelease {} does not sort after published {published}; choose an explicitly higher core version",
+                text(next)
+            ),
         ),
-        Refusal::ExplicitOffTrain { channel } => format!(
-            "explicit version {explicit} does not belong to the configured {} prerelease train",
-            channel.label()
+        Refusal::ExplicitOffTrain { channel } => (
+            RefusalReason::ExplicitVersionRefused,
+            format!(
+                "explicit version {explicit} does not belong to the configured {} prerelease train",
+                channel.label()
+            ),
         ),
         Refusal::ExplicitBelowRequired {
             candidate,
             required,
-        } => format!(
-            "explicit manifest version {} is below the required version {}",
-            candidate.map_or(explicit, text),
-            text(required)
+        } => (
+            RefusalReason::ExplicitVersionRefused,
+            format!(
+                "explicit manifest version {} is below the required version {}",
+                candidate.map_or(explicit, text),
+                text(required)
+            ),
         ),
-        Refusal::NotAfterPublished { selected } => format!(
-            "the selected version {} doesn't follow the published version {published}, so there is nothing new to release",
-            text(selected)
+        Refusal::NotAfterPublished { selected } => (
+            RefusalReason::VersionNotAfterPublished,
+            format!(
+                "the selected version {} doesn't follow the published version {published}, so there is nothing new to release",
+                text(selected)
+            ),
         ),
-    })
+    };
+    crate::failure::refused(reason, message)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::failure::{RefusalReason, refusal_reason};
 
     fn v(input: &str) -> Version {
         input.parse().unwrap()
@@ -237,7 +272,17 @@ mod tests {
             (format!("1.{max}.3"), Bump::Minor),
             (format!("{max}.2.3"), Bump::Major),
         ] {
-            assert!(apply_bump(&v(&input), bump).is_err(), "{input} {bump:?}");
+            let error = apply_bump(&v(&input), bump).unwrap_err();
+            let name = bump_name(bump);
+            assert_eq!(
+                (refusal_reason(&error), error.to_string()),
+                (
+                    Some(RefusalReason::VersionNumberExhausted),
+                    format!(
+                        "{input} has the largest {name} number, so no {name} release can follow it"
+                    )
+                )
+            );
         }
         assert_eq!(
             apply_bump(&v(&format!("1.2.{max}")), Bump::Minor).unwrap(),
@@ -254,11 +299,19 @@ mod tests {
                 "1.2.0-alpha.{max} has the largest alpha number, so choose an explicitly higher core version"
             )
         );
+        assert_eq!(
+            refusal_reason(&error),
+            Some(RefusalReason::VersionNumberExhausted)
+        );
         let error =
             select_version(&v(&format!("{max}.0.0")), None, Bump::Major, None, None).unwrap_err();
         assert_eq!(
             error.to_string(),
             format!("{max}.0.0 has the largest major number, so no major release can follow it")
+        );
+        assert_eq!(
+            refusal_reason(&error),
+            Some(RefusalReason::VersionNumberExhausted)
         );
     }
 
@@ -321,6 +374,10 @@ mod tests {
             below.to_string(),
             "explicit manifest version 1.2.0 is below the required version 2.0.0"
         );
+        assert_eq!(
+            refusal_reason(&below),
+            Some(RefusalReason::ExplicitVersionRefused)
+        );
         let train_below = select_version(
             &v("1.0.0"),
             Some(&v("1.0.0")),
@@ -378,19 +435,28 @@ mod tests {
             unchanged.to_string(),
             "the selected version 1.0.0 doesn't follow the published version 1.0.0, so there is nothing new to release"
         );
+        assert_eq!(
+            refusal_reason(&unchanged),
+            Some(RefusalReason::VersionNotAfterPublished)
+        );
     }
 
     #[test]
     fn backward_channel_moves_require_an_explicitly_higher_core() {
-        assert!(
-            select_version(
-                &v("1.2.0-rc.2"),
-                Some(&v("1.1.0")),
-                Bump::Major,
-                None,
-                Some(PrereleaseChannel::Alpha),
+        let error = select_version(
+            &v("1.2.0-rc.2"),
+            Some(&v("1.1.0")),
+            Bump::Major,
+            None,
+            Some(PrereleaseChannel::Alpha),
+        )
+        .unwrap_err();
+        assert_eq!(
+            (refusal_reason(&error), error.to_string()),
+            (
+                Some(RefusalReason::PrereleaseTrainBackward),
+                "moving prerelease channel backwards from rc to alpha requires an explicitly higher core version".to_owned()
             )
-            .is_err()
         );
         assert_eq!(
             select_version(
@@ -444,10 +510,13 @@ mod tests {
             PrereleaseChannel::Alpha,
             false,
         )
-        .unwrap_err()
-        .to_string();
+        .unwrap_err();
         assert_eq!(
-            non_numeric,
+            refusal_reason(&non_numeric),
+            Some(RefusalReason::PrereleaseTrainBackward)
+        );
+        assert_eq!(
+            non_numeric.to_string(),
             "selected prerelease 1.2.0-alpha.1 does not sort after published 1.2.0-alpha.preview; choose an explicitly higher core version"
         );
         let stable_core_reuse =
@@ -491,12 +560,36 @@ mod tests {
             ("1.2.0-rc.1", PrereleaseChannel::Alpha),
             ("1.2.0-rc.1", PrereleaseChannel::Beta),
         ] {
-            assert!(
-                next_prerelease_with_core(&v(published), &v("1.2.0"), backwards, false,).is_err(),
+            let current = v(published)
+                .pre
+                .as_str()
+                .split('.')
+                .next()
+                .unwrap()
+                .to_owned();
+            let channel = backwards.as_str();
+            let same_core = next_prerelease_with_core(&v(published), &v("1.2.0"), backwards, false)
+                .unwrap_err();
+            assert_eq!(
+                (refusal_reason(&same_core), same_core.to_string()),
+                (
+                    Some(RefusalReason::PrereleaseTrainBackward),
+                    format!(
+                        "cannot move prerelease channel backwards from {current} to {channel}; choose an explicitly higher core version"
+                    )
+                ),
                 "{published} -> {backwards:?}"
             );
-            assert!(
-                next_prerelease_with_core(&v(published), &v("2.0.0"), backwards, false,).is_err(),
+            let higher = next_prerelease_with_core(&v(published), &v("2.0.0"), backwards, false)
+                .unwrap_err();
+            assert_eq!(
+                (refusal_reason(&higher), higher.to_string()),
+                (
+                    Some(RefusalReason::PrereleaseTrainBackward),
+                    format!(
+                        "moving prerelease channel backwards from {current} to {channel} requires an explicitly higher core version"
+                    )
+                ),
                 "higher but non-explicit {published} -> {backwards:?}"
             );
             assert_eq!(
@@ -619,6 +712,10 @@ mod tests {
             wrong_train.to_string(),
             "explicit version 1.2.0-rc.3 does not belong to the configured beta prerelease train"
         );
+        assert_eq!(
+            refusal_reason(&wrong_train),
+            Some(RefusalReason::ExplicitVersionRefused)
+        );
 
         let prefixed_train = select_version(
             &v("1.2.0-alpha.1"),
@@ -665,11 +762,14 @@ mod tests {
                 "{version} {channel:?} {stable}"
             );
         }
+        let off_train =
+            initial_version(&v("1.0.0-beta.3"), Some(PrereleaseChannel::Alpha), false).unwrap_err();
         assert_eq!(
-            initial_version(&v("1.0.0-beta.3"), Some(PrereleaseChannel::Alpha), false)
-                .unwrap_err()
-                .to_string(),
-            "initial version 1.0.0-beta.3 does not belong to the configured alpha prerelease train"
+            (refusal_reason(&off_train), off_train.to_string()),
+            (
+                Some(RefusalReason::ExplicitVersionRefused),
+                "initial version 1.0.0-beta.3 does not belong to the configured alpha prerelease train".to_owned()
+            )
         );
     }
 
