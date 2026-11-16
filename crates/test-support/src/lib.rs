@@ -28,11 +28,29 @@ const INHERITED_ENVIRONMENT: [&str; 12] = [
     "RUST_BACKTRACE",
 ];
 
+/// Ends the calling test with `message`.
+#[expect(
+    clippy::panic,
+    reason = "a test helper fails the test that called it when its tool, fixture, or assertion fails"
+)]
+#[track_caller]
+fn fail(message: std::fmt::Arguments<'_>) -> ! {
+    panic!("{message}")
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the test support starts every child in this one place, from a program that its caller names"
+)]
+fn new_command(program: impl AsRef<OsStr>) -> Command {
+    Command::new(program)
+}
+
 /// A command whose environment holds only the variables a test may inherit.
 ///
 /// Add what a test needs with [`Command::env`].
 pub fn isolated_command(program: impl AsRef<OsStr>) -> Command {
-    let mut command = Command::new(program);
+    let mut command = new_command(program);
     command.env_clear();
     for name in INHERITED_ENVIRONMENT {
         if let Some(value) = std::env::var_os(name) {
@@ -43,6 +61,10 @@ pub fn isolated_command(program: impl AsRef<OsStr>) -> Command {
 }
 
 /// Panic with the command's output unless it exited successfully.
+///
+/// # Panics
+///
+/// When the command exited unsuccessfully.
 pub fn assert_success(output: &Output, description: &str) {
     assert!(
         output.status.success(),
@@ -58,16 +80,23 @@ pub fn assert_success(output: &Output, description: &str) {
 /// # Panics
 ///
 /// When git cannot start or exits unsuccessfully.
+#[expect(
+    clippy::must_use_candidate,
+    reason = "most callers run Git for its effect on the repository and leave its output unread"
+)]
 pub fn git(directory: &Path, arguments: &[&str]) -> String {
-    let output = Command::new("git")
+    let output = new_command("git")
         .arg("-C")
         .arg(directory)
         .args(arguments)
         .output()
-        .unwrap_or_else(|error| panic!("git {arguments:?} could not start: {error}"));
+        .unwrap_or_else(|error| fail(format_args!("git {arguments:?} could not start: {error}")));
     assert_success(&output, &format!("git {arguments:?}"));
-    String::from_utf8(output.stdout)
-        .unwrap_or_else(|error| panic!("git {arguments:?} printed non-UTF-8 output: {error}"))
+    String::from_utf8(output.stdout).unwrap_or_else(|error| {
+        fail(format_args!(
+            "git {arguments:?} printed non-UTF-8 output: {error}"
+        ))
+    })
 }
 
 /// Create a repository whose first branch is `main`.
@@ -81,18 +110,22 @@ pub fn init_repository(directory: &Path) {
 ///
 /// When `gleam` is missing or reports no version, because a test that needs the compiler must fail rather than pass without running.
 pub fn require_gleam() -> String {
-    let output = Command::new("gleam")
+    let output = new_command("gleam")
         .arg("--version")
         .output()
         .unwrap_or_else(|error| {
-            panic!("this test needs Gleam on PATH; install the pinned version with `mise install`: {error}")
+            fail(format_args!(
+                "this test needs Gleam on PATH; install the pinned version with `mise install`: {error}"
+            ))
         });
     assert_success(&output, "gleam --version");
     String::from_utf8_lossy(&output.stdout)
         .split_whitespace()
         .find(|word| word.starts_with(|first: char| first.is_ascii_digit()))
-        .map(str::to_owned)
-        .unwrap_or_else(|| panic!("gleam --version reported no version"))
+        .map_or_else(
+            || fail(format_args!("gleam --version reported no version")),
+            str::to_owned,
+        )
 }
 
 /// Read what `reader` has into `buffer` and return the count, retrying a read that a signal interrupted.
@@ -107,7 +140,7 @@ pub fn read_some(reader: &mut impl std::io::Read, buffer: &mut [u8]) -> usize {
         match reader.read(buffer) {
             Ok(count) => return count,
             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
-            Err(error) => panic!("read failed: {error}"),
+            Err(error) => fail(format_args!("read failed: {error}")),
         }
     }
 }

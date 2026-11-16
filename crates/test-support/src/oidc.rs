@@ -7,6 +7,8 @@ use ring::rand::SystemRandom;
 use ring::rsa::{KeyPairComponents, PublicKeyComponents};
 use ring::signature::{RSA_PKCS1_SHA256, RsaKeyPair};
 
+use crate::fail;
+
 /// The key id that every token's header names.
 pub const KEY_ID: &str = "rfc7515";
 
@@ -58,14 +60,27 @@ const INVERSE_Q: &str = concat!(
 );
 
 /// A compact RS256 JWT whose payload is `claims` and whose header names [`KEY_ID`].
+///
+/// # Panics
+///
+/// When `claims` don't serialize to JSON, or the RFC 7515 key can't be decoded or sign.
 pub fn sign_rs256(claims: &impl serde::Serialize) -> String {
     let encoder = base64::engine::general_purpose::URL_SAFE_NO_PAD;
     let decode = |value: &str| {
         encoder
             .decode(value)
-            .expect("the RFC 7515 key is base64url")
+            .unwrap_or_else(|error| fail(format_args!("the RFC 7515 key is base64url: {error:?}")))
     };
-    let [n, e, d, p, q, dp, dq, inverse_q] = [
+    let [
+        modulus,
+        public_exponent,
+        private_exponent,
+        prime_p,
+        prime_q,
+        exponent_p,
+        exponent_q,
+        inverse_q,
+    ] = [
         MODULUS,
         EXPONENT,
         PRIVATE_EXPONENT,
@@ -77,17 +92,26 @@ pub fn sign_rs256(claims: &impl serde::Serialize) -> String {
     ]
     .map(decode);
     let key = RsaKeyPair::from_components(&KeyPairComponents {
-        public_key: PublicKeyComponents { n: &n, e: &e },
-        d: &d,
-        p: &p,
-        q: &q,
-        dP: &dp,
-        dQ: &dq,
+        public_key: PublicKeyComponents {
+            n: &modulus,
+            e: &public_exponent,
+        },
+        d: &private_exponent,
+        p: &prime_p,
+        q: &prime_q,
+        dP: &exponent_p,
+        dQ: &exponent_q,
         qInv: &inverse_q,
     })
-    .expect("the RFC 7515 key is a valid RSA key");
+    .unwrap_or_else(|error| {
+        fail(format_args!(
+            "the RFC 7515 key is a valid RSA key: {error:?}"
+        ))
+    });
     let header = encoder.encode(format!(r#"{{"alg":"RS256","kid":"{KEY_ID}"}}"#));
-    let payload = encoder.encode(serde_json::to_vec(claims).expect("claims serialize to JSON"));
+    let claims = serde_json::to_vec(claims)
+        .unwrap_or_else(|error| fail(format_args!("claims serialize to JSON: {error:?}")));
+    let payload = encoder.encode(claims);
     let signing_input = format!("{header}.{payload}");
     let mut signature = vec![0_u8; key.public().modulus_len()];
     key.sign(
@@ -96,6 +120,6 @@ pub fn sign_rs256(claims: &impl serde::Serialize) -> String {
         signing_input.as_bytes(),
         &mut signature,
     )
-    .expect("RSA signing succeeds");
+    .unwrap_or_else(|error| fail(format_args!("RSA signing succeeds: {error:?}")));
     format!("{signing_input}.{}", encoder.encode(signature))
 }

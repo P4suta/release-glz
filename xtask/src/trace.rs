@@ -2,8 +2,8 @@
 //!
 //! The check refuses a reference that names nothing, a property without evidence, and a harness, theorem, invariant, model test, or fuzz target that no property cites.
 
+use crate::fs;
 use std::collections::BTreeSet;
-use std::fs;
 use std::path::Path;
 
 use crate::container::Failure;
@@ -57,7 +57,7 @@ struct Citation {
 fn citations(map: &str) -> Result<Vec<Citation>, Failure> {
     let mut citations = Vec::new();
     let mut property: Option<(String, usize)> = None;
-    let finish = |property: Option<(String, usize)>, count: usize| match property {
+    let finish = |open: Option<(String, usize)>, count: usize| match open {
         Some((name, before)) if count == before => Err(Failure::new(format!(
             "the property \"{name}\" cites no evidence"
         ))),
@@ -126,8 +126,8 @@ fn quint_names(model: &str) -> Result<BTreeSet<String>, Failure> {
 /// The fuzz targets in `directory`.
 fn fuzz_targets(directory: &Path) -> Result<BTreeSet<String>, Failure> {
     let mut targets = BTreeSet::new();
-    for entry in fs::read_dir(directory).map_err(Failure::io)? {
-        let path = entry.map_err(Failure::io)?.path();
+    for entry in std::fs::read_dir(directory).map_err(|error| Failure::io(&error))? {
+        let path = entry.map_err(|error| Failure::io(&error))?.path();
         if path.extension().is_some_and(|extension| extension == "rs")
             && let Some(stem) = path.file_stem().and_then(|stem| stem.to_str())
         {
@@ -141,35 +141,43 @@ fn fuzz_targets(directory: &Path) -> Result<BTreeSet<String>, Failure> {
 fn defines_test(source: &str, name: &str) -> bool {
     let signature = format!("fn {name}(");
     source.match_indices(&signature).any(|(position, _)| {
-        let before = &source[..position];
-        let item = before.rfind('}').map_or(before, |end| &before[end..]);
-        item.contains("#[test]") || item.contains("#[tokio::test]")
+        source
+            .split_at_checked(position)
+            .is_some_and(|(before, _)| {
+                let item = before.rsplit_once('}').map_or(before, |(_, item)| item);
+                item.contains("#[test]") || item.contains("#[tokio::test]")
+            })
     })
 }
 
 /// What the check found.
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct Summary {
     properties: usize,
     citations: usize,
 }
 
 /// Check the map of the repository at `root`.
+///
+/// # Errors
+///
+/// Returns a failure when the map, the Quint model, a cited source, or the fuzz targets can't be read.
+/// Returns a failure when a citation names nothing, a property cites no evidence, or a check has no property.
 pub fn check(root: &Path) -> Result<Summary, Failure> {
-    let map = fs::read_to_string(root.join(MAP)).map_err(Failure::io)?;
-    let model = fs::read_to_string(root.join(QUINT_MODEL)).map_err(Failure::io)?;
+    let map = fs::read_to_string(root.join(MAP))?;
+    let model = fs::read_to_string(root.join(QUINT_MODEL))?;
     let fuzz = fuzz_targets(&root.join(FUZZ_TARGETS))?;
     verify(&map, &model, &fuzz, |file| {
-        fs::read_to_string(root.join(file)).ok()
+        fs::read_if_present(root.join(file))
     })
 }
 
-/// Check `map` with the Quint `model`, the `fuzz` targets, and the sources that `read` returns for a path in the repository.
+/// Check `map` with the Quint `model`, the `fuzz` targets, and the sources that `read` returns for a path in the repository, or `None` for a path that holds no file.
 fn verify(
     map: &str,
     model: &str,
     fuzz: &BTreeSet<String>,
-    read: impl Fn(&str) -> Option<String>,
+    read: impl Fn(&str) -> Result<Option<String>, Failure>,
 ) -> Result<Summary, Failure> {
     let citations = citations(map)?;
     let kani = HARNESSES
@@ -197,7 +205,7 @@ fn verify(
                         citation.name
                     ))
                 })?;
-                read(file).is_some_and(|source| defines_test(&source, name))
+                read(file)?.is_some_and(|source| defines_test(&source, name))
             }
         };
         if !known {
@@ -236,6 +244,10 @@ fn verify(
 }
 
 /// Check the map and report what it covers.
+///
+/// # Errors
+///
+/// Returns a failure when [`check`] refuses the map.
 pub fn run(root: &Path) -> Result<(), Failure> {
     let summary = check(root)?;
     println!(
@@ -247,12 +259,13 @@ pub fn run(root: &Path) -> Result<(), Failure> {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use crate::container::Failure;
+    use crate::fs;
     use std::path::{Path, PathBuf};
 
     use super::{
-        FUZZ_TARGETS, Kind, MAP, QUINT_MODEL, check, citations, defines_test, fuzz_targets,
-        quint_names, verify,
+        FUZZ_TARGETS, Kind, MAP, QUINT_MODEL, Summary, check, citations, defines_test,
+        fuzz_targets, quint_names, verify,
     };
 
     fn repository() -> PathBuf {
@@ -260,16 +273,14 @@ mod tests {
     }
 
     /// The map of the repository with `edit` applied, checked with the repository's model, fuzz targets, and sources.
-    fn verify_edited(edit: impl Fn(String) -> String) -> Result<(), String> {
+    fn verify_edited(edit: impl Fn(String) -> String) -> Result<Summary, Failure> {
         let root = repository();
-        let map = edit(fs::read_to_string(root.join(MAP)).unwrap());
-        let model = fs::read_to_string(root.join(QUINT_MODEL)).unwrap();
-        let fuzz = fuzz_targets(&root.join(FUZZ_TARGETS)).unwrap();
+        let map = edit(fs::read_to_string(root.join(MAP))?);
+        let model = fs::read_to_string(root.join(QUINT_MODEL))?;
+        let fuzz = fuzz_targets(&root.join(FUZZ_TARGETS))?;
         verify(&map, &model, &fuzz, |file| {
-            fs::read_to_string(root.join(file)).ok()
+            fs::read_if_present(root.join(file))
         })
-        .map(|_| ())
-        .map_err(|failure| failure.to_string())
     }
 
     /// The fast gate runs this on every pull request, so a new harness, theorem, invariant, model test, or fuzz target needs a property in the map before it merges.
@@ -289,7 +300,9 @@ mod tests {
             ("- Quint: `skipsAheadTest`\n", "Quint"),
             ("- Fuzz: `pr_marker`\n", "Fuzz"),
         ] {
-            let error = verify_edited(|map| map.replacen(line, "", 1)).unwrap_err();
+            let error = verify_edited(|map| map.replacen(line, "", 1))
+                .unwrap_err()
+                .to_string();
             assert!(
                 error.contains(&format!("maps no property to {kind}")),
                 "{error}"
@@ -312,7 +325,9 @@ mod tests {
             ),
             ("`tests/v1_domain.rs::", "`tests/v1_domains.rs::"),
         ] {
-            let error = verify_edited(|map| map.replacen(from, to, 1)).unwrap_err();
+            let error = verify_edited(|map| map.replacen(from, to, 1))
+                .unwrap_err()
+                .to_string();
             assert!(error.contains("which doesn't exist"), "{from}: {error}");
         }
     }
@@ -324,11 +339,11 @@ mod tests {
         assert_eq!(found.len(), 3);
         assert_eq!(found[1].kind, Kind::Test);
         assert_eq!(found[2].property, "Next");
-        assert!(citations("### Empty\n\nNothing cited.\n\n### Other\n\n- Kani: `a`\n").is_err());
-        assert!(citations("### Last\n").is_err());
-        assert!(citations("### Bad\n\n- Kani: a\n").is_err());
-        assert!(citations("### Bad\n\n- Kani: `a` and `b`\n").is_err());
-        assert!(citations("- Kani: `a`\n").is_err());
+        citations("### Empty\n\nNothing cited.\n\n### Other\n\n- Kani: `a`\n").unwrap_err();
+        citations("### Last\n").unwrap_err();
+        citations("### Bad\n\n- Kani: a\n").unwrap_err();
+        citations("### Bad\n\n- Kani: `a` and `b`\n").unwrap_err();
+        citations("- Kani: `a`\n").unwrap_err();
     }
 
     #[test]
@@ -350,6 +365,6 @@ mod tests {
             names.into_iter().collect::<Vec<_>>(),
             ["aTest", "approvalFirst", "bTest", "ordered"]
         );
-        assert!(quint_names("  run aTest = init\n").is_err());
+        quint_names("  run aTest = init\n").unwrap_err();
     }
 }

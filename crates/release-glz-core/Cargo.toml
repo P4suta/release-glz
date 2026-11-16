@@ -176,3 +176,9 @@ serde = { version = "1.0.228", default-features = false, features = ["derive"], 
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+
+# The core meets the workspace baseline together with the Kani harnesses it moves.
+# Each entry leaves with the change that makes the crate pass that lint.
+[lints.clippy]
+disallowed_methods = "allow"
+too_many_arguments = "allow"

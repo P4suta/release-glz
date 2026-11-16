@@ -49,8 +49,96 @@ process-wrap = { version = "10.0.1", default-features = false, features = ["job-
 [dev-dependencies]
 release-glz-test-support = { path = "crates/test-support", version = "0.0.0" }
 
+# The release engine meets the workspace baseline one lint group at a time.
+# Each entry leaves with the change that makes the crate pass that lint.
+[lints.clippy]
+disallowed_methods = "allow"
+disallowed_types = "allow"
+too_many_arguments = "allow"
+enum_variant_names = "allow"
+
 [workspace]
 members = ["crates/assurance-core", "crates/release-glz-core", "crates/test-support", "xtask"]
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+non_ascii_idents = "deny"
+unfulfilled_lint_expectations = "deny"
+unexpected_cfgs = { level = "deny", check-cfg = ['cfg(kani)'] }
+
+unused = { level = "deny", priority = -1 }
+future_incompatible = { level = "deny", priority = -1 }
+
+missing_debug_implementations = "deny"
+missing_copy_implementations = "deny"
+unreachable_pub = "deny"
+unused_qualifications = "deny"
+elided_lifetimes_in_paths = "deny"
+unused_lifetimes = "deny"
+single_use_lifetimes = "deny"
+redundant_lifetimes = "deny"
+trivial_casts = "deny"
+trivial_numeric_casts = "deny"
+let_underscore_drop = "deny"
+meta_variable_misuse = "deny"
+unit_bindings = "deny"
+variant_size_differences = "deny"
+ambiguous_negative_literals = "deny"
+
+[workspace.lints.rustdoc]
+broken_intra_doc_links = "deny"
+private_intra_doc_links = "deny"
+bare_urls = "deny"
+
+[workspace.lints.clippy]
+pedantic = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
+cargo = { level = "deny", priority = -1 }
+
+allow_attributes = "deny"
+allow_attributes_without_reason = "deny"
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+dbg_macro = "deny"
+indexing_slicing = "deny"
+string_slice = "deny"
+as_conversions = "deny"
+clone_on_ref_ptr = "deny"
+lossy_float_literal = "deny"
+rc_buffer = "deny"
+verbose_file_reads = "deny"
+str_to_string = "deny"
+mem_forget = "deny"
+arithmetic_side_effects = "deny"
+cognitive_complexity = "deny"
+let_underscore_must_use = "deny"
+map_err_ignore = "deny"
+panic_in_result_fn = "deny"
+unwrap_in_result = "deny"
+try_err = "deny"
+unused_result_ok = "deny"
+create_dir = "deny"
+error_impl_error = "deny"
+mutex_atomic = "deny"
+mutex_integer = "deny"
+rc_mutex = "deny"
+string_add = "deny"
+assertions_on_result_states = "deny"
+exit = "deny"
+disallowed_methods = "deny"
+disallowed_types = "deny"
+disallowed_macros = "deny"
+wildcard_enum_match_arm = "deny"
+fallible_impl_from = "deny"
+shadow_unrelated = "deny"
+undocumented_unsafe_blocks = "deny"
+
+# `ring` and `jsonschema` reach two releases of `getrandom`, and the proc-macro tree reaches two of `syn`, so two versions of a crate are unavoidable.
+multiple_crate_versions = "allow"
 
 [profile.release]
 lto = "thin"

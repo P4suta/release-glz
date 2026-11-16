@@ -1,6 +1,6 @@
 //! The Quint model of the release protocol, checked by TLC in the pinned image, with a probe that has to fail and the traces that the replay test reads.
 
-use std::fs;
+use crate::fs;
 use std::path::Path;
 
 use serde_json::Value;
@@ -64,10 +64,16 @@ const SCENARIO_TRACES: &str = "/evidence/traces/release_run_{test}.itf.json";
 const RANDOM_TRACE_PATHS: &str = "/evidence/traces/release_run.{seq}.itf.json";
 
 /// Check the model, its probe, and its traces in the pinned image.
+///
+/// # Errors
+///
+/// Returns a failure when the evidence or the image can't be made, or the image runs another Quint release.
+/// Returns a failure when the model doesn't typecheck, a test or the simulation fails, or TLC can't prove the invariant.
+/// Returns a failure when TLC finds no violation in a probe, or the traces differ from the committed ones.
 pub fn run(root: &Path) -> Result<(), Failure> {
-    let evidence = crate::container::evidence_directory(root, "quint")?;
-    fs::write(evidence.join("tlc.json"), TLC_CONFIG).map_err(Failure::io)?;
-    fs::create_dir(evidence.join("traces")).map_err(Failure::io)?;
+    let evidence = fs::evidence_directory(root, "quint")?;
+    fs::write(evidence.join("tlc.json"), TLC_CONFIG)?;
+    fs::create_dir(evidence.join("traces"))?;
     let container = Container::build(root, &evidence, "verification/quint.Dockerfile")?;
     let version = container.output(root, &evidence, &["quint", "--version"])?;
     if version.trim() != QUINT_VERSION {
@@ -75,10 +81,41 @@ pub fn run(root: &Path) -> Result<(), Failure> {
             "the image runs another Quint release: {version}"
         )));
     }
-    container.output(root, &evidence, &["quint", "typecheck", MODEL])?;
+    simulate(&container, root, &evidence)?;
+
+    let checked = tlc(&container, root, &evidence, MAIN)?;
+    let found = distinct_states(&checked.stdout)?;
+    if checked.code != Some(0) || found != Some(DISTINCT_STATES) {
+        return Err(Failure::new(format!(
+            "TLC found {found:?} distinct states of {MAIN}, which must hold {INVARIANT} in all {DISTINCT_STATES}; see {}",
+            evidence.display()
+        )));
+    }
+    for (probe, defect) in PROBES {
+        let probed = tlc(&container, root, &evidence, probe)?;
+        let report = format!("{}{}", probed.stdout, probed.stderr);
+        if probed.code == Some(0) || !violates(&report, defect) {
+            return Err(Failure::new(format!(
+                "TLC found no violation of {INVARIANT} in {probe} that sets {defect}, so nothing shows that this part of the check can fail; see {}",
+                evidence.display()
+            )));
+        }
+    }
+    let traces = compare_traces(&root.join(TRACES), &evidence.join("traces"))?;
+    println!(
+        "Quint {QUINT_VERSION}: TLC proved {INVARIANT} in all {DISTINCT_STATES} states of {MAIN}, found the violation in each of {} probes, and Quint wrote the {traces} committed traces again; evidence in {}",
+        PROBES.len(),
+        evidence.display()
+    );
+    Ok(())
+}
+
+/// Typecheck the model, run its tests and the tests of each probe, and write the scenario and random traces into `evidence`.
+fn simulate(container: &Container, root: &Path, evidence: &Path) -> Result<(), Failure> {
+    container.output(root, evidence, &["quint", "typecheck", MODEL])?;
     container.output(
         root,
-        &evidence,
+        evidence,
         &[
             "quint",
             "test",
@@ -94,7 +131,7 @@ pub fn run(root: &Path) -> Result<(), Failure> {
     for (probe, _) in PROBES {
         container.output(
             root,
-            &evidence,
+            evidence,
             &[
                 "quint",
                 "test",
@@ -108,7 +145,7 @@ pub fn run(root: &Path) -> Result<(), Failure> {
     }
     container.output(
         root,
-        &evidence,
+        evidence,
         &[
             "quint",
             "run",
@@ -134,31 +171,6 @@ pub fn run(root: &Path) -> Result<(), Failure> {
             "0",
         ],
     )?;
-
-    let checked = tlc(&container, root, &evidence, MAIN)?;
-    let found = distinct_states(&checked.stdout);
-    if checked.code != Some(0) || found != Some(DISTINCT_STATES) {
-        return Err(Failure::new(format!(
-            "TLC found {found:?} distinct states of {MAIN}, which must hold {INVARIANT} in all {DISTINCT_STATES}; see {}",
-            evidence.display()
-        )));
-    }
-    for (probe, defect) in PROBES {
-        let probed = tlc(&container, root, &evidence, probe)?;
-        let report = format!("{}{}", probed.stdout, probed.stderr);
-        if probed.code == Some(0) || !violates(&report, defect) {
-            return Err(Failure::new(format!(
-                "TLC found no violation of {INVARIANT} in {probe} that sets {defect}, so nothing shows that this part of the check can fail; see {}",
-                evidence.display()
-            )));
-        }
-    }
-    let traces = compare_traces(&root.join(TRACES), &evidence.join("traces"))?;
-    println!(
-        "Quint {QUINT_VERSION}: TLC proved {INVARIANT} in all {DISTINCT_STATES} states of {MAIN}, found the violation in each of {} probes, and Quint wrote the {traces} committed traces again; evidence in {}",
-        PROBES.len(),
-        evidence.display()
-    );
     Ok(())
 }
 
@@ -195,8 +207,7 @@ fn tlc(container: &Container, root: &Path, evidence: &Path, module: &str) -> Res
     fs::write(
         evidence.join(format!("{module}.tlc.log")),
         format!("{}{}", exit.stdout, exit.stderr),
-    )
-    .map_err(Failure::io)?;
+    )?;
     Ok(exit)
 }
 
@@ -207,26 +218,41 @@ fn violates(report: &str, defect: &str) -> bool {
         && report.lines().any(|line| line.trim_start().ends_with(&set))
 }
 
-/// The number of distinct states in TLC's final report.
-fn distinct_states(report: &str) -> Option<u64> {
-    report.lines().rev().find_map(|line| {
-        let (_, rest) = line.split_once(" states generated, ")?;
-        rest.split_once(" distinct states found")?.0.parse().ok()
-    })
+/// The number of distinct states in TLC's final report, or `None` when the report has no final line.
+fn distinct_states(report: &str) -> Result<Option<u64>, Failure> {
+    report
+        .lines()
+        .rev()
+        .find_map(|line| {
+            let (_, rest) = line.split_once(" states generated, ")?;
+            let (count, _) = rest.split_once(" distinct states found")?;
+            Some(count.parse().map_err(|error| {
+                Failure::new(format!(
+                    "TLC's final report counts `{count}` distinct states, which isn't a number: {error}"
+                ))
+            }))
+        })
+        .transpose()
 }
 
 /// The variables and states of an ITF trace, without the metadata that says when Quint wrote it.
 fn states(text: &str) -> Result<(Value, Value), Failure> {
     let document: Value = serde_json::from_str(text)
         .map_err(|error| Failure::new(format!("a trace isn't JSON: {error}")))?;
-    Ok((document["vars"].clone(), document["states"].clone()))
+    let field = |name: &str| {
+        document
+            .get(name)
+            .cloned()
+            .ok_or_else(|| Failure::new(format!("a trace has no `{name}`")))
+    };
+    Ok((field("vars")?, field("states")?))
 }
 
 /// The names of the traces in `directory`, in order.
 fn trace_names(directory: &Path) -> Result<Vec<String>, Failure> {
     let mut names = Vec::new();
-    for entry in fs::read_dir(directory).map_err(Failure::io)? {
-        let name = entry.map_err(Failure::io)?.file_name();
+    for entry in std::fs::read_dir(directory).map_err(|error| Failure::io(&error))? {
+        let name = entry.map_err(|error| Failure::io(&error))?.file_name();
         let name = name
             .to_str()
             .ok_or_else(|| Failure::new("a trace has a name that isn't UTF-8"))?;
@@ -249,9 +275,7 @@ fn compare_traces(committed: &Path, written: &Path) -> Result<usize, Failure> {
     }
     for name in &names {
         let read = |directory: &Path| {
-            fs::read_to_string(directory.join(name))
-                .map_err(Failure::io)
-                .and_then(|text| states(&text))
+            fs::read_to_string(directory.join(name)).and_then(|text| states(&text))
         };
         if read(committed)? != read(written)? {
             return Err(Failure::new(format!(
@@ -264,7 +288,7 @@ fn compare_traces(committed: &Path, written: &Path) -> Result<usize, Failure> {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use crate::fs;
     use std::path::Path;
 
     use super::{PROBES, QUINT_VERSION, compare_traces, distinct_states, violates};
@@ -295,8 +319,12 @@ mod tests {
     #[test]
     fn the_final_report_names_the_distinct_states() {
         let report = "Progress(9): 295,380 states generated (295,380 s/min), 133,969 distinct states found (133,969 ds/min), 23,075 states left on queue.\nModel checking completed. No error has been found.\n476952 states generated, 188667 distinct states found, 0 states left on queue.\n";
-        assert_eq!(distinct_states(report), Some(188_667));
-        assert_eq!(distinct_states("Model checking completed."), None);
+        assert_eq!(distinct_states(report).unwrap(), Some(188_667));
+        assert_eq!(distinct_states("Model checking completed.").unwrap(), None);
+        distinct_states(
+            "9 states generated, many distinct states found, 0 states left on queue.\n",
+        )
+        .unwrap_err();
     }
 
     #[test]
@@ -314,12 +342,12 @@ mod tests {
         assert_eq!(compare_traces(committed.path(), written.path()).unwrap(), 1);
 
         fs::write(written.path().join("a.itf.json"), trace("22")).unwrap();
-        assert!(compare_traces(committed.path(), written.path()).is_err());
+        compare_traces(committed.path(), written.path()).unwrap_err();
 
         fs::write(written.path().join("a.itf.json"), trace("1")).unwrap();
         fs::write(written.path().join("b.itf.json"), trace("1")).unwrap();
-        assert!(compare_traces(committed.path(), written.path()).is_err());
-        assert!(compare_traces(written.path(), committed.path()).is_err());
+        compare_traces(committed.path(), written.path()).unwrap_err();
+        compare_traces(written.path(), committed.path()).unwrap_err();
     }
 
     /// The image installs the Quint release that the check expects, so a version bump has to change both.

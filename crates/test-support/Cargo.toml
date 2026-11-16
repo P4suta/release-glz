@@ -13,3 +13,6 @@ jsonschema = { version = "0.56.0", default-features = false }
 ring = "0.17.14"
 serde = "1.0.228"
 serde_json = "1.0.154"
+
+[lints]
+workspace = true

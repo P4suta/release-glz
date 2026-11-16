@@ -19,6 +19,10 @@ impl Report {
     }
 
     /// Succeeds when every step succeeded, and otherwise names each failed step.
+    ///
+    /// # Errors
+    ///
+    /// Returns a failure naming each step that failed.
     pub fn finish(self, what: &str) -> Result<(), Failure> {
         if self.failures.is_empty() {
             eprintln!("{what}: clean");

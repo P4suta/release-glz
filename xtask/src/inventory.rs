@@ -892,8 +892,8 @@ pub const CONTROLS: [Control; 91] = [
 
 #[cfg(test)]
 mod tests {
+    use crate::fs;
     use std::collections::{BTreeMap, BTreeSet};
-    use std::fs;
     use std::path::{Path, PathBuf};
 
     use super::{CONTROLS, HARNESSES, PACKAGES};
@@ -910,7 +910,7 @@ mod tests {
     fn harnesses_in(package: &str) -> BTreeMap<String, String> {
         let mut harnesses = BTreeMap::new();
         let source = package_directory(package).join("src");
-        for entry in fs::read_dir(&source).unwrap() {
+        for entry in std::fs::read_dir(&source).unwrap() {
             let path = entry.unwrap().path();
             let module = path.file_stem().unwrap().to_str().unwrap().to_owned();
             let prefix = if module == "lib" {
@@ -997,7 +997,7 @@ mod tests {
                 control.harness,
                 control.assertion
             );
-            let sources = fs::read_dir(package_directory(control.package).join("src"))
+            let sources = std::fs::read_dir(package_directory(control.package).join("src"))
                 .unwrap()
                 .map(|entry| fs::read_to_string(entry.unwrap().path()).unwrap())
                 .collect::<String>();

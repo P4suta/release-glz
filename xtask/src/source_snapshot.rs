@@ -2,8 +2,10 @@
 //!
 //! The run reads the copy, and the digest shows afterward that the repository still holds the same sources.
 
-use std::fs;
-use std::io::Read;
+use crate::fs;
+use std::fmt::Write as _;
+use std::fs::File;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
@@ -28,6 +30,7 @@ const SOURCE_ROOTS: [&str; 7] = [
 const EXCLUDED_DIRECTORIES: [&str; 2] = ["target", "node_modules"];
 
 /// A copy of the source roots in an evidence directory.
+#[derive(Debug)]
 pub struct SourceSnapshot {
     directory: PathBuf,
     /// Digest of every path and its bytes.
@@ -37,7 +40,8 @@ pub struct SourceSnapshot {
 }
 
 fn files_under(root: &Path, relative: &Path, files: &mut Vec<PathBuf>) -> Result<(), Failure> {
-    let metadata = fs::symlink_metadata(root.join(relative)).map_err(Failure::io)?;
+    let metadata =
+        std::fs::symlink_metadata(root.join(relative)).map_err(|error| Failure::io(&error))?;
     if metadata.is_symlink() {
         return Err(Failure::new(format!(
             "proof inputs can't contain symbolic links: {}",
@@ -47,9 +51,12 @@ fn files_under(root: &Path, relative: &Path, files: &mut Vec<PathBuf>) -> Result
     if metadata.is_file() {
         files.push(relative.to_path_buf());
     } else if metadata.is_dir() {
-        for entry in fs::read_dir(root.join(relative)).map_err(Failure::io)? {
-            let entry = entry.map_err(Failure::io)?;
-            let is_directory = entry.file_type().map_err(Failure::io)?.is_dir();
+        for entry in std::fs::read_dir(root.join(relative)).map_err(|error| Failure::io(&error))? {
+            let entry = entry.map_err(|error| Failure::io(&error))?;
+            let is_directory = entry
+                .file_type()
+                .map_err(|error| Failure::io(&error))?
+                .is_dir();
             if is_directory
                 && EXCLUDED_DIRECTORIES
                     .iter()
@@ -99,50 +106,113 @@ fn collect(
             .to_str()
             .ok_or_else(|| Failure::new("proof inputs must have UTF-8 paths"))?
             .replace('\\', "/");
-        digest.update((portable.len() as u64).to_le_bytes());
+        digest.update(length_prefix(portable.as_bytes())?);
         digest.update(portable.as_bytes());
-        digest.update((bytes.len() as u64).to_le_bytes());
+        digest.update(length_prefix(&bytes)?);
         digest.update(&bytes);
         if let Some(destination) = destination {
             let path = destination.join(relative);
             if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent).map_err(Failure::io)?;
+                fs::create_dir_all(parent)?;
             }
-            fs::write(path, bytes).map_err(Failure::io)?;
+            fs::write(path, bytes)?;
         }
     }
-    let digest = digest
-        .finalize()
+    Ok((lower_hex(&digest.finalize())?, files.len()))
+}
+
+/// The little-endian 64-bit length of `bytes`, which frames them in a digest.
+///
+/// # Errors
+///
+/// Returns a failure when the length doesn't fit in 64 bits.
+pub fn length_prefix(bytes: &[u8]) -> Result<[u8; 8], Failure> {
+    u64::try_from(bytes.len())
+        .map(u64::to_le_bytes)
+        .map_err(|error| {
+            Failure::new(format!(
+                "a length of {} bytes doesn't fit in 64 bits: {error}",
+                bytes.len()
+            ))
+        })
+}
+
+/// The lowercase hexadecimal form of `bytes`, two digits for each byte.
+///
+/// # Errors
+///
+/// Returns a failure when the formatter reports an error.
+pub fn lower_hex(bytes: &[u8]) -> Result<String, Failure> {
+    bytes
         .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect();
-    Ok((digest, files.len()))
+        .try_fold(String::new(), |mut hex, byte| {
+            write!(hex, "{byte:02x}").map(|()| hex)
+        })
+        .map_err(|error| Failure::new(format!("a digest won't format as hexadecimal: {error}")))
 }
 
 /// The digest of every path and byte under `roots` of the repository at `root`.
+///
+/// # Errors
+///
+/// Returns a failure when a root holds a link, a special file, or a path that isn't UTF-8.
+/// Returns a failure when a file can't be read or the files exceed the byte budget.
 pub fn digest_of(root: &Path, roots: &[&str]) -> Result<String, Failure> {
     collect(root, roots, None, SOURCE_BUDGET_BYTES).map(|(digest, _)| digest)
 }
 
 /// Copy `roots` of the repository at `root` into `destination`.
+///
+/// # Errors
+///
+/// Returns a failure when a root holds a link, a special file, or a path that isn't UTF-8.
+/// Returns a failure when a file can't be read or written, or the files exceed the byte budget.
 pub fn copy_roots(root: &Path, roots: &[&str], destination: &Path) -> Result<(), Failure> {
     collect(root, roots, Some(destination), SOURCE_BUDGET_BYTES).map(|_| ())
 }
 
 /// The roots that a snapshot copies, so a copy of a snapshot holds the same sources.
+#[must_use]
 pub const fn roots() -> [&'static str; 7] {
     SOURCE_ROOTS
 }
 
 /// The bytes of `path`, refusing a file larger than `limit`.
+///
+/// # Errors
+///
+/// Returns a failure when the file can't be opened or read, or holds more than `limit` bytes.
 pub fn read_bounded(path: &Path, limit: usize) -> Result<Vec<u8>, Failure> {
+    let file = File::open(path).map_err(|error| Failure::io(&error))?;
+    read_within(file, path, limit)
+}
+
+/// The bytes of `path`, or `None` when no file exists there, refusing a file larger than `limit`.
+///
+/// # Errors
+///
+/// Returns a failure when the file exists but can't be opened or read, or holds more than `limit` bytes.
+pub fn read_bounded_if_present(path: &Path, limit: usize) -> Result<Option<Vec<u8>>, Failure> {
+    match File::open(path) {
+        Ok(file) => read_within(file, path, limit).map(Some),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(Failure::io(&error)),
+    }
+}
+
+/// The bytes of the open `file` at `path`, refusing more than `limit`.
+fn read_within(file: File, path: &Path, limit: usize) -> Result<Vec<u8>, Failure> {
     let mut bytes = Vec::new();
-    let read_limit = (limit as u64).saturating_add(1);
-    fs::File::open(path)
-        .map_err(Failure::io)?
-        .take(read_limit)
+    let read_limit = u64::try_from(limit)
+        .map_err(|error| {
+            Failure::new(format!(
+                "the byte budget {limit} doesn't fit in 64 bits: {error}"
+            ))
+        })?
+        .saturating_add(1);
+    file.take(read_limit)
         .read_to_end(&mut bytes)
-        .map_err(Failure::io)?;
+        .map_err(|error| Failure::io(&error))?;
     if bytes.len() > limit {
         return Err(Failure::new(format!(
             "{} exceeds its byte budget",
@@ -154,9 +224,13 @@ pub fn read_bounded(path: &Path, limit: usize) -> Result<Vec<u8>, Failure> {
 
 impl SourceSnapshot {
     /// Copy the source roots of the repository at `root` into `evidence/source`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a failure when the copy can't be made or the sources break a rule of [`digest_of`].
     pub fn capture(root: &Path, evidence: &Path) -> Result<Self, Failure> {
         let directory = evidence.join("source");
-        fs::create_dir(&directory).map_err(Failure::io)?;
+        fs::create_dir(&directory)?;
         let (digest, files) = collect(root, &SOURCE_ROOTS, Some(&directory), SOURCE_BUDGET_BYTES)?;
         Ok(Self {
             directory,
@@ -166,11 +240,16 @@ impl SourceSnapshot {
     }
 
     /// The directory that holds the copy.
+    #[must_use]
     pub fn path(&self) -> &Path {
         &self.directory
     }
 
     /// Whether both the repository at `root` and the copy still hold exactly the captured sources.
+    ///
+    /// # Errors
+    ///
+    /// Returns a failure when the repository or the copy breaks a rule of [`digest_of`].
     pub fn matches(&self, root: &Path) -> Result<bool, Failure> {
         let current = collect(root, &SOURCE_ROOTS, None, SOURCE_BUDGET_BYTES)?;
         let frozen = collect(self.path(), &SOURCE_ROOTS, None, SOURCE_BUDGET_BYTES)?;
@@ -180,9 +259,9 @@ impl SourceSnapshot {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use crate::fs;
 
-    use super::{SOURCE_ROOTS, SourceSnapshot, collect, read_bounded};
+    use super::{SOURCE_ROOTS, SourceSnapshot, collect, read_bounded, read_bounded_if_present};
 
     #[test]
     fn the_digest_binds_every_path_and_byte() {
@@ -204,10 +283,28 @@ mod tests {
     fn an_empty_or_oversized_source_is_refused() {
         let root = tempfile::tempdir().unwrap();
         fs::write(root.path().join("input"), b"ab").unwrap();
-        assert!(collect(root.path(), &[], None, 1024).is_err());
-        assert!(collect(root.path(), &["input"], None, 1).is_err());
-        assert!(read_bounded(&root.path().join("input"), 1).is_err());
+        collect(root.path(), &[], None, 1024).unwrap_err();
+        collect(root.path(), &["input"], None, 1).unwrap_err();
+        read_bounded(&root.path().join("input"), 1).unwrap_err();
         assert_eq!(read_bounded(&root.path().join("input"), 2).unwrap(), b"ab");
+    }
+
+    #[test]
+    fn only_a_missing_file_reads_as_absent_within_the_budget() {
+        let root = tempfile::tempdir().unwrap();
+        assert_eq!(
+            read_bounded_if_present(&root.path().join("missing"), 2).unwrap(),
+            None
+        );
+        fs::write(root.path().join("input"), b"ab").unwrap();
+        assert_eq!(
+            read_bounded_if_present(&root.path().join("input"), 2)
+                .unwrap()
+                .as_deref(),
+            Some(b"ab".as_slice())
+        );
+        read_bounded_if_present(&root.path().join("input"), 1).unwrap_err();
+        read_bounded_if_present(root.path(), 2).unwrap_err();
     }
 
     #[test]
@@ -240,6 +337,6 @@ mod tests {
     fn a_symbolic_link_is_refused_instead_of_followed() {
         let root = tempfile::tempdir().unwrap();
         std::os::unix::fs::symlink("/etc/hosts", root.path().join("input")).unwrap();
-        assert!(collect(root.path(), &["input"], None, 1024).is_err());
+        collect(root.path(), &["input"], None, 1024).unwrap_err();
     }
 }

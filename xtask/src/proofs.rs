@@ -2,17 +2,17 @@
 //!
 //! Each harness gets its own bounded run, so neither the time nor the memory of one run grows with the other harnesses.
 
+use crate::fs;
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
 use std::path::{Path, PathBuf};
 
 use assurance_core::{Admission, admit_control, admit_proofs};
 use serde::Deserialize;
 
-use crate::container::{Container, Failure, Mounts};
+use crate::container::{Container, Failure, Mounted, Mounts};
 use crate::inventory::{CONTROLS, Control, HARNESSES, Harness, PACKAGES};
 use crate::proof_report::{ProofReport, logs_supported};
-use crate::source_snapshot::{SourceSnapshot, read_bounded};
+use crate::source_snapshot::{SourceSnapshot, read_bounded, read_bounded_if_present};
 
 /// The largest export the audit reads.
 const MAX_REPORT_BYTES: usize = 64 * 1024 * 1024;
@@ -53,7 +53,7 @@ impl Proof {
     }
 
     /// The arguments of the Kani run that proves exactly this harness and exports its report to `export`.
-    fn arguments<'a>(&'a self, export: &'a str) -> [&'a str; 11] {
+    const fn arguments<'a>(&'a self, export: &'a str) -> [&'a str; 11] {
         [
             "cargo",
             "kani",
@@ -102,10 +102,10 @@ fn proofs_to_run(
 fn metadata_files(directory: &Path) -> Result<Vec<PathBuf>, Failure> {
     let mut files = Vec::new();
     let mut pending = vec![directory.to_path_buf()];
-    while let Some(directory) = pending.pop() {
-        for entry in fs::read_dir(&directory).map_err(Failure::io)? {
-            let entry = entry.map_err(Failure::io)?;
-            let kind = entry.file_type().map_err(Failure::io)?;
+    while let Some(listed) = pending.pop() {
+        for entry in std::fs::read_dir(&listed).map_err(|error| Failure::io(&error))? {
+            let entry = entry.map_err(|error| Failure::io(&error))?;
+            let kind = entry.file_type().map_err(|error| Failure::io(&error))?;
             let path = entry.path();
             if kind.is_dir() {
                 pending.push(path);
@@ -189,8 +189,13 @@ fn census(
 }
 
 /// Run every harness and every negative control, and refuse unless each run is admitted.
+///
+/// # Errors
+///
+/// Returns a failure when the evidence, the snapshot, the image, or a run can't be made.
+/// Returns a failure when the audit refuses a harness or a negative control.
 pub fn run(root: &Path) -> Result<(), Failure> {
-    let evidence = crate::container::evidence_directory(root, "proofs")?;
+    let evidence = fs::evidence_directory(root, "proofs")?;
     println!("proof evidence: {}", evidence.display());
     let source = SourceSnapshot::capture(root, &evidence)?;
     let container = Container::build(root, &evidence, "verification/kani.Dockerfile")?;
@@ -208,7 +213,11 @@ pub fn run(root: &Path) -> Result<(), Failure> {
     };
     let environment = [("CARGO_TARGET_DIR", TARGET_DIRECTORY)];
 
-    let proofs = admit_every_harness(&container, &mounts, &source, root, "proofs")?;
+    let mounted = Mounted {
+        container: &container,
+        mounts: &mounts,
+    };
+    let proofs = admit_every_harness(mounted, &source, root, "proofs")?;
     println!(
         "verified all {} harnesses, each in its own run",
         proofs.len()
@@ -257,8 +266,7 @@ pub fn run(root: &Path) -> Result<(), Failure> {
             HARNESSES.len(),
             CONTROLS.len()
         ),
-    )
-    .map_err(Failure::io)?;
+    )?;
     println!(
         "admitted {} harnesses and {} negative controls",
         HARNESSES.len(),
@@ -270,13 +278,18 @@ pub fn run(root: &Path) -> Result<(), Failure> {
 /// Prove every harness of the inventory from `source`, each in its own bounded run named after `name`, and refuse unless the audit admits each run.
 ///
 /// It returns the harnesses it proved, each with its package, in the order of the inventory.
+///
+/// # Errors
+///
+/// Returns a failure when the census or a run can't finish, or the inventory and the compiler name different harnesses.
+/// Returns a failure when the audit refuses a run, or the repository at `root` no longer holds the sources of `source`.
 pub fn admit_every_harness(
-    container: &Container,
-    mounts: &Mounts<'_>,
+    mounted: Mounted<'_>,
     source: &SourceSnapshot,
     root: &Path,
     name: &str,
 ) -> Result<Vec<Proof>, Failure> {
+    let Mounted { container, mounts } = mounted;
     let proofs = proofs_to_run(&census(container, mounts)?, &HARNESSES)?;
     for proof in &proofs {
         let run = format!("{name}-{}", proof.label());
@@ -314,26 +327,52 @@ fn refused(control: &Control, admission: Admission, evidence: &Path) -> Failure 
     ))
 }
 
+/// Keep the standard output and standard error of the run `name` in `evidence`.
+///
+/// # Errors
+///
+/// Returns a failure when a log can't be written.
 pub fn keep_logs(evidence: &Path, name: &str, stdout: &str, stderr: &str) -> Result<(), Failure> {
-    fs::write(evidence.join(format!("{name}.stdout.log")), stdout).map_err(Failure::io)?;
-    fs::write(evidence.join(format!("{name}.stderr.log")), stderr).map_err(Failure::io)
+    fs::write(evidence.join(format!("{name}.stdout.log")), stdout)?;
+    fs::write(evidence.join(format!("{name}.stderr.log")), stderr)
 }
 
 /// Read the export of the run `name`, and keep the part the audit reads beside it.
+///
+/// # Errors
+///
+/// Returns a failure when the export can't be read, exceeds its byte budget, or isn't a Kani report.
+/// Returns a failure when the audited part can't be written.
 pub fn read_report(evidence: &Path, name: &str) -> Result<ProofReport, Failure> {
     let bytes = read_bounded(&evidence.join(format!("{name}.json")), MAX_REPORT_BYTES)?;
-    let report: ProofReport = serde_json::from_slice(&bytes)
+    keep_audited(evidence, name, &bytes)
+}
+
+/// The report of the run `name` as [`read_report`] reads it, or `None` when the run exported none.
+///
+/// # Errors
+///
+/// Returns a failure when an export exists but [`read_report`] would refuse it.
+pub fn read_report_if_present(evidence: &Path, name: &str) -> Result<Option<ProofReport>, Failure> {
+    read_bounded_if_present(&evidence.join(format!("{name}.json")), MAX_REPORT_BYTES)?
+        .map(|bytes| keep_audited(evidence, name, &bytes))
+        .transpose()
+}
+
+/// The report in the export `bytes` of the run `name`, after keeping the part the audit reads in `evidence`.
+fn keep_audited(evidence: &Path, name: &str, bytes: &[u8]) -> Result<ProofReport, Failure> {
+    let report: ProofReport = serde_json::from_slice(bytes)
         .map_err(|error| Failure::new(format!("Kani's export of {name} is unreadable: {error}")))?;
     let audited = serde_json::to_vec_pretty(&report)
         .map_err(|error| Failure::new(format!("the audited report won't serialize: {error}")))?;
-    fs::write(evidence.join(format!("{name}.audited.json")), audited).map_err(Failure::io)?;
+    fs::write(evidence.join(format!("{name}.audited.json")), audited)?;
     Ok(report)
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::fs;
     use std::collections::{BTreeMap, BTreeSet};
-    use std::fs;
 
     use super::{Proof, census_of, metadata_files, proofs_to_run};
     use crate::inventory::{HARNESSES, Harness};
@@ -409,11 +448,11 @@ mod tests {
         let census = compiled(&[("run::proofs::a", "core"), ("run::proofs::b", "core")]);
         let both = [harness("run::proofs::a"), harness("run::proofs::b")];
         assert_eq!(proofs_to_run(&census, &both).unwrap().len(), 2);
-        assert!(proofs_to_run(&census, &both[..1]).is_err());
+        proofs_to_run(&census, &both[..1]).unwrap_err();
         let unknown = [both[0], both[1], harness("run::proofs::c")];
-        assert!(proofs_to_run(&census, &unknown).is_err());
+        proofs_to_run(&census, &unknown).unwrap_err();
         let twice = [both[0], both[1], both[1]];
-        assert!(proofs_to_run(&census, &twice).is_err());
+        proofs_to_run(&census, &twice).unwrap_err();
     }
 
     #[test]
@@ -447,13 +486,13 @@ mod tests {
                 ("proofs::b", "assurance-core")
             ])
         );
-        assert!(census_of(&[files[0].clone(), files[0].clone(), files[1].clone()]).is_err());
-        assert!(census_of(&files[..1]).is_err());
+        census_of(&[files[0].clone(), files[0].clone(), files[1].clone()]).unwrap_err();
+        census_of(&files[..1]).unwrap_err();
         fs::write(
             assurance.join("serde-3.kani-metadata.json"),
             r#"{"crate_name":"serde","proof_harnesses":[]}"#,
         )
         .unwrap();
-        assert!(census_of(&metadata_files(directory.path()).unwrap()).is_err());
+        census_of(&metadata_files(directory.path()).unwrap()).unwrap_err();
     }
 }
