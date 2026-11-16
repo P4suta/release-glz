@@ -85,6 +85,31 @@ fn github_api_base_urls_are_absolute_hierarchical_and_query_free() {
 }
 
 #[test]
+fn an_unparsable_github_endpoint_is_a_malformed_url() {
+    let repository = GitHubRepository::parse("o/r").unwrap();
+    for (api_url, graphql_url) in [
+        ("https://", "https://api.github.com/graphql"),
+        ("https://api.github.com", "not a url"),
+    ] {
+        let error = GitHubClient::new(
+            repository.clone(),
+            api_url.into(),
+            graphql_url.into(),
+            Some("token".into()),
+        )
+        .unwrap_err();
+        assert_eq!(
+            (refusal_reason(&error), error.to_string()),
+            (
+                Some(RefusalReason::UrlMalformed),
+                "GitHub API URL is not a valid URL".to_owned()
+            ),
+            "{api_url} {graphql_url}"
+        );
+    }
+}
+
+#[test]
 fn github_api_base_urls_use_https_or_http_to_a_numeric_loopback_address() {
     let repository = GitHubRepository::parse("o/r").unwrap();
     let client = |base: &str| {
