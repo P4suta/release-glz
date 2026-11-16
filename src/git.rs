@@ -414,10 +414,18 @@ mod tests {
     #[test]
     fn malformed_log_records_and_all_breaking_markers_are_explicit() {
         let mut empty = std::iter::empty();
-        assert!(required_part(&mut empty, "sha").is_err());
+        assert_eq!(
+            required_part(&mut empty, "sha").unwrap_err().to_string(),
+            "git log record has no sha"
+        );
         let mut only_sha = std::iter::once("sha");
         required_part(&mut only_sha, "sha").unwrap();
-        assert!(required_part(&mut only_sha, "author").is_err());
+        assert_eq!(
+            required_part(&mut only_sha, "author")
+                .unwrap_err()
+                .to_string(),
+            "git log record has no author"
+        );
         assert_eq!(conventional_bump("fix!: remove", ""), Bump::Major);
         assert_eq!(
             conventional_bump("chore: release", "BREAKING-CHANGE: remove"),

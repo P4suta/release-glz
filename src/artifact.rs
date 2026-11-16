@@ -15,6 +15,8 @@ use sha2::{Digest, Sha256};
 use tar::Archive;
 use toml_edit::{DocumentMut, value};
 
+use crate::failure::{Refusal, RefusalReason, refused};
+use crate::refuse;
 use crate::units::MIB;
 
 /// Archive contents keyed by repository-relative path.
@@ -88,10 +90,16 @@ pub fn build_hex_tarball(
     limits: ArchiveLimits,
 ) -> Result<Vec<u8>> {
     if files.len() > limits.max_entries {
-        bail!("Hex contents exceed the archive entry limit");
+        refuse!(
+            ArchiveLimitExceeded,
+            "Hex contents exceed the archive entry limit"
+        );
     }
     if metadata.len() as u64 > limits.max_entry_bytes {
-        bail!("Hex metadata exceed the per-entry archive limit");
+        refuse!(
+            ArchiveLimitExceeded,
+            "Hex metadata exceed the per-entry archive limit"
+        );
     }
 
     let mut expanded_bytes = 0_u64;
@@ -99,13 +107,24 @@ pub fn build_hex_tarball(
         safe_archive_path_value(path.as_bytes())
             .context("Hex contents path must be a safe relative path")?;
         if contents.len() as u64 > limits.max_entry_bytes {
-            bail!("Hex contents file `{path}` exceeds the per-entry archive limit");
+            refuse!(
+                ArchiveLimitExceeded,
+                "Hex contents file `{path}` exceeds the per-entry archive limit"
+            );
         }
         expanded_bytes = expanded_bytes
             .checked_add(contents.len() as u64)
-            .context("Hex contents size overflow")?;
+            .ok_or_else(|| {
+                refused(
+                    RefusalReason::ArchiveLimitExceeded,
+                    "Hex contents size overflow",
+                )
+            })?;
         if expanded_bytes > limits.max_total_bytes {
-            bail!("Hex contents exceed the expanded archive limit");
+            refuse!(
+                ArchiveLimitExceeded,
+                "Hex contents exceed the expanded archive limit"
+            );
         }
     }
 
@@ -186,7 +205,10 @@ fn expand_hex_tarball(
     limits: ArchiveLimits,
 ) -> Result<(HexTarballValidation, BTreeMap<String, Vec<u8>>)> {
     if bytes.len() as u64 > limits.max_archive_bytes {
-        bail!("Hex package exceeds the archive byte limit");
+        refuse!(
+            ArchiveLimitExceeded,
+            "Hex package exceeds the archive byte limit"
+        );
     }
     let outer =
         read_tar_files(Cursor::new(bytes), limits, false).context("unsafe Hex package tarball")?;
@@ -211,7 +233,10 @@ fn expand_hex_tarball(
     let recorded =
         std::str::from_utf8(trim_ascii(&outer["CHECKSUM"])).context("Hex CHECKSUM is not ASCII")?;
     if recorded != inner_checksum {
-        bail!("Hex package inner checksum mismatch");
+        refuse!(
+            HexInnerChecksumMismatch,
+            "Hex package inner checksum mismatch"
+        );
     }
     let contents = read_tar_gz_files(&outer["contents.tar.gz"], limits)
         .context("unsafe Hex contents archive")?;
@@ -258,7 +283,7 @@ pub fn validate_and_fingerprint_docs_tarball(
 /// Entry paths are validated first, so an entry cannot escape the destination through `..` or an absolute path.
 pub fn unpack_tar_bytes(bytes: &[u8], destination: &Path, limits: ArchiveLimits) -> Result<()> {
     if bytes.len() as u64 > limits.max_archive_bytes {
-        bail!("tar archive exceeds the byte limit");
+        refuse!(ArchiveLimitExceeded, "tar archive exceeds the byte limit");
     }
     let files = read_tar_files(Cursor::new(bytes), limits, true)?;
     fs::create_dir_all(destination)?;
@@ -407,7 +432,10 @@ fn checked_outer_files(bytes: &[u8], limits: ArchiveLimits) -> Result<BTreeMap<S
 
 fn read_tar_gz_files(bytes: &[u8], limits: ArchiveLimits) -> Result<BTreeMap<String, Vec<u8>>> {
     if bytes.len() as u64 > limits.max_archive_bytes {
-        bail!("compressed archive exceeds the byte limit");
+        refuse!(
+            ArchiveLimitExceeded,
+            "compressed archive exceeds the byte limit"
+        );
     }
     let decompressed_limit = limits
         .max_total_bytes
@@ -433,26 +461,41 @@ fn read_tar_files<R: Read>(
         .enumerate()
     {
         if index >= limits.max_entries {
-            bail!("archive exceeds the entry limit");
+            refuse!(ArchiveLimitExceeded, "archive exceeds the entry limit");
         }
         let mut entry = entry.context("invalid tar entry")?;
         let kind = entry.header().entry_type();
         if matches!(kind.as_byte(), b'g' | b'K') {
-            bail!("archive extension headers are not supported");
+            refuse!(
+                ArchiveExtensionHeaderInvalid,
+                "archive extension headers are not supported"
+            );
         }
         let size = entry.size();
         if size > limits.max_entry_bytes {
-            bail!("archive entry exceeds the per-file limit");
+            refuse!(
+                ArchiveLimitExceeded,
+                "archive entry exceeds the per-file limit"
+            );
         }
-        total = total
-            .checked_add(size)
-            .context("archive expanded size overflow")?;
+        total = total.checked_add(size).ok_or_else(|| {
+            refused(
+                RefusalReason::ArchiveLimitExceeded,
+                "archive expanded size overflow",
+            )
+        })?;
         if total > limits.max_total_bytes {
-            bail!("archive exceeds the expanded byte limit");
+            refuse!(
+                ArchiveLimitExceeded,
+                "archive exceeds the expanded byte limit"
+            );
         }
         if matches!(kind.as_byte(), b'x' | b'L') {
             if pending_path.is_some() {
-                bail!("archive contains consecutive path extension headers");
+                refuse!(
+                    ArchiveExtensionHeaderInvalid,
+                    "archive contains consecutive path extension headers"
+                );
             }
             let contents = read_entry_contents(&mut entry, size, "archive path extension")?;
             let raw_path = if kind.as_byte() == b'L' {
@@ -469,22 +512,34 @@ fn read_tar_files<R: Read>(
         };
         if kind.is_dir() && allow_directories {
             if size != 0 {
-                bail!("archive directory `{path}` has content");
+                refuse!(
+                    ArchiveEntryNotRegular,
+                    "archive directory `{path}` has content"
+                );
             }
             continue;
         }
         if !kind.is_file() {
-            bail!("archive entry `{path}` is not a regular file");
+            refuse!(
+                ArchiveEntryNotRegular,
+                "archive entry `{path}` is not a regular file"
+            );
         }
         if output.contains_key(&path) {
-            bail!("archive contains duplicate entry `{path}`");
+            refuse!(
+                ArchiveEntryDuplicate,
+                "archive contains duplicate entry `{path}`"
+            );
         }
         claim_folded(&mut folded, &path)?;
         let contents = read_entry_contents(&mut entry, size, &format!("archive entry `{path}`"))?;
         output.insert(path, contents);
     }
     if pending_path.is_some() {
-        bail!("archive has a dangling path extension header");
+        refuse!(
+            ArchiveExtensionHeaderInvalid,
+            "archive has a dangling path extension header"
+        );
     }
     Ok(output)
 }
@@ -495,11 +550,16 @@ fn safe_archive_path<R: Read>(entry: &tar::Entry<'_, R>) -> Result<String> {
 }
 
 fn safe_archive_path_value(raw: &[u8]) -> Result<String> {
-    let value = std::str::from_utf8(raw)
-        .map_err(|error| anyhow::Error::new(error).context("archive path is not UTF-8"))?;
+    let value = std::str::from_utf8(raw).with_context(|| {
+        Refusal::new(
+            RefusalReason::ArchivePathUnsafe,
+            "archive path is not UTF-8",
+        )
+    })?;
     match archive_path(value) {
         Some(path) => Ok(path.to_owned()),
-        None => bail!(
+        None => refuse!(
+            ArchivePathUnsafe,
             "archive contains unsafe path `{}`",
             value.trim_end_matches('/')
         ),
@@ -536,9 +596,12 @@ impl ClaimedPaths for FoldedPaths {
 /// Record a file path of an archive, refusing it when it names the same file or directory as an earlier entry once letter case and Unicode normalization no longer count.
 fn claim_folded(folded: &mut FoldedPaths, path: &str) -> Result<()> {
     claim_path(folded, fold(path).as_bytes(), path.to_owned()).map_err(|collision| {
-        anyhow::anyhow!(
-            "archive path `{path}` collides with `{}` once letter case and Unicode normalization no longer count",
-            collision.earlier()
+        refused(
+            RefusalReason::ArchiveEntryDuplicate,
+            format_args!(
+                "archive path `{path}` collides with `{}` once letter case and Unicode normalization no longer count",
+                collision.earlier()
+            ),
         )
     })
 }
@@ -571,49 +634,72 @@ fn read_entry_contents<R: Read>(
 
 fn parse_gnu_long_path(contents: &[u8]) -> Result<&[u8]> {
     let Some((&terminator, path)) = contents.split_last() else {
-        bail!("GNU long path extension is empty");
+        refuse!(
+            ArchiveExtensionHeaderInvalid,
+            "GNU long path extension is empty"
+        );
     };
     if terminator != 0 || path.is_empty() || path.contains(&0) {
-        bail!("GNU long path extension is malformed");
+        refuse!(
+            ArchiveExtensionHeaderInvalid,
+            "GNU long path extension is malformed"
+        );
     }
     Ok(path)
 }
 
 fn parse_pax_path(contents: &[u8]) -> Result<&[u8]> {
+    let invalid = |message| refused(RefusalReason::ArchiveExtensionHeaderInvalid, message);
     let space = contents
         .iter()
         .position(|byte| *byte == b' ')
-        .context("PAX record has no length separator")?;
+        .ok_or_else(|| invalid("PAX record has no length separator"))?;
     let length_bytes = &contents[..space];
     if length_bytes.is_empty()
         || length_bytes.first() == Some(&b'0')
         || !length_bytes.iter().all(u8::is_ascii_digit)
     {
-        bail!("PAX record has an invalid length");
+        refuse!(
+            ArchiveExtensionHeaderInvalid,
+            "PAX record has an invalid length"
+        );
     }
     let length = std::str::from_utf8(length_bytes)?
         .parse::<usize>()
-        .context("PAX record length is too large")?;
+        .with_context(|| {
+            Refusal::new(
+                RefusalReason::ArchiveExtensionHeaderInvalid,
+                "PAX record length is too large",
+            )
+        })?;
     if length != contents.len() || contents.last() != Some(&b'\n') {
-        bail!("PAX record length is inconsistent");
+        refuse!(
+            ArchiveExtensionHeaderInvalid,
+            "PAX record length is inconsistent"
+        );
     }
     let record_start = space
         .checked_add(1)
-        .context("PAX record length is inconsistent")?;
+        .ok_or_else(|| invalid("PAX record length is inconsistent"))?;
     let record_end = contents
         .len()
         .checked_sub(1)
-        .context("PAX record length is inconsistent")?;
+        .ok_or_else(|| invalid("PAX record length is inconsistent"))?;
     let record = contents
         .get(record_start..record_end)
-        .context("PAX record length is inconsistent")?;
+        .ok_or_else(|| invalid("PAX record length is inconsistent"))?;
     let equals = record
         .iter()
         .position(|byte| *byte == b'=')
-        .context("PAX record has no key/value separator")?;
-    let key = std::str::from_utf8(&record[..equals]).context("PAX key is not UTF-8")?;
+        .ok_or_else(|| invalid("PAX record has no key/value separator"))?;
+    let key = std::str::from_utf8(&record[..equals]).with_context(|| {
+        Refusal::new(
+            RefusalReason::ArchiveExtensionHeaderInvalid,
+            "PAX key is not UTF-8",
+        )
+    })?;
     if key != "path" {
-        bail!("unsupported PAX key `{key}`");
+        refuse!(ArchiveExtensionHeaderInvalid, "unsupported PAX key `{key}`");
     }
     Ok(&record[equals + 1..])
 }
@@ -704,7 +790,11 @@ fn collect_publish_inputs(
             continue;
         }
         if !file_type.is_file() {
-            bail!("publish input `{}` is not a regular file", path.display());
+            refuse!(
+                ArchiveEntryNotRegular,
+                "publish input `{}` is not a regular file",
+                path.display()
+            );
         }
         let root_file = !relative.contains('/') && is_publish_root_file(&relative);
         let source_file = in_source && is_publish_source_file(&relative);
@@ -758,9 +848,23 @@ fn is_publish_root_file(path: &str) -> bool {
 mod tests {
     use super::*;
 
+    use crate::failure::{RefusalReason, refusal_reason};
     use flate2::{Compression, write::GzEncoder};
     use std::io::Write;
     use std::io::{Cursor, Read};
+
+    /// The reason and message of an extension-header refusal with `message`.
+    fn extension(message: &str) -> (Option<RefusalReason>, String) {
+        (
+            Some(RefusalReason::ArchiveExtensionHeaderInvalid),
+            message.to_owned(),
+        )
+    }
+
+    /// The reason and message of `error`.
+    fn refusal(error: &anyhow::Error) -> (Option<RefusalReason>, String) {
+        (refusal_reason(error), error.to_string())
+    }
 
     fn package(version: &str, source: &str, generated: &str) -> Vec<u8> {
         let mut contents = Vec::new();
@@ -827,10 +931,25 @@ mod tests {
     fn the_combined_expansion_rejects_what_validation_alone_rejects() {
         let limits = ArchiveLimits::default();
         let truncated = b"not a tarball".to_vec();
-        assert!(validate_hex_tarball(&truncated, limits).is_err());
-        assert!(validate_and_fingerprint_hex_tarball(&truncated, limits).is_err());
-        assert!(validate_docs_tarball(&truncated, limits).is_err());
-        assert!(validate_and_fingerprint_docs_tarball(&truncated, limits).is_err());
+        let hex = (None, "unsafe Hex package tarball".to_owned());
+        let docs = (None, "unsafe documentation archive".to_owned());
+        for (error, expected) in [
+            (validate_hex_tarball(&truncated, limits).unwrap_err(), &hex),
+            (
+                validate_and_fingerprint_hex_tarball(&truncated, limits).unwrap_err(),
+                &hex,
+            ),
+            (
+                validate_docs_tarball(&truncated, limits).unwrap_err(),
+                &docs,
+            ),
+            (
+                validate_and_fingerprint_docs_tarball(&truncated, limits).unwrap_err(),
+                &docs,
+            ),
+        ] {
+            assert_eq!(&refusal(&error), expected, "{error:#}");
+        }
     }
 
     fn add<W: Write>(tar: &mut tar::Builder<W>, path: &str, bytes: &[u8]) {
@@ -873,20 +992,33 @@ mod tests {
             b"\0".as_slice(),
             b"safe\0tail\0".as_slice(),
         ] {
-            assert!(parse_gnu_long_path(malformed).is_err(), "{malformed:?}");
+            assert_eq!(
+                refusal(&parse_gnu_long_path(malformed).unwrap_err()),
+                extension("GNU long path extension is malformed"),
+                "{malformed:?}"
+            );
         }
         assert_eq!(parse_gnu_long_path(b"safe\0").unwrap(), b"safe");
     }
 
     #[test]
     fn pax_length_rejects_a_leading_zero_independently_of_digit_validation() {
-        assert!(parse_pax_path(b"011 path=a\n").is_err());
+        let invalid_length = extension("PAX record has an invalid length");
+        let inconsistent = extension("PAX record length is inconsistent");
+        assert_eq!(
+            refusal(&parse_pax_path(b"011 path=a\n").unwrap_err()),
+            invalid_length
+        );
         assert_eq!(parse_pax_path(b"10 path=a\n").unwrap(), b"a");
         assert_eq!(parse_pax_path(b"8 path=\n").unwrap(), b"");
-        assert!(parse_pax_path(b"10 path=ab").is_err());
-        assert!(parse_pax_path(b"10 path=a\n10 path=b\n").is_err());
-
-        let zero = parse_pax_path(b"0 ").unwrap_err().to_string();
-        assert!(zero.contains("invalid length"), "{zero}");
+        assert_eq!(
+            refusal(&parse_pax_path(b"10 path=ab").unwrap_err()),
+            inconsistent
+        );
+        assert_eq!(
+            refusal(&parse_pax_path(b"10 path=a\n10 path=b\n").unwrap_err()),
+            inconsistent
+        );
+        assert_eq!(refusal(&parse_pax_path(b"0 ").unwrap_err()), invalid_length);
     }
 }

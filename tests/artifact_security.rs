@@ -8,6 +8,7 @@ use release_glz::artifact::{
     package_publish_inputs, unpack_hex_source, unpack_tar_bytes, validate_docs_tarball,
     validate_hex_tarball,
 };
+use release_glz::failure::{RefusalReason, refusal_reason};
 use sha2::{Digest, Sha256};
 
 #[test]
@@ -37,6 +38,7 @@ fn hex_v3_builder_is_deterministic_bounded_and_rejects_unsafe_paths() {
     let unsafe_files = BTreeMap::from([("../escape".to_owned(), b"secret".to_vec())]);
     assert_error_contains(
         build_hex_tarball(metadata, &unsafe_files, ArchiveLimits::default()),
+        RefusalReason::ArchivePathUnsafe,
         "safe relative path",
     );
     assert_error_contains(
@@ -48,6 +50,7 @@ fn hex_v3_builder_is_deterministic_bounded_and_rejects_unsafe_paths() {
                 ..ArchiveLimits::default()
             },
         ),
+        RefusalReason::ArchiveLimitExceeded,
         "expanded archive limit",
     );
     assert_error_contains(
@@ -59,6 +62,7 @@ fn hex_v3_builder_is_deterministic_bounded_and_rejects_unsafe_paths() {
                 ..ArchiveLimits::default()
             },
         ),
+        RefusalReason::ArchiveLimitExceeded,
         "entry limit",
     );
     assert_error_contains(
@@ -70,6 +74,7 @@ fn hex_v3_builder_is_deterministic_bounded_and_rejects_unsafe_paths() {
                 ..ArchiveLimits::default()
             },
         ),
+        RefusalReason::ArchiveLimitExceeded,
         "metadata",
     );
     assert_error_contains(
@@ -81,6 +86,7 @@ fn hex_v3_builder_is_deterministic_bounded_and_rejects_unsafe_paths() {
                 ..ArchiveLimits::default()
             },
         ),
+        RefusalReason::ArchiveLimitExceeded,
         "contents file",
     );
     assert_error_contains(
@@ -92,6 +98,7 @@ fn hex_v3_builder_is_deterministic_bounded_and_rejects_unsafe_paths() {
                 ..ArchiveLimits::default()
             },
         ),
+        RefusalReason::ArchiveLimitExceeded,
         "generated Hex package failed validation",
     );
 }
@@ -140,6 +147,7 @@ fn hex_outer_archive_has_an_exact_bounded_v3_inventory() {
     };
     assert_error_contains(
         validate_hex_tarball(&valid, too_small),
+        RefusalReason::ArchiveLimitExceeded,
         "archive byte limit",
     );
 
@@ -189,9 +197,13 @@ fn archive_paths_reject_every_ambiguous_or_traversing_form() {
         &[0xff, b'x'],
     ] {
         let archive = tar_gz_with_rewritten_first_path(raw_path);
-        let error = validate_docs_tarball(&archive, ArchiveLimits::default())
-            .unwrap_err()
-            .to_string();
+        let error = validate_docs_tarball(&archive, ArchiveLimits::default()).unwrap_err();
+        assert_eq!(
+            refusal_reason(&error),
+            Some(RefusalReason::ArchivePathUnsafe),
+            "{raw_path:?}: {error:#}"
+        );
+        let error = error.to_string();
         assert!(
             error.contains("unsafe") || error.contains("UTF-8"),
             "accepted or misclassified {raw_path:?}: {error}"
@@ -231,11 +243,11 @@ fn archive_paths_reject_names_that_some_supported_os_cannot_represent() {
         "next\u{85}line",
     ] {
         let archive = tar_gz(&[(path, b"contents")]);
-        let error = format!(
-            "{:#}",
-            validate_docs_tarball(&archive, ArchiveLimits::default()).unwrap_err()
+        assert_error_contains(
+            validate_docs_tarball(&archive, ArchiveLimits::default()),
+            RefusalReason::ArchivePathUnsafe,
+            "unsafe path",
         );
-        assert!(error.contains("unsafe path"), "accepted {path:?}: {error}");
     }
 }
 
@@ -253,14 +265,11 @@ fn archive_paths_reject_entries_that_collide_once_letter_case_no_longer_counts()
         ],
     ] {
         let archive = tar_gz(&files);
-        let error = format!(
-            "{:#}",
-            validate_docs_tarball(&archive, ArchiveLimits::default()).unwrap_err()
-        );
         let [(earlier, _), (later, _)] = files;
-        assert!(
-            error.contains(&format!("`{later}` collides with `{earlier}`")),
-            "accepted {files:?} or named another entry: {error}"
+        assert_error_contains(
+            validate_docs_tarball(&archive, ArchiveLimits::default()),
+            RefusalReason::ArchiveEntryDuplicate,
+            &format!("`{later}` collides with `{earlier}`"),
         );
     }
 }
@@ -278,14 +287,11 @@ fn archive_paths_reject_entries_that_differ_only_in_unicode_normalization() {
         [("\u{212b}.txt", b"angstrom sign"), ("\u{e5}.txt", b"ring")],
     ] {
         let archive = tar_gz(&files);
-        let error = format!(
-            "{:#}",
-            validate_docs_tarball(&archive, ArchiveLimits::default()).unwrap_err()
-        );
         let [(earlier, _), (later, _)] = files;
-        assert!(
-            error.contains(&format!("`{later}` collides with `{earlier}`")),
-            "accepted {files:?} or named another entry: {error}"
+        assert_error_contains(
+            validate_docs_tarball(&archive, ArchiveLimits::default()),
+            RefusalReason::ArchiveEntryDuplicate,
+            &format!("`{later}` collides with `{earlier}`"),
         );
     }
 }
@@ -326,18 +332,43 @@ fn portable_names_that_resemble_refused_ones_still_pass() {
 
 #[test]
 fn archives_reject_links_devices_and_nonempty_directories() {
-    for (kind, payload) in [
-        (tar::EntryType::Symlink, b"".as_slice()),
-        (tar::EntryType::Link, b""),
-        (tar::EntryType::Block, b""),
-        (tar::EntryType::Char, b""),
-        (tar::EntryType::Fifo, b""),
-        (tar::EntryType::Directory, b"x"),
+    for (kind, payload, expected) in [
+        (
+            tar::EntryType::Symlink,
+            b"".as_slice(),
+            "archive entry `entry` is not a regular file",
+        ),
+        (
+            tar::EntryType::Link,
+            b"",
+            "archive entry `entry` is not a regular file",
+        ),
+        (
+            tar::EntryType::Block,
+            b"",
+            "archive entry `entry` is not a regular file",
+        ),
+        (
+            tar::EntryType::Char,
+            b"",
+            "archive entry `entry` is not a regular file",
+        ),
+        (
+            tar::EntryType::Fifo,
+            b"",
+            "archive entry `entry` is not a regular file",
+        ),
+        (
+            tar::EntryType::Directory,
+            b"x",
+            "archive directory `directory` has content",
+        ),
     ] {
         let archive = special_tar_gz(kind, payload);
-        assert!(
-            validate_docs_tarball(&archive, ArchiveLimits::default()).is_err(),
-            "accepted unsafe tar entry type {kind:?}"
+        assert_error_contains(
+            validate_docs_tarball(&archive, ArchiveLimits::default()),
+            RefusalReason::ArchiveEntryNotRegular,
+            expected,
         );
     }
 
@@ -361,6 +392,7 @@ fn archives_accept_path_only_long_names_and_reject_unsafe_extensions() {
     for kind in [tar::EntryType::GNULongLink, tar::EntryType::XGlobalHeader] {
         assert_error_contains(
             validate_docs_tarball(&extension_tar_gz(kind), ArchiveLimits::default()),
+            RefusalReason::ArchiveExtensionHeaderInvalid,
             "extension",
         );
     }
@@ -369,6 +401,7 @@ fn archives_accept_path_only_long_names_and_reject_unsafe_extensions() {
         extension_tar_gz_with_contents(tar::EntryType::GNULongName, b"../outside\0");
     assert_error_contains(
         validate_docs_tarball(&unsafe_long_name, ArchiveLimits::default()),
+        RefusalReason::ArchivePathUnsafe,
         "unsafe",
     );
 
@@ -376,6 +409,7 @@ fn archives_accept_path_only_long_names_and_reject_unsafe_extensions() {
         extension_tar_gz_with_contents(tar::EntryType::XHeader, &pax_record("path", "../outside"));
     assert_error_contains(
         validate_docs_tarball(&unsafe_pax, ArchiveLimits::default()),
+        RefusalReason::ArchivePathUnsafe,
         "unsafe",
     );
 
@@ -383,6 +417,7 @@ fn archives_accept_path_only_long_names_and_reject_unsafe_extensions() {
         extension_tar_gz_with_contents(tar::EntryType::XHeader, &pax_record("mtime", "1.5"));
     assert_error_contains(
         validate_docs_tarball(&unsupported_pax, ArchiveLimits::default()),
+        RefusalReason::ArchiveExtensionHeaderInvalid,
         "PAX",
     );
 
@@ -390,6 +425,7 @@ fn archives_accept_path_only_long_names_and_reject_unsafe_extensions() {
         extension_tar_gz_with_contents(tar::EntryType::XHeader, b"99 path=safe.txt\n");
     assert_error_contains(
         validate_docs_tarball(&malformed_pax, ArchiveLimits::default()),
+        RefusalReason::ArchiveExtensionHeaderInvalid,
         "PAX",
     );
 }
@@ -403,7 +439,11 @@ fn archive_entry_total_count_and_compressed_limits_are_independent() {
         max_total_bytes: 100,
         max_archive_bytes: two_files.len() as u64,
     };
-    assert_error_contains(validate_docs_tarball(&two_files, per_entry), "per-file");
+    assert_error_contains(
+        validate_docs_tarball(&two_files, per_entry),
+        RefusalReason::ArchiveLimitExceeded,
+        "per-file",
+    );
 
     let total = ArchiveLimits {
         max_entries: 10,
@@ -413,6 +453,7 @@ fn archive_entry_total_count_and_compressed_limits_are_independent() {
     };
     assert_error_contains(
         validate_docs_tarball(&two_files, total),
+        RefusalReason::ArchiveLimitExceeded,
         "expanded byte limit",
     );
 
@@ -422,7 +463,11 @@ fn archive_entry_total_count_and_compressed_limits_are_independent() {
         max_total_bytes: 16,
         max_archive_bytes: two_files.len() as u64,
     };
-    assert_error_contains(validate_docs_tarball(&two_files, entries), "entry limit");
+    assert_error_contains(
+        validate_docs_tarball(&two_files, entries),
+        RefusalReason::ArchiveLimitExceeded,
+        "entry limit",
+    );
 
     let compressed = ArchiveLimits {
         max_archive_bytes: two_files.len() as u64 - 1,
@@ -430,6 +475,7 @@ fn archive_entry_total_count_and_compressed_limits_are_independent() {
     };
     assert_error_contains(
         validate_docs_tarball(&two_files, compressed),
+        RefusalReason::ArchiveLimitExceeded,
         "compressed archive",
     );
 
@@ -439,7 +485,11 @@ fn archive_entry_total_count_and_compressed_limits_are_independent() {
         max_total_bytes: 0,
         max_archive_bytes: two_files.len() as u64,
     };
-    assert!(validate_docs_tarball(&two_files, decompressed).is_err());
+    assert_error_contains(
+        validate_docs_tarball(&two_files, decompressed),
+        RefusalReason::ArchiveLimitExceeded,
+        "unsafe documentation archive: archive exceeds the entry limit",
+    );
 
     let exact = ArchiveLimits {
         max_entries: 10,
@@ -483,6 +533,7 @@ fn unpacking_uses_only_validated_relative_regular_files() {
     };
     assert_error_contains(
         unpack_tar_bytes(&archive, &temp.path().join("blocked"), limit),
+        RefusalReason::ArchiveLimitExceeded,
         "byte limit",
     );
     assert!(!temp.path().join("blocked").exists());
@@ -574,7 +625,11 @@ fn package_directory_normalization_rejects_symlink_publish_inputs() {
     fs::create_dir(temp.path().join("src")).unwrap();
     fs::write(temp.path().join("outside"), "secret").unwrap();
     symlink("../outside", temp.path().join("src/leak.gleam")).unwrap();
-    assert_error_contains(normalize_package_dir(temp.path()), "not a regular file");
+    assert_error_contains(
+        normalize_package_dir(temp.path()),
+        RefusalReason::ArchiveEntryNotRegular,
+        "not a regular file",
+    );
 }
 
 #[test]
@@ -588,14 +643,25 @@ fn docs_interface_lookup_handles_nested_absent_and_malformed_archives() {
         interface_from_docs_tarball(&tar_gz(&[("index.html", b"ok")])).unwrap(),
         None
     );
-    assert!(interface_from_docs_tarball(b"not gzip").is_err());
+    let error = interface_from_docs_tarball(b"not gzip").unwrap_err();
+    assert_eq!(
+        (refusal_reason(&error), error.to_string()),
+        (None, "invalid tar entry".to_owned()),
+        "{error:#}"
+    );
 }
 
-fn assert_error_contains<T: std::fmt::Debug>(result: anyhow::Result<T>, expected: &str) {
-    let error = format!("{:#}", result.unwrap_err());
+fn assert_error_contains<T: std::fmt::Debug>(
+    result: anyhow::Result<T>,
+    reason: RefusalReason,
+    expected: &str,
+) {
+    let error = result.unwrap_err();
+    let message = format!("{error:#}");
+    assert_eq!(refusal_reason(&error), Some(reason), "{message}");
     assert!(
-        error.contains(expected),
-        "expected {expected:?} in {error:?}"
+        message.contains(expected),
+        "expected {expected:?} in {message:?}"
     );
 }
 

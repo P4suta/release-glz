@@ -55,7 +55,10 @@ fn commits_resolution_and_bounded_history_have_exact_edges() {
     assert!(all[0].body.contains("BREAKING-CHANGE"));
     assert_eq!(repo.commits_since(Some(&first)).unwrap().len(), 1);
 
-    assert!(repo.rev_list_bounded(0).is_err());
+    assert_eq!(
+        repo.rev_list_bounded(0).unwrap_err().to_string(),
+        "git history search limit must be greater than zero"
+    );
     let (one, truncated) = repo.rev_list_bounded(1).unwrap();
     assert_eq!(one.len(), 1);
     assert!(truncated);
@@ -125,12 +128,24 @@ fn git_effect_failures_are_errors_and_never_report_success() {
     let work = temp.path().join("work");
     init_repo(&work, "main");
     let repo = GitRepo::discover(&work).unwrap();
-    assert!(
-        repo.archive("refs/heads/missing", &temp.path().join("archive"))
-            .is_err()
-    );
-    assert!(repo.run(["not-a-real-git-subcommand"]).is_err());
-    assert!(GitRepo::discover(Path::new("/definitely/not/a/repository")).is_err());
+    for (error, prefix) in [
+        (
+            repo.archive("refs/heads/missing", &temp.path().join("archive"))
+                .unwrap_err(),
+            "git archive failed: ",
+        ),
+        (
+            repo.run(["not-a-real-git-subcommand"]).unwrap_err(),
+            "git failed: ",
+        ),
+        (
+            GitRepo::discover(Path::new("/definitely/not/a/repository")).unwrap_err(),
+            "git failed: ",
+        ),
+    ] {
+        let message = error.to_string();
+        assert!(message.starts_with(prefix), "{message}");
+    }
 }
 
 #[test]

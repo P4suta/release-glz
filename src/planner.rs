@@ -8,7 +8,7 @@ use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -17,7 +17,9 @@ use crate::api;
 use crate::artifact;
 use crate::changelog::{self, ReleaseNotesConfig};
 use crate::config::{ApprovalMode, Manifest, ReleaseConfig};
-use crate::failure::{FailureClass, classified, with_default_class};
+use crate::failure::{
+    FailureClass, Refusal, RefusalReason, classified, refused, with_default_class,
+};
 use crate::git::{Commit, GitRepo};
 use crate::gleam::Gleam;
 use crate::model::{
@@ -25,6 +27,7 @@ use crate::model::{
     ChangeEntry, Diagnostic, DiagnosticLevel, ReasonKind, ReleasePlan, ReleaseReason, ReleaseStage,
     ReleaseState,
 };
+use crate::refuse;
 use crate::registry::{HexRegistry, PackageState, Registry};
 use crate::version::{bump_between, effective_bump, follows, initial_version, select_version};
 
@@ -162,7 +165,8 @@ impl<R: Registry> Planner<R> {
         let manifest = Manifest::load(committed.package_dir().join("gleam.toml"))?;
         let release = manifest.release()?;
         if compiler != release.compiler {
-            bail!(
+            refuse!(
+                GleamCompilerMismatch,
                 "configured Gleam compiler {} is required; found {compiler}",
                 release.compiler
             );
@@ -255,13 +259,12 @@ impl<R: Registry> Planner<R> {
             .as_ref()
             .unwrap_or(&manifest.version);
         if follows(&latest.version, candidate) {
-            return Err(classified(
-                FailureClass::PolicyOrApproval,
-                format!(
-                    "manifest version {} is behind the latest Hex release {}; run `release-glz release-pr` or set a higher version",
-                    candidate, latest.version
-                ),
-            ));
+            refuse!(
+                ManifestVersionBehindPublished,
+                "manifest version {} is behind the latest Hex release {}; run `release-glz release-pr` or set a higher version",
+                candidate,
+                latest.version
+            );
         }
         // Validate the API exception before any potentially long artifact-fingerprint history scan.
         let api_exception = validated_api_exception(release, repo, &latest.version)?;
@@ -502,8 +505,11 @@ impl<R: Registry> Planner<R> {
         }
 
         if let Some(git_ref) = release.baseline_refs.get(version) {
-            let sha = repo.resolve(git_ref)?.with_context(|| {
-                format!("configured baseline ref `{git_ref}` cannot be resolved")
+            let sha = repo.resolve(git_ref)?.ok_or_else(|| {
+                refused(
+                    RefusalReason::BaselineRefUnresolved,
+                    format_args!("configured baseline ref `{git_ref}` cannot be resolved"),
+                )
             })?;
             return Ok(Baseline {
                 version: Some(version.clone()),
@@ -557,18 +563,16 @@ impl<R: Registry> Planner<R> {
         }
 
         if truncated {
-            return Err(classified(
-                FailureClass::PolicyOrApproval,
-                format!(
-                    "bounded artifact baseline search inspected {} commits without a match; add `[tools.release-glz.baseline_refs]` for {version} instead of expanding an unbounded history scan",
-                    self.baseline_search_limit
-                ),
-            ));
+            refuse!(
+                BaselineNotFound,
+                "bounded artifact baseline search inspected {} commits without a match; add `[tools.release-glz.baseline_refs]` for {version} instead of expanding an unbounded history scan",
+                self.baseline_search_limit
+            );
         }
 
-        Err(classified(
-            FailureClass::PolicyOrApproval,
-            format!(
+        Err(refused(
+            RefusalReason::BaselineNotFound,
+            format_args!(
                 "the Hex artifact for {version} does not match any commit and tag `{tag}` is missing; add `[tools.release-glz.baseline_refs]` with `\"{version}\" = \"<sha>\"`"
             ),
         ))
@@ -700,18 +704,19 @@ fn validated_api_exception(
     let expires = chrono::NaiveDate::parse_from_str(&exception.expires, "%Y-%m-%d")
         .expect("API exception dates are validated while parsing configuration");
     if expires < chrono::Utc::now().date_naive() {
-        return Err(classified(
-            FailureClass::PolicyOrApproval,
-            format!(
-                "API exception for {version} expired on {}; remove it or complete a newly reviewed exception",
-                exception.expires
-            ),
-        ));
+        refuse!(
+            ApiExceptionExpired,
+            "API exception for {version} expired on {}; remove it or complete a newly reviewed exception",
+            exception.expires
+        );
     }
-    repo.resolve(&exception.baseline)?.with_context(|| {
-        format!(
-            "API exception baseline `{}` for {version} cannot be resolved",
-            exception.baseline
+    repo.resolve(&exception.baseline)?.ok_or_else(|| {
+        refused(
+            RefusalReason::BaselineRefUnresolved,
+            format_args!(
+                "API exception baseline `{}` for {version} cannot be resolved",
+                exception.baseline
+            ),
         )
     })?;
     Ok(Some(format!(
@@ -800,7 +805,12 @@ pub fn prepare_release_files(
         .canonicalize()
         .or_else(|_| Ok::<_, std::io::Error>(manifest.path().to_path_buf()))?
         .strip_prefix(repo.root().canonicalize()?)
-        .context("manifest is outside git repository")?
+        .with_context(|| {
+            Refusal::new(
+                RefusalReason::ReleaseFileOutsideRepository,
+                "manifest is outside git repository",
+            )
+        })?
         .to_string_lossy()
         .replace('\\', "/");
     let changelog_relative = if changelog_path.exists() {
@@ -812,7 +822,12 @@ pub fn prepare_release_files(
             .join(&changelog_config.path)
     }
     .strip_prefix(repo.root().canonicalize()?)
-    .context("changelog is outside git repository")?
+    .with_context(|| {
+        Refusal::new(
+            RefusalReason::ReleaseFileOutsideRepository,
+            "changelog is outside git repository",
+        )
+    })?
     .to_string_lossy()
     .replace('\\', "/");
     Ok(BTreeMap::from([
@@ -871,13 +886,11 @@ fn first_version(
     if let Some(explicit) = &options.version_override
         && follows(&manifest.version, explicit)
     {
-        return Err(classified(
-            FailureClass::PolicyOrApproval,
-            format!(
-                "release policy forbids lowering the manifest version from {} to {explicit}",
-                manifest.version
-            ),
-        ));
+        refuse!(
+            VersionLoweringForbidden,
+            "release policy forbids lowering the manifest version from {} to {explicit}",
+            manifest.version
+        );
     }
     let requested = options
         .version_override

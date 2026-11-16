@@ -2,11 +2,26 @@ use release_glz::authorization::{
     GithubOidcClaims, GithubOidcVerifier, JwkSet, OidcAudience, OidcExpectation, RsaJwk,
     VerifiedGithubOidc, verify_github_oidc_token,
 };
+use release_glz::failure::{RefusalReason, refusal_reason};
 use release_glz_test_support::http::{FakeServer, Response};
 use release_glz_test_support::oidc;
 
 const NOW: i64 = 1_800_000_000;
 type ClaimsMutation = Box<dyn Fn(&mut GithubOidcClaims)>;
+
+/// The reason and message of the refusal that verifying `claims` against `expected` ends in.
+fn refusal(
+    claims: GithubOidcClaims,
+    expected: &OidcExpectation,
+) -> (Option<RefusalReason>, String) {
+    let error = verify(claims, expected).unwrap_err();
+    (refusal_reason(&error), error.to_string())
+}
+
+/// A claims refusal with `message`.
+fn mismatch(message: &str) -> (Option<RefusalReason>, String) {
+    (Some(RefusalReason::OidcClaimsMismatch), message.to_owned())
+}
 
 fn claims() -> GithubOidcClaims {
     GithubOidcClaims {
@@ -60,29 +75,78 @@ fn exact_github_environment_identity_is_accepted() {
 
 #[test]
 fn every_security_boundary_is_fail_closed() {
-    let mutations: Vec<ClaimsMutation> = vec![
-        Box::new(|claims| claims.issuer = "https://attacker.invalid".into()),
-        Box::new(|claims| claims.audience = OidcAudience::One("other".into())),
-        Box::new(|claims| claims.subject = "repo:owner/widget:ref:refs/heads/main".into()),
-        Box::new(|claims| claims.repository = "fork/widget".into()),
-        Box::new(|claims| claims.environment = Some("staging".into())),
-        Box::new(|claims| {
-            claims.workflow_ref = "owner/widget/.github/workflows/other.yml@refs/heads/main".into()
-        }),
-        Box::new(|claims| claims.git_ref = "refs/pull/1/merge".into()),
-        Box::new(|claims| claims.source_sha = "b".repeat(40)),
-        Box::new(|claims| claims.run_id = "999".into()),
-        Box::new(|claims| claims.run_attempt = "0".into()),
-        Box::new(|claims| claims.event_name = "pull_request".into()),
-        Box::new(|claims| claims.expires_at = NOW),
-        Box::new(|claims| claims.issued_at = NOW + 31),
-        Box::new(|claims| claims.not_before = Some(NOW + 31)),
+    let outside_validity = |message: &str| {
+        (
+            Some(RefusalReason::OidcTokenOutsideValidity),
+            message.to_owned(),
+        )
+    };
+    let mutations: Vec<(ClaimsMutation, (Option<RefusalReason>, String))> = vec![
+        (
+            Box::new(|claims| claims.issuer = "https://attacker.invalid".into()),
+            mismatch("GitHub OIDC issuer is not trusted"),
+        ),
+        (
+            Box::new(|claims| claims.audience = OidcAudience::One("other".into())),
+            mismatch("GitHub OIDC audience is not release-glz"),
+        ),
+        (
+            Box::new(|claims| claims.subject = "repo:owner/widget:ref:refs/heads/main".into()),
+            mismatch("GitHub OIDC subject is not the approved Environment"),
+        ),
+        (
+            Box::new(|claims| claims.repository = "fork/widget".into()),
+            mismatch("GitHub OIDC repository does not match the sealed Candidate"),
+        ),
+        (
+            Box::new(|claims| claims.environment = Some("staging".into())),
+            mismatch("GitHub OIDC environment does not match the sealed Candidate"),
+        ),
+        (
+            Box::new(|claims| {
+                claims.workflow_ref =
+                    "owner/widget/.github/workflows/other.yml@refs/heads/main".into()
+            }),
+            mismatch("GitHub OIDC workflow is not the managed release workflow"),
+        ),
+        (
+            Box::new(|claims| claims.git_ref = "refs/pull/1/merge".into()),
+            mismatch("GitHub OIDC ref is not an allowed full branch or tag ref"),
+        ),
+        (
+            Box::new(|claims| claims.source_sha = "b".repeat(40)),
+            mismatch("GitHub OIDC source SHA does not match the sealed Candidate"),
+        ),
+        (
+            Box::new(|claims| claims.run_id = "999".into()),
+            mismatch("GitHub OIDC run ID does not match the publishing run"),
+        ),
+        (
+            Box::new(|claims| claims.run_attempt = "0".into()),
+            mismatch("GitHub OIDC run attempt is invalid"),
+        ),
+        (
+            Box::new(|claims| claims.event_name = "pull_request".into()),
+            mismatch("GitHub OIDC event is not an authorized release trigger"),
+        ),
+        (
+            Box::new(|claims| claims.expires_at = NOW),
+            outside_validity("GitHub OIDC token has expired"),
+        ),
+        (
+            Box::new(|claims| claims.issued_at = NOW + 31),
+            outside_validity("GitHub OIDC token was issued in the future"),
+        ),
+        (
+            Box::new(|claims| claims.not_before = Some(NOW + 31)),
+            outside_validity("GitHub OIDC token is not valid yet"),
+        ),
     ];
 
-    for mutate in mutations {
+    for (mutate, expected) in mutations {
         let mut candidate = claims();
         mutate(&mut candidate);
-        assert!(verify(candidate, &expectation()).is_err());
+        assert_eq!(refusal(candidate, &expectation()), expected);
     }
 }
 
@@ -109,8 +173,11 @@ async fn a_runner_token_url_outside_githubs_zone_is_refused_before_any_request()
             .await
             .unwrap_err();
         assert_eq!(
-            error.to_string(),
-            "GitHub OIDC URL origin is not trusted",
+            (refusal_reason(&error), error.to_string()),
+            (
+                Some(RefusalReason::OidcUrlUntrusted),
+                "GitHub OIDC URL origin is not trusted".to_owned()
+            ),
             "{url}"
         );
     }
@@ -124,7 +191,10 @@ fn audience_arrays_are_supported_but_must_contain_release_glz() {
 
     let mut candidate = claims();
     candidate.audience = OidcAudience::Many(vec!["other".into()]);
-    assert!(verify(candidate, &expectation()).is_err());
+    assert_eq!(
+        refusal(candidate, &expectation()),
+        mismatch("GitHub OIDC audience is not release-glz")
+    );
 }
 
 #[test]
@@ -147,14 +217,22 @@ fn optional_and_alternate_valid_github_claim_forms_are_explicit() {
 
 #[test]
 fn claim_values_that_match_textually_still_require_canonical_safe_shapes() {
-    for case in [
-        "unsafe-full-ref",
-        "invalid-sha-format",
-        "empty-run-id",
-        "nondigit-run-id",
-        "invalid-attempt",
-        "overflow-attempt",
-        "signed-attempt",
+    let invalid_run_id = "GitHub OIDC run ID is invalid";
+    let invalid_attempt = "GitHub OIDC run attempt is invalid";
+    for (case, message) in [
+        (
+            "unsafe-full-ref",
+            "GitHub OIDC ref is not an allowed full branch or tag ref",
+        ),
+        (
+            "invalid-sha-format",
+            "GitHub OIDC source SHA does not match the sealed Candidate",
+        ),
+        ("empty-run-id", invalid_run_id),
+        ("nondigit-run-id", invalid_run_id),
+        ("invalid-attempt", invalid_attempt),
+        ("overflow-attempt", invalid_attempt),
+        ("signed-attempt", invalid_attempt),
     ] {
         let mut expected = expectation();
         let mut candidate = claims();
@@ -181,10 +259,7 @@ fn claim_values_that_match_textually_still_require_canonical_safe_shapes() {
             "signed-attempt" => candidate.run_attempt = "+3".into(),
             _ => unreachable!(),
         }
-        assert!(
-            verify(candidate, &expected).is_err(),
-            "accepted malformed matching claim {case}"
-        );
+        assert_eq!(refusal(candidate, &expected), mismatch(message), "{case}");
     }
 }
 
@@ -198,16 +273,21 @@ fn signed_compact_token_is_verified_before_github_claims_are_returned() {
     let mut tampered = token;
     let payload_start = tampered.find('.').unwrap() + 1;
     tampered.replace_range(payload_start..payload_start + 1, "A");
-    assert!(
-        verify_github_oidc_token(
-            &tampered,
-            &JwkSet {
-                keys: vec![public_jwk()]
-            },
-            &expectation(),
-            NOW,
+    let error = verify_github_oidc_token(
+        &tampered,
+        &JwkSet {
+            keys: vec![public_jwk()],
+        },
+        &expectation(),
+        NOW,
+    )
+    .unwrap_err();
+    assert_eq!(
+        (refusal_reason(&error), error.to_string()),
+        (
+            Some(RefusalReason::OidcTokenUnverified),
+            "GitHub OIDC JWT signature is invalid".to_owned()
         )
-        .is_err()
     );
 }
 

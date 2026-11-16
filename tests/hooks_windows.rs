@@ -6,6 +6,7 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use release_glz::config::HookConfig;
+use release_glz::failure::{RefusalReason, refusal_reason};
 use release_glz::hooks::{HookContext, HookRunner};
 use semver::Version;
 
@@ -29,9 +30,10 @@ async fn hook_timeout_ends_every_process_the_hook_started() {
     let error = HookRunner::default()
         .run_verify(&[hook], temp.path(), &context())
         .await
-        .unwrap_err()
-        .to_string();
+        .unwrap_err();
     assert!(started.elapsed() < Duration::from_secs(60));
+    assert_eq!(refusal_reason(&error), Some(RefusalReason::HookTimedOut));
+    let error = error.to_string();
     assert!(error.contains("timed out"), "{error}");
 
     let grandchild =
@@ -58,9 +60,13 @@ async fn a_hook_that_exits_with_an_error_reports_failure() {
             &context(),
         )
         .await
-        .unwrap_err()
-        .to_string();
+        .unwrap_err();
 
+    assert_eq!(
+        refusal_reason(&error),
+        Some(RefusalReason::HookReportedFailure)
+    );
+    let error = error.to_string();
     assert!(error.contains("reported failure"), "{error}");
 }
 

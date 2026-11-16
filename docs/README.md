@@ -340,6 +340,167 @@ Exit code meanings are stable:
 | 6 | Hook failure |
 | 7 | Partial release requiring resume |
 
+A failed command without a result carries one error diagnostic, whose `code` names what failed.
+A refusal that release-glz names carries its reason code, which decides the exit code; any other failure carries the code of its class.
+A step that imposes another class on a refusal, such as a release that stops after it published part of a release, carries the code of that class instead.
+The class codes are `internal_failure`, `usage_or_config`, `policy_or_approval`, `immutable_state_conflict`, `temporary_external_failure`, `hook_failure`, and `partial_release`, for exit codes 1 to 7 in order.
+Reason codes are stable, and a code is never reused for another refusal:
+
+| Reason code | Exit code | Meaning |
+|---|---:|---|
+| `config_missing` | 2 | The manifest has no `[tools.release-glz]` table. |
+| `config_schema_unsupported` | 2 | The `[tools.release-glz]` table sets a `schema` other than 2. |
+| `config_table_invalid` | 2 | The `[tools.release-glz]` table has an unknown key, lacks a required key, or holds a value of the wrong type. |
+| `manifest_changed` | 4 | The manifest changed on disk after release-glz read it, so it isn't replaced. |
+| `package_name_invalid` | 2 | A package name isn't one Hex accepts. |
+| `path_not_relative` | 2 | A configured path is empty or not `/`-separated. |
+| `path_outside_repository` | 2 | A configured path leaves the repository. |
+| `git_ref_unsafe` | 2 | A git ref is unsafe, or git itself would refuse it. |
+| `git_ref_prefix_unsafe` | 2 | A ref prefix, such as the release branch prefix, could produce an unsafe ref. |
+| `hook_id_unsafe` | 2 | A hook id isn't a safe name. |
+| `hook_id_reserved` | 2 | A hook takes the id of the evidence that release-glz builds itself. |
+| `hook_argv_invalid` | 2 | A hook argv is empty or holds an empty or NUL-containing argument. |
+| `hook_timeout_out_of_range` | 2 | A hook timeout lies outside the permitted range. |
+| `hook_env_invalid` | 2 | A hook allows an environment variable whose name is invalid. |
+| `hook_env_protected` | 2 | A hook allows a credential or a GitHub control file that no hook may receive. |
+| `credential_env_invalid` | 2 | The registry credential setting isn't the name of an environment variable. |
+| `registry_repository_invalid` | 2 | The Hex organization isn't a safe single path segment. |
+| `url_credentials` | 2 | A configured URL carries credentials. |
+| `url_not_hierarchical` | 2 | A configured URL isn't absolute and hierarchical. |
+| `url_query_or_fragment` | 2 | A configured URL carries a query or a fragment. |
+| `url_transport_untrusted` | 2 | A configured URL uses neither HTTPS nor HTTP to a numeric loopback address. |
+| `approval_environment_invalid` | 2 | The approval Environment name is empty or spans lines. |
+| `approval_mode_fixed` | 2 | An approval path names a mode other than its fixed one. |
+| `approval_fallback_unsupported` | 2 | The private repository fallback names an unsupported value. |
+| `manual_ref_kind_unsupported` | 2 | A manual release ref names neither a branch nor a tag. |
+| `manual_ref_duplicate` | 2 | A manual release ref is listed twice. |
+| `api_exception_duplicate` | 2 | Two API exceptions name the same version. |
+| `api_exception_reason_missing` | 2 | An API exception gives no reason. |
+| `api_exception_expiry_invalid` | 2 | An API exception expiry isn't a `YYYY-MM-DD` date. |
+| `github_repository_invalid` | 2 | A GitHub repository isn't an `owner/name` that GitHub accepts. |
+| `github_token_missing` | 5 | A command that writes to GitHub has neither `GITHUB_TOKEN` nor `GH_TOKEN`. |
+| `github_environment_empty` | 2 | The GitHub Environment to audit has an empty name. |
+| `github_default_branch_missing` | 2 | GitHub reports no default branch for the repository. |
+| `release_pr_marker_mismatch` | 5 | The managed Release PR at the Candidate head describes another release. |
+| `release_pr_head_unverified` | 5 | The managed Release PR head isn't the generated commit that GitHub verified. |
+| `release_pr_intent_conflict` | 5 | The managed Release PR is already bound to another Candidate intent. |
+| `release_pr_changed` | 5 | The managed Release PR changed while its intent was being bound. |
+| `candidate_run_from_another_push` | 3 | A push publishes a Candidate that another run prepared. |
+| `candidate_run_promotes_itself` | 3 | A manual promotion names a Candidate from its own run. |
+| `candidate_run_event_unsupported` | 3 | An event other than a push or a manual promotion publishes a Candidate. |
+| `approval_github_token_missing` | 3 | The release approval can't verify its Actions artifact without `GITHUB_TOKEN` or `GH_TOKEN`. |
+| `actions_artifact_identity_invalid` | 3 | The Actions artifact ID or digest that the approval names is malformed. |
+| `actions_run_id_invalid` | 3 | The Actions run ID that the approval names isn't a canonical number. |
+| `actions_artifact_expired` | 3 | The Candidate's Actions artifact has expired. |
+| `actions_artifact_mismatch` | 3 | The Actions artifact doesn't match its sealed run, source, and digest. |
+| `actions_run_mismatch` | 3 | The Actions run doesn't match the repository, managed workflow, source, and required state. |
+| `github_tag_target_not_commit` | 5 | An annotated tag on GitHub targets something other than a commit. |
+| `github_tag_object_unsupported` | 5 | A tag ref on GitHub points at an unsupported object type. |
+| `github_tag_creation_unexpected` | 5 | GitHub created an annotated tag object other than the one requested. |
+| `github_release_tag_ambiguous` | 4 | Two or more GitHub Releases have the Candidate's tag. |
+| `release_asset_draft_required` | 5 | A Release asset upload targets a Release that is no longer a draft. |
+| `release_asset_name_unsafe` | 5 | A Release asset name is unsafe. |
+| `release_asset_media_type_invalid` | 5 | A Release asset media type is invalid. |
+| `release_upload_url_malformed` | 5 | GitHub's Release upload URL is malformed. |
+| `release_upload_url_untrusted` | 5 | GitHub's Release upload URL has an untrusted origin. |
+| `release_upload_url_mismatch` | 5 | GitHub's Release upload URL names another repository or Release. |
+| `release_asset_upload_unexpected` | 5 | GitHub reports an uploaded Release asset whose identity differs from the bytes sent. |
+| `release_asset_on_published_release` | 5 | A Release asset to delete belongs to a published Release. |
+| `release_asset_uploaded` | 5 | A Release asset to delete is already uploaded. |
+| `release_asset_missing` | 5 | The Release has no asset of the name to delete. |
+| `release_asset_duplicate` | 5 | The Release has two assets of the name to delete. |
+| `release_asset_id_missing` | 5 | A Release asset to delete has no id. |
+| `candidate_not_directory` | 2 | A `--candidate` path isn't a directory. |
+| `candidate_destination_exists` | 4 | The Candidate destination already exists, and a sealed Candidate is never replaced. |
+| `candidate_source_commit_invalid` | 2 | The Candidate source commit isn't a full lowercase SHA. |
+| `candidate_tag_unsafe` | 2 | The Candidate tag is a full ref or a peeled ref. |
+| `candidate_tag_version_mismatch` | 2 | The Candidate tag doesn't end with the Candidate version. |
+| `candidate_release_notes_invalid` | 2 | The Candidate release notes hold a NUL or exceed 1 MiB. |
+| `manual_refs_empty` | 2 | The Candidate lists no manual release ref. |
+| `hook_id_duplicate` | 2 | Two hooks share an id. |
+| `notify_hook_id_invalid` | 2 | A notify hook id is empty or listed twice. |
+| `notify_hooks_mismatch` | 2 | The sealed notify hook definitions don't match the ordered notify hook ids. |
+| `candidate_docs_policy_mismatch` | 2 | The documentation archive's presence contradicts `outputs.docs`. |
+| `candidate_interface_too_large` | 2 | The package interface exceeds the archive size limit. |
+| `candidate_schema_unsupported` | 4 | The Candidate manifest names an unsupported schema. |
+| `candidate_manifest_invalid` | 4 | The Candidate manifest isn't the strict JSON that a seal writes. |
+| `candidate_file_not_regular` | 4 | A Candidate file isn't a regular file. |
+| `candidate_file_too_large` | 4 | A Candidate file exceeds its size limit. |
+| `candidate_artifact_path_unexpected` | 4 | A Candidate artifact sits at a path other than its fixed one. |
+| `candidate_checksum_malformed` | 4 | A checksum that the Candidate records isn't a lowercase SHA-256 digest. |
+| `candidate_checksum_mismatch` | 4 | A Candidate file's size or SHA-256 differs from what the Candidate records. |
+| `candidate_inventory_mismatch` | 4 | The Candidate directory holds files or directories other than the sealed ones. |
+| `candidate_semantic_checksum_mismatch` | 4 | An archive's semantic checksum differs from what the Candidate records. |
+| `candidate_intent_digest_mismatch` | 4 | The Candidate's intent digest differs from the intent it records. |
+| `candidate_digest_mismatch` | 4 | The Candidate digest differs from the manifest it records. |
+| `candidate_hook_evidence_invalid` | 4 | Hook evidence names an unsupported schema, or an empty or duplicate id. |
+| `candidate_hook_failed` | 4 | A required hook did not succeed. |
+| `candidate_hook_evidence_mismatch` | 4 | Hook evidence doesn't match the configured verify and sidecar hooks. |
+| `candidate_sidecar_producer_undeclared` | 4 | A sidecar artifact comes from a hook that the Candidate doesn't declare. |
+| `candidate_sidecars_too_many` | 4 | The Candidate carries more sidecar artifacts than the limit. |
+| `candidate_sidecar_path_invalid` | 4 | A sidecar artifact path is invalid or duplicated. |
+| `candidate_sidecars_too_large` | 4 | The sidecar artifacts exceed their size limit. |
+| `candidate_sidecar_release_disabled` | 4 | A public sidecar artifact needs `outputs.github_release`. |
+| `candidate_sidecar_private_upload_forbidden` | 4 | A public sidecar artifact of a private package needs `outputs.allow_private_evidence_upload`. |
+| `candidate_sidecar_name_duplicate` | 4 | Two public sidecar artifacts share a GitHub Release asset name. |
+| `candidate_evidence_policy_mismatch` | 4 | The built-in SBOM or provenance evidence contradicts the output policy. |
+| `candidate_signature_missing` | 4 | `outputs.signature` is set, and no signature sidecar artifact is sealed. |
+| `sidecar_hook_id_unsafe` | 6 | A sidecar artifact names an unsafe hook id. |
+| `sidecar_name_unsafe` | 6 | A sidecar artifact name isn't one that GitHub keeps as it is. |
+| `sidecar_media_type_invalid` | 6 | A sidecar artifact media type is invalid. |
+| `candidate_source_mismatch` | 4 | The checkout isn't at the Candidate's source commit. |
+| `candidate_policy_differs` | 4 | The Candidate's policy differs from the configuration at its source commit. |
+| `registry_credential_missing` | 3 | A private registry's credential variable is not set. |
+| `oidc_url_untrusted` | 3 | A GitHub OIDC URL is malformed, carries credentials or a fragment, or has an origin other than GitHub's. |
+| `oidc_token_unverified` | 3 | The GitHub OIDC token isn't a well-formed RS256 compact JWS that one key of the issuer's key set verifies. |
+| `oidc_claims_mismatch` | 3 | The GitHub OIDC claims don't canonically name the trusted issuer, the release-glz audience, the sealed Candidate's repository, Environment, workflow, ref, and commit, the publishing run, and an authorized event. |
+| `oidc_token_outside_validity` | 3 | The GitHub OIDC token has expired, was issued in the future, or isn't valid yet. |
+| `version_number_exhausted` | 2 | A release step or prerelease train would pass the largest number that a version component holds. |
+| `prerelease_train_backward` | 2 | A prerelease train would move backwards, stay behind the published core, or not sort after the published version, without an explicitly higher core version. |
+| `explicit_version_refused` | 2 | An explicit version is below the version that the changes require, or doesn't belong to the configured prerelease train. |
+| `version_not_after_published` | 2 | The selected version doesn't follow the published version, so there is nothing new to release. |
+| `changelog_notes_layout_invalid` | 1 | The structured changelog notes path isn't a directory, holds more note files than the limit, or holds a note that isn't a regular file within the size limit. |
+| `changelog_note_invalid` | 1 | A structured changelog note has an unsafe id or one other than its filename, text other than one trimmed line within the length limit, or a zero pull request. |
+| `gleam_compiler_unsupported` | 2 | The installed Gleam compiler is older than the oldest one that release-glz supports. |
+| `gleam_repository_invalid` | 2 | The package `repository` names an unsupported type, or lacks the user, repository, host, or URL that its type needs. |
+| `release_pr_marker_not_trailing` | 5 | The managed Release PR body doesn't end in exactly one release-glz marker. |
+| `workflow_input_unsafe` | 2 | A value that the generated workflow embeds holds characters that are unsafe in YAML, or names the default branch as a full ref. |
+| `action_sha_invalid` | 2 | The release-glz Action pin isn't a full lowercase commit SHA. |
+| `workflow_modified` | 4 | The managed workflow lacks a valid managed-state record or changed after generation, so it isn't overwritten. |
+| `registry_release_invalid` | 5 | The registry's release response isn't valid JSON, or names an invalid version, a release other than the one observed, or a checksum that isn't a SHA-256 digest. |
+| `registry_release_not_visible` | 5 | A published release didn't appear on the registry within the visibility poll. |
+| `archive_limit_exceeded` | 2 | An archive exceeds its compressed size, entry count, per-entry size, or expanded size limit. |
+| `archive_path_unsafe` | 2 | An archive entry path isn't a safe relative UTF-8 path that every supported OS can represent. |
+| `archive_entry_not_regular` | 2 | An archive entry, or a file that a package publishes, isn't a regular file, or a directory entry has content. |
+| `archive_entry_duplicate` | 2 | Two archive entries name the same path, also once letter case and Unicode normalization no longer count. |
+| `archive_extension_header_invalid` | 2 | An archive carries a global or link extension header, or a path extension header that is malformed, unsupported, consecutive, or dangling. |
+| `hex_inner_checksum_mismatch` | 2 | A Hex package's `CHECKSUM` doesn't match its `VERSION`, `metadata.config`, and `contents.tar.gz`. |
+| `hook_snapshot_modified` | 6 | A verify or sidecar hook changed the snapshot that it ran against. |
+| `hook_timed_out` | 6 | A hook ran past its timeout and was terminated. |
+| `hook_reported_failure` | 6 | A required verify or sidecar hook, or a notify hook delivering its notification, exited unsuccessfully or reported failure. |
+| `hook_observation_failed` | 6 | A required notify hook exited unsuccessfully or reported failure while observing whether its notification was delivered. |
+| `hook_output_limit_exceeded` | 6 | A hook wrote more to stdout or stderr than its limit. |
+| `hook_output_invalid` | 6 | A hook's output isn't strict `hook/v1` JSON with a non-empty summary and object evidence, or a notify hook's observation lacks a boolean `complete`. |
+| `sidecar_artifacts_invalid` | 6 | A sidecar hook's evidence isn't a list of artifacts with only known fields and base64 content, or names one artifact twice. |
+| `sidecar_artifacts_limit_exceeded` | 6 | Sidecar hooks returned more artifacts, or more bytes, than a Candidate holds. |
+| `hook_snapshot_entry_not_regular` | 6 | The snapshot that hooks run against holds an entry that is neither a regular file nor a directory. |
+| `source_commit_unresolved` | 2 | The commit SHA that a rehearsal seals names no commit, or git resolves it as a ref to another commit. |
+| `gleam_compiler_mismatch` | 2 | The installed Gleam compiler isn't the version that the configuration pins. |
+| `version_lowering_forbidden` | 3 | An explicit version is below the manifest version of a package that has no release yet. |
+| `manifest_version_behind_published` | 3 | The manifest or explicit version is behind the latest release on the registry. |
+| `baseline_ref_unresolved` | 2 | A configured baseline ref, or the baseline of an API exception, names no commit. |
+| `api_exception_expired` | 3 | The API exception for the published version has expired. |
+| `baseline_not_found` | 3 | No tag, `baseline_refs` entry, or commit within the bounded history search matches the published Hex artifact. |
+| `release_file_outside_repository` | 1 | The manifest or changelog that a Release PR writes lies outside the repository. |
+| `registry_package_invalid` | 5 | The registry's package response isn't valid JSON, or lists an invalid version. |
+| `registry_redirect_cross_origin` | 5 | A registry redirect leaves the origin that the request was sent to. |
+| `registry_redirect_limit_exceeded` | 5 | A registry request was redirected more times than the redirect limit. |
+| `registry_redirect_location_invalid` | 5 | A registry redirect has no `Location` header, or one that isn't ASCII. |
+| `registry_response_too_large` | 5 | A registry response exceeds its download limit. |
+| `release_asset_unfinished` | 4 | A GitHub Release asset is unfinished where a release can't complete it: the Candidate doesn't seal it, or its Release is published or isn't the Candidate's draft. |
+| `approval_request_incomplete` | 3 | The publishing job's environment lacks a variable that release approval checks. |
+| `approval_release_pr_missing` | 3 | A push release has no server-verified merged managed Release PR for its Candidate. |
+
 A release run that stops after it published part of a release exits 7 whatever stopped it, including a required notify hook that fails after publication.
 Inspection commands, `status`, `verify --online`, and `release --dry-run`, exit 0 whenever they can report a state, and that `state` names what remains.
 A `--candidate` path that isn't a directory exits 2, and only a Candidate that fails its own checks exits 4.

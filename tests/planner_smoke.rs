@@ -5,6 +5,7 @@ use anyhow::{Result, bail};
 use async_trait::async_trait;
 use flate2::{Compression, write::GzEncoder};
 use release_glz::config::Manifest;
+use release_glz::failure::{RefusalReason, refusal_reason};
 use release_glz::git::GitRepo;
 use release_glz::gleam::Gleam;
 use release_glz::model::{
@@ -116,8 +117,12 @@ async fn initial_plan_covers_empty_registry_version_floor_and_prerelease_train_e
             ..PlanOptions::default()
         })
         .await
-        .unwrap_err()
-        .to_string();
+        .unwrap_err();
+    assert_eq!(
+        refusal_reason(&error),
+        Some(RefusalReason::VersionLoweringForbidden)
+    );
+    let error = error.to_string();
     assert!(error.contains("forbids lowering"), "{error}");
 
     let alpha = planner
@@ -148,8 +153,12 @@ async fn initial_plan_covers_empty_registry_version_floor_and_prerelease_train_e
             ..PlanOptions::default()
         })
         .await
-        .unwrap_err()
-        .to_string();
+        .unwrap_err();
+    assert_eq!(
+        refusal_reason(&mismatched),
+        Some(RefusalReason::ExplicitVersionRefused)
+    );
+    let mismatched = mismatched.to_string();
     assert!(mismatched.contains("does not belong"), "{mismatched}");
     Ok(())
 }
@@ -250,8 +259,12 @@ async fn unchanged_existing_release_is_noop_but_explicit_train_and_retirement_ar
         ..PlanOptions::default()
     })
     .await
-    .unwrap_err()
-    .to_string();
+    .unwrap_err();
+    assert_eq!(
+        refusal_reason(&behind),
+        Some(RefusalReason::ManifestVersionBehindPublished)
+    );
+    let behind = behind.to_string();
     assert!(behind.contains("behind the latest"), "{behind}");
     Ok(())
 }
@@ -304,8 +317,12 @@ async fn existing_prerelease_trains_move_forward_promote_and_reject_backward_cor
             ..PlanOptions::default()
         })
         .await
-        .unwrap_err()
-        .to_string();
+        .unwrap_err();
+    assert_eq!(
+        refusal_reason(&backward),
+        Some(RefusalReason::PrereleaseTrainBackward)
+    );
+    let backward = backward.to_string();
     assert!(backward.contains("backward"), "{backward}");
 
     let beta = uncached_planner(registry("1.1.0-alpha.1".parse()?), gleam)
@@ -345,12 +362,54 @@ async fn planning_refuses_a_manifest_without_release_configuration() -> Result<(
     })
     .await
     .unwrap_err();
-    assert_eq!(
-        release_glz::failure::classify(&error),
-        release_glz::failure::FailureClass::UsageOrConfig
-    );
+    assert_eq!(refusal_reason(&error), Some(RefusalReason::ConfigMissing));
     assert!(error.to_string().contains("release-glz init"), "{error}");
     assert_eq!(fs::read_to_string(package.join("gleam.toml"))?, source);
+    Ok(())
+}
+
+#[tokio::test]
+async fn planning_refuses_a_compiler_other_than_the_configured_one() -> Result<()> {
+    require_gleam();
+    let temp = tempfile::tempdir()?;
+    let package = temp.path();
+    init_gleam_fixture(package, "compiler_fixture", "1.0.0")?;
+    fs::write(
+        package.join("gleam.toml"),
+        configured_manifest("compiler_fixture", "1.0.0", "99.0.0", ""),
+    )?;
+    git(
+        package,
+        &[
+            "commit",
+            "--quiet",
+            "-am",
+            "test: pin an unavailable compiler",
+        ],
+    )?;
+
+    let error = uncached_planner(
+        InitialRegistry {
+            empty_package: false,
+        },
+        Gleam::default(),
+    )
+    .plan(&PlanOptions {
+        manifest_path: package.join("gleam.toml"),
+        ..PlanOptions::default()
+    })
+    .await
+    .unwrap_err();
+    assert_eq!(
+        refusal_reason(&error),
+        Some(RefusalReason::GleamCompilerMismatch)
+    );
+    assert!(
+        error
+            .to_string()
+            .contains("configured Gleam compiler 99.0.0 is required"),
+        "{error}"
+    );
     Ok(())
 }
 
@@ -531,8 +590,12 @@ async fn plan_uses_hex_api_and_tag_without_dirtying_the_package() -> Result<()> 
         .with_baseline_search_limit(1)
         .plan(&options)
         .await
-        .unwrap_err()
-        .to_string();
+        .unwrap_err();
+    assert_eq!(
+        refusal_reason(&poisoned),
+        Some(RefusalReason::BaselineNotFound)
+    );
+    let poisoned = poisoned.to_string();
     assert!(poisoned.contains("bounded"), "{poisoned}");
 
     let bounded = uncached_planner(registry, gleam.clone())
@@ -540,8 +603,12 @@ async fn plan_uses_hex_api_and_tag_without_dirtying_the_package() -> Result<()> 
         .with_baseline_search_limit(1)
         .plan(&options)
         .await
-        .unwrap_err()
-        .to_string();
+        .unwrap_err();
+    assert_eq!(
+        refusal_reason(&bounded),
+        Some(RefusalReason::BaselineNotFound)
+    );
+    let bounded = bounded.to_string();
     assert!(bounded.contains("bounded"), "{bounded}");
     assert!(bounded.contains("1 commit"), "{bounded}");
     assert!(
@@ -696,7 +763,12 @@ async fn structured_api_exception_requires_an_active_expiry_and_resolvable_basel
     )?;
     git(package, &["add", "gleam.toml"])?;
     git(package, &["commit", "-m", "test: expire exception"])?;
-    let expired = planner.plan(&options).await.unwrap_err().to_string();
+    let expired = planner.plan(&options).await.unwrap_err();
+    assert_eq!(
+        refusal_reason(&expired),
+        Some(RefusalReason::ApiExceptionExpired)
+    );
+    let expired = expired.to_string();
     assert!(expired.contains("expired"), "{expired}");
     assert!(expired.contains("2000-01-01"), "{expired}");
 
@@ -709,7 +781,12 @@ async fn structured_api_exception_requires_an_active_expiry_and_resolvable_basel
         package,
         &["commit", "-m", "test: missing exception baseline"],
     )?;
-    let missing = planner.plan(&options).await.unwrap_err().to_string();
+    let missing = planner.plan(&options).await.unwrap_err();
+    assert_eq!(
+        refusal_reason(&missing),
+        Some(RefusalReason::BaselineRefUnresolved)
+    );
+    let missing = missing.to_string();
     assert!(missing.contains("refs/tags/missing"), "{missing}");
     assert!(missing.contains("cannot be resolved"), "{missing}");
     Ok(())
@@ -812,9 +889,12 @@ fn release_file_generation_rejects_a_manifest_outside_the_discovered_repository(
     let manifest = Manifest::load(&manifest_path)?;
     let repo = GitRepo::discover(repository.path())?;
 
-    let error = prepare_release_files(&manifest, &repo, &release_file_plan(), &[])
-        .unwrap_err()
-        .to_string();
+    let error = prepare_release_files(&manifest, &repo, &release_file_plan(), &[]).unwrap_err();
+    assert_eq!(
+        refusal_reason(&error),
+        Some(RefusalReason::ReleaseFileOutsideRepository)
+    );
+    let error = error.to_string();
     assert!(error.contains("outside git repository"), "{error}");
     Ok(())
 }

@@ -10,7 +10,7 @@ use release_glz::candidate::{
 use release_glz::config::{
     ApprovalConfig, ApprovalMode, AuthKind, HookConfig, Manifest, OutputConfig, RegistryProvider,
 };
-use release_glz::failure::{FailureClass, classify};
+use release_glz::failure::{FailureClass, RefusalReason, classify, refusal_reason};
 use release_glz::hooks::SidecarArtifact;
 use release_glz::release::{LiveReleaseTarget, SourceBoundCandidate};
 use release_glz_test_support::schema::assert_published_envelope;
@@ -86,12 +86,12 @@ fn candidate_seals_and_verifies_the_exact_publish_bytes() {
 
     let verified = Candidate::verify(&directory).unwrap();
     assert_eq!(verified, sealed);
-    assert!(
-        Candidate::seal(
+    assert_eq!(
+        seal_refusal(
             &directory,
             candidate_input(package, None, br#"{}"#.to_vec())
-        )
-        .is_err()
+        ),
+        Some(RefusalReason::CandidateDestinationExists)
     );
 }
 
@@ -101,11 +101,17 @@ fn candidate_rejects_an_unsafe_tag_or_credential_environment_name() {
     let package = hex_package(&[("gleam.toml", b"name = \"widget\"\nversion = \"1.2.3\"\n")]);
     let mut unsafe_tag = candidate_input(package.clone(), None, br#"{}"#.to_vec());
     unsafe_tag.tag = "refs/heads/main".into();
-    assert!(Candidate::seal(&temp.path().join("tag"), unsafe_tag).is_err());
+    assert_eq!(
+        seal_refusal(&temp.path().join("tag"), unsafe_tag),
+        Some(RefusalReason::CandidateTagUnsafe)
+    );
 
     let mut unsafe_env = candidate_input(package, None, br#"{}"#.to_vec());
     unsafe_env.registry.credential_env = "BAD=secret".into();
-    assert!(Candidate::seal(&temp.path().join("env"), unsafe_env).is_err());
+    assert_eq!(
+        seal_refusal(&temp.path().join("env"), unsafe_env),
+        Some(RefusalReason::CredentialEnvInvalid)
+    );
 
     let mut unsafe_branch = candidate_input(
         hex_package(&[("gleam.toml", b"name = \"widget\"\nversion = \"1.2.3\"\n")]),
@@ -113,7 +119,10 @@ fn candidate_rejects_an_unsafe_tag_or_credential_environment_name() {
         br#"{}"#.to_vec(),
     );
     unsafe_branch.release_branch_prefix = "refs/heads/main".into();
-    assert!(Candidate::seal(&temp.path().join("branch"), unsafe_branch).is_err());
+    assert_eq!(
+        seal_refusal(&temp.path().join("branch"), unsafe_branch),
+        Some(RefusalReason::GitRefPrefixUnsafe)
+    );
 
     let mut missing_hook_policy = candidate_input(
         hex_package(&[("gleam.toml", b"name = \"widget\"\nversion = \"1.2.3\"\n")]),
@@ -121,7 +130,10 @@ fn candidate_rejects_an_unsafe_tag_or_credential_environment_name() {
         br#"{}"#.to_vec(),
     );
     missing_hook_policy.notify_hooks.push("announce".into());
-    assert!(Candidate::seal(&temp.path().join("hook"), missing_hook_policy).is_err());
+    assert_eq!(
+        seal_refusal(&temp.path().join("hook"), missing_hook_policy),
+        Some(RefusalReason::NotifyHooksMismatch)
+    );
 
     let mut unsafe_repository = candidate_input(
         hex_package(&[("gleam.toml", b"name = \"widget\"\nversion = \"1.2.3\"\n")]),
@@ -129,10 +141,12 @@ fn candidate_rejects_an_unsafe_tag_or_credential_environment_name() {
         br#"{}"#.to_vec(),
     );
     unsafe_repository.github_repository = "-owner/widget".into();
-    let error = Candidate::seal(&temp.path().join("repository"), unsafe_repository)
-        .unwrap_err()
-        .to_string();
-    assert!(error.contains("owner/name"), "{error}");
+    let error = Candidate::seal(&temp.path().join("repository"), unsafe_repository).unwrap_err();
+    assert_eq!(
+        refusal_reason(&error),
+        Some(RefusalReason::GithubRepositoryInvalid)
+    );
+    assert!(error.to_string().contains("owner/name"), "{error}");
 }
 
 #[test]
@@ -150,11 +164,14 @@ fn candidate_registry_urls_reject_queries_and_fragments_at_the_sealed_boundary()
         } else {
             input.registry.docs_url = url.into();
         }
-        let error = Candidate::seal(&temp.path().join(name), input)
-            .unwrap_err()
-            .to_string();
+        let error = Candidate::seal(&temp.path().join(name), input).unwrap_err();
+        assert_eq!(
+            refusal_reason(&error),
+            Some(RefusalReason::UrlQueryOrFragment),
+            "{name}"
+        );
         assert!(
-            error.contains("query or fragment"),
+            error.to_string().contains("query or fragment"),
             "{name} unexpectedly passed the Candidate boundary: {error}"
         );
     }
@@ -163,19 +180,44 @@ fn candidate_registry_urls_reject_queries_and_fragments_at_the_sealed_boundary()
 #[test]
 fn candidate_registry_urls_reject_opaque_credentials_and_http_beyond_loopback_independently() {
     let temp = tempfile::tempdir().unwrap();
-    for (name, url) in [
-        ("opaque", "mailto:registry@example.test"),
-        ("password", "https://user:password@hex.pm/api"),
-        ("http-to-a-host-name", "http://registry.example.test/api"),
-        ("http-to-localhost", "http://localhost:8080/api"),
-        ("http-to-a-public-address", "http://192.0.2.1/api"),
-        ("http-to-a-mapped-address", "http://[::ffff:127.0.0.1]/api"),
+    for (name, url, reason) in [
+        (
+            "opaque",
+            "mailto:registry@example.test",
+            RefusalReason::UrlNotHierarchical,
+        ),
+        (
+            "password",
+            "https://user:password@hex.pm/api",
+            RefusalReason::UrlCredentials,
+        ),
+        (
+            "http-to-a-host-name",
+            "http://registry.example.test/api",
+            RefusalReason::UrlTransportUntrusted,
+        ),
+        (
+            "http-to-localhost",
+            "http://localhost:8080/api",
+            RefusalReason::UrlTransportUntrusted,
+        ),
+        (
+            "http-to-a-public-address",
+            "http://192.0.2.1/api",
+            RefusalReason::UrlTransportUntrusted,
+        ),
+        (
+            "http-to-a-mapped-address",
+            "http://[::ffff:127.0.0.1]/api",
+            RefusalReason::UrlTransportUntrusted,
+        ),
     ] {
         let mut input = fresh_candidate_input();
         input.registry.api_url = url.into();
-        assert!(
-            Candidate::seal(&temp.path().join(name), input).is_err(),
-            "accepted unsafe registry URL case {name}"
+        assert_eq!(
+            seal_refusal(&temp.path().join(name), input),
+            Some(reason),
+            "{name}"
         );
     }
 }
@@ -193,9 +235,10 @@ fn candidate_rejects_an_unsafe_hex_organization_identity() {
             br#"{}"#.to_vec(),
         );
         input.registry.repository = Some(repository.into());
-        assert!(
-            Candidate::seal(&temp.path().join(index.to_string()), input).is_err(),
-            "accepted unsafe Hex organization {repository:?}"
+        assert_eq!(
+            seal_refusal(&temp.path().join(index.to_string()), input),
+            Some(RefusalReason::RegistryRepositoryInvalid),
+            "{repository:?}"
         );
     }
 }
@@ -220,9 +263,10 @@ fn candidate_identity_requires_a_gleam_package_name_and_matching_version_tag() {
             br#"{}"#.to_vec(),
         );
         input.package = package.into();
-        assert!(
-            Candidate::seal(&temp.path().join(format!("package-{index}")), input).is_err(),
-            "accepted unsafe package name {package:?}"
+        assert_eq!(
+            seal_refusal(&temp.path().join(format!("package-{index}")), input),
+            Some(RefusalReason::PackageNameInvalid),
+            "{package:?}"
         );
     }
 
@@ -232,7 +276,10 @@ fn candidate_identity_requires_a_gleam_package_name_and_matching_version_tag() {
         br#"{}"#.to_vec(),
     );
     mismatched.tag = "v9.9.9".into();
-    assert!(Candidate::seal(&temp.path().join("tag-mismatch"), mismatched).is_err());
+    assert_eq!(
+        seal_refusal(&temp.path().join("tag-mismatch"), mismatched),
+        Some(RefusalReason::CandidateTagVersionMismatch)
+    );
 
     let mut prefixed = candidate_input(
         hex_package(&[("gleam.toml", b"name = \"widget\"\nversion = \"1.2.3\"\n")]),
@@ -247,27 +294,39 @@ fn candidate_identity_requires_a_gleam_package_name_and_matching_version_tag() {
 #[test]
 fn candidate_source_registry_branch_notes_and_approval_policy_are_independently_sealed() {
     let temp = tempfile::tempdir().unwrap();
-    for case in [
-        "short-sha",
-        "long-sha",
-        "uppercase-sha",
-        "nonhex-sha",
-        "manifest-parent",
-        "unsafe-custom-repository",
-        "external-http",
-        "credential-url",
-        "empty-prefix",
-        "refs-prefix",
-        "spaced-prefix",
-        "nul-notes",
-        "empty-environment",
-        "multiline-environment",
-        "normal-mode",
-        "manual-mode",
-        "fallback",
-        "empty-manual-refs",
-        "partial-manual-ref",
-        "duplicate-manual-ref",
+    for (case, reason) in [
+        ("short-sha", RefusalReason::CandidateSourceCommitInvalid),
+        ("long-sha", RefusalReason::CandidateSourceCommitInvalid),
+        ("uppercase-sha", RefusalReason::CandidateSourceCommitInvalid),
+        ("nonhex-sha", RefusalReason::CandidateSourceCommitInvalid),
+        ("manifest-parent", RefusalReason::PathOutsideRepository),
+        (
+            "unsafe-custom-repository",
+            RefusalReason::RegistryRepositoryInvalid,
+        ),
+        ("external-http", RefusalReason::UrlTransportUntrusted),
+        ("credential-url", RefusalReason::UrlCredentials),
+        ("empty-prefix", RefusalReason::GitRefPrefixUnsafe),
+        ("refs-prefix", RefusalReason::GitRefPrefixUnsafe),
+        ("spaced-prefix", RefusalReason::GitRefPrefixUnsafe),
+        ("nul-notes", RefusalReason::CandidateReleaseNotesInvalid),
+        (
+            "empty-environment",
+            RefusalReason::ApprovalEnvironmentInvalid,
+        ),
+        (
+            "multiline-environment",
+            RefusalReason::ApprovalEnvironmentInvalid,
+        ),
+        ("normal-mode", RefusalReason::ApprovalModeFixed),
+        ("manual-mode", RefusalReason::ApprovalModeFixed),
+        ("fallback", RefusalReason::ApprovalFallbackUnsupported),
+        ("empty-manual-refs", RefusalReason::ManualRefsEmpty),
+        (
+            "partial-manual-ref",
+            RefusalReason::ManualRefKindUnsupported,
+        ),
+        ("duplicate-manual-ref", RefusalReason::ManualRefDuplicate),
     ] {
         let mut input = fresh_candidate_input();
         match case {
@@ -303,9 +362,10 @@ fn candidate_source_registry_branch_notes_and_approval_policy_are_independently_
             }
             _ => unreachable!(),
         }
-        assert!(
-            Candidate::seal(&temp.path().join(case), input).is_err(),
-            "accepted invalid Candidate policy case {case}"
+        assert_eq!(
+            seal_refusal(&temp.path().join(case), input),
+            Some(reason),
+            "{case}"
         );
     }
 
@@ -332,7 +392,10 @@ fn candidate_release_notes_have_a_hard_one_mebibyte_limit() {
 
     let mut over_limit = fresh_candidate_input();
     over_limit.release_notes = "x".repeat(1024 * 1024 + 1);
-    assert!(Candidate::seal(&temp.path().join("over-limit"), over_limit).is_err());
+    assert_eq!(
+        seal_refusal(&temp.path().join("over-limit"), over_limit),
+        Some(RefusalReason::CandidateReleaseNotesInvalid)
+    );
 }
 
 #[test]
@@ -350,8 +413,15 @@ fn candidate_verification_detects_any_raw_artifact_change() {
     )
     .unwrap();
     fs::write(directory.join("artifacts/package.tar"), b"tampered").unwrap();
-    let error = Candidate::verify(&directory).unwrap_err().to_string();
-    assert!(error.contains("checksum"), "{error}");
+    let error = Candidate::verify(&directory).unwrap_err();
+    assert_eq!(
+        refusal_reason(&error),
+        Some(RefusalReason::CandidateChecksumMismatch)
+    );
+    assert_eq!(
+        error.to_string(),
+        "candidate checksum mismatch for `artifacts/package.tar`"
+    );
 }
 
 #[test]
@@ -369,62 +439,107 @@ fn candidate_verification_rejects_unsealed_inventory_entries() {
         b"must not be ignored",
     )
     .unwrap();
-    let error = Candidate::verify(&directory).unwrap_err().to_string();
-    assert!(error.contains("inventory"), "{error}");
+    let error = Candidate::verify(&directory).unwrap_err();
+    assert_eq!(
+        refusal_reason(&error),
+        Some(RefusalReason::CandidateInventoryMismatch)
+    );
+    assert_eq!(
+        error.to_string(),
+        "Candidate inventory differs from the sealed manifest"
+    );
 }
 
 #[test]
 fn candidate_verification_rejects_every_manifest_identity_and_digest_tamper() {
     let temp = tempfile::tempdir().unwrap();
     // Every tamper also breaks a digest that verification checks last, so each case names the refusal of its own field.
-    for (case, expected) in [
-        ("schema", "unsupported candidate schema `candidate/v2`"),
+    for (case, reason, expected) in [
+        (
+            "schema",
+            RefusalReason::CandidateSchemaUnsupported,
+            "unsupported candidate schema `candidate/v2`",
+        ),
         (
             "package",
+            RefusalReason::PackageNameInvalid,
             "package name must start with a lowercase letter and contain only a-z, 0-9, or _",
         ),
         (
             "tag",
+            RefusalReason::CandidateTagVersionMismatch,
             "candidate.tag must end with the Candidate version `v1.2.3`",
         ),
-        ("tag-ref", "candidate.tag contains a dangerous git ref form"),
+        (
+            "tag-ref",
+            RefusalReason::CandidateTagUnsafe,
+            "candidate.tag contains a dangerous git ref form",
+        ),
         (
             "source-sha",
+            RefusalReason::CandidateSourceCommitInvalid,
             "candidate source commit must be a full lowercase SHA",
         ),
         (
             "source-path",
+            RefusalReason::PathOutsideRepository,
             "candidate source manifest_path must stay within the repository",
         ),
         (
             "credential-env",
+            RefusalReason::CredentialEnvInvalid,
             "candidate registry credential_env is not a safe environment variable name",
         ),
         (
             "registry-url-without-host",
+            RefusalReason::UrlNotHierarchical,
             "candidate registry api_url must be an absolute hierarchical URL",
         ),
-        ("branch-prefix", "candidate release branch prefix is unsafe"),
+        (
+            "branch-prefix",
+            RefusalReason::GitRefPrefixUnsafe,
+            "candidate release branch prefix is unsafe",
+        ),
         (
             "release-notes",
+            RefusalReason::CandidateReleaseNotesInvalid,
             "candidate release notes are invalid or exceed 1 MiB",
         ),
         (
             "artifact-path",
+            RefusalReason::CandidateArtifactPathUnexpected,
             "candidate artifact path `artifacts/other.tar` must be `artifacts/package.tar`",
         ),
         (
             "artifact-size",
+            RefusalReason::CandidateFileTooLarge,
             "candidate artifact `artifacts/package.tar` exceeds its size limit",
         ),
         (
             "artifact-sha",
+            RefusalReason::CandidateChecksumMalformed,
             "artifact checksum is not a lowercase SHA-256 digest",
         ),
-        ("package-semantic", "candidate semantic checksum mismatch"),
-        ("interface-semantic", "candidate semantic checksum mismatch"),
-        ("intent-digest", "candidate intent digest mismatch"),
-        ("candidate-digest", "candidate digest mismatch"),
+        (
+            "package-semantic",
+            RefusalReason::CandidateSemanticChecksumMismatch,
+            "candidate semantic checksum mismatch",
+        ),
+        (
+            "interface-semantic",
+            RefusalReason::CandidateSemanticChecksumMismatch,
+            "candidate semantic checksum mismatch",
+        ),
+        (
+            "intent-digest",
+            RefusalReason::CandidateIntentDigestMismatch,
+            "candidate intent digest mismatch",
+        ),
+        (
+            "candidate-digest",
+            RefusalReason::CandidateDigestMismatch,
+            "candidate digest mismatch",
+        ),
     ] {
         let directory = temp.path().join(case);
         Candidate::seal(&directory, fresh_candidate_input()).unwrap();
@@ -457,8 +572,9 @@ fn candidate_verification_rejects_every_manifest_identity_and_digest_tamper() {
             "candidate-digest" => manifest["candidate_digest"] = "0".repeat(64).into(),
             _ => unreachable!(),
         });
-        let error = Candidate::verify(&directory).unwrap_err().to_string();
-        assert_eq!(error, expected, "tamper {case}");
+        let error = Candidate::verify(&directory).unwrap_err();
+        assert_eq!(refusal_reason(&error), Some(reason), "tamper {case}");
+        assert_eq!(error.to_string(), expected, "tamper {case}");
     }
 }
 
@@ -471,14 +587,22 @@ fn candidate_manifest_is_bounded_strict_json_in_a_regular_file() {
     mutate_candidate_json(&unknown, |manifest| {
         manifest["unsealed"] = true.into();
     });
-    assert!(Candidate::verify(&unknown).is_err());
+    assert_eq!(
+        verify_refusal(&unknown),
+        Some(RefusalReason::CandidateManifestInvalid)
+    );
 
     let loosened = temp.path().join("loosened");
     Candidate::seal(&loosened, fresh_candidate_input()).unwrap();
     mutate_candidate_json(&loosened, |manifest| {
         manifest["registry"]["allow_http_loopback"] = false.into();
     });
-    let error = format!("{:#}", Candidate::verify(&loosened).unwrap_err());
+    let error = Candidate::verify(&loosened).unwrap_err();
+    assert_eq!(
+        refusal_reason(&error),
+        Some(RefusalReason::CandidateManifestInvalid)
+    );
+    let error = format!("{error:#}");
     assert!(
         error.contains("unknown field `allow_http_loopback`"),
         "{error}"
@@ -491,8 +615,12 @@ fn candidate_manifest_is_bounded_strict_json_in_a_regular_file() {
         vec![b' '; 1024 * 1024 + 1],
     )
     .unwrap();
-    let error = Candidate::verify(&oversized).unwrap_err().to_string();
-    assert!(error.contains("size limit"), "{error}");
+    let error = Candidate::verify(&oversized).unwrap_err();
+    assert_eq!(
+        refusal_reason(&error),
+        Some(RefusalReason::CandidateFileTooLarge)
+    );
+    assert!(error.to_string().contains("size limit"), "{error}");
 
     #[cfg(unix)]
     {
@@ -506,8 +634,12 @@ fn candidate_manifest_is_bounded_strict_json_in_a_regular_file() {
         )
         .unwrap();
         symlink("manifest-target", linked.join("candidate.json")).unwrap();
-        let error = Candidate::verify(&linked).unwrap_err().to_string();
-        assert!(error.contains("regular file"), "{error}");
+        let error = Candidate::verify(&linked).unwrap_err();
+        assert_eq!(
+            refusal_reason(&error),
+            Some(RefusalReason::CandidateFileNotRegular)
+        );
+        assert!(error.to_string().contains("regular file"), "{error}");
     }
 }
 
@@ -522,9 +654,9 @@ fn candidate_verification_refuses_a_declared_artifact_size_over_the_archive_limi
             mutate_candidate_json(&directory, |manifest| {
                 manifest["artifacts"][artifact]["size"] = size.into();
             });
-            let error = Candidate::verify(&directory).unwrap_err().to_string();
+            let error = Candidate::verify(&directory).unwrap_err();
             assert_eq!(
-                error.contains("exceeds its size limit"),
+                refusal_reason(&error) == Some(RefusalReason::CandidateFileTooLarge),
                 refused,
                 "{artifact} declared at {size} bytes: {error}"
             );
@@ -539,11 +671,9 @@ fn sealing_refuses_a_package_interface_over_the_archive_limit() {
     for (size, refused) in [(limit, false), (limit + 1, true)] {
         let mut input = fresh_candidate_input();
         input.package_interface = vec![b' '; size];
-        let error = Candidate::seal(&temp.path().join(size.to_string()), input)
-            .unwrap_err()
-            .to_string();
+        let error = Candidate::seal(&temp.path().join(size.to_string()), input).unwrap_err();
         assert_eq!(
-            error.contains("exceeds its size limit"),
+            refusal_reason(&error) == Some(RefusalReason::CandidateInterfaceTooLarge),
             refused,
             "{size} bytes: {error}"
         );
@@ -604,8 +734,12 @@ fn a_private_publication_needs_its_registry_credential_before_it_builds_a_target
         let bound = SourceBoundCandidate::bind(sealed, &repository.join("gleam.toml")).unwrap();
         let error = LiveReleaseTarget::from_candidate(bound)
             .err()
-            .map(|error| error.to_string());
-        assert_eq!(error, expected, "{case}");
+            .map(|error| (refusal_reason(&error), error.to_string()));
+        assert_eq!(
+            error,
+            expected.map(|message| (Some(RefusalReason::RegistryCredentialMissing), message)),
+            "{case}"
+        );
     }
 }
 
@@ -620,10 +754,14 @@ fn a_sealed_file_with_its_size_but_other_bytes_fails_its_checksum() {
     bytes[last] ^= 0xff;
     fs::write(&path, bytes).unwrap();
 
-    let error = Candidate::verify(&directory).unwrap_err().to_string();
+    let error = Candidate::verify(&directory).unwrap_err();
 
     assert_eq!(
-        error,
+        refusal_reason(&error),
+        Some(RefusalReason::CandidateChecksumMismatch)
+    );
+    assert_eq!(
+        error.to_string(),
         "candidate checksum mismatch for `artifacts/package.tar`"
     );
 }
@@ -664,14 +802,27 @@ fn publication_refuses_a_candidate_whose_policy_differs_from_its_source_commit()
             input.release_branch_prefix = "attacker/".into();
         }),
     ];
+    let honest = Candidate::seal(
+        &temp.path().join("honest"),
+        honest_policy_input(&repository, &sha),
+    )
+    .unwrap();
+    let honest = SealedPolicy::of(&honest);
     for (index, (field, forge)) in forgeries.into_iter().enumerate() {
         let mut input = honest_policy_input(&repository, &sha);
         forge(&mut input);
         let sealed = Candidate::seal(&temp.path().join(format!("forged-{index}")), input).unwrap();
-        let error = SourceBoundCandidate::bind(sealed, &repository.join("gleam.toml"))
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains(field), "{field}: {error}");
+        assert_eq!(SealedPolicy::of(&sealed).differences(&honest), [field]);
+        let error = SourceBoundCandidate::bind(sealed, &repository.join("gleam.toml")).unwrap_err();
+        assert_eq!(
+            refusal_reason(&error),
+            Some(RefusalReason::CandidatePolicyDiffers),
+            "{field}"
+        );
+        assert!(
+            error.to_string().ends_with(&format!(": {field}")),
+            "{field}: {error}"
+        );
     }
 }
 
@@ -690,10 +841,12 @@ fn publication_reads_the_source_policy_from_the_commit_instead_of_the_working_tr
     )
     .unwrap();
     assert_eq!(sealed.registry.api_url, "https://attacker.example/api");
-    let error = SourceBoundCandidate::bind(sealed, &repository.join("gleam.toml"))
-        .unwrap_err()
-        .to_string();
-    assert!(error.contains("registry"), "{error}");
+    let error = SourceBoundCandidate::bind(sealed, &repository.join("gleam.toml")).unwrap_err();
+    assert_eq!(
+        refusal_reason(&error),
+        Some(RefusalReason::CandidatePolicyDiffers)
+    );
+    assert!(error.to_string().ends_with(": registry"), "{error}");
 }
 
 #[test]
@@ -708,6 +861,7 @@ fn publication_refuses_a_source_commit_without_release_configuration() {
     )
     .unwrap();
     let error = SourceBoundCandidate::bind(sealed, &repository.join("gleam.toml")).unwrap_err();
+    assert_eq!(refusal_reason(&error), Some(RefusalReason::ConfigMissing));
     assert_eq!(classify(&error), FailureClass::UsageOrConfig);
     let message = format!("{error:#}");
     assert!(
@@ -721,7 +875,7 @@ fn publication_refuses_a_source_commit_without_release_configuration() {
     )
     .unwrap();
     let error = SealedPolicy::from_source(&unconfigured, &repository, "gleam.toml").unwrap_err();
-    assert_eq!(classify(&error), FailureClass::UsageOrConfig);
+    assert_eq!(refusal_reason(&error), Some(RefusalReason::ConfigMissing));
 }
 
 #[test]
@@ -748,7 +902,7 @@ fn candidate_commands_refuse_a_checkout_without_release_configuration() {
         assert_eq!(output.status.code(), Some(2), "{arguments:?}");
         let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_published_envelope(&envelope);
-        assert_eq!(envelope["diagnostics"][0]["code"], "usage_or_config");
+        assert_eq!(envelope["diagnostics"][0]["code"], "config_missing");
         let message = envelope["diagnostics"][0]["message"].as_str().unwrap();
         assert!(
             message.contains("[tools.release-glz]") && message.contains("release-glz init"),
@@ -770,10 +924,12 @@ fn publication_refuses_a_checkout_at_another_commit() {
         &repository,
         &["commit", "--allow-empty", "-m", "chore: later"],
     );
-    let error = SourceBoundCandidate::bind(sealed, &repository.join("gleam.toml"))
-        .unwrap_err()
-        .to_string();
-    assert!(error.contains("source"), "{error}");
+    let error = SourceBoundCandidate::bind(sealed, &repository.join("gleam.toml")).unwrap_err();
+    assert_eq!(
+        refusal_reason(&error),
+        Some(RefusalReason::CandidateSourceMismatch)
+    );
+    assert!(error.to_string().contains("source"), "{error}");
 }
 
 #[test]
@@ -796,7 +952,10 @@ fn a_candidate_path_that_is_not_a_directory_is_a_usage_error() {
         assert_published_envelope(&envelope);
         let message = envelope["diagnostics"][0]["message"].as_str().unwrap();
         assert_eq!(output.status.code(), Some(2), "{arguments:?}: {message}");
-        assert_eq!(envelope["diagnostics"][0]["code"], "usage_or_config");
+        assert_eq!(
+            envelope["diagnostics"][0]["code"],
+            "candidate_not_directory"
+        );
         assert!(
             message.contains(&missing.display().to_string()),
             "{arguments:?}: {message}"
@@ -902,7 +1061,21 @@ fn release_refuses_a_forged_candidate_before_it_needs_any_token() {
     assert_published_envelope(&envelope);
     let message = envelope["diagnostics"][0]["message"].as_str().unwrap();
     assert_eq!(output.status.code(), Some(4), "{message}");
-    assert!(message.contains("registry"), "{message}");
+    assert_eq!(
+        envelope["diagnostics"][0]["code"],
+        "candidate_policy_differs"
+    );
+    assert!(message.ends_with(": registry"), "{message}");
+}
+
+/// The reason that sealing `input` into `directory` is refused with, which panics when sealing succeeds.
+fn seal_refusal(directory: &std::path::Path, input: CandidateInput) -> Option<RefusalReason> {
+    refusal_reason(&Candidate::seal(directory, input).unwrap_err())
+}
+
+/// The reason that verifying the Candidate in `directory` is refused with, which panics when verification succeeds.
+fn verify_refusal(directory: &std::path::Path) -> Option<RefusalReason> {
+    refusal_reason(&Candidate::verify(directory).unwrap_err())
 }
 
 /// A committed copy of [`POLICY_SOURCE`] and the SHA of its commit.
@@ -1019,8 +1192,18 @@ fn hex_validation_rejects_bad_checksum_duplicate_and_link_entries() {
     let valid = hex_package(&[("gleam.toml", b"name = \"x\"\nversion = \"1.0.0\"\n")]);
     validate_hex_tarball(&valid, ArchiveLimits::default()).unwrap();
 
+    let refusal = |package: &[u8], limits| {
+        let error = validate_hex_tarball(package, limits).unwrap_err();
+        (refusal_reason(&error), format!("{error:#}"))
+    };
     let bad_checksum = outer_package(b"3", b"meta", &tar_gz(&[("x", b"ok")]), Some(b"BAD"));
-    assert!(validate_hex_tarball(&bad_checksum, ArchiveLimits::default()).is_err());
+    assert_eq!(
+        refusal(&bad_checksum, ArchiveLimits::default()),
+        (
+            Some(RefusalReason::HexInnerChecksumMismatch),
+            "Hex package inner checksum mismatch".to_owned()
+        )
+    );
 
     let duplicate = outer_package(
         b"3",
@@ -1028,11 +1211,23 @@ fn hex_validation_rejects_bad_checksum_duplicate_and_link_entries() {
         &tar_gz(&[("same", b"one"), ("same", b"two")]),
         None,
     );
-    assert!(validate_hex_tarball(&duplicate, ArchiveLimits::default()).is_err());
+    assert_eq!(
+        refusal(&duplicate, ArchiveLimits::default()),
+        (
+            Some(RefusalReason::ArchiveEntryDuplicate),
+            "unsafe Hex contents archive: archive contains duplicate entry `same`".to_owned()
+        )
+    );
 
     let linked_contents = malicious_link_tar_gz();
     let linked = outer_package(b"3", b"meta", &linked_contents, None);
-    assert!(validate_hex_tarball(&linked, ArchiveLimits::default()).is_err());
+    assert_eq!(
+        refusal(&linked, ArchiveLimits::default()),
+        (
+            Some(RefusalReason::ArchiveEntryNotRegular),
+            "unsafe Hex contents archive: archive entry `link` is not a regular file".to_owned()
+        )
+    );
 }
 
 #[test]
@@ -1044,7 +1239,14 @@ fn archive_expansion_limits_are_enforced_before_extraction() {
         max_total_bytes: 512,
         max_archive_bytes: 1024 * 1024,
     };
-    assert!(validate_hex_tarball(&package, limits).is_err());
+    let error = validate_hex_tarball(&package, limits).unwrap_err();
+    assert_eq!(
+        (refusal_reason(&error), format!("{error:#}")),
+        (
+            Some(RefusalReason::ArchiveLimitExceeded),
+            "unsafe Hex contents archive: archive entry exceeds the per-file limit".to_owned()
+        )
+    );
 }
 
 #[test]
@@ -1096,7 +1298,10 @@ fn sidecars_are_sealed_beside_but_cannot_change_the_candidate_core_intent() {
         b"tampered",
     )
     .unwrap();
-    assert!(Candidate::verify(&temp.path().join("with")).is_err());
+    assert_eq!(
+        verify_refusal(&temp.path().join("with")),
+        Some(RefusalReason::CandidateChecksumMismatch)
+    );
 }
 
 #[test]
@@ -1121,7 +1326,10 @@ fn output_policy_is_part_of_the_semantic_release_intent() {
         br#"{}"#.to_vec(),
     );
     inconsistent.outputs.docs = true;
-    assert!(Candidate::seal(&temp.path().join("inconsistent"), inconsistent).is_err());
+    assert_eq!(
+        seal_refusal(&temp.path().join("inconsistent"), inconsistent),
+        Some(RefusalReason::CandidateDocsPolicyMismatch)
+    );
 }
 
 #[test]
@@ -1171,7 +1379,10 @@ fn verify_and_sidecar_hook_definitions_are_sealed_into_the_intent() {
         required: true,
         env: vec![],
     }];
-    assert!(Candidate::seal(&temp.path().join("missing"), missing_evidence).is_err());
+    assert_eq!(
+        seal_refusal(&temp.path().join("missing"), missing_evidence),
+        Some(RefusalReason::CandidateHookEvidenceMismatch)
+    );
 }
 
 #[test]
@@ -1188,28 +1399,40 @@ fn candidate_boundary_rejects_core_and_configured_publication_credentials_in_hoo
         let mut input = input_with_verify_hook();
         input.registry.credential_env = credential_env.into();
         input.verify_hook_definitions[0].env = vec![forwarded_env.into()];
-        let error = Candidate::seal(&temp.path().join(case), input)
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("may not receive"), "{case}: {error}");
+        let error = Candidate::seal(&temp.path().join(case), input).unwrap_err();
+        assert_eq!(
+            refusal_reason(&error),
+            Some(RefusalReason::HookEnvProtected),
+            "{case}"
+        );
+        assert!(
+            error.to_string().contains("may not receive"),
+            "{case}: {error}"
+        );
     }
 }
 
 #[test]
 fn candidate_hook_evidence_is_strictly_bound_to_ordered_definitions() {
     let temp = tempfile::tempdir().unwrap();
-    for case in [
-        "schema",
-        "empty-id",
-        "checksum",
-        "required-failure",
-        "missing",
-        "binding-id",
-        "binding-kind",
-        "binding-required",
-        "duplicate-evidence",
-        "duplicate-definition",
-        "invalid-definition",
+    for (case, reason) in [
+        ("schema", RefusalReason::CandidateHookEvidenceInvalid),
+        ("empty-id", RefusalReason::CandidateHookEvidenceInvalid),
+        ("checksum", RefusalReason::CandidateChecksumMalformed),
+        ("required-failure", RefusalReason::CandidateHookFailed),
+        ("missing", RefusalReason::CandidateHookEvidenceMismatch),
+        ("binding-id", RefusalReason::CandidateHookEvidenceMismatch),
+        ("binding-kind", RefusalReason::CandidateHookEvidenceMismatch),
+        (
+            "binding-required",
+            RefusalReason::CandidateHookEvidenceMismatch,
+        ),
+        (
+            "duplicate-evidence",
+            RefusalReason::CandidateHookEvidenceInvalid,
+        ),
+        ("duplicate-definition", RefusalReason::HookIdDuplicate),
+        ("invalid-definition", RefusalReason::HookArgvInvalid),
     ] {
         let mut input = input_with_verify_hook();
         match case {
@@ -1240,9 +1463,10 @@ fn candidate_hook_evidence_is_strictly_bound_to_ordered_definitions() {
             "invalid-definition" => input.verify_hook_definitions[0].argv.clear(),
             _ => unreachable!(),
         }
-        assert!(
-            Candidate::seal(&temp.path().join(case), input).is_err(),
-            "accepted invalid hook binding {case}"
+        assert_eq!(
+            seal_refusal(&temp.path().join(case), input),
+            Some(reason),
+            "{case}"
         );
     }
 }
@@ -1250,17 +1474,23 @@ fn candidate_hook_evidence_is_strictly_bound_to_ordered_definitions() {
 #[test]
 fn candidate_sidecars_require_safe_identity_declared_producer_and_signature_policy() {
     let temp = tempfile::tempdir().unwrap();
-    for (index, case) in [
-        "empty-hook",
-        "numeric-hook",
-        "empty-name",
-        "nested-name",
-        "backslash-name",
-        "long-name",
-        "empty-media",
-        "missing-media-slash",
-        "quoted-media",
-        "undeclared-producer",
+    for (index, (case, reason)) in [
+        ("empty-hook", RefusalReason::SidecarHookIdUnsafe),
+        ("numeric-hook", RefusalReason::SidecarHookIdUnsafe),
+        ("empty-name", RefusalReason::SidecarNameUnsafe),
+        ("nested-name", RefusalReason::SidecarNameUnsafe),
+        ("backslash-name", RefusalReason::SidecarNameUnsafe),
+        ("long-name", RefusalReason::SidecarNameUnsafe),
+        ("empty-media", RefusalReason::SidecarMediaTypeInvalid),
+        (
+            "missing-media-slash",
+            RefusalReason::SidecarMediaTypeInvalid,
+        ),
+        ("quoted-media", RefusalReason::SidecarMediaTypeInvalid),
+        (
+            "undeclared-producer",
+            RefusalReason::CandidateSidecarProducerUndeclared,
+        ),
     ]
     .into_iter()
     .enumerate()
@@ -1287,9 +1517,10 @@ fn candidate_sidecars_require_safe_identity_declared_producer_and_signature_poli
             _ => unreachable!(),
         }
         input.sidecars.push(artifact);
-        assert!(
-            Candidate::seal(&temp.path().join(format!("invalid-{index}")), input).is_err(),
-            "accepted invalid sidecar case {case}"
+        assert_eq!(
+            seal_refusal(&temp.path().join(format!("invalid-{index}")), input),
+            Some(reason),
+            "{case}"
         );
     }
 
@@ -1303,11 +1534,17 @@ fn candidate_sidecars_require_safe_identity_declared_producer_and_signature_poli
             public: false,
         })
         .collect();
-    assert!(Candidate::seal(&temp.path().join("too-many"), too_many).is_err());
+    assert_eq!(
+        seal_refusal(&temp.path().join("too-many"), too_many),
+        Some(RefusalReason::CandidateSidecarsTooMany)
+    );
 
     let mut missing_signature = fresh_candidate_input();
     missing_signature.outputs.signature = true;
-    assert!(Candidate::seal(&temp.path().join("missing-signature"), missing_signature).is_err());
+    assert_eq!(
+        seal_refusal(&temp.path().join("missing-signature"), missing_signature),
+        Some(RefusalReason::CandidateSignatureMissing)
+    );
 
     let mut signed = fresh_candidate_input();
     signed.outputs.signature = true;
@@ -1336,7 +1573,11 @@ fn candidate_sidecars_require_safe_identity_declared_producer_and_signature_poli
     let signed_dir = temp.path().join("signed");
     Candidate::seal(&signed_dir, signed).unwrap();
 
-    for case in ["path", "checksum", "size"] {
+    for (case, reason) in [
+        ("path", RefusalReason::CandidateSidecarPathInvalid),
+        ("checksum", RefusalReason::CandidateChecksumMalformed),
+        ("size", RefusalReason::CandidateSidecarsTooLarge),
+    ] {
         let directory = temp.path().join(format!("tampered-{case}"));
         let mut input = fresh_candidate_input();
         add_public_sidecar(&mut input, "evidence", "evidence.json");
@@ -1347,10 +1588,7 @@ fn candidate_sidecars_require_safe_identity_declared_producer_and_signature_poli
             "size" => manifest["sidecars"][0]["size"] = u64::MAX.into(),
             _ => unreachable!(),
         });
-        assert!(
-            Candidate::verify(&directory).is_err(),
-            "accepted {case} tamper"
-        );
+        assert_eq!(verify_refusal(&directory), Some(reason), "{case}");
     }
 }
 
@@ -1383,10 +1621,17 @@ fn sealing_and_verifying_refuse_an_asset_name_that_github_would_rename() {
     {
         let mut input = fresh_candidate_input();
         add_public_sidecar(&mut input, "evidence", name);
-        let error = Candidate::seal(&temp.path().join(format!("renamed-{index}")), input)
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("safe asset name"), "{name:?}: {error}");
+        let error =
+            Candidate::seal(&temp.path().join(format!("renamed-{index}")), input).unwrap_err();
+        assert_eq!(
+            refusal_reason(&error),
+            Some(RefusalReason::SidecarNameUnsafe),
+            "{name:?}"
+        );
+        assert!(
+            error.to_string().contains("safe asset name"),
+            "{name:?}: {error}"
+        );
 
         let directory = temp.path().join(format!("tampered-{index}"));
         let mut input = fresh_candidate_input();
@@ -1396,19 +1641,27 @@ fn sealing_and_verifying_refuse_an_asset_name_that_github_would_rename() {
             manifest["sidecars"][0]["name"] = name.into();
             manifest["sidecars"][0]["path"] = format!("sidecars/evidence/{name}").into();
         });
-        let error = Candidate::verify(&directory).unwrap_err().to_string();
-        assert!(error.contains("safe asset name"), "{name:?}: {error}");
+        let error = Candidate::verify(&directory).unwrap_err();
+        assert_eq!(
+            refusal_reason(&error),
+            Some(RefusalReason::SidecarNameUnsafe),
+            "{name:?}"
+        );
+        assert!(
+            error.to_string().contains("safe asset name"),
+            "{name:?}: {error}"
+        );
     }
 }
 
 #[test]
 fn candidate_notify_hooks_are_an_ordered_idempotent_protocol() {
     let temp = tempfile::tempdir().unwrap();
-    for case in [
-        "empty-id",
-        "duplicate-id",
-        "missing-definition",
-        "wrong-order",
+    for (case, reason) in [
+        ("empty-id", RefusalReason::NotifyHookIdInvalid),
+        ("duplicate-id", RefusalReason::NotifyHookIdInvalid),
+        ("missing-definition", RefusalReason::NotifyHooksMismatch),
+        ("wrong-order", RefusalReason::NotifyHooksMismatch),
     ] {
         let mut input = fresh_candidate_input();
         input.notify_hooks = vec!["announce".into(), "audit".into()];
@@ -1422,9 +1675,10 @@ fn candidate_notify_hooks_are_an_ordered_idempotent_protocol() {
             "wrong-order" => input.notify_hook_definitions.swap(0, 1),
             _ => unreachable!(),
         }
-        assert!(
-            Candidate::seal(&temp.path().join(case), input).is_err(),
-            "accepted invalid notify protocol {case}"
+        assert_eq!(
+            seal_refusal(&temp.path().join(case), input),
+            Some(reason),
+            "{case}"
         );
     }
 
@@ -1442,18 +1696,27 @@ fn public_sidecars_require_an_unambiguous_explicit_upload_policy() {
     let mut no_release = candidate_input(package(), None, br#"{}"#.to_vec());
     add_public_sidecar(&mut no_release, "sbom", "evidence.json");
     no_release.outputs.github_release = false;
-    assert!(Candidate::seal(&temp.path().join("no-release"), no_release).is_err());
+    assert_eq!(
+        seal_refusal(&temp.path().join("no-release"), no_release),
+        Some(RefusalReason::CandidateSidecarReleaseDisabled)
+    );
 
     let mut private = candidate_input(package(), None, br#"{}"#.to_vec());
     add_public_sidecar(&mut private, "sbom", "evidence.json");
     private.private = true;
     assert!(!private.outputs.allow_private_evidence_upload);
-    assert!(Candidate::seal(&temp.path().join("private"), private).is_err());
+    assert_eq!(
+        seal_refusal(&temp.path().join("private"), private),
+        Some(RefusalReason::CandidateSidecarPrivateUploadForbidden)
+    );
 
     let mut duplicate = candidate_input(package(), None, br#"{}"#.to_vec());
     add_public_sidecar(&mut duplicate, "sbom", "evidence.json");
     add_public_sidecar(&mut duplicate, "provenance", "evidence.json");
-    assert!(Candidate::seal(&temp.path().join("duplicate"), duplicate).is_err());
+    assert_eq!(
+        seal_refusal(&temp.path().join("duplicate"), duplicate),
+        Some(RefusalReason::CandidateSidecarNameDuplicate)
+    );
 }
 
 #[test]
@@ -1493,7 +1756,10 @@ fn requested_sbom_and_provenance_are_built_in_deterministic_evidence() {
         br#"{}"#.to_vec(),
     );
     missing.outputs.sbom = true;
-    assert!(Candidate::seal(&temp.path().join("missing"), missing).is_err());
+    assert_eq!(
+        seal_refusal(&temp.path().join("missing"), missing),
+        Some(RefusalReason::CandidateEvidencePolicyMismatch)
+    );
 }
 
 #[test]

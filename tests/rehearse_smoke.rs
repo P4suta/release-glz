@@ -5,6 +5,7 @@ use std::process::Command;
 use anyhow::{Result, bail};
 use release_glz::artifact::normalize_hex_tarball;
 use release_glz::candidate::Candidate;
+use release_glz::failure::{RefusalReason, refusal_reason};
 use release_glz::rehearse::{Rehearsal, RehearseOptions};
 use release_glz::release::SourceBoundCandidate;
 use release_glz_test_support::require_gleam;
@@ -129,8 +130,12 @@ async fn rehearsal_rejects_noncanonical_source_identifiers_before_creating_outpu
                 output: output.clone(),
             })
             .await
-            .unwrap_err()
-            .to_string();
+            .unwrap_err();
+        assert_eq!(
+            refusal_reason(&error),
+            Some(RefusalReason::CandidateSourceCommitInvalid)
+        );
+        let error = error.to_string();
         assert!(error.contains("full lowercase commit SHA"), "{error}");
         assert!(!output.exists());
     }
@@ -162,8 +167,12 @@ async fn rehearsal_rejects_missing_symbolic_unconfigured_and_wrong_compiler_sour
             output: missing_output.clone(),
         })
         .await
-        .unwrap_err()
-        .to_string();
+        .unwrap_err();
+    assert_eq!(
+        refusal_reason(&missing),
+        Some(RefusalReason::SourceCommitUnresolved)
+    );
+    let missing = missing.to_string();
     assert!(
         missing.contains("source commit does not exist"),
         "{missing}"
@@ -182,8 +191,12 @@ async fn rehearsal_rejects_missing_symbolic_unconfigured_and_wrong_compiler_sour
             output: symbolic_output.clone(),
         })
         .await
-        .unwrap_err()
-        .to_string();
+        .unwrap_err();
+    assert_eq!(
+        refusal_reason(&symbolic),
+        Some(RefusalReason::SourceCommitUnresolved)
+    );
+    let symbolic = symbolic.to_string();
     assert!(symbolic.contains("exact full commit SHA"), "{symbolic}");
     assert!(!symbolic_output.exists());
 
@@ -197,8 +210,8 @@ async fn rehearsal_rejects_missing_symbolic_unconfigured_and_wrong_compiler_sour
         .await
         .unwrap_err();
     assert_eq!(
-        release_glz::failure::classify(&unconfigured),
-        release_glz::failure::FailureClass::UsageOrConfig
+        refusal_reason(&unconfigured),
+        Some(RefusalReason::ConfigMissing)
     );
     let unconfigured = unconfigured.to_string();
     assert!(
@@ -226,8 +239,12 @@ async fn rehearsal_rejects_missing_symbolic_unconfigured_and_wrong_compiler_sour
             output: wrong_output.clone(),
         })
         .await
-        .unwrap_err()
-        .to_string();
+        .unwrap_err();
+    assert_eq!(
+        refusal_reason(&wrong),
+        Some(RefusalReason::GleamCompilerMismatch)
+    );
+    let wrong = wrong.to_string();
     assert!(
         wrong.contains("configured Gleam compiler 99.0.0"),
         "{wrong}"

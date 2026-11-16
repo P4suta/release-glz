@@ -5,6 +5,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::time::{Duration, Instant};
 
 use release_glz::config::HookConfig;
+use release_glz::failure::{RefusalReason, refusal_reason};
 use release_glz::hooks::{HookContext, HookRunner};
 use semver::Version;
 
@@ -66,6 +67,10 @@ async fn a_later_verify_hook_cannot_mutate_the_snapshot_either() {
         )
         .await
         .unwrap_err();
+    assert_eq!(
+        refusal_reason(&error),
+        Some(RefusalReason::HookSnapshotModified)
+    );
     assert!(error.to_string().contains("modified the source snapshot"));
 }
 
@@ -94,6 +99,10 @@ async fn a_later_sidecar_hook_cannot_mutate_the_snapshot_either() {
         )
         .await
         .unwrap_err();
+    assert_eq!(
+        refusal_reason(&error),
+        Some(RefusalReason::HookSnapshotModified)
+    );
     assert!(error.to_string().contains("modified the source snapshot"));
 }
 
@@ -110,6 +119,10 @@ async fn verify_hook_cannot_mutate_the_snapshot() {
         .run_verify(&[required("mutator", &hook, 5)], temp.path(), &context())
         .await
         .unwrap_err();
+    assert_eq!(
+        refusal_reason(&error),
+        Some(RefusalReason::HookSnapshotModified)
+    );
     assert!(error.to_string().contains("modified the source snapshot"));
 }
 
@@ -124,6 +137,7 @@ async fn required_hook_timeout_is_bounded_and_fails_closed() {
         .await
         .unwrap_err();
     assert!(started.elapsed() < Duration::from_secs(30));
+    assert_eq!(refusal_reason(&error), Some(RefusalReason::HookTimedOut));
     assert!(error.to_string().contains("timed out"));
 }
 
@@ -152,9 +166,10 @@ printf '%s' '{{"schema":"hook/v1","success":true,"summary":"direct child exited"
             &context(),
         )
         .await
-        .unwrap_err()
-        .to_string();
+        .unwrap_err();
     assert!(started.elapsed() < Duration::from_secs(30));
+    assert_eq!(refusal_reason(&error), Some(RefusalReason::HookTimedOut));
+    let error = error.to_string();
     assert!(error.contains("timed out"), "{error}");
 
     let grandchild = fs::read_to_string(&pid_file).unwrap();
@@ -226,8 +241,12 @@ async fn protected_authorization_environment_is_rejected_at_the_runner_boundary(
     let error = HookRunner::default()
         .run_verify(&[configured], temp.path(), &context())
         .await
-        .unwrap_err()
-        .to_string();
+        .unwrap_err();
+    assert_eq!(
+        refusal_reason(&error),
+        Some(RefusalReason::HookEnvProtected)
+    );
+    let error = error.to_string();
     assert!(error.contains("may not receive"), "{error}");
 }
 
@@ -321,8 +340,12 @@ async fn sidecar_asset_names_must_be_publishable_basenames() {
     let error = HookRunner::default()
         .run_sidecars(&[required("evidence", &hook, 5)], temp.path(), &context())
         .await
-        .unwrap_err()
-        .to_string();
+        .unwrap_err();
+    assert_eq!(
+        refusal_reason(&error),
+        Some(RefusalReason::SidecarNameUnsafe)
+    );
+    let error = error.to_string();
     assert!(error.contains("safe asset name"), "{error}");
 }
 
@@ -346,8 +369,13 @@ async fn sidecar_protocol_rejects_unknown_evidence_and_artifact_fields() {
         let error = HookRunner::default()
             .run_sidecars(&[required("evidence", &hook, 5)], temp.path(), &context())
             .await
-            .unwrap_err()
-            .to_string();
+            .unwrap_err();
+        assert_eq!(
+            refusal_reason(&error),
+            Some(RefusalReason::SidecarArtifactsInvalid),
+            "{name}"
+        );
+        let error = error.to_string();
         assert!(error.contains("invalid artifacts"), "{name}: {error}");
     }
 }
@@ -366,16 +394,32 @@ async fn verify_failures_preserve_required_and_optional_policy() {
     let nonzero = script(temp.path(), "nonzero.sh", "exit 17\n");
     let runner = HookRunner::default();
 
-    for (name, hook, expected) in [
-        ("reported", &reported, "reported failure"),
-        ("invalid", &invalid, "invalid JSON"),
-        ("nonzero", &nonzero, "reported failure"),
+    for (name, hook, reason, expected) in [
+        (
+            "reported",
+            &reported,
+            RefusalReason::HookReportedFailure,
+            "reported failure",
+        ),
+        (
+            "invalid",
+            &invalid,
+            RefusalReason::HookOutputInvalid,
+            "invalid JSON",
+        ),
+        (
+            "nonzero",
+            &nonzero,
+            RefusalReason::HookReportedFailure,
+            "reported failure",
+        ),
     ] {
         let error = runner
             .run_verify(&[required(name, hook, 5)], temp.path(), &context())
             .await
-            .unwrap_err()
-            .to_string();
+            .unwrap_err();
+        assert_eq!(refusal_reason(&error), Some(reason), "{name}");
+        let error = error.to_string();
         assert!(error.contains(expected), "{name}: {error}");
 
         let evidence = runner
@@ -429,8 +473,13 @@ async fn hook_output_protocol_is_strict_at_every_field() {
         let error = runner
             .run_verify(&[hook], temp.path(), &context())
             .await
-            .unwrap_err()
-            .to_string();
+            .unwrap_err();
+        assert_eq!(
+            refusal_reason(&error),
+            Some(RefusalReason::HookOutputInvalid),
+            "{name}"
+        );
+        let error = error.to_string();
         assert!(error.contains(expected), "{name}: {error}");
     }
 
@@ -444,8 +493,9 @@ async fn hook_output_protocol_is_strict_at_every_field() {
     let error = runner
         .run_verify(&[empty_argv], temp.path(), &context())
         .await
-        .unwrap_err()
-        .to_string();
+        .unwrap_err();
+    assert_eq!(refusal_reason(&error), Some(RefusalReason::HookArgvInvalid));
+    let error = error.to_string();
     assert!(error.contains("non-empty NUL-free argv"), "{error}");
 }
 
@@ -476,8 +526,12 @@ printf '%s' '{"schema":"hook/v1","success":true,"summary":"declared","evidence":
     let error = HookRunner::default()
         .run_verify(&[required("declared", &hook, 5)], temp.path(), &context())
         .await
-        .unwrap_err()
-        .to_string();
+        .unwrap_err();
+    assert_eq!(
+        refusal_reason(&error),
+        Some(RefusalReason::HookSnapshotEntryNotRegular)
+    );
+    let error = error.to_string();
     assert!(error.contains("non-regular entry"), "{error}");
 }
 
@@ -500,8 +554,13 @@ async fn stdout_and_stderr_are_streamed_but_strictly_bounded() {
         let error = runner
             .run_verify(&[required(name, &hook, 5)], temp.path(), &context())
             .await
-            .unwrap_err()
-            .to_string();
+            .unwrap_err();
+        assert_eq!(
+            refusal_reason(&error),
+            Some(RefusalReason::HookOutputLimitExceeded),
+            "{name}"
+        );
+        let error = error.to_string();
         assert!(error.contains("output limit"), "{name}: {error}");
     }
 }
@@ -531,8 +590,12 @@ async fn sidecar_failures_preserve_policy_and_snapshot_immutability() {
             &context(),
         )
         .await
-        .unwrap_err()
-        .to_string();
+        .unwrap_err();
+    assert_eq!(
+        refusal_reason(&error),
+        Some(RefusalReason::HookReportedFailure)
+    );
+    let error = error.to_string();
     assert!(error.contains("reported failure"), "{error}");
     let result = runner
         .run_sidecars(
@@ -558,8 +621,12 @@ async fn sidecar_failures_preserve_policy_and_snapshot_immutability() {
             &context(),
         )
         .await
-        .unwrap_err()
-        .to_string();
+        .unwrap_err();
+    assert_eq!(
+        refusal_reason(&error),
+        Some(RefusalReason::HookSnapshotModified)
+    );
+    let error = error.to_string();
     assert!(error.contains("modified the source snapshot"), "{error}");
 }
 
@@ -571,46 +638,54 @@ async fn sidecar_artifact_protocol_rejects_every_unsafe_shape() {
         (
             "shape.sh",
             r#"{"artifacts":"not-an-array"}"#,
+            RefusalReason::SidecarArtifactsInvalid,
             "invalid artifacts",
         ),
         (
             "name.sh",
             r#"{"artifacts":[{"name":"../escape","media_type":"application/json","content_base64":"e30="}]}"#,
+            RefusalReason::SidecarNameUnsafe,
             "safe asset name",
         ),
         (
             "parent-name.sh",
             r#"{"artifacts":[{"name":"..","media_type":"application/json","content_base64":"e30="}]}"#,
+            RefusalReason::SidecarNameUnsafe,
             "safe asset name",
         ),
         (
             "media.sh",
             r#"{"artifacts":[{"name":"evidence.json","media_type":"json","content_base64":"e30="}]}"#,
+            RefusalReason::SidecarMediaTypeInvalid,
             "media type",
         ),
         (
             "control-media.sh",
             r#"{"artifacts":[{"name":"evidence.json","media_type":"application/\u007f","content_base64":"e30="}]}"#,
+            RefusalReason::SidecarMediaTypeInvalid,
             "media type",
         ),
         (
             "long-media.sh",
             r#"{"artifacts":[{"name":"evidence.json","media_type":"application/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx","content_base64":"e30="}]}"#,
+            RefusalReason::SidecarMediaTypeInvalid,
             "media type",
         ),
         (
             "base64.sh",
             r#"{"artifacts":[{"name":"evidence.json","media_type":"application/json","content_base64":"%%%"}]}"#,
+            RefusalReason::SidecarArtifactsInvalid,
             "valid base64",
         ),
         (
             "duplicate.sh",
             r#"{"artifacts":[{"name":"evidence.json","media_type":"application/json","content_base64":"e30="},{"name":"evidence.json","media_type":"application/json","content_base64":"e30="}]}"#,
+            RefusalReason::SidecarArtifactsInvalid,
             "duplicate artifact",
         ),
     ];
     let runner = HookRunner::default();
-    for (name, evidence, expected) in cases {
+    for (name, evidence, reason, expected) in cases {
         let output = format!(
             "{{\"schema\":\"hook/v1\",\"success\":true,\"summary\":\"case\",\"evidence\":{evidence}}}"
         );
@@ -618,8 +693,9 @@ async fn sidecar_artifact_protocol_rejects_every_unsafe_shape() {
         let error = runner
             .run_sidecars(&[required("evidence", &hook, 5)], temp.path(), &context())
             .await
-            .unwrap_err()
-            .to_string();
+            .unwrap_err();
+        assert_eq!(refusal_reason(&error), Some(reason), "{name}");
+        let error = error.to_string();
         assert!(error.contains(expected), "{name}: {error}");
     }
 
@@ -647,8 +723,12 @@ async fn sidecar_artifact_protocol_rejects_every_unsafe_shape() {
     let error = runner
         .run_sidecars(&[required("evidence", &hook, 5)], temp.path(), &context())
         .await
-        .unwrap_err()
-        .to_string();
+        .unwrap_err();
+    assert_eq!(
+        refusal_reason(&error),
+        Some(RefusalReason::SidecarArtifactsLimitExceeded)
+    );
+    let error = error.to_string();
     assert!(error.contains("count limit"), "{error}");
 }
 
@@ -678,8 +758,12 @@ async fn notify_failure_and_observation_shapes_are_fail_closed() {
     let error = runner
         .observe_notify(&required("notify", &failed, 5), temp.path(), &context())
         .await
-        .unwrap_err()
-        .to_string();
+        .unwrap_err();
+    assert_eq!(
+        refusal_reason(&error),
+        Some(RefusalReason::HookObservationFailed)
+    );
+    let error = error.to_string();
     assert!(error.contains("could not observe"), "{error}");
     assert!(
         !runner
@@ -690,16 +774,24 @@ async fn notify_failure_and_observation_shapes_are_fail_closed() {
     let error = runner
         .apply_notify(&optional("notify", &failed, 5), temp.path(), &context())
         .await
-        .unwrap_err()
-        .to_string();
+        .unwrap_err();
+    assert_eq!(
+        refusal_reason(&error),
+        Some(RefusalReason::HookReportedFailure)
+    );
+    let error = error.to_string();
     assert!(error.contains("apply failure"), "{error}");
 
     for hook in [missing, wrong] {
         let error = runner
             .observe_notify(&required("notify", &hook, 5), temp.path(), &context())
             .await
-            .unwrap_err()
-            .to_string();
+            .unwrap_err();
+        assert_eq!(
+            refusal_reason(&error),
+            Some(RefusalReason::HookOutputInvalid)
+        );
+        let error = error.to_string();
         assert!(error.contains("boolean `complete`"), "{error}");
     }
 }

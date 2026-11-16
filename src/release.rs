@@ -12,7 +12,7 @@ use sha2::{Digest, Sha256};
 use crate::candidate::{Candidate, CandidateManifest, SealedPolicy};
 use crate::canonical::SHA256_HEX_LEN;
 use crate::config::{Manifest, RegistryConfig};
-use crate::failure::{FailureClass, classified};
+use crate::failure::{RefusalReason, refused};
 use crate::forge::{GitHubClient, GitHubRelease, GitHubReleaseAsset, GitHubRepository};
 use crate::git::GitRepo;
 use crate::gleam::Gleam;
@@ -121,8 +121,8 @@ impl SourceBoundCandidate {
     pub fn bind(manifest: CandidateManifest, manifest_path: &Path) -> Result<Self> {
         let (repo, relative_manifest) = crate::rehearse::locate_manifest(manifest_path)?;
         if repo.head()? != manifest.source.commit_sha {
-            return Err(classified(
-                FailureClass::ImmutableStateConflict,
+            return Err(refused(
+                RefusalReason::CandidateSourceMismatch,
                 "checked-out commit does not match the sealed Candidate source",
             ));
         }
@@ -139,9 +139,9 @@ impl SourceBoundCandidate {
         )?;
         let differences = SealedPolicy::of(&manifest).differences(&source);
         if !differences.is_empty() {
-            return Err(classified(
-                FailureClass::ImmutableStateConflict,
-                format!(
+            return Err(refused(
+                RefusalReason::CandidatePolicyDiffers,
+                format_args!(
                     "the Candidate's policy differs from the configuration at its source commit in: {}",
                     differences.join(", ")
                 ),
@@ -172,10 +172,13 @@ impl LiveReleaseTarget {
             auth: manifest.registry.auth,
         };
         if manifest.private && std::env::var_os(&registry_config.credential_env).is_none() {
-            bail!(
-                "private registry credential environment `{}` is not set",
-                registry_config.credential_env
-            );
+            return Err(refused(
+                RefusalReason::RegistryCredentialMissing,
+                format_args!(
+                    "private registry credential environment `{}` is not set",
+                    registry_config.credential_env
+                ),
+            ));
         }
         let registry = HexRegistry::from_environment(&registry_config)?;
         Ok(Self {
@@ -293,7 +296,7 @@ impl ReleaseTarget for LiveReleaseTarget {
                 }
                 if asset.state != "uploaded" {
                     if let Some(refusal) = unfinished_asset_refusal(release, asset, intent) {
-                        return Err(classified(FailureClass::ImmutableStateConflict, refusal));
+                        return Err(refused(RefusalReason::ReleaseAssetUnfinished, refusal));
                     }
                     unfinished_release_assets.insert(asset.name.clone());
                     continue;
@@ -332,7 +335,7 @@ impl ReleaseTarget for LiveReleaseTarget {
                     Ok(complete) => complete,
                     Err(_) if !hook.required => false,
                     Err(error) => {
-                        return Err(crate::failure::classified(
+                        return Err(crate::failure::classified_keeping_reason(
                             crate::failure::FailureClass::Hook,
                             error,
                         ));
@@ -462,9 +465,9 @@ impl ReleaseTarget for LiveReleaseTarget {
                         );
                     }
                     if !candidate_release(&release, intent) {
-                        return Err(classified(
-                            FailureClass::ImmutableStateConflict,
-                            format!(
+                        return Err(refused(
+                            RefusalReason::ReleaseAssetUnfinished,
+                            format_args!(
                                 "GitHub Release asset `{name}` is unfinished on a Release that the Candidate didn't draft"
                             ),
                         ));
@@ -502,7 +505,10 @@ impl ReleaseTarget for LiveReleaseTarget {
                     .apply_notify(hook, self.repo.root(), &context)
                     .await
                     .map_err(|error| {
-                        crate::failure::classified(crate::failure::FailureClass::Hook, error)
+                        crate::failure::classified_keeping_reason(
+                            crate::failure::FailureClass::Hook,
+                            error,
+                        )
                     })?;
             }
         }
@@ -580,6 +586,13 @@ impl ReleaseRunError {
     pub fn failure_class(&self) -> crate::failure::FailureClass {
         self.class
     }
+
+    /// The reason of the typed refusal that stopped the run, when that refusal has the run's class.
+    ///
+    /// A run whose state imposes another class, such as a partial release, names no reason.
+    pub fn refusal_reason(&self) -> Option<crate::failure::RefusalReason> {
+        crate::failure::reason_of_class(self.class, &self.source)
+    }
 }
 
 impl std::fmt::Display for ReleaseRunError {
@@ -639,7 +652,7 @@ where
         let manifest = Candidate::verify(candidate_directory).map_err(|source| {
             run_error(
                 ReleaseState::Blocked,
-                crate::failure::classified(
+                crate::failure::classified_keeping_reason(
                     crate::failure::FailureClass::ImmutableStateConflict,
                     source,
                 ),
@@ -649,7 +662,7 @@ where
             Candidate::package_bytes(candidate_directory, &manifest).map_err(|source| {
                 run_error(
                     ReleaseState::Blocked,
-                    crate::failure::classified(
+                    crate::failure::classified_keeping_reason(
                         crate::failure::FailureClass::ImmutableStateConflict,
                         source,
                     ),
@@ -658,7 +671,7 @@ where
         let docs = Candidate::docs_bytes(candidate_directory, &manifest).map_err(|source| {
             run_error(
                 ReleaseState::Blocked,
-                crate::failure::classified(
+                crate::failure::classified_keeping_reason(
                     crate::failure::FailureClass::ImmutableStateConflict,
                     source,
                 ),
@@ -669,7 +682,7 @@ where
             Candidate::sidecar_bytes(candidate_directory, &manifest).map_err(|source| {
                 run_error(
                     ReleaseState::Blocked,
-                    crate::failure::classified(
+                    crate::failure::classified_keeping_reason(
                         crate::failure::FailureClass::ImmutableStateConflict,
                         source,
                     ),
@@ -898,5 +911,91 @@ fn state_label(state: ReleaseState) -> &'static str {
         ReleaseState::PartiallyReleased => "partial release",
         ReleaseState::Blocked => "release blocked",
         _ => "release failed",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::run_error;
+    use crate::failure::{
+        FailureClass, RefusalReason, classify, diagnostic_code, refusal_reason, refused,
+    };
+    use crate::model::ReleaseState;
+
+    const STATES: [ReleaseState; 8] = [
+        ReleaseState::UpToDate,
+        ReleaseState::Planned,
+        ReleaseState::CandidateReady,
+        ReleaseState::AwaitingApproval,
+        ReleaseState::PartiallyReleased,
+        ReleaseState::Released,
+        ReleaseState::Conflict,
+        ReleaseState::Blocked,
+    ];
+
+    #[test]
+    fn a_failed_run_is_coded_by_its_refusal_only_when_the_refusal_has_the_run_class() {
+        let invalid = anyhow::Error::new(run_error(
+            ReleaseState::Blocked,
+            refused(
+                RefusalReason::RegistryReleaseInvalid,
+                "the registry release names another version",
+            ),
+        ));
+        assert_eq!(classify(&invalid), FailureClass::TemporaryExternal);
+        assert_eq!(
+            refusal_reason(&invalid),
+            Some(RefusalReason::RegistryReleaseInvalid)
+        );
+        assert_eq!(diagnostic_code(&invalid), "registry_release_invalid");
+
+        let partial = run_error(
+            ReleaseState::PartiallyReleased,
+            refused(
+                RefusalReason::RegistryReleaseNotVisible,
+                "the release did not appear on the registry",
+            ),
+        );
+        assert_eq!(partial.failure_class(), FailureClass::PartialRelease);
+        assert_eq!(partial.refusal_reason(), None);
+        let partial = anyhow::Error::new(partial);
+        assert_eq!(classify(&partial), FailureClass::PartialRelease);
+        assert_eq!(refusal_reason(&partial), None);
+        assert_eq!(diagnostic_code(&partial), "partial_release");
+
+        let conflict = anyhow::Error::new(run_error(
+            ReleaseState::Conflict,
+            refused(
+                RefusalReason::RegistryReleaseInvalid,
+                "the registry release names another version",
+            ),
+        ));
+        assert_eq!(classify(&conflict), FailureClass::ImmutableStateConflict);
+        assert_eq!(refusal_reason(&conflict), None);
+        assert_eq!(diagnostic_code(&conflict), "immutable_state_conflict");
+    }
+
+    #[test]
+    fn a_failed_run_keeps_its_class_whatever_refusal_stopped_it() {
+        for state in STATES {
+            for &reason in RefusalReason::ALL {
+                let run = run_error(
+                    state,
+                    refused(reason, "message text is not classification")
+                        .context("while releasing"),
+                );
+                let class = run.failure_class();
+                let named = (reason.class() == class).then_some(reason);
+                assert_eq!(run.refusal_reason(), named, "{state:?} {reason:?}");
+                let error = anyhow::Error::new(run);
+                assert_eq!(classify(&error), class, "{state:?} {reason:?}");
+                assert_eq!(refusal_reason(&error), named, "{state:?} {reason:?}");
+                assert_eq!(
+                    diagnostic_code(&error),
+                    named.map_or(class.diagnostic_code(), RefusalReason::code),
+                    "{state:?} {reason:?}"
+                );
+            }
+        }
     }
 }

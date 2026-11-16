@@ -150,7 +150,18 @@ fn a_written_plan_reads_back_unchanged_and_is_never_replaced() {
         serde_json::to_value(&written).unwrap()
     );
 
-    assert!(handoff::write_new(&path, &plan(None)).is_err());
+    let error = handoff::write_new(&path, &plan(None)).unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        format!("failed to create plan `{}`", path.display())
+    );
+    assert_eq!(
+        error
+            .downcast_ref::<std::io::Error>()
+            .map(std::io::Error::kind),
+        Some(std::io::ErrorKind::AlreadyExists),
+        "{error:#}"
+    );
     assert_eq!(std::fs::read(&path).unwrap(), bytes);
 }
 

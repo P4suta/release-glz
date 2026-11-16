@@ -785,13 +785,17 @@ mod tests {
         ];
         let valid = interface(module(json!({}), json!({})));
         for (index, malformed) in cases.into_iter().enumerate() {
-            assert!(
-                compare(&malformed, &valid).is_err(),
-                "malformed case {index} was accepted"
+            let baseline = compare(&malformed, &valid).unwrap_err();
+            assert_eq!(
+                baseline.to_string(),
+                "invalid baseline package interface",
+                "malformed case {index}: {baseline:#}"
             );
-            assert!(
-                compare(&valid, &malformed).is_err(),
-                "malformed new case {index} was accepted"
+            let current = compare(&valid, &malformed).unwrap_err();
+            assert_eq!(
+                current.to_string(),
+                "invalid local package interface",
+                "malformed new case {index}: {current:#}"
             );
         }
     }

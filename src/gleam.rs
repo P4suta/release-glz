@@ -137,7 +137,8 @@ impl Gleam {
     pub fn ensure_supported(&self) -> Result<Version> {
         let version = self.installed_version()?;
         if version < MINIMUM_SUPPORTED_COMPILER {
-            bail!(
+            crate::refuse!(
+                GleamCompilerUnsupported,
                 "release-glz requires Gleam {MINIMUM_SUPPORTED_COMPILER} or newer; found {version}"
             );
         }
@@ -697,16 +698,22 @@ fn dependency_otp_apps(
 
 #[cfg(any(windows, test))]
 fn repository_url(repository: &PackageRepository) -> Result<String> {
+    let invalid = |message| {
+        crate::failure::refused(
+            crate::failure::RefusalReason::GleamRepositoryInvalid,
+            message,
+        )
+    };
     let identity = || -> Result<(&str, &str)> {
         Ok((
             repository
                 .user
                 .as_deref()
-                .context("Gleam repository has no user")?,
+                .ok_or_else(|| invalid("Gleam repository has no user"))?,
             repository
                 .repo
                 .as_deref()
-                .context("Gleam repository has no repo")?,
+                .ok_or_else(|| invalid("Gleam repository has no repo"))?,
         ))
     };
     let url = match repository.kind.as_str() {
@@ -739,18 +746,21 @@ fn repository_url(repository: &PackageRepository) -> Result<String> {
             let host = repository
                 .host
                 .as_deref()
-                .context("Gleam repository has no host")?
+                .ok_or_else(|| invalid("Gleam repository has no host"))?
                 .trim_end_matches('/');
             format!("{host}/{user}/{repo}")
         }
         "custom" => repository
             .url
             .clone()
-            .context("custom Gleam repository has no URL")?,
-        kind => bail!("unsupported Gleam repository type `{kind}`"),
+            .ok_or_else(|| invalid("custom Gleam repository has no URL"))?,
+        kind => crate::refuse!(
+            GleamRepositoryInvalid,
+            "unsupported Gleam repository type `{kind}`"
+        ),
     };
     if url.is_empty() {
-        bail!("Gleam repository URL is empty");
+        crate::refuse!(GleamRepositoryInvalid, "Gleam repository URL is empty");
     }
     Ok(url)
 }
@@ -798,6 +808,7 @@ fn copy_tree(source: &Path, destination: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::failure::{RefusalReason, refusal_reason};
 
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
@@ -838,10 +849,23 @@ mod tests {
         assert_eq!(gleam.ensure_supported().unwrap(), Version::new(1, 18, 1));
 
         write_executable(&executable, "printf 'gleam 1.8.9\\n'\n");
-        assert!(gleam.ensure_supported().is_err());
+        let error = gleam.ensure_supported().unwrap_err();
+        assert_eq!(
+            (refusal_reason(&error), error.to_string()),
+            (
+                Some(RefusalReason::GleamCompilerUnsupported),
+                format!(
+                    "release-glz requires Gleam {MINIMUM_SUPPORTED_COMPILER} or newer; found 1.8.9"
+                )
+            )
+        );
 
         write_executable(&executable, "printf 'gleam current\\n'\n");
-        assert!(gleam.installed_version().is_err());
+        let error = gleam.installed_version().unwrap_err();
+        assert_eq!(
+            (refusal_reason(&error), error.to_string()),
+            (None, "could not parse Gleam version".to_owned())
+        );
 
         write_executable(
             &executable,
@@ -1088,17 +1112,31 @@ mod tests {
 
         let mut missing_identity = repository("github");
         missing_identity.user = None;
-        assert!(repository_url(&missing_identity).is_err());
         let mut missing_host = repository("gitea");
         missing_host.host = None;
-        assert!(repository_url(&missing_host).is_err());
         let mut missing_url = repository("custom");
         missing_url.url = None;
-        assert!(repository_url(&missing_url).is_err());
         let mut empty_url = repository("custom");
         empty_url.url = Some(String::new());
-        assert!(repository_url(&empty_url).is_err());
-        assert!(repository_url(&repository("unknown")).is_err());
+        for (invalid, message) in [
+            (missing_identity, "Gleam repository has no user"),
+            (missing_host, "Gleam repository has no host"),
+            (missing_url, "custom Gleam repository has no URL"),
+            (empty_url, "Gleam repository URL is empty"),
+            (
+                repository("unknown"),
+                "unsupported Gleam repository type `unknown`",
+            ),
+        ] {
+            let error = repository_url(&invalid).unwrap_err();
+            assert_eq!(
+                (refusal_reason(&error), error.to_string()),
+                (
+                    Some(RefusalReason::GleamRepositoryInvalid),
+                    message.to_owned()
+                )
+            );
+        }
     }
 
     #[cfg(unix)]
@@ -1116,9 +1154,39 @@ mod tests {
         write_executable(&executable, "exit 0\n");
         let gleam = Gleam { executable };
 
-        assert!(gleam.export_hex_tarball(&package).is_err());
-        assert!(gleam.export_package_interface(&package).is_err());
-        assert!(gleam.export_docs_tarball(&package).is_err());
+        for (error, missing) in [
+            (
+                gleam.export_hex_tarball(&package).unwrap_err(),
+                package.join("build").join("widget-1.2.3.tar"),
+            ),
+            (
+                gleam.export_package_interface(&package).unwrap_err(),
+                package.join("release-glz-package-interface.json"),
+            ),
+        ] {
+            assert_eq!(
+                error.to_string(),
+                format!("Gleam did not create `{}`", missing.display())
+            );
+            assert_eq!(
+                error
+                    .downcast_ref::<std::io::Error>()
+                    .map(std::io::Error::kind),
+                Some(std::io::ErrorKind::NotFound),
+                "{error:#}"
+            );
+        }
+        let error = gleam.export_docs_tarball(&package).unwrap_err();
+        assert_eq!(
+            (refusal_reason(&error), error.to_string()),
+            (
+                None,
+                format!(
+                    "Gleam did not create documentation at `{}`",
+                    package.join("build/dev/docs/widget").display()
+                )
+            )
+        );
     }
 
     #[test]
