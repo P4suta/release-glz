@@ -148,6 +148,7 @@ release-glz release --candidate .release-glz/candidate --dry-run
 ```
 
 `rehearse` requires a full commit SHA and uses `git archive`, so uncommitted and ignored working-tree files cannot enter the Candidate.
+A commit ID is exactly 40 lowercase hexadecimal digits, the only form that GitHub serves, so `rehearse` refuses a SHA-256 repository with `repository_object_format_unsupported` before it builds anything.
 Real publication also requires approval evidence supplied by the protected workflow; a local dry run does not manufacture that authority.
 
 ## Commands
@@ -412,7 +413,7 @@ Reason codes are stable, and a code is never reused for another refusal:
 | `release_asset_id_missing` | 5 | A Release asset to delete has no id. |
 | `candidate_not_directory` | 2 | A `--candidate` path isn't a directory. |
 | `candidate_destination_exists` | 4 | The Candidate destination already exists, and a sealed Candidate is never replaced. |
-| `candidate_source_commit_invalid` | 2 | The Candidate source commit isn't a full lowercase SHA. |
+| `candidate_source_commit_invalid` | 2 | The Candidate source commit isn't a commit ID of 40 lowercase hexadecimal digits. |
 | `candidate_tag_unsafe` | 2 | The Candidate tag is a full ref or a peeled ref. |
 | `candidate_tag_version_mismatch` | 2 | The Candidate tag doesn't end with the Candidate version. |
 | `candidate_release_notes_invalid` | 2 | The Candidate release notes hold a NUL or exceed 1 MiB. |
@@ -500,6 +501,7 @@ Reason codes are stable, and a code is never reused for another refusal:
 | `release_asset_unfinished` | 4 | A GitHub Release asset is unfinished where a release can't complete it: the Candidate doesn't seal it, or its Release is published or isn't the Candidate's draft. |
 | `approval_request_incomplete` | 3 | The publishing job's environment lacks a variable that release approval checks. |
 | `approval_release_pr_missing` | 3 | A push release has no server-verified merged managed Release PR for its Candidate. |
+| `repository_object_format_unsupported` | 2 | The repository that a rehearsal builds from names its objects with a hash other than SHA-1, so GitHub can't serve its commits. |
 
 A release run that stops after it published part of a release exits 7 whatever stopped it, including a required notify hook that fails after publication.
 Inspection commands, `status`, `verify --online`, and `release --dry-run`, exit 0 whenever they can report a state, and that `state` names what remains.

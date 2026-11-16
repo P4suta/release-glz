@@ -1377,6 +1377,7 @@ dependencies = [
  "icu_normalizer",
  "process-wrap",
  "release-glz-core",
+ "release-glz-domain",
  "release-glz-test-support",
  "reqwest",
  "ring",
@@ -1398,6 +1399,15 @@ name = "release-glz-core"
 version = "0.0.0"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "release-glz-domain"
+version = "0.0.0"
+dependencies = [
+ "release-glz-core",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

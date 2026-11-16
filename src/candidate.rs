@@ -8,6 +8,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+use release_glz_domain::CommitId;
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -1247,12 +1248,12 @@ fn validate_descriptor_path(descriptor: &SealedArtifact, expected: &str) -> Resu
 }
 
 fn validate_source(source: &CandidateSource) -> Result<()> {
-    if !release_glz_core::is_commit_id(source.commit_sha.as_bytes()) {
-        refuse!(
-            CandidateSourceCommitInvalid,
-            "candidate source commit must be a full lowercase SHA"
-        );
-    }
+    CommitId::parse(&source.commit_sha).map_err(|refusal| {
+        refused(
+            RefusalReason::CandidateSourceCommitInvalid,
+            format_args!("candidate source commit must be a full lowercase SHA: {refusal}"),
+        )
+    })?;
     validate_relative_path(
         Path::new(&source.manifest_path),
         "candidate source manifest_path",

@@ -13,6 +13,7 @@ use release_glz::model::{
     ReleaseState,
 };
 use release_glz::reconciler::ExternalReleaseState;
+use release_glz_domain::CommitId;
 use release_glz_test_support::schema::{
     RESULT_SCHEMAS, assert_matches, assert_published_envelope, published_schemas, violations,
 };
@@ -396,6 +397,90 @@ fn every_result_schema_refuses_what_its_command_never_prints() {
             !violations(file, &value).is_empty(),
             "{file} accepted {case}"
         );
+    }
+}
+
+/// Every commit ID that a schema or the generated workflow checks has the length of a [`CommitId`], so what one of them accepts, every other accepts.
+#[test]
+fn every_commit_id_pattern_names_the_length_of_a_commit_id() {
+    let pattern = format!("^[0-9a-f]{{{}}}$", CommitId::LEN);
+    let schemas = published_schemas();
+    let commit_ids = [
+        (
+            "candidate.schema.json",
+            "/$defs/source/properties/commit_sha/pattern",
+        ),
+        ("init-outcome.schema.json", "/properties/action_sha/pattern"),
+        (
+            "release-plan.schema.json",
+            "/properties/release_pr_head/anyOf/0/pattern",
+        ),
+        (
+            "release-plan.schema.json",
+            "/$defs/baseline/properties/sha/anyOf/0/pattern",
+        ),
+        (
+            "release-state.schema.json",
+            "/$defs/tag/properties/target_sha/pattern",
+        ),
+        (
+            "release-state.schema.json",
+            "/$defs/githubRelease/properties/target_sha/pattern",
+        ),
+    ];
+    for (file, pointer) in commit_ids {
+        assert_eq!(
+            schemas[file].pointer(pointer).and_then(Value::as_str),
+            Some(pattern.as_str()),
+            "{file}#{pointer}"
+        );
+    }
+    // A pattern elsewhere that counts 40 of something is a commit ID that the list above misses.
+    let mut counted = BTreeSet::new();
+    for (file, schema) in &schemas {
+        forty_count_patterns(file, "", schema, &mut counted);
+    }
+    assert_eq!(
+        counted,
+        commit_ids
+            .iter()
+            .map(|(file, pointer)| format!("{file}#{pointer}"))
+            .collect::<BTreeSet<_>>()
+    );
+
+    let workflow = release_glz::workflow::render_configured(
+        "main",
+        Path::new("gleam.toml"),
+        "1.18.1",
+        "release",
+        "HEXPM_API_KEY",
+        "release-glz/",
+        &"a".repeat(CommitId::LEN),
+    )
+    .unwrap();
+    let checks = format!(r#"[[ "$SOURCE_SHA" =~ {pattern} ]]"#);
+    assert_eq!(workflow.matches(&checks).count(), 2);
+    assert_eq!(workflow.matches("{40}").count(), 2);
+}
+
+/// Each `pattern` under `value` at `pointer` that counts 40 of something, as `file#pointer`.
+fn forty_count_patterns(file: &str, pointer: &str, value: &Value, found: &mut BTreeSet<String>) {
+    match value {
+        Value::Object(members) => {
+            for (key, member) in members {
+                let path = format!("{pointer}/{key}");
+                if key == "pattern" && member.as_str().is_some_and(|text| text.contains("{40}")) {
+                    found.insert(format!("{file}#{path}"));
+                }
+                forty_count_patterns(file, &path, member, found);
+            }
+        }
+        Value::Array(items) => {
+            for (index, item) in items.iter().enumerate() {
+                forty_count_patterns(file, &format!("{pointer}/{index}"), item, found);
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
     }
 }
 

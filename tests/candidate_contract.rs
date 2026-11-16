@@ -297,6 +297,7 @@ fn candidate_source_registry_branch_notes_and_approval_policy_are_independently_
     for (case, reason) in [
         ("short-sha", RefusalReason::CandidateSourceCommitInvalid),
         ("long-sha", RefusalReason::CandidateSourceCommitInvalid),
+        ("sha256-sha", RefusalReason::CandidateSourceCommitInvalid),
         ("uppercase-sha", RefusalReason::CandidateSourceCommitInvalid),
         ("nonhex-sha", RefusalReason::CandidateSourceCommitInvalid),
         ("manifest-parent", RefusalReason::PathOutsideRepository),
@@ -332,6 +333,7 @@ fn candidate_source_registry_branch_notes_and_approval_policy_are_independently_
         match case {
             "short-sha" => input.source.commit_sha = "a".repeat(39),
             "long-sha" => input.source.commit_sha = "a".repeat(65),
+            "sha256-sha" => input.source.commit_sha = "b".repeat(64),
             "uppercase-sha" => input.source.commit_sha = "A".repeat(40),
             "nonhex-sha" => input.source.commit_sha = "g".repeat(40),
             "manifest-parent" => input.source.manifest_path = "../gleam.toml".into(),
@@ -375,7 +377,7 @@ fn candidate_source_registry_branch_notes_and_approval_policy_are_independently_
         input.registry.api_url = format!("{base}/api");
         input.registry.repository_url = base.clone();
         input.registry.docs_url = format!("{base}/docs");
-        input.source.commit_sha = "b".repeat(64);
+        input.source.commit_sha = "b".repeat(40);
         input.source.manifest_path = "gleam.toml".into();
         input.approval.private_repository_fallback = Some("workflow-dispatch-digest".into());
         input.approval.manual_refs = vec!["refs/tags/v1.2.3".into()];
@@ -478,7 +480,12 @@ fn candidate_verification_rejects_every_manifest_identity_and_digest_tamper() {
         (
             "source-sha",
             RefusalReason::CandidateSourceCommitInvalid,
-            "candidate source commit must be a full lowercase SHA",
+            "candidate source commit must be a full lowercase SHA: a commit ID holds only the lowercase hexadecimal digits `0` to `9` and `a` to `f`",
+        ),
+        (
+            "source-sha256",
+            RefusalReason::CandidateSourceCommitInvalid,
+            "candidate source commit must be a full lowercase SHA: a SHA-256 object ID isn't a GitHub commit ID, which has 40 lowercase hexadecimal digits",
         ),
         (
             "source-path",
@@ -549,6 +556,7 @@ fn candidate_verification_rejects_every_manifest_identity_and_digest_tamper() {
             "tag" => manifest["tag"] = "v9.9.9".into(),
             "tag-ref" => manifest["tag"] = "refs/tags/v1.2.3".into(),
             "source-sha" => manifest["source"]["commit_sha"] = "A".repeat(40).into(),
+            "source-sha256" => manifest["source"]["commit_sha"] = "b".repeat(64).into(),
             "source-path" => manifest["source"]["manifest_path"] = "../gleam.toml".into(),
             "credential-env" => manifest["registry"]["credential_env"] = "TOKEN=value".into(),
             "registry-url-without-host" => {

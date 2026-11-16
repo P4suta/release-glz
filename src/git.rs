@@ -7,11 +7,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
+use release_glz_domain::CommitId;
 
 use crate::model::Bump;
-
-/// Characters in the hexadecimal form of a git object id.
-pub(crate) const OBJECT_HEX_LEN: usize = 40;
 
 /// The `git log` format of one commit, whose fields end in NUL.
 ///
@@ -82,6 +80,14 @@ impl GitRepo {
     /// Commit that `HEAD` currently resolves to.
     pub fn head(&self) -> Result<String> {
         Ok(self.run(["rev-parse", "HEAD"])?.trim().to_owned())
+    }
+
+    /// The hash function that names the repository's objects, as git spells it: `sha1` or `sha256`.
+    pub fn object_format(&self) -> Result<String> {
+        Ok(self
+            .run(["rev-parse", "--show-object-format"])?
+            .trim()
+            .to_owned())
     }
 
     /// Best guess at the default branch, falling back to `main`.
@@ -360,11 +366,10 @@ fn parse_commit_log(raw: &str) -> Result<Vec<Commit>> {
         if sha.is_empty() {
             continue;
         }
-        if sha.len() != OBJECT_HEX_LEN || !sha.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-            bail!("git log record has no commit id");
-        }
+        let sha = CommitId::parse(sha)
+            .map_err(|refusal| anyhow::anyhow!("git log record has no commit id: {refusal}"))?;
         commits.push(Commit {
-            sha: sha.to_owned(),
+            sha: sha.into(),
             author_name: required_part(&mut fields, "author name")?.to_owned(),
             author_email: required_part(&mut fields, "author email")?.to_owned(),
             subject: required_part(&mut fields, "subject")?.to_owned(),
@@ -433,6 +438,37 @@ mod tests {
         );
         assert_eq!(conventional_bump("feat", ""), Bump::Minor);
         assert_eq!(conventional_bump("perf", ""), Bump::Patch);
+    }
+
+    #[test]
+    fn a_log_record_names_its_commit_by_a_commit_id() {
+        let record = |sha: &str| format!("{sha}\0Author\0author@example.test\0fix: x\0body\0\n");
+        let sha = "0123456789abcdef0123456789abcdef01234567";
+        let commits = parse_commit_log(&format!("{}{}", record(sha), record(sha))).unwrap();
+        assert_eq!(commits.len(), 2);
+        assert_eq!(commits[0].sha, sha);
+        assert_eq!(commits[1].subject, "fix: x");
+        for (malformed, reason) in [
+            (
+                sha.to_ascii_uppercase(),
+                "a commit ID holds only the lowercase hexadecimal digits `0` to `9` and `a` to `f`",
+            ),
+            (
+                "b".repeat(64),
+                "a SHA-256 object ID isn't a GitHub commit ID, which has 40 lowercase hexadecimal digits",
+            ),
+            (
+                "b".repeat(39),
+                "a commit ID has 40 lowercase hexadecimal digits, and this value has 39 bytes",
+            ),
+        ] {
+            assert_eq!(
+                parse_commit_log(&record(&malformed))
+                    .unwrap_err()
+                    .to_string(),
+                format!("git log record has no commit id: {reason}")
+            );
+        }
     }
 
     #[test]
