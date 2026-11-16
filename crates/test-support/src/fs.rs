@@ -55,6 +55,26 @@ pub fn read_to_string(path: impl AsRef<Path>) -> String {
         .unwrap_or_else(|error| fail(format_args!("reading `{}` failed: {error}", path.display())))
 }
 
+/// The UTF-8 text of a file, or `None` when nothing is at the path.
+///
+/// # Panics
+///
+/// When something is there that can't be read or isn't UTF-8.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the test support reads fixture files in this one place and names the path when it fails"
+)]
+#[must_use]
+#[track_caller]
+pub fn read_to_string_if_present(path: impl AsRef<Path>) -> Option<String> {
+    let path = path.as_ref();
+    match std::fs::read_to_string(path) {
+        Ok(text) => Some(text),
+        Err(error) if error.kind() == ErrorKind::NotFound => None,
+        Err(error) => fail(format_args!("reading `{}` failed: {error}", path.display())),
+    }
+}
+
 /// Creates one directory, whose parent has to exist.
 ///
 /// # Panics

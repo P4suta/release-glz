@@ -719,27 +719,7 @@ impl Registry for HexRegistry {
         let Some(bytes) = self.get_bytes(url, true, JSON_LIMIT).await? else {
             return Ok(None);
         };
-        let package: ApiPackage = serde_json::from_slice(&bytes).with_context(|| {
-            Refusal::new(
-                RefusalReason::RegistryPackageInvalid,
-                "invalid registry package response",
-            )
-        })?;
-        let mut releases = Vec::new();
-        for release in package.releases {
-            let version: Version = release.version.parse().with_context(|| {
-                Refusal::new(
-                    RefusalReason::RegistryPackageInvalid,
-                    format!("registry returned invalid version `{}`", release.version),
-                )
-            })?;
-            releases.push(HexRelease {
-                retired: package.retirements.contains_key(&release.version),
-                version,
-                has_docs: release.has_docs,
-            });
-        }
-        Ok(Some(PackageState { releases }))
+        parse_package_response(&bytes).map(Some)
     }
 
     async fn release(&self, name: &str, version: &Version) -> Result<Option<RegistryRelease>> {
@@ -747,31 +727,7 @@ impl Registry for HexRegistry {
         let Some(bytes) = self.get_bytes(url, true, JSON_LIMIT).await? else {
             return Ok(None);
         };
-        let release: ApiReleaseDetail = serde_json::from_slice(&bytes).with_context(|| {
-            Refusal::new(
-                RefusalReason::RegistryReleaseInvalid,
-                "invalid registry release response",
-            )
-        })?;
-        let parsed: Version = release.version.parse().with_context(|| {
-            Refusal::new(
-                RefusalReason::RegistryReleaseInvalid,
-                "registry release has an invalid version",
-            )
-        })?;
-        if &parsed != version {
-            refuse!(
-                RegistryReleaseInvalid,
-                "registry returned release {parsed} while observing {version}"
-            );
-        }
-        let checksum = parse_checksum(&release.checksum)?;
-        Ok(Some(RegistryRelease {
-            version: parsed,
-            has_docs: release.has_docs,
-            retired: release.retirement.is_some(),
-            outer_checksum: Some(checksum),
-        }))
+        parse_release_response(&bytes, version).map(Some)
     }
 
     async fn source_tarball(&self, name: &str, version: &Version) -> Result<Vec<u8>> {
@@ -802,6 +758,64 @@ impl Registry for HexRegistry {
             self.api_endpoint(&["packages", name, "releases", &version.to_string(), "docs"])?;
         self.post_bytes(url, tarball).await
     }
+}
+
+/// The releases that the body of the registry's package response lists.
+///
+/// A body that isn't the package JSON, or that lists an invalid version, is refused with [`RefusalReason::RegistryPackageInvalid`].
+pub fn parse_package_response(body: &[u8]) -> Result<PackageState> {
+    let package: ApiPackage = serde_json::from_slice(body).with_context(|| {
+        Refusal::new(
+            RefusalReason::RegistryPackageInvalid,
+            "invalid registry package response",
+        )
+    })?;
+    let mut releases = Vec::new();
+    for release in package.releases {
+        let version: Version = release.version.parse().with_context(|| {
+            Refusal::new(
+                RefusalReason::RegistryPackageInvalid,
+                format!("registry returned invalid version `{}`", release.version),
+            )
+        })?;
+        releases.push(HexRelease {
+            retired: package.retirements.contains_key(&release.version),
+            version,
+            has_docs: release.has_docs,
+        });
+    }
+    Ok(PackageState { releases })
+}
+
+/// The release of `observed` that the body of the registry's release response describes.
+///
+/// A body that isn't the release JSON, or that names another version or a checksum other than a SHA-256 digest, is refused with [`RefusalReason::RegistryReleaseInvalid`].
+pub fn parse_release_response(body: &[u8], observed: &Version) -> Result<RegistryRelease> {
+    let release: ApiReleaseDetail = serde_json::from_slice(body).with_context(|| {
+        Refusal::new(
+            RefusalReason::RegistryReleaseInvalid,
+            "invalid registry release response",
+        )
+    })?;
+    let parsed: Version = release.version.parse().with_context(|| {
+        Refusal::new(
+            RefusalReason::RegistryReleaseInvalid,
+            "registry release has an invalid version",
+        )
+    })?;
+    if &parsed != observed {
+        refuse!(
+            RegistryReleaseInvalid,
+            "registry returned release {parsed} while observing {observed}"
+        );
+    }
+    let checksum = parse_checksum(&release.checksum)?;
+    Ok(RegistryRelease {
+        version: parsed,
+        has_docs: release.has_docs,
+        retired: release.retirement.is_some(),
+        outer_checksum: Some(checksum),
+    })
 }
 
 fn append_segments(base: &Url, segments: &[&str]) -> Result<Url> {

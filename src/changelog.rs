@@ -103,14 +103,19 @@ impl NoteCategory {
     }
 }
 
-#[derive(Debug, Deserialize)]
+/// One structured note fragment, as its TOML file states it.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct StructuredNote {
-    id: String,
-    category: NoteCategory,
-    text: String,
+pub struct StructuredNote {
+    /// The id, which is also the stem of the file's name.
+    pub id: String,
+    /// The section that the note belongs in.
+    pub category: NoteCategory,
+    /// The single line of the note.
+    pub text: String,
+    /// The pull request that the note describes, when it names one.
     #[serde(default)]
-    pull_request: Option<u64>,
+    pub pull_request: Option<u64>,
 }
 
 impl ReleaseNotesConfig {
@@ -120,9 +125,13 @@ impl ReleaseNotesConfig {
             return Ok(Self::default());
         }
         let source = fs::read_to_string(path)?;
-        Ok(serde_norway::from_str::<ReleaseNotesFile>(&source)
-            .with_context(|| format!("invalid release notes config `{}`", path.display()))?
-            .changelog)
+        Self::parse(&source)
+            .with_context(|| format!("invalid release notes config `{}`", path.display()))
+    }
+
+    /// Read the `changelog` section of the text of a `.github/release.yml` file.
+    pub fn parse(source: &str) -> Result<Self> {
+        Ok(serde_norway::from_str::<ReleaseNotesFile>(source)?.changelog)
     }
 
     /// Apply exclusions and categories to a set of entries.
@@ -231,9 +240,7 @@ pub fn load_structured_notes(
         }
         let source = fs::read_to_string(&path)
             .with_context(|| format!("failed to read structured note `{}`", path.display()))?;
-        let note: StructuredNote = toml_edit::de::from_str(&source)
-            .with_context(|| format!("invalid structured note `{}`", path.display()))?;
-        validate_note(&note, &path)?;
+        let note = parse_structured_note(&path, &source)?;
         if !ids.insert(note.id.clone()) {
             anyhow::bail!("duplicate structured changelog note id `{}`", note.id);
         }
@@ -296,6 +303,16 @@ fn released_note_ids(changelog: Option<&str>) -> BTreeSet<&str> {
         rest = after;
     }
     ids
+}
+
+/// Read the text of the structured note file at `path`, whose name the note's id has to match.
+///
+/// Text that isn't a note's TOML is refused, and a note whose id, text, or pull request breaks its rule is refused with [`crate::failure::RefusalReason::ChangelogNoteInvalid`].
+pub fn parse_structured_note(path: &Path, source: &str) -> Result<StructuredNote> {
+    let note: StructuredNote = toml_edit::de::from_str(source)
+        .with_context(|| format!("invalid structured note `{}`", path.display()))?;
+    validate_note(&note, path)?;
+    Ok(note)
 }
 
 fn validate_note(note: &StructuredNote, path: &Path) -> Result<()> {

@@ -4,6 +4,7 @@
 //! The behavior lives in a file rather than in the environment, because release-glz runs the compiler and each hook with a scrubbed environment.
 
 use std::ffi::OsString;
+use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -182,7 +183,7 @@ pub fn behavior_file(executable: &Path) -> Option<PathBuf> {
 /// When `command` holds a dot, which would end the stem that names the behavior file, or when the fake can't be built or copied, or its behavior can't be written.
 #[must_use]
 pub fn install(directory: &Path, command: &str, behavior: &Behavior) -> PathBuf {
-    place(directory, command, behavior)
+    place(directory, command, behavior, built())
 }
 
 /// Install the fake in `directory` as `gleam`, and return a `PATH` that finds it first.
@@ -192,7 +193,7 @@ pub fn install(directory: &Path, command: &str, behavior: &Behavior) -> PathBuf 
 /// When [`install`] does, or when `directory` can't lead a `PATH`.
 #[must_use]
 pub fn gleam_on_path(directory: &Path, behavior: &Behavior) -> OsString {
-    place(directory, "gleam", behavior);
+    place(directory, "gleam", behavior, built());
     path_searching_first(directory)
 }
 
@@ -200,13 +201,12 @@ pub fn gleam_on_path(directory: &Path, behavior: &Behavior) -> OsString {
     clippy::disallowed_methods,
     reason = "the test support owns the copies it installs and names each path in its failure"
 )]
-fn place(directory: &Path, command: &str, behavior: &Behavior) -> PathBuf {
+fn place(directory: &Path, command: &str, behavior: &Behavior, source: &Path) -> PathBuf {
     if command.contains('.') {
         fail(format_args!(
             "`{command}` holds a dot, so its stem would not name its behavior file"
         ));
     }
-    let source = built();
     let executable = directory.join(format!("{command}{}", std::env::consts::EXE_SUFFIX));
     let behavior_path = behavior_file(&executable)
         .unwrap_or_else(|| fail(format_args!("`{command}` names no file")));
@@ -218,6 +218,12 @@ fn place(directory: &Path, command: &str, behavior: &Behavior) -> PathBuf {
             directory.display()
         ))
     });
+    let lock = build_lock();
+    lock.lock_shared().unwrap_or_else(|error| {
+        fail(format_args!(
+            "the fake's build lock can't be shared: {error}"
+        ))
+    });
     std::fs::copy(source, &executable).unwrap_or_else(|error| {
         fail(format_args!(
             "`{}` can't be copied to `{}`: {error}",
@@ -225,6 +231,7 @@ fn place(directory: &Path, command: &str, behavior: &Behavior) -> PathBuf {
             executable.display()
         ))
     });
+    drop(lock);
     std::fs::write(&behavior_path, behavior).unwrap_or_else(|error| {
         fail(format_args!(
             "`{}` can't be written: {error}",
@@ -251,16 +258,7 @@ fn build() -> PathBuf {
                 "no `CARGO` names the Cargo that builds {BINARY}"
             ))
         });
-    // A path without `..` keeps the deepest build outputs under the 260 characters that the Windows linker opens.
-    let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .nth(2)
-        .unwrap_or_else(|| {
-            fail(format_args!(
-                "{} lies outside `crates/` of a workspace",
-                env!("CARGO_MANIFEST_DIR")
-            ))
-        });
+    let workspace = workspace();
     let mut command = new_command(cargo);
     command
         .current_dir(workspace)
@@ -287,11 +285,19 @@ fn build() -> PathBuf {
             command.env_remove(name);
         }
     }
+    // Cargo replaces the executable on every build, so a copy in another test process waits until the build ends.
+    let lock = build_lock();
+    lock.lock().unwrap_or_else(|error| {
+        fail(format_args!(
+            "the fake's build lock can't be taken: {error}"
+        ))
+    });
     let output = command.output().unwrap_or_else(|error| {
         fail(format_args!(
             "cargo build of {BINARY} didn't start: {error}"
         ))
     });
+    drop(lock);
     if !output.status.success() {
         fail(format_args!(
             "cargo build of {BINARY} failed with {}:\n{}",
@@ -334,6 +340,46 @@ fn announced_executable(messages: &[u8]) -> PathBuf {
         })
 }
 
+/// The workspace root, named without `..`, which keeps the deepest build outputs under the 260 characters that the Windows linker opens.
+fn workspace() -> &'static Path {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .unwrap_or_else(|| {
+            fail(format_args!(
+                "{} lies outside `crates/` of a workspace",
+                env!("CARGO_MANIFEST_DIR")
+            ))
+        })
+}
+
+/// The lock file that each build of the fake holds alone and each copy of it shares, across test processes.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the test support owns the fake's build directory and names the lock file in its failure"
+)]
+fn build_lock() -> File {
+    let directory = target_directory(workspace());
+    std::fs::create_dir_all(&directory).unwrap_or_else(|error| {
+        fail(format_args!(
+            "`{}` can't be created: {error}",
+            directory.display()
+        ))
+    });
+    let path = directory.join("build.lock");
+    OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .unwrap_or_else(|error| {
+            fail(format_args!(
+                "`{}` can't be opened: {error}",
+                path.display()
+            ))
+        })
+}
+
 /// The directory that the fake builds into, beside the targets of the test build.
 fn target_directory(workspace: &Path) -> PathBuf {
     std::env::var_os("CARGO_TARGET_DIR")
@@ -343,8 +389,41 @@ fn target_directory(workspace: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::behavior_file;
+    use super::{Behavior, behavior_file, build, place};
     use std::path::{Path, PathBuf};
+
+    /// Builders and copiers run at once, as separate test processes do, and Cargo replaces the executable on each build.
+    ///
+    /// The scope joins every thread and fails the test when one of them panics.
+    #[test]
+    fn concurrent_builds_and_copies_of_the_fake_never_meet() {
+        let directory = tempfile::tempdir().unwrap();
+        let built = build();
+        std::thread::scope(|scope| {
+            for _ in 0..2 {
+                scope.spawn(|| {
+                    for _ in 0..10 {
+                        assert_eq!(build(), built);
+                    }
+                });
+            }
+            for copier in 0..6 {
+                let tools = directory.path().join(format!("tools-{copier}"));
+                let built = &built;
+                scope.spawn(move || {
+                    for _ in 0..40 {
+                        let executable =
+                            place(&tools, "gleam", &Behavior { rules: Vec::new() }, built);
+                        assert!(
+                            std::fs::metadata(&executable).unwrap().is_file(),
+                            "{}",
+                            executable.display()
+                        );
+                    }
+                });
+            }
+        });
+    }
 
     #[test]
     fn a_copy_with_or_without_the_windows_suffix_reads_the_same_behavior_file() {

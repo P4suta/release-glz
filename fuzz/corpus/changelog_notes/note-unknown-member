@@ -1,0 +1,4 @@
+id = "extra"
+category = "added"
+text = "Add a gadget."
+author = "octocat"

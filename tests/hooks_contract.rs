@@ -557,6 +557,11 @@ async fn hook_output_protocol_is_strict_at_every_field() {
             r#"{"schema":"hook/v1","success":true,"summary":"ok","evidence":{},"unexpected":true}"#,
             "invalid JSON",
         ),
+        (
+            "positional",
+            r#"["hook/v1",true,"ok",{}]"#,
+            "output must be a JSON object",
+        ),
     ];
     let runner = HookRunner::default();
     for (name, output, expected) in cases {
@@ -838,6 +843,12 @@ async fn sidecar_artifact_protocol_rejects_every_unsafe_shape() {
             r#"{"artifacts":[{"name":"evidence.json","media_type":"application/json","content_base64":"e30="},{"name":"evidence.json","media_type":"application/json","content_base64":"e30="}]}"#,
             RefusalReason::SidecarArtifactsInvalid,
             "duplicate artifact",
+        ),
+        (
+            "positional",
+            r#"{"artifacts":[["evidence.json","application/json","e30=",true]]}"#,
+            RefusalReason::SidecarArtifactsInvalid,
+            "artifact must be a JSON object",
         ),
     ];
     let runner = HookRunner::default();

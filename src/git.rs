@@ -357,8 +357,11 @@ where
     Ok(String::from_utf8(output.stdout)?)
 }
 
-/// Read the commits that [`COMMIT_LOG_FORMAT`] printed, one newline-terminated record each.
-fn parse_commit_log(raw: &str) -> Result<Vec<Commit>> {
+/// Read the commits that `git log` printed in the format of [`GitRepo::commits_since`], one newline-terminated record each.
+///
+/// A record holds the commit ID, the author name, the author email, the subject, and the body, each followed by NUL.
+/// A record whose first field isn't a commit ID, or that lacks a field, is refused.
+pub fn parse_commit_log(raw: &str) -> Result<Vec<Commit>> {
     let mut fields = raw.split('\0');
     let mut commits = Vec::new();
     while let Some(sha) = fields.next() {

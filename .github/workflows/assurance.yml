@@ -246,7 +246,7 @@ jobs:
   fuzz:
     name: Bounded parser fuzz smoke
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:
@@ -273,3 +273,17 @@ jobs:
         run: cargo fuzz run identifiers -- -runs=10000 -seed=1 -timeout=10 -rss_limit_mb=2048
       - name: Fuzz prerelease reading and precedence against semver
         run: cargo fuzz run prerelease -- -runs=10000 -seed=1 -timeout=10 -rss_limit_mb=2048
+      - name: Fuzz registry and GitHub API response readers
+        run: cargo fuzz run api_responses -- -runs=10000 -seed=1 -timeout=10 -rss_limit_mb=2048
+      - name: Fuzz sealed Candidate manifest reader
+        run: cargo fuzz run candidate -- -runs=10000 -seed=1 -timeout=10 -rss_limit_mb=2048
+      - name: Fuzz structured changelog note and release notes configuration readers
+        run: cargo fuzz run changelog_notes -- -runs=10000 -seed=1 -timeout=10 -rss_limit_mb=2048
+      - name: Fuzz git log record reader
+        run: cargo fuzz run git_log -- -runs=10000 -seed=1 -timeout=10 -rss_limit_mb=2048
+      - name: Fuzz plan handoff reader
+        run: cargo fuzz run handoff -- -runs=10000 -seed=1 -timeout=10 -rss_limit_mb=2048
+      - name: Fuzz hook output and sidecar artifact readers
+        run: cargo fuzz run hook_output -- -runs=10000 -seed=1 -timeout=10 -rss_limit_mb=2048
+      - name: Fuzz OIDC discovery, key set, and token readers
+        run: cargo fuzz run oidc -- -runs=10000 -seed=1 -timeout=10 -rss_limit_mb=2048

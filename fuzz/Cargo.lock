@@ -1062,10 +1062,13 @@ name = "release-glz-fuzz"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "base64 0.23.1",
  "libfuzzer-sys",
  "release-glz",
  "release-glz-core",
+ "ring",
  "semver",
+ "serde",
  "serde_json",
  "sha2",
  "toml_edit",

@@ -124,7 +124,7 @@ pub struct SidecarRun {
 struct ExecutedHook {
     success: bool,
     output_sha256: Sha256Digest,
-    evidence: serde_json::Value,
+    evidence: serde_json::Map<String, serde_json::Value>,
 }
 
 impl ExecutedHook {
@@ -219,7 +219,6 @@ impl HookRunner {
     ) -> Result<SidecarRun> {
         let mut evidence = Vec::new();
         let mut artifacts = Vec::new();
-        let mut names = std::collections::BTreeSet::new();
         let mut total_size = 0_u64;
         // The digest after one hook is the digest before the next, for the same reason as in `run_verify`.
         let mut unchanged = None;
@@ -240,43 +239,14 @@ impl HookRunner {
             unchanged = Some(after);
             match result {
                 Ok(item) if item.success => {
-                    let output: SidecarOutput = serde_json::from_value(item.evidence.clone())
-                        .with_context(|| {
-                            Refusal::new(
-                                RefusalReason::SidecarArtifactsInvalid,
-                                format!("sidecar hook `{}` returned invalid artifacts", hook.id),
-                            )
-                        })?;
-                    for artifact in output.artifacts {
+                    for artifact in parse_sidecar_artifacts(&hook.id, item.evidence.clone())? {
                         if artifacts.len() >= SIDECAR_COUNT_LIMIT {
                             refuse!(
                                 SidecarArtifactsLimitExceeded,
                                 "sidecar hooks exceeded the artifact count limit"
                             );
                         }
-                        validate_name(&artifact.name)?;
-                        validate_media_type(&artifact.media_type)?;
-                        let key = format!("{}/{}", hook.id, artifact.name);
-                        if !names.insert(key) {
-                            refuse!(
-                                SidecarArtifactsInvalid,
-                                "sidecar hook `{}` returned duplicate artifact `{}`",
-                                hook.id,
-                                artifact.name
-                            );
-                        }
-                        let bytes = base64::engine::general_purpose::STANDARD
-                            .decode(&artifact.content_base64)
-                            .with_context(|| {
-                                Refusal::new(
-                                    RefusalReason::SidecarArtifactsInvalid,
-                                    format!(
-                                        "sidecar hook `{}` artifact `{}` is not valid base64",
-                                        hook.id, artifact.name
-                                    ),
-                                )
-                            })?;
-                        let size = bytes.len() as u64;
+                        let size = artifact.bytes.len() as u64;
                         if size > SIDECAR_ARTIFACT_LIMIT
                             || total_size.saturating_add(size) > SIDECAR_TOTAL_LIMIT
                         {
@@ -286,13 +256,7 @@ impl HookRunner {
                             );
                         }
                         total_size += size;
-                        artifacts.push(SidecarArtifact {
-                            hook_id: hook.id.clone(),
-                            name: artifact.name,
-                            media_type: artifact.media_type,
-                            bytes,
-                            public: artifact.public,
-                        });
+                        artifacts.push(artifact);
                     }
                     evidence.push(item.as_evidence(hook, HookKind::Sidecar));
                 }
@@ -456,43 +420,128 @@ impl HookRunner {
             return Ok(ExecutedHook {
                 success: false,
                 output_sha256,
-                evidence: serde_json::json!({}),
+                evidence: serde_json::Map::new(),
             });
         }
-        let output: HookOutput = serde_json::from_slice(&stdout).with_context(|| {
-            Refusal::new(
-                RefusalReason::HookOutputInvalid,
-                format!("hook `{}` returned invalid JSON", hook.id),
-            )
-        })?;
-        if output.schema != "hook/v1" {
-            refuse!(
-                HookOutputInvalid,
-                "hook `{}` returned unsupported schema `{}`",
-                hook.id,
-                output.schema
-            );
-        }
-        if output.summary.trim().is_empty() {
-            refuse!(
-                HookOutputInvalid,
-                "hook `{}` returned an empty summary",
-                hook.id
-            );
-        }
-        if !output.evidence.is_object() {
-            refuse!(
-                HookOutputInvalid,
-                "hook `{}` evidence must be a JSON object",
-                hook.id
-            );
-        }
+        let report = parse_hook_output(&hook.id, &stdout)?;
         Ok(ExecutedHook {
-            success: output.success,
+            success: report.success,
             output_sha256,
-            evidence: output.evidence,
+            evidence: report.evidence,
         })
     }
+}
+
+/// What a hook reported on stdout, once its `hook/v1` envelope was checked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HookReport {
+    /// Whether the hook reported success.
+    pub success: bool,
+    /// The summary, which isn't blank.
+    pub summary: String,
+    /// The evidence object.
+    pub evidence: serde_json::Map<String, serde_json::Value>,
+}
+
+/// Read the `hook/v1` report that the hook `hook_id` wrote to stdout.
+///
+/// Output that isn't strict `hook/v1` JSON with a non-blank summary and object evidence is refused with [`RefusalReason::HookOutputInvalid`].
+pub fn parse_hook_output(hook_id: &str, stdout: &[u8]) -> Result<HookReport> {
+    let output: HookOutput = serde_json::from_slice(stdout).with_context(|| {
+        Refusal::new(
+            RefusalReason::HookOutputInvalid,
+            format!("hook `{hook_id}` returned invalid JSON"),
+        )
+    })?;
+    // Serde also reads a struct from a list of its members by position, which `hook/v1` never writes.
+    if stdout.iter().find(|byte| !byte.is_ascii_whitespace()) != Some(&b'{') {
+        refuse!(
+            HookOutputInvalid,
+            "hook `{hook_id}` output must be a JSON object"
+        );
+    }
+    if output.schema != "hook/v1" {
+        refuse!(
+            HookOutputInvalid,
+            "hook `{hook_id}` returned unsupported schema `{}`",
+            output.schema
+        );
+    }
+    if output.summary.trim().is_empty() {
+        refuse!(
+            HookOutputInvalid,
+            "hook `{hook_id}` returned an empty summary"
+        );
+    }
+    let serde_json::Value::Object(evidence) = output.evidence else {
+        refuse!(
+            HookOutputInvalid,
+            "hook `{hook_id}` evidence must be a JSON object"
+        );
+    };
+    Ok(HookReport {
+        success: output.success,
+        summary: output.summary,
+        evidence,
+    })
+}
+
+/// The artifacts that the evidence of the sidecar hook `hook_id` lists.
+///
+/// Evidence that isn't a list of artifact objects with only known fields and base64 content, or that names one artifact twice, is refused with [`RefusalReason::SidecarArtifactsInvalid`].
+/// An artifact name that GitHub would change, or an invalid media type, is refused with its own reason.
+pub fn parse_sidecar_artifacts(
+    hook_id: &str,
+    evidence: serde_json::Map<String, serde_json::Value>,
+) -> Result<Vec<SidecarArtifact>> {
+    // Serde also reads a struct from a list of its members by position, which `hook/v1` never writes.
+    if let Some(serde_json::Value::Array(listed)) = evidence.get("artifacts")
+        && !listed.iter().all(serde_json::Value::is_object)
+    {
+        refuse!(
+            SidecarArtifactsInvalid,
+            "sidecar hook `{hook_id}` artifact must be a JSON object"
+        );
+    }
+    let output: SidecarOutput = serde_json::from_value(serde_json::Value::Object(evidence))
+        .with_context(|| {
+            Refusal::new(
+                RefusalReason::SidecarArtifactsInvalid,
+                format!("sidecar hook `{hook_id}` returned invalid artifacts"),
+            )
+        })?;
+    let mut names = std::collections::BTreeSet::new();
+    let mut artifacts = Vec::new();
+    for artifact in output.artifacts {
+        validate_name(&artifact.name)?;
+        validate_media_type(&artifact.media_type)?;
+        if !names.insert(artifact.name.clone()) {
+            refuse!(
+                SidecarArtifactsInvalid,
+                "sidecar hook `{hook_id}` returned duplicate artifact `{}`",
+                artifact.name
+            );
+        }
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(&artifact.content_base64)
+            .with_context(|| {
+                Refusal::new(
+                    RefusalReason::SidecarArtifactsInvalid,
+                    format!(
+                        "sidecar hook `{hook_id}` artifact `{}` is not valid base64",
+                        artifact.name
+                    ),
+                )
+            })?;
+        artifacts.push(SidecarArtifact {
+            hook_id: hook_id.to_owned(),
+            name: artifact.name,
+            media_type: artifact.media_type,
+            bytes,
+            public: artifact.public,
+        });
+    }
+    Ok(artifacts)
 }
 
 async fn spawn_hook(command: tokio::process::Command, hook_id: &str) -> Result<HookProcess> {

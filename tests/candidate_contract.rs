@@ -1674,6 +1674,25 @@ fn candidate_sidecars_require_safe_identity_declared_producer_and_signature_poli
     }
 }
 
+/// Sidecar sizes whose sum passes the largest number also exceed the size limit, so their refusal names that limit.
+#[test]
+fn sidecar_sizes_whose_sum_overflows_are_refused_as_too_large() {
+    let temp = tempfile::tempdir().unwrap();
+    let directory = temp.path().join("candidate");
+    let mut input = fresh_candidate_input();
+    add_public_sidecar(&mut input, "first", "first.json");
+    add_public_sidecar(&mut input, "second", "second.json");
+    Candidate::seal(&directory, input).unwrap();
+    mutate_candidate_json(&directory, |manifest| {
+        manifest["sidecars"][0]["size"] = 1.into();
+        manifest["sidecars"][1]["size"] = u64::MAX.into();
+    });
+    assert_eq!(
+        verify_refusal(&directory),
+        Some(RefusalReason::CandidateSidecarsTooLarge)
+    );
+}
+
 /// GitHub renames an asset whose name it doesn't keep, so sealing and verifying refuse such a name before anything publishes.
 #[test]
 fn sealing_and_verifying_refuse_an_asset_name_that_github_would_rename() {
