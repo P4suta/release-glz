@@ -1,9 +1,11 @@
 use std::path::PathBuf;
 
 use release_glz::config::{
-    ApprovalMode, AuthKind, HookConfig, Manifest, RegistryProvider, SeparationMode, valid_env_name,
-    validate_git_ref, validate_hook_config, validate_package_name, validate_relative_path,
+    ApprovalMode, AuthKind, HookConfig, Manifest, MissingReleaseConfig, RegistryProvider,
+    SeparationMode, valid_env_name, validate_git_ref, validate_hook_config, validate_package_name,
+    validate_relative_path,
 };
+use release_glz::failure::{FailureClass, classify};
 
 fn complete_config(extra: &str) -> String {
     format!(
@@ -64,8 +66,7 @@ env = ["CI"]
 #[test]
 fn schema_two_is_fully_typed() {
     let manifest = Manifest::parse(PathBuf::from("gleam.toml"), complete_config("")).unwrap();
-    let release = &manifest.release;
-    assert_eq!(release.schema, 2);
+    let release = manifest.release().unwrap();
     assert_eq!(release.compiler.to_string(), "1.12.3");
     assert_eq!(release.registry.provider, RegistryProvider::HexPm);
     assert_eq!(release.registry.repository.as_deref(), Some("acme"));
@@ -83,7 +84,25 @@ fn schema_two_is_fully_typed() {
         release.changelog.notes_dir,
         PathBuf::from(".release-glz/notes")
     );
-    assert!(release.compatibility_warnings.is_empty());
+}
+
+#[test]
+fn a_manifest_without_a_release_table_names_init_and_is_a_usage_failure() {
+    let manifest = Manifest::parse(
+        PathBuf::from("gleam.toml"),
+        "name = \"widget\"\nversion = \"1.0.0\"\n\n[tools.other]\nenabled = true\n".into(),
+    )
+    .unwrap();
+    let refusal = manifest.release().unwrap_err();
+    assert_eq!(refusal, MissingReleaseConfig);
+    assert_eq!(
+        refusal.to_string(),
+        "the manifest has no `[tools.release-glz]` configuration; run `release-glz init` to write it"
+    );
+    assert_eq!(
+        classify(&anyhow::Error::new(refusal)),
+        FailureClass::UsageOrConfig
+    );
 }
 
 #[test]
@@ -118,44 +137,102 @@ fn schema_two_rejects_unknown_keys_and_wrong_types() {
 }
 
 #[test]
-fn an_explicit_schema_is_never_silently_reinterpreted_as_legacy() {
-    for schema in ["3", "0", "\"2\"", "true"] {
-        let source = complete_config("").replace("schema = 2", &format!("schema = {schema}"));
+fn release_configuration_refuses_every_schema_but_two() {
+    for (schema, found) in [
+        ("schema = 1\n", "`schema = 1`"),
+        ("schema = 0\n", "`schema = 0`"),
+        ("schema = 3\n", "`schema = 3`"),
+        ("schema = \"2\"\n", "`schema = \"2\"`"),
+        ("schema = true\n", "`schema = true`"),
+        ("", "no `schema`"),
+    ] {
+        let source = complete_config("").replace("schema = 2\n", schema);
         let error = Manifest::parse(PathBuf::from("gleam.toml"), source)
             .unwrap_err()
             .to_string();
-        assert!(
-            error.contains("schema"),
-            "schema {schema} was not rejected explicitly: {error}"
+        assert_eq!(
+            error,
+            format!("`[tools.release-glz]` requires `schema = 2`, but it sets {found}")
         );
     }
 }
 
 #[test]
-fn structured_configuration_requires_an_explicit_schema_two_marker() {
-    for key in [
-        "registry",
-        "approval",
-        "outputs",
-        "hooks",
-        "changelog",
-        "api_exceptions",
+fn a_release_table_with_only_top_level_keys_still_needs_schema_two() {
+    for (table, found) in [
+        ("changelog_path = \"NEWS.md\"\nschema = 1\n", "`schema = 1`"),
+        ("prerelease = \"beta\"\n", "no `schema`"),
+        (
+            "[tools.release-glz.baseline_refs]\n\"1.0.0\" = \"refs/tags/v1.0.0\"\n",
+            "no `schema`",
+        ),
     ] {
-        let mut source = complete_config("").replace("schema = 2\n", "");
-        if !source.contains(&format!("tools.release-glz.{key}")) {
-            source.push_str(&format!("\n[tools.release-glz.{key}]\n"));
-        }
+        let source = if table.starts_with('[') {
+            format!("name = \"widget\"\nversion = \"1.0.0\"\n\n{table}")
+        } else {
+            format!("name = \"widget\"\nversion = \"1.0.0\"\n\n[tools.release-glz]\n{table}")
+        };
         let error = Manifest::parse(PathBuf::from("gleam.toml"), source)
             .unwrap_err()
             .to_string();
-        assert!(error.contains("schema = 2"), "{key}: {error}");
+        assert_eq!(
+            error,
+            format!("`[tools.release-glz]` requires `schema = 2`, but it sets {found}")
+        );
+    }
+    let inline = "name = \"widget\"\nversion = \"1.0.0\"\ntools = { release-glz = { prerelease = \"rc\" } }\n";
+    let error = Manifest::parse(PathBuf::from("gleam.toml"), inline.into())
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("requires `schema = 2`"), "{error}");
+}
+
+#[test]
+fn schema_two_refuses_the_keys_that_its_tables_replace() {
+    for (key, value) in [
+        ("changelog_path", "\"NEWS.md\""),
+        ("allow_unknown_api_for", "[\"1.0.0\"]"),
+    ] {
+        let source = complete_config("").replace(
+            "release_branch_prefix = \"release-glz/\"",
+            &format!("release_branch_prefix = \"release-glz/\"\n{key} = {value}"),
+        );
+        let error = Manifest::parse(PathBuf::from("gleam.toml"), source)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(&format!("unknown field `{key}`")), "{error}");
+    }
+}
+
+#[test]
+fn schema_two_refuses_malformed_channels_and_baseline_refs() {
+    let valid =
+        complete_config("[tools.release-glz.baseline_refs]\n\"1.0.0\" = \"refs/tags/v1.0.0\"")
+            .replace(
+                "release_branch_prefix = \"release-glz/\"",
+                "release_branch_prefix = \"releases/\"\nprerelease = \"beta\"",
+            );
+    Manifest::parse(PathBuf::from("gleam.toml"), valid.clone()).unwrap();
+    for invalid in [
+        valid.replace(
+            "\"1.0.0\" = \"refs/tags/v1.0.0\"",
+            "\"bad\" = \"refs/tags/v1\"",
+        ),
+        valid.replace("\"refs/tags/v1.0.0\"", "1"),
+        valid.replace("\"refs/tags/v1.0.0\"", "\"refs/tags/../bad\""),
+        valid.replace("prerelease = \"beta\"", "prerelease = \"preview\""),
+    ] {
+        assert!(
+            Manifest::parse(PathBuf::from("gleam.toml"), invalid.clone()).is_err(),
+            "{invalid}"
+        );
     }
 }
 
 #[test]
 fn schema_two_does_not_silently_enable_zero_major_versions() {
     let omitted = Manifest::parse(PathBuf::from("gleam.toml"), complete_config("")).unwrap();
-    assert!(!omitted.release.allow_version_zero);
+    assert!(!omitted.release().unwrap().allow_version_zero);
     let explicit = complete_config("").replace(
         "release_branch_prefix = \"release-glz/\"",
         "release_branch_prefix = \"release-glz/\"\nallow_version_zero = true",
@@ -163,7 +240,8 @@ fn schema_two_does_not_silently_enable_zero_major_versions() {
     assert!(
         Manifest::parse(PathBuf::from("gleam.toml"), explicit)
             .unwrap()
-            .release
+            .release()
+            .unwrap()
             .allow_version_zero
     );
 }
@@ -474,10 +552,10 @@ fn approval_and_registry_variants_are_strict_but_cover_supported_forms() {
         .replace("auth = \"hex-token\"", "auth = \"bearer\"");
     let parsed = Manifest::parse(PathBuf::from("gleam.toml"), custom).unwrap();
     assert_eq!(
-        parsed.release.registry.provider,
+        parsed.release().unwrap().registry.provider,
         RegistryProvider::HexCompatible
     );
-    assert_eq!(parsed.release.registry.auth, AuthKind::Bearer);
+    assert_eq!(parsed.release().unwrap().registry.auth, AuthKind::Bearer);
 
     let custom_with_repository =
         complete_config("").replace("provider = \"hexpm\"", "provider = \"hex-compatible\"");
@@ -485,7 +563,8 @@ fn approval_and_registry_variants_are_strict_but_cover_supported_forms() {
         Manifest::parse(PathBuf::from("gleam.toml"), custom_with_repository).unwrap();
     assert_eq!(
         custom_with_repository
-            .release
+            .release()
+            .unwrap()
             .registry
             .repository
             .as_deref(),
@@ -520,44 +599,6 @@ fn approval_and_registry_variants_are_strict_but_cover_supported_forms() {
     assert!(Manifest::parse(PathBuf::from("gleam.toml"), external_http).is_err());
     let non_hierarchical = complete_config("").replace("https://hex.pm/api", "file:///api");
     assert!(Manifest::parse(PathBuf::from("gleam.toml"), non_hierarchical).is_err());
-}
-
-#[test]
-fn legacy_options_reject_malformed_overrides_and_accept_complete_compatible_values() {
-    let valid = r#"name = "widget"
-version = "0.9.0"
-
-[tools.release-glz]
-schema = 1
-changelog_path = "NEWS.md"
-release_branch_prefix = "releases/"
-allow_version_zero = true
-prerelease = "beta"
-allow_unknown_api_for = ["1.0.0"]
-
-[tools.release-glz.baseline_refs]
-"1.0.0" = "refs/tags/v1.0.0"
-"#;
-    let parsed = Manifest::parse(PathBuf::from("gleam.toml"), valid.into()).unwrap();
-    assert_eq!(parsed.release.changelog_path, PathBuf::from("NEWS.md"));
-    assert_eq!(parsed.release.release_branch_prefix, "releases/");
-    assert!(parsed.release.allow_version_zero);
-    assert_eq!(parsed.release.prerelease.unwrap().as_str(), "beta");
-    assert_eq!(parsed.release.baseline_refs.len(), 1);
-
-    for invalid in [
-        valid.replace("[\"1.0.0\"]", "[1]"),
-        valid.replace("[\"1.0.0\"]", "[\"not-semver\"]"),
-        valid.replace(
-            "\"1.0.0\" = \"refs/tags/v1.0.0\"",
-            "\"bad\" = \"refs/tags/v1\"",
-        ),
-        valid.replace("\"refs/tags/v1.0.0\"", "1"),
-        valid.replace("\"refs/tags/v1.0.0\"", "\"refs/tags/../bad\""),
-        valid.replace("prerelease = \"beta\"", "prerelease = \"preview\""),
-    ] {
-        assert!(Manifest::parse(PathBuf::from("gleam.toml"), invalid).is_err());
-    }
 }
 
 #[test]
@@ -604,13 +645,9 @@ reason = "The historical compiler is unavailable"
 expires = "2999-12-31"
 "#;
     let parsed = Manifest::parse(PathBuf::from("gleam.toml"), complete_config(exception)).unwrap();
-    assert_eq!(parsed.release.api_exceptions.len(), 1);
-    assert!(
-        parsed
-            .release
-            .allow_unknown_api_for
-            .contains(&"1.2.3".parse().unwrap())
-    );
+    let exceptions = &parsed.release().unwrap().api_exceptions;
+    assert_eq!(exceptions.len(), 1);
+    assert_eq!(exceptions[0].version, "1.2.3".parse().unwrap());
 
     for (name, expected, invalid) in [
         (
@@ -645,24 +682,4 @@ expires = "2999-12-31"
             .to_string();
         assert!(error.contains(expected), "{name}: {error}");
     }
-}
-
-#[test]
-fn legacy_flat_configuration_remains_readable_with_a_migration_warning() {
-    let source = r#"name = "widget"
-version = "1.0.0"
-
-[tools.release-glz]
-changelog_path = "CHANGELOG.md"
-allow_version_zero = false
-"#;
-    let manifest = Manifest::parse(PathBuf::from("gleam.toml"), source.into()).unwrap();
-    assert_eq!(manifest.release.schema, 1);
-    assert!(
-        manifest
-            .release
-            .compatibility_warnings
-            .iter()
-            .any(|warning| warning.contains("migrate"))
-    );
 }

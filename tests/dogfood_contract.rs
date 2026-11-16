@@ -20,20 +20,26 @@ fn version(value: &str) -> Version {
 fn dogfood_manifests_cover_public_initial_and_private_prerelease_paths() {
     let kangaroo = Manifest::load(Path::new(KANGAROO).join("gleam.toml")).unwrap();
     assert_eq!(kangaroo.package, "kangaroo");
-    assert_eq!(kangaroo.release.schema, 2);
-    assert_eq!(kangaroo.release.registry.provider, RegistryProvider::HexPm);
+    assert!(kangaroo.original_source().contains("\nschema = 2\n"));
+    assert_eq!(
+        kangaroo.release().unwrap().registry.provider,
+        RegistryProvider::HexPm
+    );
     assert_eq!(kangaroo.version, version("1.0.0"));
 
     let mutants = Manifest::load(Path::new(GLEAM_MUTANTS).join("gleam.toml")).unwrap();
     assert_eq!(mutants.package, "gleam_mutants");
-    assert_eq!(mutants.release.schema, 2);
+    assert!(mutants.original_source().contains("\nschema = 2\n"));
     assert_eq!(mutants.version, version("0.1.0"));
-    assert!(mutants.release.allow_version_zero);
+    assert!(mutants.release().unwrap().allow_version_zero);
     assert_eq!(
-        mutants.release.registry.provider,
+        mutants.release().unwrap().registry.provider,
         RegistryProvider::HexCompatible
     );
-    assert_eq!(mutants.release.prerelease, Some(PrereleaseChannel::Alpha));
+    assert_eq!(
+        mutants.release().unwrap().prerelease,
+        Some(PrereleaseChannel::Alpha)
+    );
 }
 
 #[test]

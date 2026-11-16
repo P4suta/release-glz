@@ -52,20 +52,18 @@ impl Rehearsal {
             .gleam
             .snapshot_from_git(&repo, &resolved, package_relative)?;
         let manifest = Manifest::load(snapshot.package_dir().join("gleam.toml"))?;
-        if manifest.release.schema != 2 {
-            bail!("rehearse requires `[tools.release-glz] schema = 2`; run migrate first");
-        }
+        let release = manifest.release()?;
         let compiler = self.gleam.ensure_supported()?;
-        if compiler != manifest.release.compiler {
+        if compiler != release.compiler {
             bail!(
                 "configured Gleam compiler {} is required; found {compiler}",
-                manifest.release.compiler
+                release.compiler
             );
         }
         let hook_runner = HookRunner::default();
         let hook_evidence = hook_runner
             .run_verify(
-                &manifest.release.hooks.verify,
+                &release.hooks.verify,
                 snapshot.package_dir(),
                 &HookContext {
                     package: manifest.package.clone(),
@@ -85,8 +83,7 @@ impl Rehearsal {
         let package_interface = self
             .gleam
             .export_package_interface(snapshot.package_dir())?;
-        let docs_tarball = manifest
-            .release
+        let docs_tarball = release
             .outputs
             .docs
             .then(|| self.gleam.export_docs_tarball(snapshot.package_dir()))

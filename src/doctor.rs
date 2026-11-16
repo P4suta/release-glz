@@ -3,16 +3,14 @@
 use semver::Version;
 use serde::Serialize;
 
-use crate::config::{ApprovalConfig, SeparationMode};
+use crate::config::{ApprovalConfig, MissingReleaseConfig, SeparationMode};
 use crate::forge::GitHubEnvironmentAudit;
 use crate::model::{Diagnostic, DiagnosticLevel, NextAction, ReleaseState};
 use crate::registry::RegistryCredentialAudit;
 
-/// Everything the checks are decided from.
+/// Everything the checks of a configured package are decided from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DoctorInput {
-    /// Configuration schema found in the manifest.
-    pub config_schema: u32,
     /// Version currently declared by the package.
     pub package_version: Version,
     /// Compiler the manifest requires.
@@ -36,10 +34,8 @@ pub struct DoctorReport {
     pub schema: String,
     /// State the package is in, as far as the checks can tell.
     pub state: ReleaseState,
-    /// Configuration schema that was found.
-    pub config_schema: u32,
-    /// Compiler the manifest requires.
-    pub required_compiler: Version,
+    /// Compiler the manifest requires, which only a configured manifest names.
+    pub required_compiler: Option<Version>,
     /// Compiler that is installed.
     pub installed_compiler: Option<Version>,
     /// Everything the checks concluded.
@@ -58,29 +54,48 @@ pub fn assess_local(input: &DoctorInput) -> DoctorReport {
     assess_mode(input, false)
 }
 
-fn assess_mode(input: &DoctorInput, online: bool) -> DoctorReport {
+/// Assess a package whose manifest has no `[tools.release-glz]` table.
+///
+/// Every other check reads that table, so the report names its absence and the command that writes it.
+pub fn assess_unconfigured(
+    package_version: &Version,
+    installed_compiler: Option<Version>,
+) -> DoctorReport {
     let mut diagnostics = Vec::new();
-    let mut next_actions = Vec::new();
-
-    if input.config_schema != 2 {
-        error(
-            &mut diagnostics,
-            "config_schema_legacy",
-            "release requires `[tools.release-glz] schema = 2`",
-        );
-        action(
-            &mut next_actions,
-            "release-glz migrate --update",
-            "Migrate the manifest to schema 2 without discarding legacy settings.",
-        );
+    error(
+        &mut diagnostics,
+        "config_missing",
+        MissingReleaseConfig.to_string(),
+    );
+    warn_about_version_zero(&mut diagnostics, package_version);
+    DoctorReport {
+        schema: "doctor/v1".into(),
+        state: ReleaseState::Blocked,
+        required_compiler: None,
+        installed_compiler,
+        diagnostics,
+        next_actions: vec![NextAction::guidance(
+            "configure release-glz",
+            "Run `release-glz init --update` with `--profile public`, `organization`, or `private` to write `[tools.release-glz]` and the managed release workflow.",
+        )],
     }
-    if input.package_version.major == 0 {
+}
+
+fn warn_about_version_zero(diagnostics: &mut Vec<Diagnostic>, package_version: &Version) {
+    if package_version.major == 0 {
         warning(
-            &mut diagnostics,
+            diagnostics,
             "version_zero",
             "Gleam recommends starting published packages at version 1.0.0; 0.x remains supported",
         );
     }
+}
+
+fn assess_mode(input: &DoctorInput, online: bool) -> DoctorReport {
+    let mut diagnostics = Vec::new();
+    let mut next_actions = Vec::new();
+
+    warn_about_version_zero(&mut diagnostics, &input.package_version);
     match &input.installed_compiler {
         Some(actual) if actual == &input.required_compiler => {}
         Some(actual) => {
@@ -238,8 +253,7 @@ fn assess_mode(input: &DoctorInput, online: bool) -> DoctorReport {
     DoctorReport {
         schema: "doctor/v1".into(),
         state,
-        config_schema: input.config_schema,
-        required_compiler: input.required_compiler.clone(),
+        required_compiler: Some(input.required_compiler.clone()),
         installed_compiler: input.installed_compiler.clone(),
         diagnostics,
         next_actions,

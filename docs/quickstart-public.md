@@ -28,7 +28,7 @@ auth = "hex-token"
 
 ```
 
-Packages already on schema 2 omit `--profile` when refreshing the workflow.
+A package that is already configured omits `--profile` when refreshing the workflow.
 For a deliberate 0.x package add `--allow-version-zero` to both init commands.
 Commit the manifest and generated workflow.
 

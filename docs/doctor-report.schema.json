@@ -5,14 +5,12 @@
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "schema", "state", "config_schema", "required_compiler", "installed_compiler",
-    "diagnostics", "next_actions"
+    "schema", "state", "required_compiler", "installed_compiler", "diagnostics", "next_actions"
   ],
   "properties": {
     "schema": { "const": "doctor/v1" },
     "state": { "enum": ["up_to_date", "blocked"] },
-    "config_schema": { "enum": [1, 2] },
-    "required_compiler": { "$ref": "#/$defs/version" },
+    "required_compiler": { "anyOf": [{ "$ref": "#/$defs/version" }, { "type": "null" }] },
     "installed_compiler": { "anyOf": [{ "$ref": "#/$defs/version" }, { "type": "null" }] },
     "diagnostics": {
       "type": "array",

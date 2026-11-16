@@ -15,7 +15,7 @@ fn project_guide_documents_the_v1_candidate_first_contract() {
         "release --candidate",
         "status",
         "doctor",
-        "migrate --update",
+        "config_missing",
         "command/v2",
         "candidate_digest",
         "intent_digest",
@@ -94,35 +94,17 @@ fn registry_guides_and_release_checklist_preserve_the_v1_operational_boundary() 
 }
 
 #[test]
-fn operations_and_migration_guides_cover_every_supported_registry_path() {
+fn operations_guides_cover_every_supported_registry_path() {
     for path in [
         "docs/quickstart-public.md",
         "docs/quickstart-organization.md",
         "docs/quickstart-private.md",
-        "docs/migration-v1.md",
         "docs/recovery.md",
         "docs/threat-model.md",
     ] {
         let source = fs::read_to_string(path)
             .unwrap_or_else(|error| panic!("missing required guide {path}: {error}"));
         assert!(source.starts_with('#'), "{path} has no title");
-    }
-
-    let migration = fs::read_to_string("docs/migration-v1.md").unwrap();
-    for required in [
-        "schema 1",
-        "schema 2",
-        "migrate --check",
-        "migrate --diff",
-        "migrate --update",
-        "legacy-gleam.toml",
-        "legacy-unreleased",
-        "JSON schema v1",
-    ] {
-        assert!(
-            migration.contains(required),
-            "migration guide misses {required}"
-        );
     }
 
     let recovery = fs::read_to_string("docs/recovery.md").unwrap();

@@ -10,6 +10,7 @@ use release_glz::candidate::{
 use release_glz::config::{
     ApprovalConfig, ApprovalMode, AuthKind, HookConfig, Manifest, OutputConfig, RegistryProvider,
 };
+use release_glz::failure::{FailureClass, classify};
 use release_glz::hooks::SidecarArtifact;
 use release_glz::release::{LiveReleaseTarget, SourceBoundCandidate};
 use release_glz_test_support::schema::assert_published_envelope;
@@ -684,6 +685,67 @@ fn publication_reads_the_source_policy_from_the_commit_instead_of_the_working_tr
         .unwrap_err()
         .to_string();
     assert!(error.contains("registry"), "{error}");
+}
+
+#[test]
+fn publication_refuses_a_source_commit_without_release_configuration() {
+    let temp = tempfile::tempdir().unwrap();
+    let (repository, sha) =
+        policy_repository_from(temp.path(), "name = \"widget\"\nversion = \"1.2.3\"\n");
+    fs::write(repository.join("gleam.toml"), POLICY_SOURCE).unwrap();
+    let sealed = Candidate::seal(
+        &temp.path().join("candidate"),
+        honest_policy_input(&repository, &sha),
+    )
+    .unwrap();
+    let error = SourceBoundCandidate::bind(sealed, &repository.join("gleam.toml")).unwrap_err();
+    assert_eq!(classify(&error), FailureClass::UsageOrConfig);
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("[tools.release-glz]") && message.contains("release-glz init"),
+        "{message}"
+    );
+
+    let unconfigured = Manifest::parse(
+        repository.join("gleam.toml"),
+        "name = \"widget\"\nversion = \"1.2.3\"\n".into(),
+    )
+    .unwrap();
+    let error = SealedPolicy::from_source(&unconfigured, &repository, "gleam.toml").unwrap_err();
+    assert_eq!(classify(&error), FailureClass::UsageOrConfig);
+}
+
+#[test]
+fn candidate_commands_refuse_a_checkout_without_release_configuration() {
+    let temp = tempfile::tempdir().unwrap();
+    let unconfigured = "name = \"widget\"\nversion = \"1.2.3\"\n";
+    let (repository, sha) = policy_repository_from(temp.path(), unconfigured);
+    fs::write(repository.join("gleam.toml"), POLICY_SOURCE).unwrap();
+    let candidate = temp.path().join("candidate");
+    Candidate::seal(&candidate, honest_policy_input(&repository, &sha)).unwrap();
+    fs::write(repository.join("gleam.toml"), unconfigured).unwrap();
+    for arguments in [
+        vec!["release-pr", "--dry-run", "--candidate"],
+        vec!["release", "--dry-run", "--candidate"],
+        vec!["verify", "--online", "--candidate"],
+    ] {
+        let output = isolated_command(env!("CARGO_BIN_EXE_release-glz"))
+            .current_dir(&repository)
+            .args(["--output", "json"])
+            .args(&arguments)
+            .arg(&candidate)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2), "{arguments:?}");
+        let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_published_envelope(&envelope);
+        assert_eq!(envelope["diagnostics"][0]["code"], "usage_or_config");
+        let message = envelope["diagnostics"][0]["message"].as_str().unwrap();
+        assert!(
+            message.contains("[tools.release-glz]") && message.contains("release-glz init"),
+            "{arguments:?}: {message}"
+        );
+    }
 }
 
 #[test]

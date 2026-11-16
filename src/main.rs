@@ -15,12 +15,13 @@ use release_glz::approval::{ApprovalRequest, verify_approval};
 use release_glz::authorization::GithubOidcVerifier;
 use release_glz::candidate::Candidate;
 use release_glz::config::{
-    AuthKind, InitializationSettings, Manifest, RegistryConfig, RegistryProvider,
+    AuthKind, InitializationSettings, Manifest, RegistryConfig, RegistryProvider, ReleaseConfig,
     validate_registry_repository,
 };
 use release_glz::diff::unified_diff;
 use release_glz::doctor::{
     DoctorInput, DoctorReport, assess as assess_doctor, assess_local as assess_doctor_local,
+    assess_unconfigured as assess_doctor_unconfigured,
 };
 use release_glz::failure::{FailureClass, classified};
 use release_glz::forge::{GitHubClient, GitHubRepository, IntentBinding, MAX_ATTRIBUTED_COMMITS};
@@ -138,15 +139,6 @@ enum Command {
         #[command(flatten)]
         mode: ModeArgs,
     },
-    /// Losslessly migrate legacy configuration to schema 2.
-    Migrate {
-        #[arg(long)]
-        check: bool,
-        #[arg(long)]
-        diff: bool,
-        #[arg(long, alias = "write")]
-        update: bool,
-    },
     /// Raise the automatically selected version.
     SetVersion {
         version: Version,
@@ -183,7 +175,6 @@ impl Command {
             Self::Status { .. } => "status",
             Self::Doctor { .. } => "doctor",
             Self::Init { .. } => "init",
-            Self::Migrate { .. } => "migrate",
             Self::SetVersion { .. } => "set-version",
             Self::Prerelease { .. } => "prerelease",
             Self::Completion { .. } => "completion",
@@ -335,7 +326,10 @@ async fn main() {
     let command = cli.command.name();
     let configured_credential = Manifest::load(&cli.manifest_path)
         .ok()
-        .and_then(|manifest| std::env::var(manifest.release.registry.credential_env).ok());
+        .and_then(|manifest| {
+            let release = manifest.configured_release()?;
+            std::env::var(&release.registry.credential_env).ok()
+        });
     match run(cli).await {
         Ok(code) if code != 0 => std::process::exit(code),
         Ok(_) => {}
@@ -445,14 +439,6 @@ async fn run(cli: Cli) -> Result<i32> {
         )
         .await;
     }
-    if let Command::Migrate {
-        check,
-        diff,
-        update,
-    } = &cli.command
-    {
-        return run_migrate(&cli.manifest_path, cli.output, *check, *diff, *update);
-    }
     if let Command::Doctor {
         online,
         candidate_build,
@@ -524,6 +510,7 @@ async fn run(cli: Cli) -> Result<i32> {
                 let sealed = verified_candidate(&candidate_directory)?;
                 let checkout_manifest = Manifest::load(&cli.manifest_path)
                     .map_err(|error| default_failure_class(error, FailureClass::UsageOrConfig))?;
+                checkout_manifest.release()?;
                 if checkout_manifest.package != sealed.package
                     || checkout_manifest.version != sealed.version
                 {
@@ -674,7 +661,7 @@ async fn run(cli: Cli) -> Result<i32> {
                 .await
                 .map_err(|error| default_failure_class(error, FailureClass::UsageOrConfig))?
         }
-        Command::Doctor { .. } | Command::Init { .. } | Command::Migrate { .. } => {
+        Command::Doctor { .. } | Command::Init { .. } => {
             unreachable!("handled before planning")
         }
         Command::SetVersion { version, dry_run } => {
@@ -725,7 +712,7 @@ async fn run(cli: Cli) -> Result<i32> {
             if !dry_run {
                 let mut manifest = Manifest::load(&cli.manifest_path)
                     .map_err(|error| default_failure_class(error, FailureClass::UsageOrConfig))?;
-                manifest.set_prerelease(selected_channel);
+                manifest.set_prerelease(selected_channel)?;
                 if plan.release_required {
                     manifest.set_version(plan.version.clone());
                 }
@@ -778,17 +765,11 @@ async fn run_init(
         .default_branch()
         .map_err(|error| classified(FailureClass::UsageOrConfig, error))?;
 
-    let initialized_source = if manifest.has_release_config() {
-        if manifest.release.schema != 2 {
-            return Err(classified(
-                FailureClass::UsageOrConfig,
-                "legacy release-glz configuration must use migrate before init",
-            ));
-        }
+    let initialized_source = if manifest.configured_release().is_some() {
         if profile_args.profile.is_some() || profile_args.configures_fields() {
             return Err(classified(
                 FailureClass::UsageOrConfig,
-                "--profile and profile configuration are forbidden for an existing schema 2 package",
+                "--profile and profile configuration are forbidden for a configured package",
             ));
         }
         None
@@ -825,15 +806,12 @@ async fn run_init(
         .context("manifest is outside the git repository")?
         .to_path_buf();
     let public_manifest_path = relative_manifest.to_string_lossy().replace('\\', "/");
-    let workflow_settings = release_glz::workflow::WorkflowSettings {
+    let workflow_settings = workflow_settings(
+        configured.release()?,
         default_branch,
-        manifest_path: relative_manifest,
-        compiler: configured.release.compiler.to_string(),
-        environment: configured.release.approval.environment.clone(),
-        registry_credential_env: configured.release.registry.credential_env.clone(),
-        release_branch_prefix: configured.release.release_branch_prefix.clone(),
-        action_sha: action_sha.clone(),
-    };
+        relative_manifest,
+        action_sha.clone(),
+    );
     let workflow_mode = if check {
         release_glz::workflow::WorkflowMode::Check
     } else if diff {
@@ -1121,60 +1099,6 @@ fn append_profile_argv(argv: &mut Vec<String>, profile_args: &ProfileArgs) {
     }
 }
 
-fn run_migrate(
-    manifest_path: &Path,
-    output: Output,
-    check: bool,
-    diff: bool,
-    update: bool,
-) -> Result<i32> {
-    require_one_mode(check, diff, update)?;
-    let migration = release_glz::migrate::Migration::prepare(manifest_path)
-        .map_err(|error| classified(FailureClass::UsageOrConfig, error))?;
-    if diff && matches!(output, Output::Human) {
-        if let Some(diff) = migration.diff() {
-            print!("{diff}");
-        }
-        return Ok(0);
-    }
-    let outcome = if update {
-        migration
-            .apply()
-            .map_err(|error| classified(FailureClass::ImmutableStateConflict, error))?
-    } else {
-        let mut outcome = migration.outcome(false);
-        if diff {
-            outcome.diff = migration.diff();
-        }
-        outcome
-    };
-    let stale = check && outcome.changed;
-    print_checked_result(
-        "migrate",
-        &outcome,
-        !stale,
-        stale.then(|| Diagnostic {
-            code: "migration_required".into(),
-            level: DiagnosticLevel::Error,
-            message: "legacy configuration must be migrated to schema 2".into(),
-            detail: None,
-        }),
-        stale.then(|| {
-            manifest_executable_action(
-                manifest_path,
-                ["migrate", "--update"],
-                "Review and apply the lossless schema 2 migration.",
-            )
-        }),
-        output,
-    )?;
-    Ok(if stale {
-        FailureClass::PolicyOrApproval.exit_code()
-    } else {
-        0
-    })
-}
-
 async fn run_doctor(
     manifest_path: &Path,
     output: Output,
@@ -1184,17 +1108,25 @@ async fn run_doctor(
     let manifest = Manifest::load(manifest_path)
         .map_err(|error| classified(FailureClass::UsageOrConfig, error))?;
     let installed_compiler = Gleam::default().installed_version().ok();
+    let Some(release) = manifest.configured_release() else {
+        // Every other check reads the configuration, and a Candidate build refuses without it.
+        print_doctor(
+            &assess_doctor_unconfigured(&manifest.version, installed_compiler),
+            output,
+        )?;
+        return Ok(FailureClass::PolicyOrApproval.exit_code());
+    };
     let action_sha = GitRepo::discover(manifest.package_dir())
         .ok()
         .and_then(|repo| release_glz::workflow::action_sha_from_workflow(repo.root()).ok());
     let workflow_current = action_sha
         .as_deref()
-        .is_some_and(|sha| managed_workflow_is_current(&manifest, sha).unwrap_or(false));
+        .is_some_and(|sha| managed_workflow_is_current(&manifest, release, sha).unwrap_or(false));
     let (registry_credential, github_environment) = if online {
-        let registry = if std::env::var_os(&manifest.release.registry.credential_env).is_none() {
+        let registry = if std::env::var_os(&release.registry.credential_env).is_none() {
             RegistryCredentialAudit::Missing
         } else {
-            match HexRegistry::from_environment(&manifest.release.registry) {
+            match HexRegistry::from_environment(&release.registry) {
                 Ok(registry) => registry
                     .audit_credential()
                     .await
@@ -1204,7 +1136,7 @@ async fn run_doctor(
         };
         let github = match github_client(&manifest) {
             Ok(client) => client
-                .environment_audit(&manifest.release.approval.environment)
+                .environment_audit(&release.approval.environment)
                 .await
                 .ok(),
             Err(_) => None,
@@ -1214,13 +1146,12 @@ async fn run_doctor(
         (RegistryCredentialAudit::Missing, None)
     };
     let input = DoctorInput {
-        config_schema: manifest.release.schema,
         package_version: manifest.version.clone(),
-        required_compiler: manifest.release.compiler.clone(),
+        required_compiler: release.compiler.clone(),
         installed_compiler,
         registry_credential,
         workflow_current,
-        approval: manifest.release.approval.clone(),
+        approval: release.approval.clone(),
         github_environment,
     };
     let mut report = if online {
@@ -1357,6 +1288,7 @@ async fn write_rolling_release_pr(
 ) -> Result<ReleasePlan> {
     let manifest = Manifest::load(manifest_path)
         .map_err(|error| default_failure_class(error, FailureClass::UsageOrConfig))?;
+    let release_branch_prefix = &manifest.release()?.release_branch_prefix;
     let repo = GitRepo::discover(manifest.package_dir())
         .map_err(|error| default_failure_class(error, FailureClass::UsageOrConfig))?;
     let github = github_client(&manifest)
@@ -1390,7 +1322,7 @@ async fn write_rolling_release_pr(
                 &base.tip,
                 &plan.package,
                 &plan.version.to_string(),
-                &manifest.release.release_branch_prefix,
+                release_branch_prefix,
             )
             .await
             .map_err(|error| default_failure_class(error, FailureClass::TemporaryExternal))?
@@ -1438,7 +1370,7 @@ async fn write_rolling_release_pr(
             });
         } else if let Some(base) = &base {
             let update = github
-                .upsert_release_pr(&plan, base, &manifest.release.release_branch_prefix, &files)
+                .upsert_release_pr(&plan, base, release_branch_prefix, &files)
                 .await
                 .map_err(|error| default_failure_class(error, FailureClass::TemporaryExternal))?;
             plan.pr_url = Some(update.url);
@@ -1446,11 +1378,7 @@ async fn write_rolling_release_pr(
         }
     } else if let Some(base) = &base {
         github
-            .close_managed_release_pr(
-                &manifest.package,
-                &manifest.release.release_branch_prefix,
-                base,
-            )
+            .close_managed_release_pr(&manifest.package, release_branch_prefix, base)
             .await
             .map_err(|error| default_failure_class(error, FailureClass::TemporaryExternal))?;
     }
@@ -1463,7 +1391,7 @@ async fn write_rolling_release_pr(
 fn manifest_planner(manifest_path: &Path) -> Result<Planner<HexRegistry>> {
     let manifest = Manifest::load(manifest_path)
         .map_err(|error| classified(FailureClass::UsageOrConfig, error))?;
-    let registry = HexRegistry::from_environment(&manifest.release.registry)
+    let registry = HexRegistry::from_environment(&manifest.release()?.registry)
         .map_err(|error| default_failure_class(error, FailureClass::UsageOrConfig))?;
     Ok(Planner::new(registry, Gleam::default()))
 }
@@ -1690,21 +1618,40 @@ fn render_human_result(
     }
 }
 
-fn managed_workflow_is_current(manifest: &Manifest, action_sha: &str) -> Result<bool> {
+/// The workflow that `init` generates for a configuration and the repository it lives in.
+fn workflow_settings(
+    release: &ReleaseConfig,
+    default_branch: String,
+    manifest_path: PathBuf,
+    action_sha: String,
+) -> release_glz::workflow::WorkflowSettings {
+    release_glz::workflow::WorkflowSettings {
+        default_branch,
+        manifest_path,
+        compiler: release.compiler.to_string(),
+        environment: release.approval.environment.clone(),
+        registry_credential_env: release.registry.credential_env.clone(),
+        release_branch_prefix: release.release_branch_prefix.clone(),
+        action_sha,
+    }
+}
+
+fn managed_workflow_is_current(
+    manifest: &Manifest,
+    release: &ReleaseConfig,
+    action_sha: &str,
+) -> Result<bool> {
     let repo = GitRepo::discover(manifest.package_dir())?;
     let relative_manifest = absolute_or_join(manifest.path())?
         .strip_prefix(repo.root().canonicalize()?)
         .context("manifest is outside the git repository")?
         .to_path_buf();
-    let settings = release_glz::workflow::WorkflowSettings {
-        default_branch: repo.default_branch()?,
-        manifest_path: relative_manifest,
-        compiler: manifest.release.compiler.to_string(),
-        environment: manifest.release.approval.environment.clone(),
-        registry_credential_env: manifest.release.registry.credential_env.clone(),
-        release_branch_prefix: manifest.release.release_branch_prefix.clone(),
-        action_sha: action_sha.to_owned(),
-    };
+    let settings = workflow_settings(
+        release,
+        repo.default_branch()?,
+        relative_manifest,
+        action_sha.to_owned(),
+    );
     let outcome = release_glz::workflow::sync(
         repo.root(),
         &settings,
@@ -1936,14 +1883,6 @@ mod tests {
                 "init",
             ),
             (
-                Command::Migrate {
-                    check: true,
-                    diff: false,
-                    update: false,
-                },
-                "migrate",
-            ),
-            (
                 Command::SetVersion {
                     version: Version::new(2, 0, 0),
                     dry_run: false,
@@ -2005,7 +1944,7 @@ mod tests {
     fn manifest_scoping_preserves_non_shell_path_arguments() {
         let path = Path::new("package with space\nand newline/gleam.toml");
         let mut actions = vec![
-            NextAction::executable(["release-glz", "migrate", "--update"], "Migrate."),
+            NextAction::executable(["release-glz", "init", "--update"], "Update."),
             NextAction::guidance("install Gleam", "Install it."),
         ];
         scope_manifest_actions(&mut actions, path);
@@ -2015,7 +1954,7 @@ mod tests {
                 "release-glz",
                 "--manifest-path",
                 "package with space\nand newline/gleam.toml",
-                "migrate",
+                "init",
                 "--update",
             ]
         );
@@ -2051,24 +1990,24 @@ mod tests {
         )
         .unwrap();
         print_checked_result(
-            "migrate",
+            "init",
             &serde_json::json!({"changed": true}),
             false,
             Some(Diagnostic {
-                code: "migration_required".into(),
+                code: "managed_file_outdated".into(),
                 level: DiagnosticLevel::Error,
-                message: "migration required".into(),
+                message: "outdated".into(),
                 detail: None,
             }),
             Some(NextAction::executable(
-                ["release-glz", "migrate", "--update"],
-                "migrate",
+                ["release-glz", "init", "--update"],
+                "update",
             )),
             Output::Json,
         )
         .unwrap();
         print_checked_result(
-            "migrate",
+            "init",
             &serde_json::json!({"changed": false}),
             true,
             None,
@@ -2080,8 +2019,7 @@ mod tests {
         let doctor = DoctorReport {
             schema: "doctor/v1".into(),
             state: ReleaseState::Blocked,
-            config_schema: 1,
-            required_compiler: Version::new(1, 18, 1),
+            required_compiler: Some(Version::new(1, 18, 1)),
             installed_compiler: None,
             diagnostics: vec![],
             next_actions: vec![],

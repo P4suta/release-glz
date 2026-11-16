@@ -1,13 +1,14 @@
 //! Properties of the `gleam.toml` parser and of the edits release-glz makes to a manifest.
 //!
+//! A manifest is configured exactly when it holds a `[tools.release-glz]` table, and that table sets `schema = 2`.
 //! An edit must change only the value it names, and initialization must only append configuration.
 //! Rendering may regroup interleaved dotted keys, respace their key segments, and end an unterminated final line, as `toml_edit` does.
 //! It never adds or drops a line or changes a line beyond its whitespace.
-//! Clearing a channel may drop a release table that it leaves empty, but it never creates release configuration.
+//! Only a configured manifest takes a channel, and an unconfigured one keeps its bytes.
 
 use std::path::PathBuf;
 
-use release_glz::config::{InitializationSettings, Manifest, RegistryConfig};
+use release_glz::config::{InitializationSettings, Manifest, MissingReleaseConfig, RegistryConfig};
 use release_glz::model::PrereleaseChannel;
 use semver::Version;
 use serde_json::Value;
@@ -19,6 +20,8 @@ const INITIALIZED_COMPILER: Version = Version::new(1, 19, 2);
 const REPLACEMENT_VERSION: &str = "2.0.0-rc.1+build.7";
 const TOOLS: &str = "tools";
 const RELEASE_TABLE: &str = "release-glz";
+const SCHEMA: &str = "schema";
+const RELEASE_CONFIG_SCHEMA: i64 = 2;
 const PRERELEASE: &str = "prerelease";
 const CHANNELS: [Option<PrereleaseChannel>; 4] = [
     None,
@@ -31,6 +34,7 @@ const CHANNELS: [Option<PrereleaseChannel>; 4] = [
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Reached {
     Parsed,
+    Configured,
     Initialized,
 }
 
@@ -42,6 +46,21 @@ pub fn check(data: &[u8]) -> Vec<Reached> {
         return Vec::new();
     };
     let original = toml_data(source);
+    let release_table = original
+        .get(TOOLS)
+        .and_then(|tools| tools.get(RELEASE_TABLE));
+    assert_eq!(
+        manifest.release().is_ok(),
+        release_table.is_some(),
+        "configuration presence differs from the release table\n{source}"
+    );
+    if let Some(table) = release_table {
+        assert_eq!(
+            table.get(SCHEMA).and_then(Value::as_i64),
+            Some(RELEASE_CONFIG_SCHEMA),
+            "a release table without `schema = 2` was accepted\n{source}"
+        );
+    }
     let rendered = manifest.render();
     assert_eq!(toml_data(&rendered), original);
     assert_same_lines(source, &rendered);
@@ -52,34 +71,45 @@ pub fn check(data: &[u8]) -> Vec<Reached> {
         assert_eq!(toml_data(&rendered), expected, "{rendered}");
         let reparsed = reparse(&rendered);
         assert_eq!(reparsed.version, version);
-        assert_eq!(reparsed.release, manifest.release);
+        assert_eq!(reparsed.release(), manifest.release());
     }
-    for channel in CHANNELS {
-        let mut edited = manifest.clone();
-        edited.set_prerelease(channel);
-        assert_eq!(edited.release.prerelease, channel);
-        let rendered = edited.render();
-        let reparsed = reparse(&rendered);
-        assert_eq!(reparsed.release, edited.release);
-        let expected = with_prerelease(original.clone(), channel);
-        if channel.is_some() {
-            assert_eq!(toml_data(&rendered), expected, "{rendered}");
-        } else {
-            assert_eq!(
-                without_empty_release_table(toml_data(&rendered)),
-                without_empty_release_table(expected),
-                "{rendered}"
-            );
-            assert!(
-                manifest.has_release_config() || !reparsed.has_release_config(),
-                "clearing a channel created release configuration\n{rendered}"
-            );
+    let mut reached = vec![Reached::Parsed];
+    if manifest.release().is_ok() {
+        edit_channels(&manifest, &original);
+        reached.push(Reached::Configured);
+    } else {
+        refuse_channels(&manifest, source);
+        if initialized(&manifest, source, &original) {
+            reached.push(Reached::Initialized);
         }
     }
-    if initialized(&manifest, source, &original) {
-        vec![Reached::Parsed, Reached::Initialized]
-    } else {
-        vec![Reached::Parsed]
+    reached
+}
+
+/// Selecting or clearing a channel changes only the `prerelease` key of the release table.
+fn edit_channels(manifest: &Manifest, original: &Value) {
+    for channel in CHANNELS {
+        let mut edited = manifest.clone();
+        edited
+            .set_prerelease(channel)
+            .expect("a configured manifest takes a channel");
+        assert_eq!(edited.release().unwrap().prerelease, channel);
+        let rendered = edited.render();
+        assert_eq!(
+            toml_data(&rendered),
+            with_prerelease(original.clone(), channel),
+            "{rendered}"
+        );
+        assert_eq!(reparse(&rendered).release(), edited.release());
+    }
+}
+
+/// An unconfigured manifest refuses every channel and keeps its bytes.
+fn refuse_channels(manifest: &Manifest, source: &str) {
+    for channel in CHANNELS {
+        let mut edited = manifest.clone();
+        assert_eq!(edited.set_prerelease(channel), Err(MissingReleaseConfig));
+        assert_eq!(edited.render(), manifest.render(), "{source}");
     }
 }
 
@@ -107,43 +137,21 @@ fn assert_same_lines(source: &str, rendered: &str) {
     );
 }
 
-/// The data after selecting a channel, which creates the release table only for a channel.
+/// The data of a configured manifest after selecting or clearing a channel.
 fn with_prerelease(mut data: Value, channel: Option<PrereleaseChannel>) -> Value {
+    let release = data[TOOLS][RELEASE_TABLE]
+        .as_object_mut()
+        .expect("a configured manifest has a release table");
     match channel {
         Some(channel) => {
-            data[TOOLS][RELEASE_TABLE][PRERELEASE] = Value::String(channel.as_str().to_owned());
+            release.insert(
+                PRERELEASE.to_owned(),
+                Value::String(channel.as_str().to_owned()),
+            );
         }
         None => {
-            if let Some(release) = data
-                .get_mut(TOOLS)
-                .and_then(|tools| tools.get_mut(RELEASE_TABLE))
-                .and_then(Value::as_object_mut)
-            {
-                release.remove(PRERELEASE);
-            }
+            release.remove(PRERELEASE);
         }
-    }
-    data
-}
-
-/// The data without an empty release table, which configures nothing.
-///
-/// `toml_edit` drops a dotted table whose last key is removed, while a table with a header stays.
-fn without_empty_release_table(mut data: Value) -> Value {
-    let Some(tools) = data.get_mut(TOOLS).and_then(Value::as_object_mut) else {
-        return data;
-    };
-    if tools
-        .get(RELEASE_TABLE)
-        .and_then(Value::as_object)
-        .is_some_and(serde_json::Map::is_empty)
-    {
-        tools.remove(RELEASE_TABLE);
-    }
-    if tools.is_empty() {
-        data.as_object_mut()
-            .expect("a manifest is a table")
-            .remove(TOOLS);
     }
     data
 }
@@ -176,9 +184,6 @@ fn tools_accept_a_new_table(source: &str) -> bool {
 }
 
 fn initialized(manifest: &Manifest, source: &str, original: &Value) -> bool {
-    if manifest.has_release_config() {
-        return false;
-    }
     let settings = InitializationSettings {
         compiler: INITIALIZED_COMPILER,
         default_branch: DEFAULT_BRANCH.to_owned(),
@@ -200,7 +205,10 @@ fn initialized(manifest: &Manifest, source: &str, original: &Value) -> bool {
     let tools = appended[TOOLS]
         .as_object_mut()
         .expect("initialization writes a tools table");
-    assert!(tools.remove(RELEASE_TABLE).is_some());
+    let release_table = tools
+        .remove(RELEASE_TABLE)
+        .expect("initialization writes a release table");
+    assert_eq!(release_table[SCHEMA], Value::from(RELEASE_CONFIG_SCHEMA));
     if tools.is_empty() && original.get(TOOLS).is_none() {
         appended
             .as_object_mut()
@@ -209,11 +217,12 @@ fn initialized(manifest: &Manifest, source: &str, original: &Value) -> bool {
     }
     assert_eq!(&appended, original);
     let reparsed = reparse(&rendered);
-    assert!(reparsed.has_release_config());
-    assert_eq!(reparsed.release.schema, 2);
-    assert_eq!(reparsed.release.compiler, INITIALIZED_COMPILER);
+    let release = reparsed
+        .release()
+        .expect("an initialized manifest is configured");
+    assert_eq!(release.compiler, INITIALIZED_COMPILER);
     assert_eq!(
-        reparsed.release.approval.manual_refs,
+        release.approval.manual_refs,
         [format!("refs/heads/{DEFAULT_BRANCH}")]
     );
     true

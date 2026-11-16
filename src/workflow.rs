@@ -941,7 +941,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_init_is_non_destructive_in_dry_write_and_existing_modes() {
+    fn one_step_init_is_non_destructive_in_dry_write_and_existing_modes() {
         let temp = tempfile::tempdir().unwrap();
         let path = init(temp.path(), Path::new("gleam.toml"), "main", true).unwrap();
         assert_eq!(path, temp.path().join(WORKFLOW_PATH));

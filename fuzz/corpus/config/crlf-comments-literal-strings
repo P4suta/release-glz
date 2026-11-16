@@ -3,4 +3,20 @@ name = 'crlf'
 version = '1.2.3' # pinned by hand
 
 [tools.release-glz]
+schema = 2 # the only schema
+compiler = '1.18.1'
 prerelease = 'beta'
+
+[tools.release-glz.registry]
+provider = 'hexpm'
+api_url = 'https://hex.pm/api'
+repository_url = 'https://repo.hex.pm'
+docs_url = 'https://repo.hex.pm/docs'
+credential_env = 'HEXPM_API_KEY'
+auth = 'hex-token'
+
+[tools.release-glz.approval]
+normal = 'release-pr-and-environment'
+manual = 'environment'
+environment = 'release'
+manual_refs = ['refs/heads/main']

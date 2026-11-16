@@ -1,5 +1,23 @@
 name = "implicit"
 version = "1.0.0"
 
+[tools]
+release-glz.schema = 2
+release-glz.compiler = "1.18.1"
+
+[tools.release-glz.registry]
+provider = "hexpm"
+api_url = "https://hex.pm/api"
+repository_url = "https://repo.hex.pm"
+docs_url = "https://repo.hex.pm/docs"
+credential_env = "HEXPM_API_KEY"
+auth = "hex-token"
+
+[tools.release-glz.approval]
+normal = "release-pr-and-environment"
+manual = "environment"
+environment = "release"
+manual_refs = ["refs/heads/main"]
+
 [tools.release-glz.baseline_refs]
 "0.9.0" = "refs/tags/v0.9.0"

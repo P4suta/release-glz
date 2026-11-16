@@ -84,10 +84,11 @@ fn public_profile_check_then_update_generates_complete_schema_two_configuration(
         String::from_utf8_lossy(&update.stderr)
     );
     let manifest = Manifest::load(temp.path().join("gleam.toml")).unwrap();
-    assert_eq!(manifest.release.schema, 2);
-    assert_eq!(manifest.release.compiler.to_string(), "1.18.1");
-    assert_eq!(manifest.release.registry, Default::default());
-    assert_eq!(manifest.release.approval.manual_refs, ["refs/heads/trunk"]);
+    assert!(manifest.original_source().contains("\nschema = 2\n"));
+    let release = manifest.release().unwrap();
+    assert_eq!(release.compiler.to_string(), "1.18.1");
+    assert_eq!(release.registry, Default::default());
+    assert_eq!(release.approval.manual_refs, ["refs/heads/trunk"]);
     assert_eq!(
         std::fs::metadata(&manifest_path)
             .unwrap()
@@ -162,16 +163,19 @@ fn organization_and_private_profiles_require_exact_non_secret_inputs() {
     assert!(update.status.success());
     let configured = Manifest::load(organization.path().join("gleam.toml")).unwrap();
     assert_eq!(
-        configured.release.registry.repository.as_deref(),
+        configured.release().unwrap().registry.repository.as_deref(),
         Some("acme_team")
     );
-    assert_eq!(configured.release.registry.api_url, "https://hex.pm/api");
     assert_eq!(
-        configured.release.registry.repository_url,
+        configured.release().unwrap().registry.api_url,
+        "https://hex.pm/api"
+    );
+    assert_eq!(
+        configured.release().unwrap().registry.repository_url,
         "https://repo.hex.pm/repos/acme_team"
     );
     assert_eq!(
-        configured.release.registry.docs_url,
+        configured.release().unwrap().registry.docs_url,
         "https://repo.hex.pm/repos/acme_team/docs"
     );
 
@@ -237,12 +241,15 @@ fn organization_and_private_profiles_require_exact_non_secret_inputs() {
     );
     let configured = Manifest::load(private.path().join("gleam.toml")).unwrap();
     assert_eq!(
-        configured.release.registry.provider,
+        configured.release().unwrap().registry.provider,
         RegistryProvider::HexCompatible
     );
-    assert_eq!(configured.release.registry.auth, AuthKind::Bearer);
     assert_eq!(
-        configured.release.registry.credential_env,
+        configured.release().unwrap().registry.auth,
+        AuthKind::Bearer
+    );
+    assert_eq!(
+        configured.release().unwrap().registry.credential_env,
         "PRIVATE_HEX_TOKEN"
     );
 }
@@ -361,7 +368,8 @@ fn zero_version_existing_configuration_and_missing_mode_fail_closed() {
     assert!(
         Manifest::load(zero.path().join("gleam.toml"))
             .unwrap()
-            .release
+            .release()
+            .unwrap()
             .allow_version_zero
     );
 

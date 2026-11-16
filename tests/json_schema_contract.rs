@@ -208,11 +208,18 @@ fn every_result_schema_refuses_what_its_command_never_prints() {
     let doctor = json!({
         "schema": "doctor/v1",
         "state": "blocked",
-        "config_schema": 2,
         "required_compiler": "1.18.1",
         "installed_compiler": null,
         "diagnostics": [{"code": "compiler_missing", "level": "error", "message": "missing", "detail": null}],
         "next_actions": [{"argv": [], "command": "install Gleam 1.18.1", "description": "Install it."}],
+    });
+    let unconfigured = json!({
+        "schema": "doctor/v1",
+        "state": "blocked",
+        "required_compiler": null,
+        "installed_compiler": "1.18.1",
+        "diagnostics": [{"code": "config_missing", "level": "error", "message": "missing", "detail": null}],
+        "next_actions": [{"argv": [], "command": "configure release-glz", "description": "Run init."}],
     });
     let init = json!({
         "schema": "init/v1",
@@ -225,14 +232,6 @@ fn every_result_schema_refuses_what_its_command_never_prints() {
         "written": false,
         "manifest_diff": null,
         "workflow_diff": "@@ -0,0 +1 @@\n+name: release-glz\n",
-    });
-    let migration = json!({
-        "schema": "migration/v1",
-        "changed": true,
-        "written": true,
-        "manifest_path": "gleam.toml",
-        "legacy_backup_path": ".release-glz/legacy-gleam.toml",
-        "diff": null,
     });
     let verification = json!({
         "schema": "verify/v1",
@@ -251,8 +250,8 @@ fn every_result_schema_refuses_what_its_command_never_prints() {
         ("release-report.schema.json", &release),
         ("release-pr-intent.schema.json", &intent),
         ("doctor-report.schema.json", &doctor),
+        ("doctor-report.schema.json", &unconfigured),
         ("init-outcome.schema.json", &init),
-        ("migration-outcome.schema.json", &migration),
         ("candidate-verification.schema.json", &verification),
         ("command-envelope.schema.json", &envelope),
     ] {
@@ -314,9 +313,9 @@ fn every_result_schema_refuses_what_its_command_never_prints() {
             with(&init, "/manifest_diff", json!("@@")),
         ),
         (
-            "a migration that wrote an unchanged manifest",
-            "migration-outcome.schema.json",
-            with(&migration, "/changed", json!(false)),
+            "an unconfigured report that claims to be clean",
+            "doctor-report.schema.json",
+            with(&unconfigured, "/state", json!("up_to_date")),
         ),
         (
             "an init manifest path outside the repository",
@@ -324,36 +323,33 @@ fn every_result_schema_refuses_what_its_command_never_prints() {
             with(&init, "/manifest_path", json!("../gleam.toml")),
         ),
         (
-            "an absolute migration path",
-            "migration-outcome.schema.json",
-            with(
-                &migration,
-                "/manifest_path",
-                json!("/repository/gleam.toml"),
-            ),
+            "an absolute init manifest path",
+            "init-outcome.schema.json",
+            with(&init, "/manifest_path", json!("/repository/gleam.toml")),
         ),
         (
-            "a migration path on a Windows drive",
-            "migration-outcome.schema.json",
-            with(
-                &migration,
-                "/manifest_path",
-                json!("C:/repository/gleam.toml"),
-            ),
+            "an init manifest path on a Windows drive",
+            "init-outcome.schema.json",
+            with(&init, "/manifest_path", json!("C:/repository/gleam.toml")),
         ),
         (
-            "a migration path with a Windows separator",
-            "migration-outcome.schema.json",
-            with(&migration, "/manifest_path", json!("packages\\gleam.toml")),
+            "an init manifest path with a Windows separator",
+            "init-outcome.schema.json",
+            with(&init, "/manifest_path", json!("packages\\gleam.toml")),
         ),
         (
-            "a backup path through the current directory",
-            "migration-outcome.schema.json",
-            with(
-                &migration,
-                "/legacy_backup_path",
-                json!("./.release-glz/legacy-gleam.toml"),
-            ),
+            "an init manifest path through the current directory",
+            "init-outcome.schema.json",
+            with(&init, "/manifest_path", json!("./gleam.toml")),
+        ),
+        (
+            "a report that names a configuration schema",
+            "doctor-report.schema.json",
+            {
+                let mut report = doctor.clone();
+                report["config_schema"] = json!(2);
+                report
+            },
         ),
         (
             "a verified Candidate missing its digest",

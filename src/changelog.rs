@@ -756,9 +756,9 @@ mod tests {
         let empty = render_section("2.0.1", &[]);
         assert!(empty.contains("Release prepared by release-glz"));
 
-        let without_unreleased = render(Some("# Old\n\nlegacy\n"), "2.0.0", &entries);
+        let without_unreleased = render(Some("# Old\n\nearlier notes\n"), "2.0.0", &entries);
         assert!(without_unreleased.contains("## [Unreleased]"));
-        assert!(without_unreleased.contains("legacy"));
+        assert!(without_unreleased.contains("earlier notes"));
         assert!(release_section(&without_unreleased, "missing").is_none());
         assert_eq!(
             without_release_section(&without_unreleased, "missing"),

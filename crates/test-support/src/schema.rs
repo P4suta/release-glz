@@ -13,7 +13,7 @@ use crate::fail;
 pub const ENVELOPE_SCHEMA: &str = "command-envelope.schema.json";
 
 /// The `schema` identifier of each command result, and the published schema that describes it.
-pub const RESULT_SCHEMAS: [(&str, &str); 10] = [
+pub const RESULT_SCHEMAS: [(&str, &str); 9] = [
     ("plan/v3", "release-plan.schema.json"),
     ("candidate/v1", "candidate.schema.json"),
     ("verify/v1", "candidate-verification.schema.json"),
@@ -22,7 +22,6 @@ pub const RESULT_SCHEMAS: [(&str, &str); 10] = [
     ("release-pr-intent/v1", "release-pr-intent.schema.json"),
     ("doctor/v1", "doctor-report.schema.json"),
     ("init/v1", "init-outcome.schema.json"),
-    ("migration/v1", "migration-outcome.schema.json"),
     ("completion/v1", "completion.schema.json"),
 ];
 

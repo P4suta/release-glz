@@ -110,6 +110,12 @@ pub fn classify(error: &Error) -> FailureClass {
     if let Some(release) = error.downcast_ref::<crate::release::ReleaseRunError>() {
         return release.failure_class();
     }
+    if error
+        .downcast_ref::<crate::config::MissingReleaseConfig>()
+        .is_some()
+    {
+        return FailureClass::UsageOrConfig;
+    }
     if let Some(error) = error.downcast_ref::<reqwest::Error>()
         && (error.is_timeout() || error.is_connect())
     {
@@ -165,5 +171,15 @@ mod tests {
             FailureClass::TemporaryExternal,
         );
         assert_eq!(classify(&defaulted), FailureClass::TemporaryExternal);
+    }
+
+    #[test]
+    fn a_manifest_without_release_configuration_is_a_usage_failure_on_every_path() {
+        let missing = Error::new(crate::config::MissingReleaseConfig);
+        assert_eq!(classify(&missing), FailureClass::UsageOrConfig);
+        let explained = missing.context("while binding the Candidate to its source");
+        assert_eq!(classify(&explained), FailureClass::UsageOrConfig);
+        let kept = with_default_class(explained, FailureClass::PolicyOrApproval);
+        assert_eq!(classify(&kept), FailureClass::UsageOrConfig);
     }
 }

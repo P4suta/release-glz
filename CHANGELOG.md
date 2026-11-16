@@ -95,6 +95,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Removed
 
+- Every `[tools.release-glz]` table except one that sets `schema = 2`.
+  release-glz refuses a table with any other `schema`, or none, with exit code 2, and it no longer reads the top-level `changelog_path` and `allow_unknown_api_for` keys; use `changelog.path` and `api_exceptions`.
+  A manifest without the table no longer plans with default settings.
+  `init` writes the table, `doctor` reports `config_missing` with a `null` `required_compiler`, and every other command that reads the configuration exits with code 2 and names `release-glz init`.
+- The command that rewrote top-level `[tools.release-glz]` keys into the structured tables, with its result format and guide.
+- The `config_schema` field of the `doctor/v1` result.
+- `ReleaseConfig::schema`, `ReleaseConfig::compatibility_warnings`, `ReleaseConfig::changelog_path`, `ReleaseConfig::allow_unknown_api_for`, `Default for ReleaseConfig`, and `Manifest::has_release_config`.
+  `Manifest::release` returns the configuration or the `MissingReleaseConfig` refusal.
 - The plan result's `intent_digest`, which no command ever set, and the plan format moves to `plan/v3`.
   The intent digest appears in the Candidate and in the `release-pr --candidate` result.
 - The `update` command, which ran the same code as `release-pr`; use `release-glz release-pr`.
@@ -135,9 +143,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   Two Releases with the tag now stop the release as a conflict, and the distribution workflow finds its draft by identifier.
 - A failure's diagnostic lists every cause beneath its message, as an unclassified failure's already did.
   A refused release approval used to say only that OIDC verification failed, without the check that refused it.
-- The `init` and `migrate` results and their diffs give the manifest path relative to the repository, as every other result does.
+- The `init` result and its diffs give the manifest path relative to the repository, as every other result does.
   They used to repeat the `--manifest-path` value, which names the file from the repository root only when the command runs there with a relative path.
-  `migrate` also put `./` before the backup path, and outside any repository it now reports both paths relative to the package directory.
 - A plan lists `verify_hooks` only when the configuration names a verify hook, and `prepare_github_draft` only when `outputs.github_release` is on.
   It used to list both for every release, though neither ran without its configuration.
 - A Conventional Commit type counts in any letter case, so `Feat:` asks for a minor release and lands under Added, as Conventional Commits 1.0.0 requires.

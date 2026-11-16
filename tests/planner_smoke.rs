@@ -321,25 +321,63 @@ async fn existing_prerelease_trains_move_forward_promote_and_reject_backward_cor
 }
 
 #[tokio::test]
-async fn explicit_baseline_ref_precedes_search_and_legacy_api_override_is_version_scoped()
--> Result<()> {
+async fn planning_refuses_a_manifest_without_release_configuration() -> Result<()> {
     require_gleam();
+    let temp = tempfile::tempdir()?;
+    let package = temp.path();
+    init_gleam_fixture(package, "unconfigured_fixture", "1.0.0")?;
+    let source = "name = \"unconfigured_fixture\"\nversion = \"1.0.0\"\n";
+    fs::write(package.join("gleam.toml"), source)?;
+    git(
+        package,
+        &["commit", "--quiet", "-am", "chore: drop configuration"],
+    )?;
+
+    let error = uncached_planner(
+        InitialRegistry {
+            empty_package: false,
+        },
+        Gleam::default(),
+    )
+    .plan(&PlanOptions {
+        manifest_path: package.join("gleam.toml"),
+        ..PlanOptions::default()
+    })
+    .await
+    .unwrap_err();
+    assert_eq!(
+        release_glz::failure::classify(&error),
+        release_glz::failure::FailureClass::UsageOrConfig
+    );
+    assert!(error.to_string().contains("release-glz init"), "{error}");
+    assert_eq!(fs::read_to_string(package.join("gleam.toml"))?, source);
+    Ok(())
+}
+
+#[tokio::test]
+async fn explicit_baseline_ref_precedes_search_and_an_api_exception_covers_its_version()
+-> Result<()> {
+    let gleam_version = require_gleam();
     let temp = tempfile::tempdir()?;
     let package = temp.path();
     fs::create_dir_all(package.join("src"))?;
     fs::write(
         package.join("gleam.toml"),
-        r#"name = "baseline_fixture"
-version = "1.0.0"
-description = "Planner fixture"
-licences = ["MIT"]
-
-[tools.release-glz]
-allow_unknown_api_for = ["1.0.0"]
-
+        configured_manifest(
+            "baseline_fixture",
+            "1.0.0",
+            &gleam_version,
+            r#"
 [tools.release-glz.baseline_refs]
 "1.0.0" = "HEAD"
+
+[[tools.release-glz.api_exceptions]]
+version = "1.0.0"
+baseline = "HEAD"
+reason = "The baseline documentation has no package interface"
+expires = "2999-12-31"
 "#,
+        ),
     )?;
     fs::write(
         package.join("src/baseline_fixture.gleam"),
@@ -373,11 +411,11 @@ allow_unknown_api_for = ["1.0.0"]
     .await?;
     assert_eq!(plan.baseline.source, BaselineSource::Config);
     assert_eq!(plan.api.status, ApiStatus::UnknownAllowed);
-    assert!(
-        plan.reasons
-            .iter()
-            .any(|reason| { reason.summary.contains("legacy version-scoped override") })
-    );
+    assert!(plan.reasons.iter().any(|reason| {
+        reason
+            .summary
+            .contains("The baseline documentation has no package interface")
+    }));
     Ok(())
 }
 
@@ -404,17 +442,13 @@ impl Registry for MockRegistry {
 
 #[tokio::test]
 async fn plan_uses_hex_api_and_tag_without_dirtying_the_package() -> Result<()> {
-    require_gleam();
+    let gleam_version = require_gleam();
     let temp = tempfile::tempdir()?;
     let package = temp.path();
     fs::create_dir(package.join("src"))?;
     fs::write(
         package.join("gleam.toml"),
-        r#"name = "planner_fixture"
-version = "1.0.0"
-description = "A release-glz planner fixture"
-licences = ["MIT"]
-"#,
+        configured_manifest("planner_fixture", "1.0.0", &gleam_version, ""),
     )?;
     fs::write(package.join("README.md"), "# Planner fixture\n")?;
     fs::write(
@@ -539,20 +573,18 @@ licences = ["MIT"]
 
 #[tokio::test]
 async fn breaking_zero_major_release_stays_on_the_zero_major_line() -> Result<()> {
-    require_gleam();
+    let gleam_version = require_gleam();
     let temp = tempfile::tempdir()?;
     let package = temp.path();
     fs::create_dir(package.join("src"))?;
     fs::write(
         package.join("gleam.toml"),
-        r#"name = "zero_fixture"
-version = "0.4.0"
-description = "A zero-major fixture"
-licences = ["MIT"]
-
-[tools.release-glz]
-allow_version_zero = true
-"#,
+        configured_manifest(
+            "zero_fixture",
+            "0.4.0",
+            &gleam_version,
+            "allow_version_zero = true\n",
+        ),
     )?;
     fs::write(package.join("README.md"), "# Zero fixture\n")?;
     fs::write(
@@ -692,14 +724,7 @@ fn release_files_are_repository_relative_structured_and_idempotently_updated() -
     fs::create_dir_all(root.join(".github"))?;
     fs::write(
         package.join("gleam.toml"),
-        r#"name = "widget"
-version = "1.1.0"
-
-[repository]
-type = "github"
-user = "owner"
-repo = "widget"
-"#,
+        configured_manifest("widget", "1.1.0", "1.18.1", ""),
     )?;
     fs::write(
         root.join(".github/release.yml"),
@@ -780,7 +805,10 @@ fn release_file_generation_rejects_a_manifest_outside_the_discovered_repository(
     git(repository.path(), &["init", "--initial-branch=main"])?;
     let outside = tempfile::tempdir()?;
     let manifest_path = outside.path().join("gleam.toml");
-    fs::write(&manifest_path, "name = \"outside\"\nversion = \"1.0.0\"\n")?;
+    fs::write(
+        &manifest_path,
+        configured_manifest("outside", "1.0.0", "1.18.1", ""),
+    )?;
     let manifest = Manifest::load(&manifest_path)?;
     let repo = GitRepo::discover(repository.path())?;
 
@@ -800,7 +828,7 @@ fn a_release_commit_changes_only_the_files_that_differ_from_head() -> Result<()>
     // The manifest already names the planned version, as `set-version` leaves it.
     fs::write(
         package.join("gleam.toml"),
-        "name = \"widget\"\nversion = \"1.2.0\"\n",
+        configured_manifest("widget", "1.2.0", "1.18.1", ""),
     )?;
     git(root, &["init", "--initial-branch=main"])?;
     git(root, &["add", "."])?;
@@ -928,13 +956,40 @@ fn tar_gz_file(path: &str, contents: &[u8]) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
+/// A manifest for `name` at `version` whose release table pins `compiler` and continues with `extra`.
+fn configured_manifest(name: &str, version: &str, compiler: &str, extra: &str) -> String {
+    format!(
+        r#"name = "{name}"
+version = "{version}"
+description = "Planner fixture"
+licences = ["MIT"]
+
+[tools.release-glz]
+schema = 2
+compiler = "{compiler}"
+{extra}
+[tools.release-glz.registry]
+provider = "hexpm"
+api_url = "https://hex.pm/api"
+repository_url = "https://repo.hex.pm"
+docs_url = "https://repo.hex.pm/docs"
+credential_env = "HEXPM_API_KEY"
+auth = "hex-token"
+
+[tools.release-glz.approval]
+normal = "release-pr-and-environment"
+manual = "environment"
+environment = "release"
+manual_refs = ["refs/heads/main"]
+"#
+    )
+}
+
 fn init_gleam_fixture(package: &Path, name: &str, version: &str) -> Result<()> {
     fs::create_dir_all(package.join("src"))?;
     fs::write(
         package.join("gleam.toml"),
-        format!(
-            "name = \"{name}\"\nversion = \"{version}\"\ndescription = \"Planner fixture\"\nlicences = [\"MIT\"]\n"
-        ),
+        configured_manifest(name, version, &require_gleam(), ""),
     )?;
     fs::write(package.join("README.md"), "# Planner fixture\n")?;
     fs::write(

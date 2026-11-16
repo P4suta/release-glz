@@ -86,9 +86,10 @@ fn every_fuzz_target_runs_shared_invariants_that_this_suite_replays() {
 }
 
 #[test]
-fn manifest_seeds_reach_parsing_initialization_and_refusal() {
+fn manifest_seeds_reach_parsing_configuration_initialization_and_refusal() {
     let verdicts = replay("config", config::check);
     assert!(reached(&verdicts, config::Reached::Parsed));
+    assert!(reached(&verdicts, config::Reached::Configured));
     assert!(reached(&verdicts, config::Reached::Initialized));
     assert!(refused(&verdicts));
 }
