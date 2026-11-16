@@ -1,11 +1,20 @@
+use std::collections::BTreeMap;
+use std::ops::Range;
 use std::path::PathBuf;
 
+use proptest::prelude::*;
+use proptest::sample::select;
 use release_glz::config::{
-    ApprovalMode, AuthKind, HookConfig, Manifest, MissingReleaseConfig, RegistryProvider,
-    SeparationMode, valid_env_name, validate_git_ref, validate_hook_config, validate_package_name,
-    validate_relative_path,
+    ApiException, ApprovalConfig, ApprovalMode, AuthKind, ChangelogConfig, HookConfig, HooksConfig,
+    InitializationSettings, Manifest, MissingReleaseConfig, OutputConfig, RegistryConfig,
+    RegistryProvider, ReleaseConfig, RepositoryConfig, SeparationMode, valid_env_name,
+    validate_git_ref, validate_hook_config, validate_package_name, validate_relative_path,
 };
 use release_glz::failure::{FailureClass, RefusalReason, classify, refusal_reason};
+use release_glz::model::PrereleaseChannel;
+use release_glz_test_support::property;
+use semver::{BuildMetadata, Prerelease, Version};
+use serde::Serialize;
 
 fn complete_config(extra: &str) -> String {
     format!(
@@ -391,6 +400,8 @@ fn registry_requires_https_or_http_to_a_numeric_loopback_address() {
             RefusalReason::UrlCredentials,
         ),
         ("ftp://hex.pm/api", RefusalReason::UrlTransportUntrusted),
+        ("https;//hex.pm/api", RefusalReason::UrlMalformed),
+        ("https://h%x.pm/api", RefusalReason::UrlMalformed),
     ] {
         let source = complete_config("").replace("https://hex.pm/api", unsafe_url);
         assert_eq!(refusal(source), Some(reason), "{unsafe_url}");
@@ -808,4 +819,584 @@ expires = "2999-12-31"
         assert_eq!(refusal_reason(&error), Some(reason), "{name}");
         assert!(error.to_string().contains(expected), "{name}: {error}");
     }
+}
+
+proptest! {
+    #![proptest_config(property::config(128))]
+
+    /// A manifest parses to the configuration it states and renders back to its own bytes, and an edit renders a manifest that parses back to the edit with everything else kept.
+    #[test]
+    fn generated_manifests_render_and_parse_back_to_their_configuration(
+        manifest in generated_manifests(),
+        next in version(),
+        channel in prop::option::of(channel()),
+    ) {
+        let path = PathBuf::from("gleam.toml");
+        let parsed = Manifest::parse(path.clone(), manifest.source.clone()).unwrap();
+        prop_assert_eq!(statement(&parsed), manifest.statement());
+        prop_assert_eq!(parsed.render(), manifest.source.as_str());
+
+        let bumped = Manifest::parse(path.clone(), parsed.render_with_version(&next)).unwrap();
+        let (package, _, repository, release) = manifest.statement();
+        prop_assert_eq!(statement(&bumped), (package, next, repository, release));
+
+        let mut selected = parsed;
+        selected.set_prerelease(channel).unwrap();
+        let reselected = Manifest::parse(path, selected.render()).unwrap();
+        let (package, version, repository, release) = manifest.statement();
+        let release = ReleaseConfig {
+            prerelease: channel,
+            ..release
+        };
+        prop_assert_eq!(statement(&reselected), (package, version, repository, release));
+    }
+
+    /// The configuration that `init` renders for an unconfigured package parses back to the settings it was rendered from.
+    #[test]
+    fn initialized_configurations_parse_back_to_their_settings(
+        package in package_name(),
+        version in version(),
+        repository in repository(),
+        settings in initialization_settings(),
+        layout in layout(),
+    ) {
+        let path = PathBuf::from("gleam.toml");
+        let source = manifest_source(&package, &version, &repository, None, layout);
+        let unconfigured = Manifest::parse(path.clone(), source.clone()).unwrap();
+        let settings = InitializationSettings {
+            allow_version_zero: settings.allow_version_zero || version.major == 0,
+            ..settings
+        };
+        let rendered = unconfigured.render_initialized(&settings).unwrap();
+        prop_assert!(rendered.starts_with(source.trim_end()));
+        let initialized = Manifest::parse(path, rendered).unwrap();
+        let expected = ReleaseConfig {
+            compiler: settings.compiler.clone(),
+            registry: settings.registry.clone(),
+            approval: ApprovalConfig {
+                manual_refs: vec![format!("refs/heads/{}", settings.default_branch)],
+                ..ApprovalConfig::default()
+            },
+            outputs: OutputConfig::default(),
+            hooks: HooksConfig::default(),
+            changelog: ChangelogConfig::default(),
+            api_exceptions: vec![],
+            release_branch_prefix: "release-glz/".into(),
+            allow_version_zero: settings.allow_version_zero,
+            prerelease: None,
+            baseline_refs: BTreeMap::new(),
+        };
+        prop_assert_eq!(statement(&initialized), (package, version, repository, expected));
+    }
+}
+
+/// What a configured manifest states: its package, version, repository, and release configuration.
+type Statement = (String, Version, RepositoryConfig, ReleaseConfig);
+
+fn statement(manifest: &Manifest) -> Statement {
+    (
+        manifest.package.clone(),
+        manifest.version.clone(),
+        manifest.repository.clone(),
+        manifest.release().unwrap().clone(),
+    )
+}
+
+/// A generated manifest, the configuration it states, and its bytes.
+#[derive(Debug, Clone)]
+struct GeneratedManifest {
+    package: String,
+    version: Version,
+    repository: RepositoryConfig,
+    release: ReleaseConfig,
+    source: String,
+}
+
+impl GeneratedManifest {
+    fn statement(&self) -> Statement {
+        (
+            self.package.clone(),
+            self.version.clone(),
+            self.repository.clone(),
+            self.release.clone(),
+        )
+    }
+}
+
+/// The layout of `gleam.toml` that the generated manifests take, which `toml_edit` writes.
+#[derive(Serialize)]
+struct ManifestToml<'a> {
+    name: &'a str,
+    version: String,
+    repository: RepositoryToml<'a>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<ToolsToml<'a>>,
+}
+
+#[derive(Serialize)]
+struct RepositoryToml<'a> {
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    kind: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    user: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    repo: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    path: Option<&'a str>,
+    #[serde(skip_serializing_if = "str::is_empty")]
+    tag_prefix: &'a str,
+}
+
+#[derive(Serialize)]
+struct ToolsToml<'a> {
+    #[serde(rename = "release-glz")]
+    release_glz: ReleaseTableToml<'a>,
+}
+
+#[derive(Serialize)]
+struct ReleaseTableToml<'a> {
+    schema: i64,
+    compiler: String,
+    release_branch_prefix: &'a str,
+    allow_version_zero: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prerelease: Option<PrereleaseChannel>,
+    registry: &'a RegistryConfig,
+    approval: &'a ApprovalConfig,
+    outputs: &'a OutputConfig,
+    hooks: HooksToml<'a>,
+    changelog: ChangelogToml<'a>,
+    api_exceptions: Vec<ApiExceptionToml<'a>>,
+    baseline_refs: BTreeMap<String, &'a str>,
+}
+
+#[derive(Serialize)]
+struct HooksToml<'a> {
+    verify: &'a [HookConfig],
+    sidecar: &'a [HookConfig],
+    notify: &'a [HookConfig],
+}
+
+#[derive(Serialize)]
+struct ChangelogToml<'a> {
+    path: &'a str,
+    managed_block: bool,
+    notes_dir: &'a str,
+}
+
+#[derive(Serialize)]
+struct ApiExceptionToml<'a> {
+    version: String,
+    baseline: &'a str,
+    reason: &'a str,
+    expires: &'a str,
+}
+
+/// How `toml_edit` lays out a generated manifest.
+#[derive(Debug, Clone, Copy)]
+enum Layout {
+    /// Every table inline, on the line of its key.
+    Inline,
+    /// A header for each table and each array of tables, the way `init` writes a configuration.
+    Headers,
+}
+
+fn layout() -> impl Strategy<Value = Layout> {
+    prop_oneof![Just(Layout::Inline), Just(Layout::Headers)]
+}
+
+/// The bytes of a manifest that names `package` at `version` in `repository`, configured when `release` is present.
+fn manifest_source(
+    package: &str,
+    version: &Version,
+    repository: &RepositoryConfig,
+    release: Option<&ReleaseConfig>,
+    layout: Layout,
+) -> String {
+    let tools = release.map(|release| ToolsToml {
+        release_glz: ReleaseTableToml {
+            schema: 2,
+            compiler: release.compiler.to_string(),
+            release_branch_prefix: &release.release_branch_prefix,
+            allow_version_zero: release.allow_version_zero,
+            prerelease: release.prerelease,
+            registry: &release.registry,
+            approval: &release.approval,
+            outputs: &release.outputs,
+            hooks: HooksToml {
+                verify: &release.hooks.verify,
+                sidecar: &release.hooks.sidecar,
+                notify: &release.hooks.notify,
+            },
+            changelog: ChangelogToml {
+                path: release.changelog.path.to_str().unwrap(),
+                managed_block: release.changelog.managed_block,
+                notes_dir: release.changelog.notes_dir.to_str().unwrap(),
+            },
+            api_exceptions: release
+                .api_exceptions
+                .iter()
+                .map(|exception| ApiExceptionToml {
+                    version: exception.version.to_string(),
+                    baseline: &exception.baseline,
+                    reason: &exception.reason,
+                    expires: &exception.expires,
+                })
+                .collect(),
+            baseline_refs: release
+                .baseline_refs
+                .iter()
+                .map(|(version, git_ref)| (version.to_string(), git_ref.as_str()))
+                .collect(),
+        },
+    });
+    let manifest = ManifestToml {
+        name: package,
+        version: version.to_string(),
+        repository: RepositoryToml {
+            kind: repository.kind.as_deref(),
+            user: repository.user.as_deref(),
+            repo: repository.repo.as_deref(),
+            path: repository.path.as_deref(),
+            tag_prefix: &repository.tag_prefix,
+        },
+        tools,
+    };
+    match layout {
+        Layout::Inline => toml_edit::ser::to_string(&manifest),
+        Layout::Headers => toml_edit::ser::to_string_pretty(&manifest),
+    }
+    .unwrap()
+}
+
+/// Characters that TOML escapes or quotes, characters beyond the Basic Multilingual Plane, and plain letters, without a line break.
+const ONE_LINE_CHARACTERS: &[char] = &[
+    'a',
+    'Z',
+    '0',
+    ' ',
+    '"',
+    '\'',
+    '\\',
+    '#',
+    '=',
+    '[',
+    '.',
+    '\u{1}',
+    '\t',
+    '\u{1f}',
+    '\u{7f}',
+    'é',
+    '\u{2028}',
+    '\u{feff}',
+    '\u{10000}',
+];
+
+/// Text without NUL, which no configured text may hold, and with line breaks only where `line_breaks` allows them.
+fn text(line_breaks: bool, length: Range<usize>) -> impl Strategy<Value = String> {
+    let breaks: &'static [char] = if line_breaks { &['\n', '\r'] } else { &[' '] };
+    let character = prop_oneof![
+        4 => select(ONE_LINE_CHARACTERS),
+        1 => select(breaks),
+        1 => any::<char>().prop_filter("NUL, or a line break where none may be", move |character| {
+            *character != '\0' && (line_breaks || !matches!(character, '\n' | '\r'))
+        }),
+    ];
+    prop::collection::vec(character, length).prop_map(String::from_iter)
+}
+
+/// Semantic versions with and without prerelease identifiers and build metadata.
+fn version() -> impl Strategy<Value = Version> {
+    let number = || prop_oneof![0..20_u64, any::<u64>()];
+    (
+        number(),
+        number(),
+        number(),
+        prop::option::of("[a-z]{1,5}(\\.(0|[1-9][0-9]{0,2}))?"),
+        prop::option::of("[0-9a-zA-Z]{1,6}(\\.[0-9a-z]{1,3})?"),
+    )
+        .prop_map(|(major, minor, patch, pre, build)| Version {
+            major,
+            minor,
+            patch,
+            pre: pre.map_or(Prerelease::EMPTY, |pre| Prerelease::new(&pre).unwrap()),
+            build: build.map_or(BuildMetadata::EMPTY, |build| {
+                BuildMetadata::new(&build).unwrap()
+            }),
+        })
+}
+
+fn channel() -> impl Strategy<Value = PrereleaseChannel> {
+    select(
+        &[
+            PrereleaseChannel::Alpha,
+            PrereleaseChannel::Beta,
+            PrereleaseChannel::Rc,
+        ][..],
+    )
+}
+
+fn package_name() -> impl Strategy<Value = String> {
+    "[a-z][a-z0-9_]{0,11}"
+}
+
+/// Repository-relative `/` paths whose segments neither start with a dot nor name a drive.
+fn relative_path() -> impl Strategy<Value = String> {
+    "[A-Za-z0-9_-][A-Za-z0-9_.-]{0,7}(/[A-Za-z0-9_-][A-Za-z0-9_.-]{0,7}){0,2}"
+}
+
+/// Ref prefixes that leave a safe ref once a name follows them.
+fn ref_prefix() -> impl Strategy<Value = String> {
+    "([a-z]{1,8}[/-]){1,2}".prop_filter("a full ref", |prefix| !prefix.starts_with("refs/"))
+}
+
+/// Git refs that the manifest accepts as a baseline.
+fn git_ref() -> impl Strategy<Value = String> {
+    "(refs/tags/)?([a-z]{1,6}/)?v(0|[1-9][0-9]?)\\.(0|[1-9][0-9]?)\\.(0|[1-9][0-9]?)"
+}
+
+/// The `[repository]` table, whose forge fields `gleam.toml` doesn't constrain.
+fn repository() -> impl Strategy<Value = RepositoryConfig> {
+    (
+        prop::option::of(prop_oneof![Just("github".to_owned()), text(true, 0..8)]),
+        prop::option::of(text(true, 0..8)),
+        prop::option::of(text(true, 0..8)),
+        prop::option::of(relative_path()),
+        prop_oneof![Just(String::new()), ref_prefix()],
+    )
+        .prop_map(|(kind, user, repo, path, tag_prefix)| RepositoryConfig {
+            kind,
+            user,
+            repo,
+            path,
+            tag_prefix,
+        })
+}
+
+/// Registry origins that use HTTPS, or HTTP to a numeric loopback address.
+fn registry_url() -> impl Strategy<Value = String> {
+    prop_oneof![
+        "https://[a-z]{1,8}\\.test(/[a-z]{1,6}){0,2}",
+        "http://127\\.0\\.0\\.1:[1-9][0-9]{0,3}(/[a-z]{1,6}){0,2}",
+        "http://\\[::1\\](/[a-z]{1,6}){0,2}",
+    ]
+}
+
+fn registry() -> impl Strategy<Value = RegistryConfig> {
+    (
+        any::<bool>(),
+        prop::option::of("[A-Za-z0-9][A-Za-z0-9_-]{0,15}"),
+        registry_url(),
+        registry_url(),
+        registry_url(),
+        "REGISTRY_[A-Z0-9]{1,6}",
+        any::<bool>(),
+    )
+        .prop_map(
+            |(
+                compatible,
+                repository,
+                api_url,
+                repository_url,
+                docs_url,
+                credential_env,
+                bearer,
+            )| {
+                RegistryConfig {
+                    provider: if compatible {
+                        RegistryProvider::HexCompatible
+                    } else {
+                        RegistryProvider::HexPm
+                    },
+                    repository,
+                    api_url,
+                    repository_url,
+                    docs_url,
+                    credential_env,
+                    auth: if bearer {
+                        AuthKind::Bearer
+                    } else {
+                        AuthKind::HexToken
+                    },
+                }
+            },
+        )
+}
+
+fn approval() -> impl Strategy<Value = ApprovalConfig> {
+    (
+        text(false, 1..12),
+        any::<bool>(),
+        prop::collection::btree_set("refs/(heads|tags)/[a-z]{1,8}(/[a-z]{1,8})?", 1..3),
+        any::<bool>(),
+    )
+        .prop_map(
+            |(environment, strict, manual_refs, fallback)| ApprovalConfig {
+                normal: ApprovalMode::ReleasePrAndEnvironment,
+                manual: ApprovalMode::Environment,
+                environment,
+                separation: if strict {
+                    SeparationMode::Strict
+                } else {
+                    SeparationMode::Solo
+                },
+                manual_refs: manual_refs.into_iter().collect(),
+                private_repository_fallback: fallback
+                    .then(|| "workflow-dispatch-digest".to_owned()),
+            },
+        )
+}
+
+fn outputs() -> impl Strategy<Value = OutputConfig> {
+    prop::array::uniform6(any::<bool>()).prop_map(
+        |[
+            docs,
+            github_release,
+            sbom,
+            provenance,
+            signature,
+            allow_private_evidence_upload,
+        ]| {
+            OutputConfig {
+                docs,
+                github_release,
+                sbom,
+                provenance,
+                signature,
+                allow_private_evidence_upload,
+            }
+        },
+    )
+}
+
+/// The hooks of one phase, under ids that name the phase so that no two phases share one.
+fn phase_hooks(phase: &'static str) -> impl Strategy<Value = Vec<HookConfig>> {
+    let hook = (
+        "[A-Za-z0-9_.-]{0,4}",
+        prop::collection::vec(text(true, 1..8), 1..3),
+        1..=3_600_u64,
+        any::<bool>(),
+        prop::collection::vec("CI_[A-Z0-9]{1,6}", 0..2),
+    );
+    prop::collection::vec(hook, 0..3).prop_map(move |hooks| {
+        hooks
+            .into_iter()
+            .enumerate()
+            .map(
+                |(index, (suffix, argv, timeout_seconds, required, env))| HookConfig {
+                    id: format!("{phase}-{index}{suffix}"),
+                    argv,
+                    timeout_seconds,
+                    required,
+                    env,
+                },
+            )
+            .collect()
+    })
+}
+
+fn api_exceptions() -> impl Strategy<Value = Vec<ApiException>> {
+    let exception = (
+        git_ref(),
+        "[A-Za-z]",
+        text(true, 0..12),
+        1_000..=9_999_u32,
+        1..=12_u32,
+        1..=28_u32,
+    );
+    prop::collection::btree_map(version(), exception, 0..3).prop_map(|exceptions| {
+        exceptions
+            .into_iter()
+            .map(
+                |(version, (baseline, first, rest, year, month, day))| ApiException {
+                    version,
+                    baseline,
+                    reason: format!("{first}{rest}"),
+                    expires: format!("{year:04}-{month:02}-{day:02}"),
+                },
+            )
+            .collect()
+    })
+}
+
+/// Release configurations within the domain that the manifest validates.
+fn release_config() -> impl Strategy<Value = ReleaseConfig> {
+    let policy = (version(), registry(), approval(), outputs());
+    let hooks = (
+        phase_hooks("verify"),
+        phase_hooks("sidecar"),
+        phase_hooks("notify"),
+    );
+    let changelog = (relative_path(), any::<bool>(), relative_path());
+    let releases = (
+        api_exceptions(),
+        ref_prefix(),
+        any::<bool>(),
+        prop::option::of(channel()),
+        prop::collection::btree_map(version(), git_ref(), 0..3),
+    );
+    (policy, hooks, changelog, releases).prop_map(
+        |(
+            (compiler, registry, approval, outputs),
+            (verify, sidecar, notify),
+            (path, managed_block, notes_dir),
+            (api_exceptions, release_branch_prefix, allow_version_zero, prerelease, baseline_refs),
+        )| ReleaseConfig {
+            compiler,
+            registry,
+            approval,
+            outputs,
+            hooks: HooksConfig {
+                verify,
+                sidecar,
+                notify,
+            },
+            changelog: ChangelogConfig {
+                path: PathBuf::from(path),
+                managed_block,
+                notes_dir: PathBuf::from(notes_dir),
+            },
+            api_exceptions,
+            release_branch_prefix,
+            allow_version_zero,
+            prerelease,
+            baseline_refs,
+        },
+    )
+}
+
+fn generated_manifests() -> impl Strategy<Value = GeneratedManifest> {
+    (
+        package_name(),
+        version(),
+        repository(),
+        release_config(),
+        layout(),
+    )
+        .prop_map(
+            |(package, version, repository, release, layout)| GeneratedManifest {
+                source: manifest_source(&package, &version, &repository, Some(&release), layout),
+                package,
+                version,
+                repository,
+                release,
+            },
+        )
+}
+
+fn initialization_settings() -> impl Strategy<Value = InitializationSettings> {
+    (
+        version(),
+        "[a-z][a-z0-9_-]{0,8}(/[a-z][a-z0-9_-]{0,8})?",
+        registry(),
+        any::<bool>(),
+    )
+        .prop_map(|(compiler, default_branch, registry, allow_version_zero)| {
+            InitializationSettings {
+                compiler,
+                default_branch,
+                registry,
+                allow_version_zero,
+            }
+        })
 }

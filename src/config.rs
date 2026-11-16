@@ -907,8 +907,12 @@ fn validate_registry(registry: &RegistryConfig) -> Result<()> {
         ("repository_url", &registry.repository_url),
         ("docs_url", &registry.docs_url),
     ] {
-        let url = reqwest::Url::parse(value)
-            .with_context(|| format!("registry.{name} is not a valid URL"))?;
+        let url = reqwest::Url::parse(value).with_context(|| {
+            Refusal::new(
+                RefusalReason::UrlMalformed,
+                format!("registry.{name} is not a valid URL"),
+            )
+        })?;
         if !url.username().is_empty() || url.password().is_some() {
             refuse!(
                 UrlCredentials,

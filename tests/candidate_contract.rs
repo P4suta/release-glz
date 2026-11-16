@@ -1,21 +1,27 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
+use std::ops::Range;
 
 use flate2::{Compression, write::GzEncoder};
-use release_glz::artifact::{ArchiveLimits, validate_hex_tarball};
+use proptest::prelude::*;
+use proptest::sample::{Index, select};
+use release_glz::artifact::{ArchiveLimits, build_hex_tarball, validate_hex_tarball};
 use release_glz::candidate::{
-    Candidate, CandidateInput, CandidateSource, HookEvidence, HookKind, RegistryIdentity,
-    SealedPolicy,
+    Candidate, CandidateInput, CandidateManifest, CandidateSource, HookEvidence, HookKind,
+    RegistryIdentity, SealedPolicy,
 };
 use release_glz::config::{
     ApprovalConfig, ApprovalMode, AuthKind, HookConfig, Manifest, OutputConfig, RegistryProvider,
+    SeparationMode,
 };
 use release_glz::failure::{FailureClass, RefusalReason, classify, refusal_reason};
 use release_glz::hooks::SidecarArtifact;
 use release_glz::release::{LiveReleaseTarget, SourceBoundCandidate};
+use release_glz_test_support::property::{self, ByteChange};
 use release_glz_test_support::schema::assert_published_envelope;
 use release_glz_test_support::{git, init_repository, isolated_command};
-use semver::Version;
+use semver::{BuildMetadata, Prerelease, Version};
 use sha2::{Digest, Sha256};
 
 /// A package whose committed configuration states one complete publication policy.
@@ -210,6 +216,16 @@ fn candidate_registry_urls_reject_opaque_credentials_and_http_beyond_loopback_in
             "http-to-a-mapped-address",
             "http://[::ffff:127.0.0.1]/api",
             RefusalReason::UrlTransportUntrusted,
+        ),
+        (
+            "no-scheme-separator",
+            "https;//hex.pm/api",
+            RefusalReason::UrlMalformed,
+        ),
+        (
+            "percent-in-host",
+            "https://h%x.pm/api",
+            RefusalReason::UrlMalformed,
         ),
     ] {
         let mut input = fresh_candidate_input();
@@ -503,6 +519,11 @@ fn candidate_verification_rejects_every_manifest_identity_and_digest_tamper() {
             "candidate registry api_url must be an absolute hierarchical URL",
         ),
         (
+            "registry-url-malformed",
+            RefusalReason::UrlMalformed,
+            "candidate registry api_url is invalid",
+        ),
+        (
             "branch-prefix",
             RefusalReason::GitRefPrefixUnsafe,
             "candidate release branch prefix is unsafe",
@@ -571,6 +592,9 @@ fn candidate_verification_rejects_every_manifest_identity_and_digest_tamper() {
             "credential-env" => manifest["registry"]["credential_env"] = "TOKEN=value".into(),
             "registry-url-without-host" => {
                 manifest["registry"]["api_url"] = "file:///registry".into()
+            }
+            "registry-url-malformed" => {
+                manifest["registry"]["api_url"] = "https;//hex.pm/api".into()
             }
             "branch-prefix" => manifest["release_branch_prefix"] = "".into(),
             "release-notes" => manifest["release_notes"] = "bad\0notes".into(),
@@ -665,6 +689,45 @@ fn candidate_manifest_is_bounded_strict_json_in_a_regular_file() {
         );
         assert!(error.to_string().contains("regular file"), "{error}");
     }
+}
+
+/// A sealed manifest has one spelling, so bytes that spell the same value another way are refused.
+#[test]
+fn a_manifest_respelled_without_changing_its_value_is_refused() {
+    let temp = tempfile::tempdir().unwrap();
+    let directory = temp.path().join("candidate");
+    let mut input = fresh_candidate_input();
+    input.release_notes = "Widget\u{1f}release notes.".into();
+    Candidate::seal(&directory, input).unwrap();
+    let path = directory.join("candidate.json");
+    let sealed = fs::read(&path).unwrap();
+    let escape = sealed
+        .windows(6)
+        .position(|window| window == br"\u001f")
+        .unwrap();
+    // The first two are the counterexamples that the property of changed sealed files found.
+    for (case, respelled) in [
+        ("an uppercase escape digit", flipped(&sealed, escape + 5, 5)),
+        (
+            "a trailing carriage return",
+            [&sealed, b"\r".as_slice()].concat(),
+        ),
+        ("a leading space", [b" ".as_slice(), &sealed].concat()),
+    ] {
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&respelled).unwrap(),
+            serde_json::from_slice::<serde_json::Value>(&sealed).unwrap(),
+            "{case} changes the value"
+        );
+        fs::write(&path, respelled).unwrap();
+        assert_eq!(
+            verify_refusal(&directory),
+            Some(RefusalReason::CandidateManifestInvalid),
+            "{case}"
+        );
+    }
+    fs::write(&path, &sealed).unwrap();
+    Candidate::verify(&directory).unwrap();
 }
 
 #[test]
@@ -1956,6 +2019,13 @@ fn mutate_candidate_json(directory: &std::path::Path, mutate: impl FnOnce(&mut s
     fs::write(path, serde_json::to_vec(&manifest).unwrap()).unwrap();
 }
 
+/// `bytes` with bit `bit` of the byte at `offset` inverted.
+fn flipped(bytes: &[u8], offset: usize, bit: u8) -> Vec<u8> {
+    let mut bytes = bytes.to_vec();
+    bytes[offset] ^= 1 << bit;
+    bytes
+}
+
 /// Spells the first letter of the digest in `digest` in uppercase, so the digest keeps its value and loses its one sealed spelling.
 fn uppercase_first_letter(digest: &mut serde_json::Value) {
     let lowercase = digest.as_str().unwrap();
@@ -2039,4 +2109,575 @@ fn append<W: Write>(archive: &mut tar::Builder<W>, path: &str, contents: &[u8]) 
 
 fn hex_sha256(bytes: &[u8]) -> String {
     release_glz::canonical::sha256(bytes).into()
+}
+
+proptest! {
+    #![proptest_config(property::config(32))]
+
+    /// A sealed Candidate verifies to the manifest that sealing returned, which records the input, and its files hold the bytes it sealed.
+    #[test]
+    fn generated_candidates_verify_to_the_manifest_that_sealed_them(input in candidate_inputs()) {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = temp.path().join("candidate");
+        let sealed = Candidate::seal(&directory, input.clone()).unwrap();
+        let verified = Candidate::verify(&directory).unwrap();
+        prop_assert_eq!(&verified, &sealed);
+        prop_assert_eq!(Recorded::of_manifest(&verified), Recorded::of_input(&input));
+        prop_assert_eq!(
+            SealedBytes::read(&directory, &verified),
+            SealedBytes::of_input(input)
+        );
+    }
+
+    /// One changed, removed, or added byte in any sealed file fails verification with a reason that names the change.
+    ///
+    /// Every file but the manifest is held to its recorded size and digest, so its reason is exact.
+    #[test]
+    fn a_changed_sealed_file_fails_verification_with_its_reason(
+        input in candidate_inputs(),
+        changes in prop::collection::vec((any::<Index>(), property::byte_change()), 16),
+    ) {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = temp.path().join("candidate");
+        let sealed = Candidate::seal(&directory, input).unwrap();
+        let files = sealed_files(&sealed);
+        for (file, change) in &changes {
+            let file = &files[file.index(files.len())];
+            let path = directory.join(file);
+            let original = fs::read(&path).unwrap();
+            fs::write(&path, change.apply(&original)).unwrap();
+            let outcome = Candidate::verify(&directory)
+                .map(drop)
+                .map_err(|error| (refusal_reason(&error), format!("{error:#}")));
+            fs::write(&path, &original).unwrap();
+            let expected = if file == "candidate.json" {
+                MANIFEST_REFUSALS
+            } else {
+                artifact_refusal(*change)
+            };
+            prop_assert!(
+                matches!(&outcome, Err((Some(reason), _)) if expected.contains(reason)),
+                "{change:?} of {file} gave {outcome:?}"
+            );
+        }
+        Candidate::verify(&directory).unwrap();
+    }
+}
+
+/// What a Candidate records of the input it was sealed from, apart from the bytes.
+#[derive(Debug, PartialEq)]
+struct Recorded<'a> {
+    package: &'a str,
+    version: &'a Version,
+    tag: &'a str,
+    source: &'a CandidateSource,
+    compiler: &'a Version,
+    registry: &'a RegistryIdentity,
+    private: bool,
+    github_repository: &'a str,
+    release_branch_prefix: &'a str,
+    release_notes: &'a str,
+    approval: &'a ApprovalConfig,
+    outputs: &'a OutputConfig,
+    verify_hook_definitions: &'a [HookConfig],
+    hook_evidence: &'a [HookEvidence],
+    notify_hooks: &'a [String],
+    notify_hook_definitions: &'a [HookConfig],
+}
+
+impl<'a> Recorded<'a> {
+    fn of_input(input: &'a CandidateInput) -> Self {
+        Self {
+            package: &input.package,
+            version: &input.version,
+            tag: &input.tag,
+            source: &input.source,
+            compiler: &input.compiler,
+            registry: &input.registry,
+            private: input.private,
+            github_repository: &input.github_repository,
+            release_branch_prefix: &input.release_branch_prefix,
+            release_notes: &input.release_notes,
+            approval: &input.approval,
+            outputs: &input.outputs,
+            verify_hook_definitions: &input.verify_hook_definitions,
+            hook_evidence: &input.hook_evidence,
+            notify_hooks: &input.notify_hooks,
+            notify_hook_definitions: &input.notify_hook_definitions,
+        }
+    }
+
+    fn of_manifest(manifest: &'a CandidateManifest) -> Self {
+        Self {
+            package: &manifest.package,
+            version: &manifest.version,
+            tag: &manifest.tag,
+            source: &manifest.source,
+            compiler: &manifest.compiler,
+            registry: &manifest.registry,
+            private: manifest.private,
+            github_repository: &manifest.github_repository,
+            release_branch_prefix: &manifest.release_branch_prefix,
+            release_notes: &manifest.release_notes,
+            approval: &manifest.approval,
+            outputs: &manifest.outputs,
+            verify_hook_definitions: &manifest.verify_hook_definitions,
+            hook_evidence: &manifest.hook_evidence,
+            notify_hooks: &manifest.notify_hooks,
+            notify_hook_definitions: &manifest.notify_hook_definitions,
+        }
+    }
+}
+
+/// The bytes a Candidate seals, with each sidecar under its name.
+#[derive(Debug, PartialEq)]
+struct SealedBytes {
+    package: Vec<u8>,
+    docs: Option<Vec<u8>>,
+    interface: Vec<u8>,
+    sidecars: Vec<(String, Vec<u8>)>,
+}
+
+impl SealedBytes {
+    fn of_input(input: CandidateInput) -> Self {
+        Self {
+            package: input.package_tarball,
+            docs: input.docs_tarball,
+            interface: input.package_interface,
+            sidecars: input
+                .sidecars
+                .into_iter()
+                .map(|artifact| (artifact.name, artifact.bytes))
+                .collect(),
+        }
+    }
+
+    /// The bytes of the Candidate in `directory`, read through the descriptors of its verified `manifest`.
+    fn read(directory: &std::path::Path, manifest: &CandidateManifest) -> Self {
+        Self {
+            package: Candidate::package_bytes(directory, manifest).unwrap(),
+            docs: Candidate::docs_bytes(directory, manifest).unwrap(),
+            interface: fs::read(directory.join(&manifest.artifacts.package_interface.path))
+                .unwrap(),
+            sidecars: Candidate::sidecar_bytes(directory, manifest)
+                .unwrap()
+                .into_iter()
+                .map(|(descriptor, bytes)| (descriptor.name, bytes))
+                .collect(),
+        }
+    }
+}
+
+/// The reasons that verification gives a manifest it refuses.
+const MANIFEST_REFUSALS: &[RefusalReason] = &[
+    RefusalReason::CandidateManifestInvalid,
+    RefusalReason::CandidateSchemaUnsupported,
+    RefusalReason::PackageNameInvalid,
+    RefusalReason::CandidateSourceCommitInvalid,
+    RefusalReason::PathNotRelative,
+    RefusalReason::PathOutsideRepository,
+    RefusalReason::GitRefUnsafe,
+    RefusalReason::CandidateTagUnsafe,
+    RefusalReason::CandidateTagVersionMismatch,
+    RefusalReason::CredentialEnvInvalid,
+    RefusalReason::RegistryRepositoryInvalid,
+    RefusalReason::UrlMalformed,
+    RefusalReason::UrlCredentials,
+    RefusalReason::UrlNotHierarchical,
+    RefusalReason::UrlQueryOrFragment,
+    RefusalReason::UrlTransportUntrusted,
+    RefusalReason::GithubRepositoryInvalid,
+    RefusalReason::GitRefPrefixUnsafe,
+    RefusalReason::CandidateReleaseNotesInvalid,
+    RefusalReason::ApprovalEnvironmentInvalid,
+    RefusalReason::ApprovalModeFixed,
+    RefusalReason::ApprovalFallbackUnsupported,
+    RefusalReason::ManualRefsEmpty,
+    RefusalReason::ManualRefKindUnsupported,
+    RefusalReason::ManualRefDuplicate,
+    RefusalReason::CandidateHookEvidenceInvalid,
+    RefusalReason::CandidateHookFailed,
+    RefusalReason::CandidateChecksumMalformed,
+    RefusalReason::CandidateSidecarsTooMany,
+    RefusalReason::CandidateSidecarPathInvalid,
+    RefusalReason::CandidateSidecarsTooLarge,
+    RefusalReason::SidecarHookIdUnsafe,
+    RefusalReason::SidecarNameUnsafe,
+    RefusalReason::SidecarMediaTypeInvalid,
+    RefusalReason::CandidateSidecarReleaseDisabled,
+    RefusalReason::CandidateSidecarPrivateUploadForbidden,
+    RefusalReason::CandidateSidecarNameDuplicate,
+    RefusalReason::CandidateEvidencePolicyMismatch,
+    RefusalReason::CandidateSignatureMissing,
+    RefusalReason::HookIdUnsafe,
+    RefusalReason::HookIdReserved,
+    RefusalReason::HookArgvInvalid,
+    RefusalReason::HookTimeoutOutOfRange,
+    RefusalReason::HookEnvInvalid,
+    RefusalReason::HookEnvProtected,
+    RefusalReason::HookIdDuplicate,
+    RefusalReason::CandidateHookEvidenceMismatch,
+    RefusalReason::CandidateSidecarProducerUndeclared,
+    RefusalReason::NotifyHookIdInvalid,
+    RefusalReason::NotifyHooksMismatch,
+    RefusalReason::CandidateDocsPolicyMismatch,
+    RefusalReason::CandidateArtifactPathUnexpected,
+    RefusalReason::CandidateInventoryMismatch,
+    RefusalReason::CandidateFileTooLarge,
+    RefusalReason::CandidateChecksumMismatch,
+    RefusalReason::CandidateSemanticChecksumMismatch,
+    RefusalReason::CandidateIntentDigestMismatch,
+    RefusalReason::CandidateDigestMismatch,
+];
+
+/// The reason that verification gives a sealed file other than the manifest after `change`.
+///
+/// A file read past its recorded size is too large, and any other change breaks its size or digest.
+fn artifact_refusal(change: ByteChange) -> &'static [RefusalReason] {
+    match change {
+        ByteChange::Flip(..) | ByteChange::Truncate(_) => {
+            &[RefusalReason::CandidateChecksumMismatch]
+        }
+        ByteChange::Extend(_) => &[RefusalReason::CandidateFileTooLarge],
+    }
+}
+
+/// The paths of the files a Candidate seals, as its manifest names them.
+fn sealed_files(manifest: &CandidateManifest) -> Vec<String> {
+    let artifacts = &manifest.artifacts;
+    [
+        "candidate.json",
+        &artifacts.package.path,
+        &artifacts.package_interface.path,
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .chain(artifacts.docs.iter().map(|docs| docs.path.clone()))
+    .chain(manifest.sidecars.iter().map(|sidecar| sidecar.path.clone()))
+    .collect()
+}
+
+/// Characters that JSON escapes, characters beyond the Basic Multilingual Plane, and plain letters, without a line break.
+const ONE_LINE_CHARACTERS: &[char] = &[
+    'a',
+    'Z',
+    '0',
+    ' ',
+    '"',
+    '\\',
+    '/',
+    '\u{1}',
+    '\u{8}',
+    '\t',
+    '\u{b}',
+    '\u{c}',
+    '\u{e}',
+    '\u{1b}',
+    '\u{1f}',
+    '\u{7f}',
+    'é',
+    '\u{2028}',
+    '\u{e000}',
+    '\u{10000}',
+];
+
+/// Text without NUL, which no sealed text may hold, and with line breaks only where `line_breaks` allows them.
+fn text(line_breaks: bool, length: Range<usize>) -> impl Strategy<Value = String> {
+    let breaks: &'static [char] = if line_breaks { &['\n', '\r'] } else { &[' '] };
+    let character = prop_oneof![
+        4 => select(ONE_LINE_CHARACTERS),
+        1 => select(breaks),
+        1 => any::<char>().prop_filter("NUL, or a line break where none may be", move |character| {
+            *character != '\0' && (line_breaks || !matches!(character, '\n' | '\r'))
+        }),
+    ];
+    prop::collection::vec(character, length).prop_map(String::from_iter)
+}
+
+/// Semantic versions with and without prerelease identifiers and build metadata.
+fn version() -> impl Strategy<Value = Version> {
+    let number = || prop_oneof![0..20_u64, any::<u64>()];
+    (
+        number(),
+        number(),
+        number(),
+        prop::option::of("[a-z]{1,5}(\\.(0|[1-9][0-9]{0,2}))?"),
+        prop::option::of("[0-9a-zA-Z]{1,6}(\\.[0-9a-z]{1,3})?"),
+    )
+        .prop_map(|(major, minor, patch, pre, build)| Version {
+            major,
+            minor,
+            patch,
+            pre: pre.map_or(Prerelease::EMPTY, |pre| Prerelease::new(&pre).unwrap()),
+            build: build.map_or(BuildMetadata::EMPTY, |build| {
+                BuildMetadata::new(&build).unwrap()
+            }),
+        })
+}
+
+/// Registry origins that use HTTPS, or HTTP to a numeric loopback address.
+fn registry_url() -> impl Strategy<Value = String> {
+    prop_oneof![
+        "https://[a-z]{1,8}\\.test(/[a-z]{1,6}){0,2}",
+        "http://127\\.0\\.0\\.1:[1-9][0-9]{0,3}(/[a-z]{1,6}){0,2}",
+        "http://\\[::1\\](/[a-z]{1,6}){0,2}",
+    ]
+}
+
+fn registry() -> impl Strategy<Value = RegistryIdentity> {
+    (
+        any::<bool>(),
+        prop::option::of("[A-Za-z0-9][A-Za-z0-9_-]{0,15}"),
+        registry_url(),
+        registry_url(),
+        registry_url(),
+        "REGISTRY_[A-Z0-9]{1,6}",
+        any::<bool>(),
+    )
+        .prop_map(
+            |(
+                compatible,
+                repository,
+                api_url,
+                repository_url,
+                docs_url,
+                credential_env,
+                bearer,
+            )| {
+                RegistryIdentity {
+                    provider: if compatible {
+                        RegistryProvider::HexCompatible
+                    } else {
+                        RegistryProvider::HexPm
+                    },
+                    repository,
+                    api_url,
+                    repository_url,
+                    docs_url,
+                    credential_env,
+                    auth: if bearer {
+                        AuthKind::Bearer
+                    } else {
+                        AuthKind::HexToken
+                    },
+                }
+            },
+        )
+}
+
+fn approval() -> impl Strategy<Value = ApprovalConfig> {
+    (
+        text(false, 1..12),
+        any::<bool>(),
+        prop::collection::btree_set("refs/(heads|tags)/[a-z]{1,8}(/[a-z]{1,8})?", 1..3),
+        any::<bool>(),
+    )
+        .prop_map(
+            |(environment, strict, manual_refs, fallback)| ApprovalConfig {
+                normal: ApprovalMode::ReleasePrAndEnvironment,
+                manual: ApprovalMode::Environment,
+                environment,
+                separation: if strict {
+                    SeparationMode::Strict
+                } else {
+                    SeparationMode::Solo
+                },
+                manual_refs: manual_refs.into_iter().collect(),
+                private_repository_fallback: fallback
+                    .then(|| "workflow-dispatch-digest".to_owned()),
+            },
+        )
+}
+
+/// Hex package tarballs that the product builder writes from generated metadata and modules.
+fn package_tarball() -> impl Strategy<Value = Vec<u8>> {
+    (
+        prop::collection::vec(any::<u8>(), 0..32),
+        prop::collection::btree_map(
+            "[a-z]{1,8}",
+            prop::collection::vec(any::<u8>(), 0..48),
+            0..4,
+        ),
+    )
+        .prop_map(|(metadata, modules)| {
+            let mut files = modules
+                .into_iter()
+                .map(|(name, source)| (format!("src/{name}.gleam"), source))
+                .collect::<BTreeMap<_, _>>();
+            files.insert("gleam.toml".into(), b"name = \"widget\"\n".to_vec());
+            build_hex_tarball(&metadata, &files, ArchiveLimits::default()).unwrap()
+        })
+}
+
+fn docs_tarball() -> impl Strategy<Value = Vec<u8>> {
+    prop::collection::btree_map(
+        "[a-z]{1,8}\\.(html|js|css)",
+        prop::collection::vec(any::<u8>(), 0..48),
+        1..4,
+    )
+    .prop_map(|files| {
+        tar_gz(
+            &files
+                .iter()
+                .map(|(path, bytes)| (path.as_str(), bytes.as_slice()))
+                .collect::<Vec<_>>(),
+        )
+    })
+}
+
+/// Package interfaces in compact or indented JSON, so the interface digest has to read past the spelling.
+fn package_interface() -> impl Strategy<Value = Vec<u8>> {
+    (
+        prop::collection::btree_map("[a-z][a-z0-9_/]{0,11}", text(true, 0..8), 0..4),
+        any::<bool>(),
+    )
+        .prop_map(|(modules, indented)| {
+            let interface = serde_json::json!({ "modules": modules });
+            if indented {
+                serde_json::to_vec_pretty(&interface).unwrap()
+            } else {
+                serde_json::to_vec(&interface).unwrap()
+            }
+        })
+}
+
+/// Verify hooks with the evidence that sealing records for them, and notify hooks, under distinct ids.
+fn hooks() -> impl Strategy<Value = (Vec<HookConfig>, Vec<HookEvidence>, Vec<HookConfig>)> {
+    let verify = (
+        any::<bool>(),
+        any::<bool>(),
+        1..=3_600_u64,
+        text(true, 1..8),
+        prop::collection::vec("CI_[A-Z0-9]{1,6}", 0..2),
+        "[0-9a-f]{64}",
+    );
+    (
+        prop::collection::vec(verify, 0..3),
+        prop::collection::vec((1..=3_600_u64, any::<bool>()), 0..3),
+    )
+        .prop_map(|(verify, notify)| {
+            let mut definitions = Vec::new();
+            let mut evidence = Vec::new();
+            for (index, (required, succeeded, timeout_seconds, argument, env, output_sha256)) in
+                verify.into_iter().enumerate()
+            {
+                let id = format!("verify-{index}");
+                definitions.push(HookConfig {
+                    id: id.clone(),
+                    argv: vec![format!("./scripts/{id}"), argument],
+                    timeout_seconds,
+                    required,
+                    env,
+                });
+                evidence.push(HookEvidence {
+                    schema: "hook/v1".into(),
+                    id,
+                    kind: HookKind::Verify,
+                    required,
+                    success: required || succeeded,
+                    output_sha256,
+                });
+            }
+            let notify = notify
+                .into_iter()
+                .enumerate()
+                .map(|(index, (timeout_seconds, required))| HookConfig {
+                    id: format!("notify-{index}"),
+                    argv: vec![format!("./scripts/notify-{index}")],
+                    timeout_seconds,
+                    required,
+                    env: vec![],
+                })
+                .collect();
+            (definitions, evidence, notify)
+        })
+}
+
+/// Candidate inputs within the domain that sealing validates, with the built-in evidence that their outputs request.
+fn candidate_inputs() -> impl Strategy<Value = CandidateInput> {
+    let identity = (
+        "[a-z][a-z0-9_]{0,11}",
+        version(),
+        "([a-z]{1,6}/){0,2}",
+        "[0-9a-f]{40}",
+        "([a-z]{1,6}/){0,2}gleam\\.toml",
+        version(),
+    );
+    let policy = (
+        registry(),
+        any::<bool>(),
+        "[A-Za-z0-9]{1,12}/[A-Za-z0-9_-][A-Za-z0-9._-]{0,19}",
+        "([a-z]{1,8}[/-]){1,2}".prop_filter("a full ref", |prefix| !prefix.starts_with("refs/")),
+        text(true, 0..32),
+        approval(),
+    );
+    let outputs = (
+        prop::option::of(docs_tarball()),
+        any::<bool>(),
+        any::<bool>(),
+        any::<bool>(),
+        any::<bool>(),
+    );
+    let contents = (package_tarball(), package_interface(), hooks());
+    (identity, policy, outputs, contents).prop_map(
+        |(
+            (package, version, tag_prefix, commit_sha, manifest_path, compiler),
+            (registry, private, github_repository, release_branch_prefix, release_notes, approval),
+            (docs_tarball, github_release, sbom, provenance, allow_private_evidence_upload),
+            (
+                package_tarball,
+                package_interface,
+                (verify_hook_definitions, hook_evidence, notify_hook_definitions),
+            ),
+        )| {
+            // Sealing refuses built-in evidence named after a version with build metadata, because no asset name may hold its `+`.
+            // Only a version without built-in evidence keeps its build metadata, so this property leaves that refusal to a naming decision.
+            let version = if sbom || provenance {
+                Version {
+                    build: BuildMetadata::EMPTY,
+                    ..version
+                }
+            } else {
+                version
+            };
+            let mut input = CandidateInput {
+                tag: format!("{tag_prefix}v{version}"),
+                package,
+                version,
+                source: CandidateSource {
+                    commit_sha,
+                    manifest_path,
+                },
+                compiler,
+                registry,
+                private,
+                github_repository,
+                release_branch_prefix,
+                release_notes,
+                approval,
+                outputs: OutputConfig {
+                    docs: docs_tarball.is_some(),
+                    github_release,
+                    sbom,
+                    provenance,
+                    signature: false,
+                    allow_private_evidence_upload,
+                },
+                package_tarball,
+                docs_tarball,
+                package_interface,
+                notify_hooks: notify_hook_definitions
+                    .iter()
+                    .map(|hook| hook.id.clone())
+                    .collect(),
+                verify_hook_definitions,
+                sidecar_hook_definitions: vec![],
+                hook_evidence,
+                sidecars: vec![],
+                notify_hook_definitions,
+            };
+            input.sidecars = Candidate::built_in_evidence(&input).unwrap();
+            input
+        },
+    )
 }
