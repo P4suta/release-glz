@@ -1067,6 +1067,34 @@ fn a_release_without_a_verifiable_approval_stops_before_it_asks_github_for_anyth
 }
 
 #[test]
+fn a_candidate_whose_package_changed_names_its_checksum_mismatch() {
+    let temp = tempfile::tempdir().unwrap();
+    let (mut registry, registry_url) = listening();
+    let gleam = initialize_initial_package(temp.path(), &registry_url);
+    let candidate = rehearsed_candidate(temp.path(), &gleam);
+    let package = candidate.join("artifacts/package.tar");
+    let mut bytes = std::fs::read(&package).unwrap();
+    let last = bytes.last_mut().unwrap();
+    *last ^= 1;
+    std::fs::write(&package, bytes).unwrap();
+
+    let release = candidate_command(temp.path(), &gleam)
+        .args(["--output", "json", "release", "--dry-run", "--candidate"])
+        .arg(&candidate)
+        .output()
+        .unwrap();
+
+    assert_eq!(release.status.code(), Some(4), "{release:?}");
+    registry.finish();
+    let envelope = json(&release);
+    assert_published_envelope(&envelope);
+    assert_eq!(
+        envelope["diagnostics"][0]["code"],
+        "candidate_checksum_mismatch"
+    );
+}
+
+#[test]
 fn an_inspection_of_a_world_that_contradicts_the_candidate_is_an_immutable_conflict() {
     let temp = tempfile::tempdir().unwrap();
     let (mut registry, registry_url) = listening();

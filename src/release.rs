@@ -335,7 +335,7 @@ impl ReleaseTarget for LiveReleaseTarget {
                     Ok(complete) => complete,
                     Err(_) if !hook.required => false,
                     Err(error) => {
-                        return Err(crate::failure::classified(
+                        return Err(crate::failure::classified_keeping_reason(
                             crate::failure::FailureClass::Hook,
                             error,
                         ));
@@ -505,7 +505,10 @@ impl ReleaseTarget for LiveReleaseTarget {
                     .apply_notify(hook, self.repo.root(), &context)
                     .await
                     .map_err(|error| {
-                        crate::failure::classified(crate::failure::FailureClass::Hook, error)
+                        crate::failure::classified_keeping_reason(
+                            crate::failure::FailureClass::Hook,
+                            error,
+                        )
                     })?;
             }
         }
@@ -659,7 +662,7 @@ where
             Candidate::package_bytes(candidate_directory, &manifest).map_err(|source| {
                 run_error(
                     ReleaseState::Blocked,
-                    crate::failure::classified(
+                    crate::failure::classified_keeping_reason(
                         crate::failure::FailureClass::ImmutableStateConflict,
                         source,
                     ),
@@ -668,7 +671,7 @@ where
         let docs = Candidate::docs_bytes(candidate_directory, &manifest).map_err(|source| {
             run_error(
                 ReleaseState::Blocked,
-                crate::failure::classified(
+                crate::failure::classified_keeping_reason(
                     crate::failure::FailureClass::ImmutableStateConflict,
                     source,
                 ),
@@ -679,7 +682,7 @@ where
             Candidate::sidecar_bytes(candidate_directory, &manifest).map_err(|source| {
                 run_error(
                     ReleaseState::Blocked,
-                    crate::failure::classified(
+                    crate::failure::classified_keeping_reason(
                         crate::failure::FailureClass::ImmutableStateConflict,
                         source,
                     ),

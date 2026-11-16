@@ -165,7 +165,10 @@ impl Rehearsal {
         input.sidecars = built_in_evidence;
         input.sidecars.extend(sidecars.artifacts);
         Candidate::seal_prepared(&options.output, input, Some(artifacts)).map_err(|error| {
-            crate::failure::classified(crate::failure::FailureClass::ImmutableStateConflict, error)
+            crate::failure::classified_keeping_reason(
+                crate::failure::FailureClass::ImmutableStateConflict,
+                error,
+            )
         })
     }
 }
