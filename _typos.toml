@@ -1,0 +1,25 @@
+[default]
+extend-ignore-identifiers-re = ["[A-Fa-f0-9]{7,}"]
+# Base64url key material in test fixtures.
+extend-ignore-re = ["[A-Za-z0-9_-]{40,}"]
+
+[default.extend-words]
+# The in-toto attestation file extension.
+intoto = "intoto"
+# Test inputs that sit one letter away from a word on purpose.
+alph = "alph"
+ba = "ba"
+tru = "tru"
+# `café` spelled with a combining accent.
+caf = "caf"
+# The output format switch of Windows `tasklist`.
+FO = "FO"
+
+[files]
+extend-exclude = [
+  "target/",
+  "*.lock",
+  "package-lock.json",
+  "fuzz/corpus/",
+  "verification/quint/traces/",
+]

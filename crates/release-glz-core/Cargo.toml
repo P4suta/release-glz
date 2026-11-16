@@ -172,9 +172,7 @@ negative-control-ready-without-docs = []
 negative-control-signed-delay = []
 
 [dependencies]
-serde = { version = "1.0.228", default-features = false, features = [
-  "derive",
-], optional = true }
+serde = { version = "1.0.228", default-features = false, features = ["derive"], optional = true }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }

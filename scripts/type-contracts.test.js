@@ -95,12 +95,12 @@ test("every JavaScript file opts into checking and the project checks it", () =>
   }
 });
 
-test("the compiler and the Node types are pinned outside the Action", () => {
+test("the compiler, the linter, and the Node types are pinned outside the Action", () => {
   const manifest = readObject("package.json");
   assert.equal(manifest.dependencies, undefined);
   const tools = manifest.devDependencies;
   assert.ok(isRecord(tools), "package.json pins no development tools");
-  assert.deepEqual(Object.keys(tools).sort(), ["@types/node", "typescript"]);
+  assert.deepEqual(Object.keys(tools).sort(), ["@biomejs/biome", "@types/node", "typescript"]);
   const packages = readObject("package-lock.json").packages;
   assert.ok(isRecord(packages), "package-lock.json lists no packages");
   for (const [name, version] of Object.entries(tools)) {

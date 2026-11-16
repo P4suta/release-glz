@@ -1,0 +1,18 @@
+# Repeats the machine configuration of ocomment, which a hosted runner lacks.
+version = 1
+
+# Remove nothing.
+[policy]
+mode = "none"
+
+# One sentence per line.
+[style]
+wrap = "sentence"
+
+# Fuzz seeds, model traces, and test fixtures are inputs under test.
+[files]
+exclude = ["fuzz/corpus/**", "verification/quint/traces/**", "tests/fixtures/**"]
+
+[[overrides]]
+paths = ["justfile"]
+language = "shell"
