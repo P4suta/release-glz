@@ -528,6 +528,16 @@ fn candidate_verification_rejects_every_manifest_identity_and_digest_tamper() {
             "artifact checksum is not a lowercase SHA-256 digest",
         ),
         (
+            "artifact-sha-uppercase",
+            RefusalReason::CandidateChecksumMalformed,
+            "artifact checksum is not a lowercase SHA-256 digest",
+        ),
+        (
+            "semantic-sha-uppercase",
+            RefusalReason::CandidateChecksumMalformed,
+            "semantic checksum is not a lowercase SHA-256 digest",
+        ),
+        (
             "package-semantic",
             RefusalReason::CandidateSemanticChecksumMismatch,
             "candidate semantic checksum mismatch",
@@ -569,6 +579,12 @@ fn candidate_verification_rejects_every_manifest_identity_and_digest_tamper() {
             }
             "artifact-size" => manifest["artifacts"]["package"]["size"] = u64::MAX.into(),
             "artifact-sha" => manifest["artifacts"]["package"]["sha256"] = "g".repeat(64).into(),
+            "artifact-sha-uppercase" => {
+                uppercase_first_letter(&mut manifest["artifacts"]["package"]["sha256"])
+            }
+            "semantic-sha-uppercase" => {
+                uppercase_first_letter(&mut manifest["artifacts"]["package"]["semantic_sha256"])
+            }
             "package-semantic" => {
                 manifest["artifacts"]["package"]["semantic_sha256"] = "0".repeat(64).into()
             }
@@ -1752,7 +1768,7 @@ fn requested_sbom_and_provenance_are_built_in_deterministic_evidence() {
     assert_eq!(provenance["_type"], "https://in-toto.io/Statement/v1");
     assert_eq!(
         provenance["subject"][0]["digest"]["sha256"],
-        release_glz::hex::lower(&Sha256::digest(&input.package_tarball))
+        release_glz::canonical::sha256(&input.package_tarball).as_str()
     );
     input.sidecars = evidence;
     let sealed = Candidate::seal(&temp.path().join("complete"), input).unwrap();
@@ -1940,6 +1956,14 @@ fn mutate_candidate_json(directory: &std::path::Path, mutate: impl FnOnce(&mut s
     fs::write(path, serde_json::to_vec(&manifest).unwrap()).unwrap();
 }
 
+/// Spells the first letter of the digest in `digest` in uppercase, so the digest keeps its value and loses its one sealed spelling.
+fn uppercase_first_letter(digest: &mut serde_json::Value) {
+    let lowercase = digest.as_str().unwrap();
+    let letter = lowercase.chars().find(char::is_ascii_lowercase).unwrap();
+    let uppercase = letter.to_ascii_uppercase().to_string();
+    *digest = lowercase.replacen(letter, &uppercase, 1).into();
+}
+
 fn hex_package(files: &[(&str, &[u8])]) -> Vec<u8> {
     outer_package(b"3", b"metadata", &tar_gz(files), None)
 }
@@ -1955,7 +1979,7 @@ fn outer_package(
         digest.update(version);
         digest.update(metadata);
         digest.update(contents);
-        release_glz::hex::upper(&digest.finalize()).into_bytes()
+        release_glz::hex::upper(&release_glz::canonical::finalize_sha256(digest)).into_bytes()
     });
     tar(&[
         ("VERSION", version),
@@ -2014,5 +2038,5 @@ fn append<W: Write>(archive: &mut tar::Builder<W>, path: &str, contents: &[u8]) 
 }
 
 fn hex_sha256(bytes: &[u8]) -> String {
-    release_glz::hex::lower(&Sha256::digest(bytes))
+    release_glz::canonical::sha256(bytes).into()
 }

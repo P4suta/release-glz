@@ -9,11 +9,11 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use release_glz_core::{AfterPoll, Answer, Next, REGISTRY_RETRIES};
+use release_glz_domain::Sha256Digest;
 use reqwest::{StatusCode, Url};
 use semver::Version;
 use serde::Deserialize;
 
-use crate::canonical::SHA256_HEX_LEN;
 use crate::config::{
     AuthKind, RegistryConfig, url_is_http_loopback, uses_trusted_transport,
     validate_registry_repository,
@@ -82,7 +82,7 @@ pub struct RegistryRelease {
     /// Whether the release has been retired.
     pub retired: bool,
     /// Outer tarball checksum, when the registry exposes one.
-    pub outer_checksum: Option<String>,
+    pub outer_checksum: Option<Sha256Digest>,
 }
 
 /// What a publish request established.
@@ -683,12 +683,12 @@ impl Registry for HexRegistry {
                 "registry returned release {parsed} while observing {version}"
             );
         }
-        validate_checksum(&release.checksum)?;
+        let checksum = parse_checksum(&release.checksum)?;
         Ok(Some(RegistryRelease {
             version: parsed,
             has_docs: release.has_docs,
             retired: release.retirement.is_some(),
-            outer_checksum: Some(release.checksum.to_ascii_lowercase()),
+            outer_checksum: Some(checksum),
         }))
     }
 
@@ -778,14 +778,14 @@ fn retry_after(headers: &reqwest::header::HeaderMap) -> Option<u64> {
         .and_then(|value| release_glz_core::delay_seconds(value.as_bytes()))
 }
 
-fn validate_checksum(value: &str) -> Result<()> {
-    if value.len() != SHA256_HEX_LEN || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        refuse!(
-            RegistryReleaseInvalid,
-            "registry release checksum is not SHA-256"
-        );
-    }
-    Ok(())
+/// The outer checksum of a registry release, which the registry may spell in either case.
+fn parse_checksum(value: &str) -> Result<Sha256Digest> {
+    Sha256Digest::from_wire(value).with_context(|| {
+        Refusal::new(
+            RefusalReason::RegistryReleaseInvalid,
+            "registry release checksum is not SHA-256",
+        )
+    })
 }
 
 #[cfg(test)]
@@ -1089,10 +1089,19 @@ mod tests {
             );
         }
 
-        assert!(validate_checksum(&"a".repeat(64)).is_ok());
-        assert!(validate_checksum(&"A".repeat(64)).is_ok());
+        for spelled in [
+            "a".repeat(64),
+            "A".repeat(64),
+            format!("A{}", "a".repeat(63)),
+        ] {
+            assert_eq!(
+                parse_checksum(&spelled).unwrap().as_str(),
+                "a".repeat(64),
+                "{spelled}"
+            );
+        }
         for malformed in ["a".repeat(63), "g".repeat(64)] {
-            let error = validate_checksum(&malformed).unwrap_err();
+            let error = parse_checksum(&malformed).unwrap_err();
             assert_eq!(
                 (refusal_reason(&error), error.to_string()),
                 (

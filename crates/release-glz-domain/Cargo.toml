@@ -1,6 +1,6 @@
 [package]
 name = "release-glz-domain"
-description = "Owned checked types of release-glz, each built only through a predicate of the proved core"
+description = "Owned checked types of release-glz, each holding only values that a predicate of the proved core accepts"
 version = "0.0.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"

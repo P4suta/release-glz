@@ -1,56 +1,24 @@
-//! Hexadecimal rendering for digests.
+//! The spelling of a digest in the `CHECKSUM` entry of a Hex package.
 //!
-//! Every digest that crosses the public boundary is written here rather than through a formatting trait, which a dependency could withdraw.
+//! Hex writes that entry in uppercase hexadecimal, and every other digest keeps the lowercase spelling of [`Sha256Digest`].
 
-/// Nibbles in one byte.
-const NIBBLES_PER_BYTE: usize = 2;
+use release_glz_domain::Sha256Digest;
 
-/// Mask selecting the low nibble of a byte.
-const LOW_NIBBLE: u8 = 0x0f;
-
-/// Bits to shift a byte right by to reach its high nibble.
-const HIGH_NIBBLE_SHIFT: u32 = 4;
-
-const LOWERCASE: &[u8; 16] = b"0123456789abcdef";
-const UPPERCASE: &[u8; 16] = b"0123456789ABCDEF";
-
-/// Render bytes as lowercase hexadecimal.
-pub fn lower(bytes: &[u8]) -> String {
-    encode(bytes, LOWERCASE)
-}
-
-/// Render bytes as uppercase hexadecimal.
-pub fn upper(bytes: &[u8]) -> String {
-    encode(bytes, UPPERCASE)
-}
-
-fn encode(bytes: &[u8], alphabet: &[u8; 16]) -> String {
-    let mut rendered = String::with_capacity(bytes.len() * NIBBLES_PER_BYTE);
-    for byte in bytes {
-        rendered.push(char::from(alphabet[usize::from(byte >> HIGH_NIBBLE_SHIFT)]));
-        rendered.push(char::from(alphabet[usize::from(byte & LOW_NIBBLE)]));
-    }
-    rendered
+/// The uppercase spelling of `digest` that the `CHECKSUM` entry of a Hex package records.
+pub fn upper(digest: &Sha256Digest) -> String {
+    digest.as_str().to_ascii_uppercase()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use release_glz_domain::Sha256Digest;
+
+    use super::upper;
 
     #[test]
-    fn rendering_matches_the_formatting_traits_it_replaces() {
-        for bytes in [
-            vec![],
-            vec![0x00],
-            vec![0xff],
-            vec![0x0a, 0xb0, 0x5f, 0x10],
-            (0..=255_u8).collect::<Vec<_>>(),
-        ] {
-            let expected_lower: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
-            let expected_upper: String = bytes.iter().map(|byte| format!("{byte:02X}")).collect();
-            assert_eq!(lower(&bytes), expected_lower);
-            assert_eq!(upper(&bytes), expected_upper);
-            assert_eq!(lower(&bytes).len(), bytes.len() * NIBBLES_PER_BYTE);
-        }
+    fn the_checksum_spelling_is_the_digest_in_uppercase() {
+        let digest = Sha256Digest::parse(&"0123456789abcdef".repeat(4)).unwrap();
+        assert_eq!(upper(&digest), "0123456789ABCDEF".repeat(4));
+        assert_eq!(Sha256Digest::from_wire(&upper(&digest)).unwrap(), digest);
     }
 }

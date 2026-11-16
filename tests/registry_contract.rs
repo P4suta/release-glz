@@ -3,6 +3,7 @@ use release_glz::failure::{RefusalReason, refusal_reason};
 use release_glz::registry::{
     HexRegistry, PublishOutcome, Registry, RegistryCredentialAudit, VisibilityPoll,
 };
+use release_glz_domain::Sha256Digest;
 use release_glz_test_support::http::{FakeServer, Reply, Request, Response};
 use semver::Version;
 
@@ -18,7 +19,7 @@ async fn custom_registry_authenticates_reads_and_observes_outer_checksum() {
     let version = Version::new(1, 2, 3);
     assert!(registry.package("widget").await.unwrap().is_some());
     let release = registry.release("widget", &version).await.unwrap().unwrap();
-    assert_eq!(release.outer_checksum.unwrap(), "a".repeat(64));
+    assert_eq!(release.outer_checksum.unwrap().as_str(), "a".repeat(64));
     assert_eq!(
         registry.source_tarball("widget", &version).await.unwrap(),
         b"package-bytes"
@@ -421,7 +422,7 @@ async fn registry_payloads_are_strictly_typed_and_release_checksums_are_exact() 
     );
     let release = registry.release("widget", &version).await.unwrap().unwrap();
     assert_eq!(
-        release.outer_checksum.as_deref(),
+        release.outer_checksum.as_ref().map(Sha256Digest::as_str),
         Some("a".repeat(64).as_str())
     );
     assert!(release.has_docs);

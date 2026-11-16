@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use release_glz_domain::CommitId;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
+use crate::canonical::sha256;
 use crate::config::{validate_git_ref, validate_relative_path, validate_release_branch_prefix};
 use crate::diff::unified_diff;
 use crate::failure::{RefusalReason, refused};
@@ -129,7 +129,8 @@ pub fn render_configured(
     validate_scalar(default_branch, "default branch", true)?;
     validate_manifest_scalar(&manifest)?;
     let manifest_yaml = format!("\"{manifest}\"");
-    let manifest_key = &digest(manifest.as_bytes())[..CONCURRENCY_KEY_LENGTH];
+    let manifest_digest = sha256(&manifest);
+    let manifest_key = &manifest_digest.as_str()[..CONCURRENCY_KEY_LENGTH];
     validate_scalar(environment, "approval environment", false)?;
     validate_environment_name(registry_credential_env, "registry credential environment")?;
     validate_scalar(release_branch_prefix, "release branch prefix", true)?;
@@ -638,7 +639,7 @@ pub fn sync(
                 })?;
             if state.schema != "workflow-state/v1"
                 || state.path != WORKFLOW_PATH
-                || state.sha256 != digest(current.as_bytes())
+                || state.sha256 != sha256(current).as_str()
             {
                 refuse!(
                     WorkflowModified,
@@ -651,7 +652,7 @@ pub fn sync(
         let state = WorkflowStateFile {
             schema: "workflow-state/v1".into(),
             path: WORKFLOW_PATH.into(),
-            sha256: digest(rendered.as_bytes()),
+            sha256: sha256(&rendered).into(),
         };
         atomic_write(
             &repo_root.join(WORKFLOW_STATE_PATH),
@@ -680,10 +681,6 @@ fn atomic_write(path: &Path, contents: &[u8]) -> Result<()> {
         .map_err(|error| error.error)
         .with_context(|| format!("failed to atomically write `{}`", path.display()))?;
     Ok(())
-}
-
-fn digest(bytes: &[u8]) -> String {
-    crate::hex::lower(&Sha256::digest(bytes))
 }
 
 #[cfg(test)]
