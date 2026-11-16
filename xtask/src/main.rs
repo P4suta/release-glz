@@ -1,6 +1,6 @@
 //! The command line of the repository tasks.
 //!
-//! `cargo xtask check` runs the fast gate, `--staged` checks only the staged files, and `--platform` runs the checks that depend on the operating system.
+//! `cargo xtask check` runs the fast gate, `--staged` checks only the staged files, `--platform` runs the checks that depend on the operating system, and `--workflows` checks the repository workflows and the generated workflow.
 //! `cargo xtask commit-msg MESSAGE` refuses a commit message without a Conventional Commit type, and a fix without a staged test.
 //! `cargo xtask proofs` proves every Kani harness, one module at a time, and every negative control, and audits each run.
 //! `cargo xtask proof-mutants` runs every mutant of the core crates through the harnesses, `--shard K --of N` runs one part of them, `merge` joins the parts, and `check` checks the committed receipt.
@@ -14,13 +14,14 @@ use std::process::ExitCode;
 use xtask::container::Failure;
 use xtask::{check, commit_msg, lean, proof_mutants, proofs, quint, structure, trace};
 
-const USAGE: &str = "usage: cargo xtask check [--staged | --platform]|commit-msg MESSAGE|proofs|proof-mutants [--shard K --of N | merge RECEIPT... | check]|lean|quint|trace|structure";
+const USAGE: &str = "usage: cargo xtask check [--staged | --platform | --workflows]|commit-msg MESSAGE|proofs|proof-mutants [--shard K --of N | merge RECEIPT... | check]|lean|quint|trace|structure";
 
 fn run(root: &Path, arguments: &[&str]) -> Option<Result<(), Failure>> {
     Some(match *arguments {
         ["check"] => check::run(root, check::Scope::Everything),
         ["check", "--staged"] => check::run(root, check::Scope::Staged),
         ["check", "--platform"] => check::run(root, check::Scope::Platform),
+        ["check", "--workflows"] => check::run(root, check::Scope::Workflows),
         ["commit-msg", message] => commit_msg::check(root, Path::new(message)),
         ["proofs"] => proofs::run(root),
         ["proof-mutants"] => proof_mutants::run(root, None),

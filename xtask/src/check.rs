@@ -1,11 +1,13 @@
-//! The fast gate: formatting, the crate structure, lints, the tests, the documentation, the dependency policy, the Action, and the workflows.
+//! The fast gate: formatting, the crate structure, lints, the tests, the documentation, the dependency policy, the Action, the workflows, and the workflow that `release-glz init` generates.
 
 use crate::container::Failure;
+use crate::fs;
 use crate::report::Report;
 use crate::structure;
-use crate::tool::{Tool, capture, succeed};
+use crate::tool::{Tool, capture, refuse, succeed};
 use std::io::ErrorKind;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 
 /// Which files a check covers.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -16,12 +18,27 @@ pub enum Scope {
     Staged,
     /// The checks whose outcome depends on the operating system, for a host that receives the files without their Git history.
     Platform,
+    /// The repository workflows and the generated workflow, as the release gate checks them on the candidate.
+    Workflows,
 }
 
 const RUST_EDITION: &str = "2024";
 const WORKFLOWS: &str = ".github/workflows";
 const FUZZ_MANIFEST: &str = "fuzz/Cargo.toml";
 const SCRIPTS: &str = "scripts";
+/// The package whose managed workflow the gate generates.
+const WORKFLOW_FIXTURE: &str = "tests/fixtures/workflow/gleam.toml";
+const GENERATED_WORKFLOW: &str = ".github/workflows/release-glz.yml";
+/// A copy of the generated workflow with one planted defect, beside the generated one.
+const PLANTED_WORKFLOW: &str = ".github/workflows/planted.yml";
+/// The commit that the generated workflow pins release-glz to, which only has to be a full lowercase SHA.
+const FIXTURE_ACTION_SHA: &str = "0123456789abcdef0123456789abcdef01234567";
+/// The exit code with which `scripts/verify-workflows.js` refuses a workflow.
+const VERIFIER_REFUSAL: i32 = 1;
+/// zizmor's exit code when its most severe finding is medium.
+const ZIZMOR_MEDIUM: i32 = 13;
+/// zizmor's exit code when its most severe finding is high.
+const ZIZMOR_HIGH: i32 = 14;
 
 fn staged_paths(root: &Path) -> Result<Vec<String>, Failure> {
     let listing = capture(
@@ -156,7 +173,7 @@ fn cli(root: &Path) -> Result<(), Failure> {
                 "--",
                 "--help",
             ])
-            .stdout(std::process::Stdio::null()),
+            .stdout(Stdio::null()),
         "release-glz --help",
     )
 }
@@ -240,12 +257,7 @@ fn javascript(root: &Path) -> Result<(), Failure> {
 }
 
 fn workflows(root: &Path) -> Result<(), Failure> {
-    succeed(
-        Tool::Node
-            .command(root)
-            .args(["scripts/verify-workflows.js", WORKFLOWS]),
-        "verify-workflows.js",
-    )?;
+    succeed(verify_workflows(root).arg(WORKFLOWS), "verify-workflows.js")?;
     succeed(
         Tool::Node
             .command(root)
@@ -253,18 +265,7 @@ fn workflows(root: &Path) -> Result<(), Failure> {
         "de-shell.js",
     )?;
     succeed(&mut Tool::Actionlint.command(root), "actionlint")?;
-    succeed(
-        Tool::Zizmor.command(root).args([
-            "--persona",
-            "auditor",
-            "--min-severity",
-            "high",
-            "--no-online-audits",
-            WORKFLOWS,
-            "action.yml",
-        ]),
-        "zizmor",
-    )?;
+    succeed(zizmor(root).args([WORKFLOWS, "action.yml"]), "zizmor")?;
     succeed(
         Tool::Jq.command(root).args([
             "-L",
@@ -276,6 +277,133 @@ fn workflows(root: &Path) -> Result<(), Failure> {
         ]),
         "check-required.jq",
     )
+}
+
+/// zizmor with every audit at every severity, without network access.
+fn zizmor(root: &Path) -> Command {
+    let mut command = Tool::Zizmor.command(root);
+    command.args(["--persona", "auditor", "--no-online-audits"]);
+    command
+}
+
+fn verify_workflows(root: &Path) -> Command {
+    let mut command = Tool::Node.command(root);
+    command.arg("scripts/verify-workflows.js");
+    command
+}
+
+/// `text` with its first line that `rewrite` changes replaced, or a failure naming the `wanted` line when no line changes.
+fn rewrite_first_line(
+    text: &str,
+    wanted: &str,
+    rewrite: impl Fn(&str) -> Option<String>,
+) -> Result<String, Failure> {
+    let mut lines = text.lines().map(str::to_owned).collect::<Vec<_>>();
+    let (line, rewritten) = lines
+        .iter_mut()
+        .find_map(|line| rewrite(line.as_str()).map(|rewritten| (line, rewritten)))
+        .ok_or_else(|| Failure::new(format!("the generated workflow holds no {wanted}")))?;
+    *line = rewritten;
+    Ok(lines.join("\n"))
+}
+
+/// The workflow with its first checkout taken from a movable tag instead of a commit.
+fn unpinned_checkout(workflow: &str) -> Result<String, Failure> {
+    rewrite_first_line(workflow, "pinned checkout", |line| {
+        line.split_once("uses: actions/checkout@")
+            .map(|(indentation, _)| format!("{indentation}uses: actions/checkout@v7"))
+    })
+}
+
+/// The workflow with its first checkout keeping its credentials, which zizmor finds at medium severity.
+fn persisted_credentials(workflow: &str) -> Result<String, Failure> {
+    rewrite_first_line(workflow, "checkout that drops its credentials", |line| {
+        line.split_once("persist-credentials: false")
+            .map(|(indentation, _)| format!("{indentation}persist-credentials: true"))
+    })
+}
+
+/// Writes the fixture package into `package` as a repository of its own, and has `release-glz init` generate its workflow.
+fn generate_workflow(root: &Path, package: &Path) -> Result<PathBuf, Failure> {
+    let manifest = package.join("gleam.toml");
+    fs::write(&manifest, fs::read_to_string(root.join(WORKFLOW_FIXTURE))?)?;
+    succeed(
+        Tool::Git
+            .command(package)
+            .args(["init", "--quiet", "--initial-branch=main"]),
+        "git init of the fixture package",
+    )?;
+    succeed(
+        Tool::Cargo
+            .command(root)
+            .args([
+                "run",
+                "--locked",
+                "--package",
+                "release-glz",
+                "--",
+                "--manifest-path",
+            ])
+            .arg(&manifest)
+            .args(["init", "--update", "--action-sha", FIXTURE_ACTION_SHA])
+            .stdout(Stdio::null()),
+        "release-glz init",
+    )?;
+    Ok(package.join(GENERATED_WORKFLOW))
+}
+
+/// The checkers refuse each defect planted in a copy of the generated workflow, so a checker that stops finding the defect fails the gate.
+fn planted_defects_fail(root: &Path, package: &Path, workflow: &str) -> Result<(), Failure> {
+    let planted = package.join(PLANTED_WORKFLOW);
+    fs::write(&planted, unpinned_checkout(workflow)?)?;
+    refuse(
+        verify_workflows(root).arg(&planted),
+        "verify-workflows.js over an unpinned action",
+        VERIFIER_REFUSAL,
+    )?;
+    refuse(
+        zizmor(root).arg(&planted),
+        "zizmor over an unpinned action",
+        ZIZMOR_HIGH,
+    )?;
+    fs::write(&planted, persisted_credentials(workflow)?)?;
+    refuse(
+        zizmor(root).arg(&planted),
+        "zizmor over a checkout that keeps its credentials",
+        ZIZMOR_MEDIUM,
+    )
+}
+
+/// The workflow that `release-glz init` generates for the fixture package meets the checkers of the repository workflows.
+fn generated_workflow(root: &Path) -> Result<(), Failure> {
+    let package = tempfile::tempdir().map_err(|error| {
+        Failure::new(format!(
+            "the directory of the fixture package wasn't created: {error}"
+        ))
+    })?;
+    let workflow = generate_workflow(root, package.path())?;
+    let text = fs::read_to_string(&workflow)?;
+    if !text.contains(&format!("P4suta/release-glz@{FIXTURE_ACTION_SHA}")) {
+        return Err(Failure::new(format!(
+            "{GENERATED_WORKFLOW} doesn't pin release-glz to {FIXTURE_ACTION_SHA}"
+        )));
+    }
+    succeed(verify_workflows(root).arg(&workflow), "verify-workflows.js")?;
+    succeed(
+        Tool::Node
+            .command(root)
+            .arg("scripts/de-shell.js")
+            .arg(&workflow),
+        "de-shell.js",
+    )?;
+    succeed(Tool::Actionlint.command(root).arg(&workflow), "actionlint")?;
+    succeed(zizmor(root).arg(&workflow), "zizmor")?;
+    planted_defects_fail(root, package.path(), &text)?;
+    package.close().map_err(|error| {
+        Failure::new(format!(
+            "the directory of the fixture package wasn't removed: {error}"
+        ))
+    })
 }
 
 /// The README and license files equal what `repository.toml` generates, where the owner's `dotfiles` tool is installed.
@@ -315,6 +443,7 @@ fn everything(root: &Path) -> Result<(), Failure> {
     report.stage("deny", || deny(root));
     report.stage("javascript", || javascript(root));
     report.stage("workflows", || workflows(root));
+    report.stage("generated workflow", || generated_workflow(root));
     report.stage("repository", || repository(root));
     report.finish("check")
 }
@@ -344,6 +473,13 @@ fn platform(root: &Path) -> Result<(), Failure> {
     report.finish("check --platform")
 }
 
+fn workflow_checks(root: &Path) -> Result<(), Failure> {
+    let mut report = Report::default();
+    report.stage("workflows", || workflows(root));
+    report.stage("generated workflow", || generated_workflow(root));
+    report.finish("check --workflows")
+}
+
 /// Runs the checks of one scope and reports every failure together.
 ///
 /// # Errors
@@ -354,13 +490,55 @@ pub fn run(root: &Path, scope: Scope) -> Result<(), Failure> {
         Scope::Everything => everything(root),
         Scope::Staged => staged(root),
         Scope::Platform => platform(root),
+        Scope::Workflows => workflow_checks(root),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{script_tests, with_suffix};
+    use super::{persisted_credentials, script_tests, unpinned_checkout, with_suffix};
     use std::path::Path;
+
+    const CHECKOUTS: &str = "\
+jobs:
+  plan:
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false";
+
+    #[test]
+    fn each_plant_changes_one_line_of_the_workflow() {
+        for (planted, expected) in [
+            (
+                unpinned_checkout(CHECKOUTS).unwrap(),
+                "      - uses: actions/checkout@v7",
+            ),
+            (
+                persisted_credentials(CHECKOUTS).unwrap(),
+                "          persist-credentials: true",
+            ),
+        ] {
+            let changed = CHECKOUTS
+                .lines()
+                .zip(planted.lines())
+                .filter(|(before, after)| before != after)
+                .map(|(_, after)| after)
+                .collect::<Vec<_>>();
+            assert_eq!(changed, [expected]);
+            assert_eq!(planted.lines().count(), CHECKOUTS.lines().count());
+        }
+        for plant in [unpinned_checkout, persisted_credentials] {
+            assert!(plant("jobs: {}").is_err_and(|failure| {
+                failure
+                    .to_string()
+                    .starts_with("the generated workflow holds no ")
+            }));
+        }
+    }
 
     #[test]
     fn a_staged_scope_selects_files_by_suffix() {

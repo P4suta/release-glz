@@ -156,6 +156,53 @@ fn no_job_that_compiles_holds_a_write_permission() {
     assert!(!compiles(job(&workflow, "bind-release-pr")));
 }
 
+/// Every job holds exactly the scopes its steps use, so `plan` and `prepare`, whose commands never ask GitHub for anything, hold no pull request access.
+#[test]
+fn every_job_holds_exactly_the_scopes_its_steps_use() {
+    let workflow = workflow();
+    let expected: [(&str, &[(&str, &str)]); 8] = [
+        ("plan", &[("contents", "read")]),
+        (
+            "release-pr",
+            &[("contents", "write"), ("pull-requests", "write")],
+        ),
+        ("rehearse-release-pr", &[("contents", "read")]),
+        (
+            "bind-release-pr",
+            &[("contents", "read"), ("pull-requests", "write")],
+        ),
+        ("prepare", &[("contents", "read")]),
+        ("validate-promotion", &[]),
+        (
+            "authorize",
+            &[("contents", "read"), ("pull-requests", "read")],
+        ),
+        (
+            "publish",
+            &[
+                ("actions", "read"),
+                ("contents", "write"),
+                ("id-token", "write"),
+                ("pull-requests", "read"),
+            ],
+        ),
+    ];
+    assert_eq!(
+        workflow["jobs"].as_mapping().unwrap().len(),
+        expected.len(),
+        "every job needs its scopes listed here"
+    );
+    for (name, scopes) in expected {
+        let held: BTreeSet<_> = job(&workflow, name)["permissions"]
+            .as_mapping()
+            .unwrap_or_else(|| panic!("{name} lists no permissions"))
+            .iter()
+            .map(|(scope, access)| (scope.as_str().unwrap(), access.as_str().unwrap()))
+            .collect();
+        assert_eq!(held, scopes.iter().copied().collect(), "{name}");
+    }
+}
+
 #[test]
 fn the_check_finds_a_write_job_that_would_compile() {
     let mut without_plan = workflow();

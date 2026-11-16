@@ -74,11 +74,7 @@ fn assurance_workflow_has_fixed_fail_closed_shipping_gates() {
         "zizmor",
         "rustup toolchain install 1.97.0 --profile minimal",
         "cargo +1.97.0 install --locked zizmor --version",
-        "scripts/verify-workflows.js",
-        "scripts/de-shell.js",
-        "tests/fixtures/workflow/gleam.toml",
-        "GENERATED_WORKFLOW",
-        "init --update",
+        "run: cargo xtask check --workflows",
     ] {
         assert!(
             yaml.contains(required),
