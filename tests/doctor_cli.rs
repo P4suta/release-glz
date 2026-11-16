@@ -1,13 +1,11 @@
-#![cfg(unix)]
-
 use std::ffi::OsString;
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 use release_glz::workflow::{self, WorkflowMode, WorkflowSettings};
+use release_glz_test_support::fake_tool::{self, Action, Behavior, Condition, Rule};
 use release_glz_test_support::http::{FakeServer, Request, Response};
 use release_glz_test_support::schema::assert_published_envelope;
-use release_glz_test_support::{git, init_repository, isolated_command, path_searching_first};
+use release_glz_test_support::{git, init_repository, isolated_command};
 
 #[test]
 fn doctor_cli_collects_local_and_github_checks_into_the_command_envelope() {
@@ -34,7 +32,7 @@ fn doctor_cli_collects_local_and_github_checks_into_the_command_envelope() {
     )
     .unwrap();
 
-    let gleam = fake_gleam(temp.path(), "#!/bin/sh\nprintf '%s\\n' 'gleam 1.12.3'\n");
+    let gleam = fake_gleam(temp.path(), &Behavior::reporting_version("1.12.3"));
 
     let mut server = fake_github(&[
         r#"{"private":true,"default_branch":"main","plan":{"name":"enterprise"}}"#,
@@ -113,7 +111,7 @@ fn doctor_defaults_to_local_checks_without_contacting_registry_or_github() {
         WorkflowMode::Update,
     )
     .unwrap();
-    let gleam = fake_gleam(temp.path(), "#!/bin/sh\nprintf '%s\\n' 'gleam 1.12.3'\n");
+    let gleam = fake_gleam(temp.path(), &Behavior::reporting_version("1.12.3"));
     let mut github = fake_github(&[]);
 
     let output = isolated_command(env!("CARGO_BIN_EXE_release-glz"))
@@ -162,9 +160,24 @@ fn candidate_build_reports_the_original_isolated_failure_without_claiming_creden
     git(temp.path(), &["add", "."]);
     git(temp.path(), &["commit", "-m", "initial"]);
 
+    // A build that still saw the registry credential would match no rule and fail without the injected message.
     let gleam = fake_gleam(
         temp.path(),
-        "#!/bin/sh\nset -eu\nif [ \"${1:-}\" = --version ]; then printf '%s\\n' 'gleam 1.12.3'; exit 0; fi\ntest -z \"${TEST_HEX_TOKEN-}\"\nprintf '%s\\n' 'injected compiler failure' >&2\nexit 9\n",
+        &Behavior {
+            rules: vec![
+                Rule {
+                    when: vec![Condition::ArgumentsStartWith(vec!["--version".into()])],
+                    actions: vec![Action::Stdout("gleam 1.12.3\n".into())],
+                },
+                Rule {
+                    when: vec![Condition::EnvironmentLacks("TEST_HEX_TOKEN".into())],
+                    actions: vec![
+                        Action::Stderr("injected compiler failure\n".into()),
+                        Action::Exit(9),
+                    ],
+                },
+            ],
+        },
     );
 
     let output = isolated_command(env!("CARGO_BIN_EXE_release-glz"))
@@ -227,7 +240,7 @@ fn doctor_cli_uses_policy_exit_and_unsuccessful_envelope_when_blocked() {
     )
     .unwrap();
 
-    let gleam = fake_gleam(temp.path(), "#!/bin/sh\nprintf '%s\\n' 'gleam 9.9.9'\n");
+    let gleam = fake_gleam(temp.path(), &Behavior::reporting_version("9.9.9"));
     let mut server = fake_github(&[
         r#"{"private":true,"default_branch":"main","plan":{"name":"enterprise"}}"#,
         r#"{"protection_rules":[{"type":"required_reviewers","prevent_self_review":true,"reviewers":[{"type":"User","reviewer":{"login":"reviewer"}}]}],"deployment_branch_policy":{"protected_branches":true,"custom_branch_policies":false}}"#,
@@ -265,16 +278,9 @@ fn doctor_cli_uses_policy_exit_and_unsuccessful_envelope_when_blocked() {
     );
 }
 
-/// Write `script` as a compiler stand-in named `gleam`, and return a `PATH` that finds it first.
-fn fake_gleam(root: &Path, script: &str) -> OsString {
-    let directory = root.join("fake-compiler");
-    std::fs::create_dir(&directory).unwrap();
-    let gleam = directory.join("gleam");
-    std::fs::write(&gleam, script).unwrap();
-    let mut permissions = std::fs::metadata(&gleam).unwrap().permissions();
-    permissions.set_mode(0o755);
-    std::fs::set_permissions(&gleam, permissions).unwrap();
-    path_searching_first(&directory)
+/// Install a compiler stand-in that plays `behavior`, and return a `PATH` that finds it first.
+fn fake_gleam(root: &Path, behavior: &Behavior) -> OsString {
+    fake_tool::gleam_on_path(&root.join("fake-compiler"), behavior)
 }
 
 fn manifest(registry_base: &str) -> String {

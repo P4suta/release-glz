@@ -1,6 +1,6 @@
 //! A loopback HTTP server that answers from a script or a handler and records every request.
 //!
-//! The server blocks on each accept and read instead of polling a clock, so a slow machine delays a test without failing it.
+//! The server blocks on each accept, and a read wakes before its data arrives only to check whether stopping has begun, so a slow machine delays a test without failing it.
 //! Each connection carries one request and one answer, and every answer closes its connection.
 
 use std::collections::VecDeque;
@@ -9,11 +9,17 @@ use std::net::{Ipv4Addr, Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
+use std::time::Duration;
 
 use super::fail;
 
 /// Bytes read from a connection in one call.
 const READ_CHUNK_BYTES: usize = 8192;
+
+/// How long a read waits for data before it checks whether stopping has begun.
+///
+/// Shutting the connection down ends a blocked read on Unix, but on Windows the read stays blocked, so the read itself checks.
+const STOP_CHECK_INTERVAL: Duration = Duration::from_millis(100);
 
 /// The blank line that ends a request's head.
 const HEAD_END: &[u8] = b"\r\n\r\n";
@@ -363,8 +369,9 @@ struct State {
     beyond_script: usize,
     /// Faults that fail the test once the server stops.
     problems: Vec<String>,
-    /// A handle on the connection being served, which stopping shuts down so that a read blocked on it returns.
+    /// A handle on the connection being served, which stopping shuts down so that a write blocked on a client that reads nothing returns.
     in_flight: Option<TcpStream>,
+    /// Whether stopping has begun, which ends the connection being read at its next check.
     stopping: bool,
     /// The local address of the connection that stopping opens to wake the thread.
     waker: Option<SocketAddr>,
@@ -442,7 +449,7 @@ impl State {
     fn begin_stopping(&mut self) {
         self.stopping = true;
         if let Some(in_flight) = self.in_flight.take() {
-            // A connection whose client has already left refuses the shutdown, and a read blocked on it has returned anyway.
+            // A connection whose client has already left refuses the shutdown, and an operation blocked on it has returned anyway.
             in_flight.shutdown(Shutdown::Both).unwrap_or_else(drop);
         }
     }
@@ -530,6 +537,10 @@ impl Shared {
         self.lock().begin_stopping();
     }
 
+    fn stopping(&self) -> bool {
+        self.lock().stopping
+    }
+
     fn name_waker(&self, address: SocketAddr) {
         self.lock().waker = Some(address);
         self.waker_named.notify_all();
@@ -558,16 +569,24 @@ fn serve(listener: &TcpListener, shared: &Shared) {
                 return;
             }
         };
+        // Bounding the reads before admission keeps stopping from shutting the connection down first, which macOS answers by refusing the bound.
+        let bounded = stream.set_read_timeout(Some(STOP_CHECK_INTERVAL)).is_ok();
         match shared.admit(&stream, peer) {
-            Admission::Serve => serve_connection(shared, stream),
+            Admission::Serve => serve_connection(shared, stream, bounded),
             Admission::HangUp => drop(stream),
             Admission::Stop => return,
         }
     }
 }
 
-fn serve_connection(shared: &Shared, mut stream: TcpStream) {
-    let reply = match receive(&mut stream) {
+fn serve_connection(shared: &Shared, mut stream: TcpStream, bounded: bool) {
+    // Only a connection whose client has already left refuses the bound, which ends it as a reset does.
+    let received = if bounded {
+        receive(&mut stream, &|| shared.stopping())
+    } else {
+        Ok(None)
+    };
+    let reply = match received {
         Ok(Some(request)) => shared.answer(request),
         Ok(None) => Reply::Close,
         Err(problem) => {
@@ -584,8 +603,11 @@ fn serve_connection(shared: &Shared, mut stream: TcpStream) {
     drop(stream);
 }
 
-/// The request that the connection carries, or `None` when it ends before the head and the body have arrived.
-fn receive(stream: &mut TcpStream) -> Result<Option<Request>, String> {
+/// The request that the connection carries, or `None` when it ends, or stopping begins, before the head and the body have arrived.
+fn receive(
+    stream: &mut TcpStream,
+    stopping: &impl Fn() -> bool,
+) -> Result<Option<Request>, String> {
     let mut raw = Vec::new();
     let head_length = loop {
         if let Some(start) = raw
@@ -594,7 +616,7 @@ fn receive(stream: &mut TcpStream) -> Result<Option<Request>, String> {
         {
             break start.saturating_add(HEAD_END.len());
         }
-        if !read_more(stream, &mut raw)? {
+        if !read_more(stream, &mut raw, stopping)? {
             return Ok(None);
         }
     };
@@ -603,7 +625,7 @@ fn receive(stream: &mut TcpStream) -> Result<Option<Request>, String> {
         .checked_add(head.body_length)
         .ok_or_else(|| format!("a request names an impossible length: {}", head.body_length))?;
     while raw.len() < total {
-        if !read_more(stream, &mut raw)? {
+        if !read_more(stream, &mut raw, stopping)? {
             return Ok(None);
         }
     }
@@ -619,7 +641,14 @@ fn receive(stream: &mut TcpStream) -> Result<Option<Request>, String> {
 }
 
 /// Append what the next read brings, and report whether the connection is still open.
-fn read_more(stream: &mut impl Read, raw: &mut Vec<u8>) -> Result<bool, String> {
+///
+/// A read that times out waits again until data arrives.
+/// Once `stopping` reports that stopping has begun, a read that times out or fails ends the connection, because Windows fails a read on a connection that stopping shut down.
+fn read_more(
+    stream: &mut impl Read,
+    raw: &mut Vec<u8>,
+    stopping: &impl Fn() -> bool,
+) -> Result<bool, String> {
     let mut chunk = [0_u8; READ_CHUNK_BYTES];
     loop {
         match stream.read(&mut chunk) {
@@ -629,6 +658,8 @@ fn read_more(stream: &mut impl Read, raw: &mut Vec<u8>) -> Result<bool, String> 
                 return Ok(true);
             }
             Err(error) if error.kind() == ErrorKind::Interrupted => {}
+            Err(_) if stopping() => return Ok(false),
+            Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {}
             Err(error)
                 if matches!(
                     error.kind(),
@@ -744,8 +775,48 @@ mod tests {
         };
         let mut raw = Vec::new();
 
-        assert_eq!(read_more(&mut reader, &mut raw), Ok(true));
+        assert_eq!(read_more(&mut reader, &mut raw, &|| false), Ok(true));
         assert_eq!(raw, b"request");
+    }
+
+    #[test]
+    fn once_stopping_begins_a_failed_read_ends_the_connection() {
+        let mut raw = Vec::new();
+        let mut shut_down = FailsFirst {
+            error: Some(ErrorKind::Other),
+            data: b"request",
+        };
+
+        assert_eq!(read_more(&mut shut_down, &mut raw, &|| true), Ok(false));
+        assert_eq!(raw, b"");
+    }
+
+    #[test]
+    fn a_read_that_times_out_waits_again_until_stopping_begins() {
+        for kind in [ErrorKind::WouldBlock, ErrorKind::TimedOut] {
+            let mut waiting = FailsFirst {
+                error: Some(kind),
+                data: b"request",
+            };
+            let mut stopped = FailsFirst {
+                error: Some(kind),
+                data: b"request",
+            };
+            let mut raw = Vec::new();
+
+            assert_eq!(
+                read_more(&mut stopped, &mut raw, &|| true),
+                Ok(false),
+                "{kind:?}"
+            );
+            assert_eq!(raw, b"", "{kind:?}");
+            assert_eq!(
+                read_more(&mut waiting, &mut raw, &|| false),
+                Ok(true),
+                "{kind:?}"
+            );
+            assert_eq!(raw, b"request", "{kind:?}");
+        }
     }
 
     #[test]
@@ -760,8 +831,8 @@ mod tests {
             data: b"request",
         };
 
-        assert_eq!(read_more(&mut reset, &mut raw), Ok(false));
-        let failure = read_more(&mut denied, &mut raw).unwrap_err();
+        assert_eq!(read_more(&mut reset, &mut raw, &|| false), Ok(false));
+        let failure = read_more(&mut denied, &mut raw, &|| false).unwrap_err();
         assert!(failure.contains("couldn't be read"), "{failure}");
         assert_eq!(raw, b"");
     }
@@ -947,6 +1018,25 @@ mod tests {
 
         assert_eq!(server.finish(), []);
         assert_eq!(server.connections(), 1);
+    }
+
+    #[test]
+    fn stopping_ends_a_stalled_connection_that_the_server_is_already_reading() {
+        let mut server = FakeServer::start();
+        let mut stream = TcpStream::connect(server.address()).unwrap();
+        stream.write_all(b"GET /stalled HTTP/1.1\r\n").unwrap();
+        // Admission counts the connection, so the stop below finds the server serving it rather than about to hang it up.
+        while server.connections() == 0 {
+            std::thread::yield_now();
+        }
+
+        assert_eq!(server.finish(), []);
+
+        let mut answer = Vec::new();
+        match stream.read_to_end(&mut answer) {
+            Ok(_) => assert_eq!(answer, b""),
+            Err(error) => assert_eq!(error.kind(), ErrorKind::ConnectionReset),
+        }
     }
 
     #[test]

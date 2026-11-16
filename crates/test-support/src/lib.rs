@@ -6,6 +6,7 @@ use std::ffi::{OsStr, OsString};
 use std::path::Path;
 use std::process::{Command, Output};
 
+pub mod fake_tool;
 pub mod http;
 pub mod oidc;
 pub mod property;
@@ -124,6 +125,30 @@ pub fn git(directory: &Path, arguments: &[&str]) -> String {
 /// Create a repository whose first branch is `main`.
 pub fn init_repository(directory: &Path) {
     git(directory, &["init", "--initial-branch=main"]);
+}
+
+/// Bytes of the name field that opens every tar header block.
+const TAR_NAME_BYTES: usize = 100;
+
+/// Write `name` into the name field of the tar header block `header`, as the `tar` crate writes a short name on Unix, without its check that the name is a relative path on this OS.
+///
+/// A test that writes a name some OS can't represent then builds the same archive on every OS.
+/// Refresh the header's checksum afterward.
+///
+/// # Panics
+///
+/// When `name` is longer than the field or holds a NUL byte.
+pub fn write_tar_name(header: &mut [u8; 512], name: &[u8]) {
+    if name.len() > TAR_NAME_BYTES || name.contains(&0) {
+        fail(format_args!(
+            "{:?} doesn't fit the {TAR_NAME_BYTES}-byte name field of a tar header",
+            String::from_utf8_lossy(name)
+        ));
+    }
+    let padded = name.iter().copied().chain(std::iter::repeat(0));
+    for (slot, byte) in header.iter_mut().take(TAR_NAME_BYTES).zip(padded) {
+        *slot = byte;
+    }
 }
 
 /// The installed Gleam version, for tests that build real packages.

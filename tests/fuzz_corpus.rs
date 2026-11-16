@@ -1,6 +1,8 @@
 use std::fs;
 use std::path::Path;
 
+use release_glz_test_support::write_tar_name;
+
 #[path = "../fuzz/invariants/api_interface.rs"]
 mod api_interface;
 #[path = "../fuzz/invariants/api_responses.rs"]
@@ -149,7 +151,7 @@ fn unportable_archive_seeds() -> [(&'static str, Vec<u8>); 5] {
     ]
 }
 
-/// A gzip-compressed tar archive whose bytes depend only on `files`.
+/// A gzip-compressed tar archive whose bytes depend only on `files`, the same on every OS.
 fn docs_seed(files: &[(&str, &[u8])]) -> Vec<u8> {
     let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
     let mut archive = tar::Builder::new(encoder);
@@ -158,8 +160,9 @@ fn docs_seed(files: &[(&str, &[u8])]) -> Vec<u8> {
         header.set_size(contents.len() as u64);
         header.set_mode(0o644);
         header.set_mtime(0);
+        write_tar_name(header.as_mut_bytes(), path.as_bytes());
         header.set_cksum();
-        archive.append_data(&mut header, path, *contents).unwrap();
+        archive.append(&header, *contents).unwrap();
     }
     archive.into_inner().unwrap().finish().unwrap()
 }
