@@ -819,7 +819,12 @@ fn append_segments(base: &Url, segments: &[&str]) -> Result<Url> {
 }
 
 fn parse_base_url(raw: &str, field: &str) -> Result<Url> {
-    let url = Url::parse(raw).with_context(|| format!("registry.{field} is invalid"))?;
+    let url = Url::parse(raw).with_context(|| {
+        Refusal::new(
+            RefusalReason::UrlMalformed,
+            format!("registry.{field} is invalid"),
+        )
+    })?;
     if !uses_trusted_transport(&url) {
         refuse!(
             UrlTransportUntrusted,
@@ -1239,7 +1244,13 @@ mod tests {
             ("https://user@example.test/api", credentials),
             ("https://:pass@example.test/api", credentials),
             ("http://user@127.0.0.1:8080/api", credentials),
-            ("https://", (None, "registry.api_url is invalid")),
+            (
+                "https://",
+                (
+                    Some(RefusalReason::UrlMalformed),
+                    "registry.api_url is invalid",
+                ),
+            ),
             ("https://example.test/api?q=1", query),
             ("http://127.0.0.1:8080/api?q=1", query),
             ("https://example.test/api#frag", query),
