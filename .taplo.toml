@@ -1,0 +1,14 @@
+include = [
+  "*.toml",
+  ".cargo/*.toml",
+  "crates/**/*.toml",
+  "xtask/**/*.toml",
+  "fuzz/**/*.toml",
+  "tests/fixtures/**/*.toml",
+]
+exclude = ["target/**", "fuzz/target/**", "fuzz/corpus/**"]
+
+[formatting]
+align_entries = false
+column_width = 100
+reorder_keys = false

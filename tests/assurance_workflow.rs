@@ -189,8 +189,9 @@ fn fuzz_targets() -> Vec<String> {
         .collect()
 }
 
+/// CI runs the same fast gate that `just check` and the push hook run, and no copy of its steps.
 #[test]
-fn routine_ci_refuses_an_unformatted_fuzz_workspace_or_a_stale_fuzz_lockfile() {
+fn routine_ci_runs_the_one_fast_gate() {
     let parsed: serde_norway::Value =
         serde_norway::from_str(&fs::read_to_string(".github/workflows/ci.yml").unwrap()).unwrap();
     let commands: Vec<_> = parsed["jobs"]["checks"]["steps"]
@@ -199,12 +200,11 @@ fn routine_ci_refuses_an_unformatted_fuzz_workspace_or_a_stale_fuzz_lockfile() {
         .iter()
         .filter_map(|step| step["run"].as_str())
         .collect();
-    for command in [
-        "cargo fmt --manifest-path fuzz/Cargo.toml -- --check",
-        "cargo fetch --locked --manifest-path fuzz/Cargo.toml",
-    ] {
-        assert!(commands.contains(&command), "routine CI omits `{command}`");
-    }
+    assert_eq!(commands, ["cargo xtask check"]);
+    assert!(
+        parsed["jobs"]["checks"]["if"].is_null(),
+        "every change can break spelling or formatting, so the gate runs on every change"
+    );
 }
 
 #[test]
@@ -267,25 +267,12 @@ fn dependency_policy_is_explicit_and_deny_by_default() {
 /// A dependency that breaks the license, ban, or source policy fails the pull request that adds it, with the cargo-deny release the release gate runs.
 #[test]
 fn the_fast_gate_enforces_the_dependency_policy_that_the_release_gate_enforces() {
-    let ci: serde_norway::Value =
-        serde_norway::from_str(&fs::read_to_string(".github/workflows/ci.yml").unwrap()).unwrap();
-    let runs = ci["jobs"]["checks"]["steps"]
-        .as_sequence()
-        .unwrap()
-        .iter()
-        .filter_map(|step| step["run"].as_str())
-        .collect::<Vec<_>>()
-        .join("\n");
     let assurance = fs::read_to_string(".github/workflows/assurance.yml").unwrap();
     let version = assurance
         .split_once("cargo install --locked cargo-deny --version ")
         .and_then(|(_, rest)| rest.split_whitespace().next())
         .expect("the release gate installs a fixed cargo-deny");
-    assert!(runs.contains(&format!(
-        "cargo-deny/releases/download/{version}/cargo-deny-{version}-x86_64-unknown-linux-musl.tar.gz"
-    )));
-    assert!(runs.contains("sha256sum --check -"));
-    assert!(runs.contains("cargo deny --locked check -D warnings bans licenses sources"));
+    assert_eq!(pinned_tool("aqua:EmbarkStudios/cargo-deny"), version);
     assert!(assurance.contains("cargo deny check -D warnings"));
 }
 
@@ -346,7 +333,7 @@ fn release_assurance_covers_native_platforms_and_gleam_versions() {
             .iter()
             .map(|value| value.as_str().unwrap())
             .collect::<Vec<_>>(),
-        ["changes", "checks"]
+        ["checks"]
     );
     let required_run = required["steps"]
         .as_sequence()
@@ -354,9 +341,7 @@ fn release_assurance_covers_native_platforms_and_gleam_versions() {
         .iter()
         .find_map(|step| step["run"].as_str())
         .unwrap();
-    assert!(required_run.contains("'include \"required\"; required($full)'"));
-    assert!(yaml.contains("node --test scripts/*.test.js"));
-    assert!(yaml.contains(".github/check-required.jq"));
+    assert!(required_run.contains("'include \"required\"; required'"));
     assert!(
         shipping["env"]["RUST_TEST_THREADS"].is_null(),
         "shipping assurance runs tests in parallel, as developers do"
@@ -394,69 +379,6 @@ fn every_job_that_runs_compiler_tests_installs_the_pinned_gleam() {
 }
 
 #[test]
-fn ci_selects_the_rust_job_for_every_file_a_test_reads() {
-    let filters: serde_norway::Value =
-        serde_norway::from_str(&fs::read_to_string(".github/filters/ci.yml").unwrap()).unwrap();
-    let runtime = filters["runtime"]
-        .as_sequence()
-        .unwrap()
-        .iter()
-        .map(|pattern| pattern.as_str().unwrap().to_owned())
-        .collect::<Vec<_>>();
-    let mut read = Vec::new();
-    for entry in fs::read_dir("tests").unwrap() {
-        let path = entry.unwrap().path();
-        if path.extension().is_some_and(|extension| extension == "rs") {
-            let source = fs::read_to_string(&path).unwrap();
-            for opening in ["include_str!(\"../", "read_to_string(\"", "read_dir(\""] {
-                for (index, _) in source.match_indices(opening) {
-                    let rest = &source[index + opening.len()..];
-                    read.push(rest[..rest.find('"').unwrap()].to_owned());
-                }
-            }
-        }
-    }
-    assert!(read.len() > 10, "found too few test inputs: {read:?}");
-    for input in read {
-        assert!(
-            runtime.iter().any(|pattern| glob_matches(pattern, &input))
-                || runtime
-                    .iter()
-                    .any(|pattern| glob_matches(pattern, &format!("{input}/file"))),
-            "CI skips the Rust job when `{input}` changes, although a test reads it"
-        );
-    }
-}
-
-fn glob_matches(pattern: &str, path: &str) -> bool {
-    fn segments(pattern: &[&str], path: &[&str]) -> bool {
-        match (pattern.split_first(), path.split_first()) {
-            (None, None) => true,
-            (Some((&"**", rest)), _) => {
-                segments(rest, path) || (!path.is_empty() && segments(pattern, &path[1..]))
-            }
-            (Some((first, rest)), Some((name, remaining))) => {
-                segment(first, name) && segments(rest, remaining)
-            }
-            _ => false,
-        }
-    }
-    fn segment(pattern: &str, name: &str) -> bool {
-        match pattern.split_once('*') {
-            None => pattern == name,
-            Some((prefix, suffix)) => {
-                name.len() >= prefix.len() + suffix.len()
-                    && name.starts_with(prefix)
-                    && name.ends_with(suffix)
-            }
-        }
-    }
-    let pattern = pattern.split('/').collect::<Vec<_>>();
-    let path = path.split('/').collect::<Vec<_>>();
-    segments(&pattern, &path)
-}
-
-#[test]
 fn local_tool_pins_match_the_versions_ci_installs() {
     let pin = pinned_tool;
     let ci = fs::read_to_string(".github/workflows/ci.yml").unwrap();
@@ -474,13 +396,26 @@ fn local_tool_pins_match_the_versions_ci_installs() {
             .unwrap_or_else(|| panic!("{job} sets no {action} {input}"))
     };
 
+    let installed = with("checks", "jdx/mise-action@", "install_args");
+    let installed = installed.split_whitespace().collect::<Vec<_>>();
+    for tool in [
+        "rust",
+        "node",
+        "taplo",
+        "typos",
+        "actionlint",
+        "jq",
+        "aqua:zizmorcore/zizmor",
+        "aqua:EmbarkStudios/cargo-deny",
+        "aqua:nextest-rs/nextest/cargo-nextest",
+    ] {
+        pin(tool);
+        assert!(
+            installed.contains(&tool),
+            "the fast gate runs {tool}, which CI doesn't install from mise.toml"
+        );
+    }
     let rust = pin("rust");
-    assert!(
-        steps("checks").iter().any(|step| step["run"]
-            .as_str()
-            .is_some_and(|run| run.contains(&format!("rustup default {rust}")))),
-        "the fast gate must use the pinned Rust {rust}"
-    );
     let manifest = fs::read_to_string("Cargo.toml")
         .unwrap()
         .parse::<toml_edit::DocumentMut>()
@@ -498,17 +433,6 @@ fn local_tool_pins_match_the_versions_ci_installs() {
         with("checks", "erlef/setup-beam@", "otp-version"),
         pin("erlang")
     );
-    assert_eq!(
-        with("changes", "actions/setup-node@", "node-version"),
-        pin("node")
-    );
-    assert!(
-        ci.contains(&format!(
-            "actionlint/releases/download/v{0}/actionlint_{0}_",
-            pin("actionlint")
-        )),
-        "CI must install the pinned actionlint"
-    );
     let assurance = fs::read_to_string(".github/workflows/assurance.yml").unwrap();
     assert!(
         assurance.contains(&format!(
@@ -516,27 +440,6 @@ fn local_tool_pins_match_the_versions_ci_installs() {
             pin("aqua:zizmorcore/zizmor")
         )),
         "shipping assurance must install the pinned zizmor"
-    );
-}
-
-#[test]
-fn the_fast_gate_type_checks_the_action_and_the_release_scripts() {
-    let ci: serde_norway::Value =
-        serde_norway::from_str(&fs::read_to_string(".github/workflows/ci.yml").unwrap()).unwrap();
-    let runs = ci["jobs"]["changes"]["steps"]
-        .as_sequence()
-        .unwrap()
-        .iter()
-        .filter_map(|step| step["run"].as_str())
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(
-        runs.contains("npm ci --ignore-scripts"),
-        "the fast gate must install the locked compiler without running package scripts"
-    );
-    assert!(
-        runs.contains("npm run typecheck"),
-        "the fast gate must type-check the Action and the release scripts"
     );
 }
 

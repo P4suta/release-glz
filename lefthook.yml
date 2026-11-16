@@ -1,0 +1,14 @@
+pre-commit:
+  commands:
+    staged:
+      run: mise x -- just check-staged
+commit-msg:
+  commands:
+    committed:
+      run: mise x -- committed --commit-file {1}
+    fix-has-test:
+      run: mise x -- cargo xtask commit-msg {1}
+pre-push:
+  commands:
+    check:
+      run: mise x -- just check

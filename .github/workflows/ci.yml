@@ -11,59 +11,12 @@ concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
-jobs:
-  changes:
-    name: Workflow and metadata checks
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    permissions:
-      contents: read # Check out the source and its change filters.
-      pull-requests: read # Let the path filter list a pull request's changed files.
-    outputs:
-      runtime: ${{ steps.changes.outputs.runtime }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
-        id: changes
-        with:
-          base: ${{ github.event.merge_group.base_sha || github.event.repository.default_branch }}
-          filters: .github/filters/ci.yml
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: "24.22.3"
-          package-manager-cache: false
-      - name: Install fixed actionlint
-        env:
-          TOOL_DIR: ${{ runner.temp }}/release-glz-tools
-        run: |
-          mkdir -p "$TOOL_DIR"
-          curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
-            --output "$TOOL_DIR/actionlint.tar.gz" \
-            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
-          printf '%s  %s\n' 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8 "$TOOL_DIR/actionlint.tar.gz" \
-            | sha256sum --check -
-          tar --extract --gzip --file "$TOOL_DIR/actionlint.tar.gz" --directory "$TOOL_DIR" actionlint
-          printf '%s\n' "$TOOL_DIR" >> "$GITHUB_PATH"
-      - run: actionlint
-      - run: jq -L .github -n -e -f .github/check-required.jq
-      - run: node scripts/verify-workflows.js .github/workflows
-      - run: node scripts/de-shell.js .github/workflows
-      - name: Type-check the Action and the release scripts
-        run: |
-          npm ci --ignore-scripts --no-audit --no-fund
-          npm run typecheck
-      - name: Action and distribution evidence tests
-        run: |
-          npm test --prefix action
-          node --test scripts/*.test.js
+env:
+  MISE_AUTO_INSTALL: "false"
 
+jobs:
   checks:
-    name: Rust checks
-    needs: changes
-    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.runtime == 'true'
+    name: Checks
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -72,52 +25,26 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install the pinned Rust toolchain
-        run: |
-          rustup toolchain install 1.100.0 --profile minimal --component rustfmt --component clippy --no-self-update
-          rustup default 1.100.0
+      - uses: jdx/mise-action@d5574b52816a478f9d4e6529a3f6ff17a8a36785 # v5.2.8
+        with:
+          install_args: rust node taplo typos actionlint jq aqua:zizmorcore/zizmor aqua:EmbarkStudios/cargo-deny aqua:nextest-rs/nextest/cargo-nextest
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: rust-${{ runner.os }}-1.100.0-${{ hashFiles('Cargo.lock') }}
+          key: rust-${{ runner.os }}-${{ hashFiles('mise.lock', 'Cargo.lock') }}
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
         with:
           otp-version: "28.5"
           gleam-version: "1.19.2"
-      - run: cargo fmt --all -- --check
-      - run: cargo fmt --manifest-path fuzz/Cargo.toml -- --check
-      - name: Check that the fuzz lockfile matches its manifest
-        run: cargo fetch --locked --manifest-path fuzz/Cargo.toml
-      - name: Install fixed cargo-deny
-        env:
-          TOOL_DIR: ${{ runner.temp }}/release-glz-tools
-        run: |
-          mkdir -p "$TOOL_DIR"
-          curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
-            --output "$TOOL_DIR/cargo-deny.tar.gz" \
-            https://github.com/EmbarkStudios/cargo-deny/releases/download/0.20.2/cargo-deny-0.20.2-x86_64-unknown-linux-musl.tar.gz
-          printf '%s  %s\n' 9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f "$TOOL_DIR/cargo-deny.tar.gz" \
-            | sha256sum --check -
-          tar --extract --gzip --file "$TOOL_DIR/cargo-deny.tar.gz" --directory "$TOOL_DIR" --strip-components 1 \
-            cargo-deny-0.20.2-x86_64-unknown-linux-musl/cargo-deny
-          printf '%s\n' "$TOOL_DIR" >> "$GITHUB_PATH"
-      - name: Enforce dependency source, license, and ban policy
-        run: cargo deny --locked check -D warnings bans licenses sources
-      - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-      - run: cargo test --workspace --all-targets --locked
-      - run: cargo run --locked -- --help
-      - name: Rust documentation
-        env:
-          RUSTDOCFLAGS: -D warnings
-        run: cargo doc --workspace --no-deps --locked
+      - run: cargo xtask check
 
   required:
     name: required
     if: always()
-    needs: [changes, checks]
+    needs: [checks]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -126,10 +53,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Require every selected check to succeed
+      - name: Require the checks to succeed
         env:
           RESULTS: ${{ toJSON(needs) }}
-          FULL: ${{ github.event_name == 'workflow_dispatch' }}
         run: |
           set -euo pipefail
-          jq -L .github -e --argjson full "$FULL" 'include "required"; required($full)' <<< "$RESULTS"
+          jq -L .github -e 'include "required"; required' <<< "$RESULTS"
