@@ -265,7 +265,7 @@ fn claim_values_that_match_textually_still_require_canonical_safe_shapes() {
             "invalid-attempt" => candidate.run_attempt = "not-a-number".into(),
             "overflow-attempt" => candidate.run_attempt = "18446744073709551616".into(),
             "signed-attempt" => candidate.run_attempt = "+3".into(),
-            _ => unreachable!(),
+            _ => panic!("unknown case {case}"),
         }
         assert_eq!(refusal(candidate, &expected), mismatch(message), "{case}");
     }

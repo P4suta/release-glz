@@ -386,9 +386,9 @@ impl HookRunner {
         context: &HookContext,
     ) -> Result<ExecutedHook> {
         validate_hook_config(hook)?;
-        let executable = hook
+        let (executable, arguments) = hook
             .argv
-            .first()
+            .split_first()
             .context("hook argv unexpectedly empty after configuration validation")?;
         let input = canonical_json_bytes(&HookRequest {
             schema: "hook/v1",
@@ -397,7 +397,7 @@ impl HookRunner {
         })?;
         let mut command = tokio::process::Command::new(executable);
         command
-            .args(&hook.argv[1..])
+            .args(arguments)
             .current_dir(directory)
             .env_clear()
             .stdin(Stdio::piped())
@@ -655,7 +655,7 @@ async fn drain_limited<R: AsyncRead + Unpin>(
         }
         let remaining = limit.saturating_sub(output.len());
         let retained = read.min(remaining);
-        output.extend_from_slice(&buffer[..retained]);
+        output.extend(buffer.iter().take(retained));
         if retained != read {
             exceeded = true;
         }

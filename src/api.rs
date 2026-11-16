@@ -55,13 +55,8 @@ pub fn compare(baseline: &[u8], current: &[u8]) -> Result<ApiDiff> {
             format!("added public module `{module}`"),
         ));
     }
-    for module in baseline_modules.intersection(&current_modules) {
-        compare_module(
-            module,
-            &baseline.modules[module],
-            &current.modules[module],
-            &mut changes,
-        );
+    for (module, baseline_module, current_module) in shared(&baseline.modules, &current.modules) {
+        compare_module(module, baseline_module, current_module, &mut changes);
     }
 
     changes.sort_by(|a, b| a.path.cmp(&b.path).then(a.summary.cmp(&b.summary)));
@@ -129,9 +124,7 @@ fn compare_module(
             format!("added public type `{module}.{name}`"),
         ));
     }
-    for name in baseline_types.intersection(&current_types) {
-        let baseline_type = &baseline.types[name];
-        let current_type = &current.types[name];
+    for (name, baseline_type, current_type) in shared(&baseline.types, &current.types) {
         if baseline_type.signature != current_type.signature {
             changes.push(change(
                 ApiChangeKind::Changed,
@@ -169,8 +162,8 @@ fn compare_items(
             format!("added public {kind} `{module}.{name}`"),
         ));
     }
-    for name in baseline_names.intersection(&current_names) {
-        if baseline[name] != current[name] {
+    for (name, baseline_signature, current_signature) in shared(baseline, current) {
+        if baseline_signature != current_signature {
             changes.push(change(
                 ApiChangeKind::Changed,
                 format!("{module}::{kind} {name}"),
@@ -207,8 +200,10 @@ fn compare_constructors(
             format!("added constructor `{module}.{name}` to existing type `{type_name}`"),
         ));
     }
-    for name in baseline_names.intersection(&current_names) {
-        if baseline.constructors[name] != current.constructors[name] {
+    for (name, baseline_signature, current_signature) in
+        shared(&baseline.constructors, &current.constructors)
+    {
+        if baseline_signature != current_signature {
             changes.push(change(
                 ApiChangeKind::Changed,
                 format!("{module}::type {type_name}::{name}"),
@@ -217,6 +212,16 @@ fn compare_constructors(
             ));
         }
     }
+}
+
+/// The entries whose name both maps hold, in name order, with the baseline value first.
+fn shared<'a, V>(
+    baseline: &'a BTreeMap<String, V>,
+    current: &'a BTreeMap<String, V>,
+) -> impl Iterator<Item = (&'a String, &'a V, &'a V)> {
+    baseline
+        .iter()
+        .filter_map(|(name, baseline)| Some((name, baseline, current.get(name)?)))
 }
 
 fn change(kind: ApiChangeKind, path: String, breaking: bool, summary: String) -> ApiChange {

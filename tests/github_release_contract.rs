@@ -906,12 +906,11 @@ async fn rolling_release_pr_is_created_from_a_server_side_verified_commit() {
     assert_eq!(additions.len(), 2);
     for addition in additions {
         let path = addition["path"].as_str().unwrap();
-        let expected = files.get(path).unwrap();
         assert_eq!(
             base64::engine::general_purpose::STANDARD
                 .decode(addition["contents"].as_str().unwrap())
                 .unwrap(),
-            *expected
+            files[path]
         );
     }
 

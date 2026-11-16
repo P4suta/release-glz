@@ -276,13 +276,12 @@ fn released_note_ids(changelog: Option<&str>) -> BTreeSet<&str> {
         return ids;
     };
     let mut rest = changelog;
-    while let Some(start) = rest.find(PREFIX) {
-        rest = &rest[start + PREFIX.len()..];
-        let Some(end) = rest.find(SUFFIX) else {
+    while let Some((_, marker)) = rest.split_once(PREFIX) {
+        let Some((id, after)) = marker.split_once(SUFFIX) else {
             break;
         };
-        ids.insert(&rest[..end]);
-        rest = &rest[end + SUFFIX.len()..];
+        ids.insert(id);
+        rest = after;
     }
     ids
 }
@@ -331,7 +330,9 @@ pub fn render(existing: Option<&str>, version: &str, entries: &[ChangeEntry]) ->
     }
 
     if let Some(range) = release_section_range(&changelog, version) {
-        let date = release_section_date(&changelog[range.clone()], version)
+        let date = changelog
+            .get(range.clone())
+            .and_then(|section| release_section_date(section, version))
             .unwrap_or_else(|| Utc::now().date_naive());
         let section = render_section_on(version, entries, date);
         changelog.replace_range(range, section.trim_end());
@@ -344,12 +345,11 @@ pub fn render(existing: Option<&str>, version: &str, entries: &[ChangeEntry]) ->
     let section = render_section(version, entries);
     let marker = "## [Unreleased]";
     let insertion = changelog
-        .find(marker)
-        .map(|index| {
-            changelog[index..]
+        .split_once(marker)
+        .and_then(|(before, after)| {
+            after
                 .find('\n')
-                .map(|offset| index + offset + 1)
-                .unwrap_or(changelog.len())
+                .map(|offset| before.len() + marker.len() + offset + 1)
         })
         .unwrap_or(changelog.len());
     changelog.insert_str(insertion, &format!("\n{section}"));
@@ -406,7 +406,7 @@ fn release_section_date(section: &str, version: &str) -> Option<NaiveDate> {
 /// Extract the section for one version, if the changelog has it.
 pub fn release_section(changelog: &str, version: &str) -> Option<String> {
     let range = release_section_range(changelog, version)?;
-    Some(changelog[range].trim().to_owned())
+    Some(changelog.get(range)?.trim().to_owned())
 }
 
 /// Remove only the section currently being regenerated.
@@ -422,12 +422,10 @@ pub fn without_release_section(changelog: &str, version: &str) -> String {
 
 fn release_section_range(changelog: &str, version: &str) -> Option<Range<usize>> {
     let heading = format!("## [{version}]");
-    let start = changelog.find(&heading)?;
-    let end = changelog[start + heading.len()..]
-        .find("\n## [")
-        .map(|offset| start + heading.len() + offset)
-        .unwrap_or(changelog.len());
-    Some(start..end)
+    let (before, after) = changelog.split_once(&heading)?;
+    let body = after.find("\n## [").unwrap_or(after.len());
+    let start = before.len();
+    Some(start..start + heading.len() + body)
 }
 
 /// The section a Conventional Commit message belongs in by default, from the release step that the core assigns to its subject and body.

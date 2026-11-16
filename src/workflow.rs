@@ -130,7 +130,11 @@ pub fn render_configured(
     validate_manifest_scalar(&manifest)?;
     let manifest_yaml = format!("\"{manifest}\"");
     let manifest_digest = sha256(&manifest);
-    let manifest_key = &manifest_digest.as_str()[..CONCURRENCY_KEY_LENGTH];
+    let manifest_key: String = manifest_digest
+        .as_str()
+        .chars()
+        .take(CONCURRENCY_KEY_LENGTH)
+        .collect();
     validate_scalar(environment, "approval environment", false)?;
     validate_environment_name(registry_credential_env, "registry credential environment")?;
     validate_scalar(release_branch_prefix, "release branch prefix", true)?;
@@ -1163,11 +1167,11 @@ mod tests {
                         "schema" => state.schema = "workflow-state/v2".into(),
                         "path" => state.path = ".github/workflows/other.yml".into(),
                         "digest" => state.sha256 = "0".repeat(64),
-                        _ => unreachable!(),
+                        _ => panic!("unknown state case {case}"),
                     }
                     fs::write(&state_path, serde_json::to_vec(&state).unwrap()).unwrap();
                 }
-                _ => unreachable!(),
+                _ => panic!("unknown case {case}"),
             }
             let mut changed = settings;
             changed.compiler = "1.18.2".into();
