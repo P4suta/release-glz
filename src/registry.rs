@@ -59,6 +59,29 @@ impl Default for VisibilityPoll {
     }
 }
 
+impl VisibilityPoll {
+    /// What the first observation that shows the release returns, or `None` once every attempt has shown nothing.
+    ///
+    /// The wait sleeps only between two observations, so it ends right after the last one.
+    async fn first_visible<T, Observation>(
+        self,
+        mut observe: impl FnMut() -> Observation,
+    ) -> Result<Option<T>>
+    where
+        Observation: Future<Output = Result<Option<T>>>,
+    {
+        for poll in 0..self.attempts {
+            let observed = observe().await?;
+            match release_glz_core::after_poll(poll, self.attempts, observed.is_some()) {
+                AfterPoll::Visible => return Ok(observed),
+                AfterPoll::PollAgain => tokio::time::sleep(self.interval).await,
+                AfterPoll::TimedOut => break,
+            }
+        }
+        Ok(None)
+    }
+}
+
 /// Redirects one request may follow on the configured origin.
 const MAX_REDIRECTS: usize = 5;
 
@@ -574,6 +597,15 @@ impl HexRegistry {
         if response.status().is_success() {
             return Ok(PublishOutcome::Accepted);
         }
+        // A publish never follows a redirect, even within the origin, because the archive and the credential go only to the configured URL.
+        if response.status().is_redirection() {
+            refuse!(
+                RegistryPublishRedirectRefused,
+                "refusing registry publish redirect {} from {url} to {}",
+                response.status(),
+                crate::secrets::redirect_target(&response)
+            );
+        }
         if response.status() == StatusCode::CONFLICT
             || response.status() == StatusCode::REQUEST_TIMEOUT
             || response.status() == StatusCode::TOO_MANY_REQUESTS
@@ -593,22 +625,20 @@ impl HexRegistry {
         version: &Version,
         require_docs: bool,
     ) -> Result<PackageState> {
-        let attempts = self.visibility_poll.attempts;
-        for poll in 0..attempts {
-            let state = self.package(package).await?;
-            let ready = release_ready(state.as_ref(), version, require_docs);
-            match release_glz_core::after_poll(poll, attempts, ready) {
-                AfterPoll::Visible => {
-                    return state.context("ready registry state unexpectedly disappeared");
-                }
-                AfterPoll::PollAgain => tokio::time::sleep(self.visibility_poll.interval).await,
-                AfterPoll::TimedOut => break,
-            }
+        let visible = self
+            .visibility_poll
+            .first_visible(move || async move {
+                let state = self.package(package).await?;
+                Ok(state.filter(|state| release_ready(Some(state), version, require_docs)))
+            })
+            .await?;
+        match visible {
+            Some(state) => Ok(state),
+            None => refuse!(
+                RegistryReleaseNotVisible,
+                "timed out waiting for {package} {version} to appear on the registry"
+            ),
         }
-        refuse!(
-            RegistryReleaseNotVisible,
-            "timed out waiting for {package} {version} to appear on the registry"
-        )
     }
 }
 
@@ -1320,6 +1350,78 @@ mod tests {
             &Version::new(1, 2, 4),
             false
         ));
+    }
+
+    /// When `poll` observes, what it returns, and when it returns, each time measured from its start, for a release that first shows at observation number `shows_at`, counting from one.
+    async fn schedule(
+        poll: VisibilityPoll,
+        shows_at: Option<usize>,
+    ) -> (Vec<Duration>, Option<usize>, Duration) {
+        let started = tokio::time::Instant::now();
+        let mut observations = Vec::new();
+        let shown = poll
+            .first_visible(|| {
+                observations.push(started.elapsed());
+                std::future::ready(Ok(
+                    Some(observations.len()).filter(|&count| Some(count) == shows_at)
+                ))
+            })
+            .await
+            .unwrap();
+        (observations, shown, started.elapsed())
+    }
+
+    /// The first `count` multiples of `interval`, starting at zero.
+    fn every(interval: Duration, count: u32) -> Vec<Duration> {
+        (0..count).map(|index| interval * index).collect()
+    }
+
+    /// A registry observes twenty times three seconds apart, so its wait gives up just under a minute after it starts, unless a caller sets another poll.
+    #[tokio::test(start_paused = true)]
+    async fn visibility_polling_waits_a_minute_unless_a_caller_sets_it() {
+        let registry = HexRegistry::new("http://127.0.0.1:9/api", "http://127.0.0.1:9/repository");
+        assert_eq!(
+            schedule(registry.visibility_poll, None).await,
+            (
+                every(Duration::from_secs(3), 20),
+                None,
+                Duration::from_secs(57)
+            )
+        );
+
+        let registry = registry.with_visibility_poll(VisibilityPoll {
+            attempts: 4,
+            interval: Duration::from_secs(10),
+        });
+        assert_eq!(
+            schedule(registry.visibility_poll, None).await,
+            (
+                every(Duration::from_secs(10), 4),
+                None,
+                Duration::from_secs(30)
+            )
+        );
+    }
+
+    /// A wait sleeps only between two observations, so it ends at the first one that shows the release, and a single attempt never sleeps.
+    #[tokio::test(start_paused = true)]
+    async fn a_visibility_wait_sleeps_only_between_observations() {
+        assert_eq!(
+            schedule(VisibilityPoll::default(), Some(3)).await,
+            (
+                every(Duration::from_secs(3), 3),
+                Some(3),
+                Duration::from_secs(6)
+            )
+        );
+        let single = VisibilityPoll {
+            attempts: 1,
+            interval: Duration::from_secs(60),
+        };
+        assert_eq!(
+            schedule(single, None).await,
+            (vec![Duration::ZERO], None, Duration::ZERO)
+        );
     }
 
     #[tokio::test]

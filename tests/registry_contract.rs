@@ -464,6 +464,71 @@ async fn every_retryable_publish_status_is_ambiguous_and_permanent_errors_fail()
     );
 }
 
+/// A publish refuses every redirect, so its bytes and its credential reach no URL but the configured one.
+#[tokio::test]
+async fn each_publish_refuses_each_redirect_and_sends_nothing_to_its_location() {
+    let version = Version::new(1, 2, 3);
+    for (publication, target) in [
+        ("package", "/api/publish"),
+        ("docs", "/api/packages/widget/releases/1.2.3/docs"),
+    ] {
+        for (status, phrase) in [
+            (301, "301 Moved Permanently"),
+            (302, "302 Found"),
+            (307, "307 Temporary Redirect"),
+            (308, "308 Permanent Redirect"),
+        ] {
+            let case = format!("the {publication} publish answered with {status}");
+            let mut elsewhere = FakeServer::start();
+            let location = format!(
+                "http://user:publish-secret@{}/publish-secret?token=publish-secret#publish-secret",
+                elsewhere.address()
+            );
+            let (base, mut server) = server(vec![
+                Response::new(status).header("Location", &location).into(),
+            ]);
+            let registry =
+                HexRegistry::from_config(&custom_config(&base), Some("publish-secret")).unwrap();
+
+            let error = match publication {
+                "package" => registry.publish_package(b"sealed").await,
+                _ => registry.publish_docs("widget", &version, b"sealed").await,
+            }
+            .unwrap_err();
+
+            assert_eq!(
+                (refusal_reason(&error), error.to_string()),
+                (
+                    Some(RefusalReason::RegistryPublishRedirectRefused),
+                    format!(
+                        "refusing registry publish redirect {phrase} from {base}{target} to {}",
+                        elsewhere.base_url()
+                    )
+                ),
+                "{case}"
+            );
+            let [publish] = server.finish().try_into().unwrap();
+            assert_eq!(
+                (
+                    publish.method.as_str(),
+                    publish.target.as_str(),
+                    authorization(&publish),
+                    publish.body.as_slice()
+                ),
+                (
+                    "POST",
+                    target,
+                    Some("Bearer publish-secret"),
+                    &b"sealed"[..]
+                ),
+                "{case}"
+            );
+            assert_eq!(elsewhere.finish(), [], "{case}");
+            assert_eq!(elsewhere.connections(), 0, "{case}");
+        }
+    }
+}
+
 #[tokio::test]
 async fn same_origin_redirects_preserve_auth_while_missing_locations_fail_closed() {
     let redirect = |location: Option<&str>| -> Reply {
@@ -661,11 +726,13 @@ async fn wait_for_returns_the_observed_ready_state() {
     assert_eq!(server.finish()[0].target, "/api/packages/widget");
 }
 
-/// Polling that a test can finish quickly.
-fn quick_poll(attempts: usize) -> VisibilityPoll {
+/// Polling with no wait between observations.
+///
+/// The schedule tests in `src/registry.rs` assert the waits on paused time, which a request to a loopback server would race against its timeouts.
+fn back_to_back(attempts: usize) -> VisibilityPoll {
     VisibilityPoll {
         attempts,
-        interval: std::time::Duration::from_millis(1),
+        interval: std::time::Duration::ZERO,
     }
 }
 
@@ -684,7 +751,7 @@ async fn wait_for_keeps_polling_until_the_release_is_visible() {
     ]);
     let registry = HexRegistry::from_config(&custom_config(&base), None)
         .unwrap()
-        .with_visibility_poll(quick_poll(3));
+        .with_visibility_poll(back_to_back(3));
     let version = Version::new(1, 2, 3);
 
     let state = registry.wait_for("widget", &version, true).await.unwrap();
@@ -731,7 +798,7 @@ async fn wait_for_stops_after_its_attempts() {
     ]);
     let registry = HexRegistry::from_config(&custom_config(&base), None)
         .unwrap()
-        .with_visibility_poll(quick_poll(2));
+        .with_visibility_poll(back_to_back(2));
 
     let error = registry
         .wait_for("widget", &Version::new(1, 2, 3), false)
@@ -769,17 +836,6 @@ fn registry_requests_follow_their_retry_schedule() {
         Next::Retry(200)
     );
     assert_eq!(REGISTRY_RETRIES.after(2, Answer::Busy(None)), Next::Stop);
-}
-
-#[test]
-fn visibility_polling_waits_a_minute_unless_a_caller_sets_it() {
-    assert_eq!(
-        VisibilityPoll::default(),
-        VisibilityPoll {
-            attempts: 20,
-            interval: std::time::Duration::from_secs(3),
-        }
-    );
 }
 
 fn custom_config(base: &str) -> RegistryConfig {

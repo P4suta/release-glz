@@ -326,6 +326,90 @@ async fn actions_token_discovery_and_jwks_are_fetched_under_fixed_policy() {
     assert!(!requests[2].contains("runner-secret"));
 }
 
+/// Each OIDC request in the order the verifier sends it, with the description that its refusal names.
+const OIDC_REQUESTS: [(&str, &str); 3] = [
+    ("/token?audience=release-glz", "GitHub Actions OIDC token"),
+    ("/discovery", "GitHub OIDC discovery"),
+    ("/jwks", "GitHub OIDC JWKS"),
+];
+
+/// An OIDC request refuses every redirect, so neither the runner's request token nor a key request reaches the `Location` origin.
+#[tokio::test]
+async fn each_oidc_request_refuses_each_redirect_and_sends_nothing_to_its_location() {
+    for (redirected, (_, description)) in OIDC_REQUESTS.into_iter().enumerate() {
+        for (status, phrase) in [
+            (301, "301 Moved Permanently"),
+            (302, "302 Found"),
+            (307, "307 Temporary Redirect"),
+            (308, "308 Permanent Redirect"),
+        ] {
+            let case = format!("{description} answered with {status}");
+            let mut server = FakeServer::start();
+            let mut elsewhere = FakeServer::start();
+            let location = format!(
+                "http://user:runner-secret@{}/runner-secret?token=runner-secret#runner-secret",
+                elsewhere.address()
+            );
+            let earlier = [
+                json_reply(&serde_json::json!({"value": "header.payload.signature"})),
+                json_reply(&serde_json::json!({
+                    "issuer": "https://token.actions.githubusercontent.com",
+                    "jwks_uri": format!("{}/jwks", server.base_url())
+                })),
+            ];
+            server.script(
+                earlier
+                    .into_iter()
+                    .take(redirected)
+                    .chain([Response::new(status).header("Location", &location)]),
+            );
+            let verifier =
+                GithubOidcVerifier::new(&format!("{}/discovery", server.base_url()), true).unwrap();
+
+            let error = verifier
+                .verify_actions_token(
+                    &format!("{}/token", server.base_url()),
+                    "runner-secret",
+                    &expectation(),
+                    NOW,
+                )
+                .await
+                .unwrap_err();
+
+            assert_eq!(
+                (refusal_reason(&error), error.to_string()),
+                (
+                    Some(RefusalReason::OidcRedirectRefused),
+                    format!(
+                        "refusing {description} redirect {phrase} to {}",
+                        elsewhere.base_url()
+                    )
+                ),
+                "{case}"
+            );
+            let targets = server
+                .finish()
+                .into_iter()
+                .map(|request| request.target)
+                .collect::<Vec<_>>();
+            let expected = OIDC_REQUESTS[..=redirected]
+                .iter()
+                .map(|(target, _)| *target)
+                .collect::<Vec<_>>();
+            assert_eq!(targets, expected, "{case}");
+            assert_eq!(elsewhere.finish(), [], "{case}");
+            assert_eq!(elsewhere.connections(), 0, "{case}");
+        }
+    }
+}
+
+/// A JSON response with `value` as its body.
+fn json_reply(value: &serde_json::Value) -> Response {
+    Response::new(200)
+        .header("Content-Type", "application/json")
+        .body(value.to_string())
+}
+
 struct OidcServer {
     server: FakeServer,
 }

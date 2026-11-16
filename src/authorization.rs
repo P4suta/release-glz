@@ -250,6 +250,14 @@ async fn checked_body(
     maximum: usize,
     description: &str,
 ) -> Result<Vec<u8>> {
+    if response.status().is_redirection() {
+        refuse!(
+            OidcRedirectRefused,
+            "refusing {description} redirect {} to {}",
+            response.status(),
+            crate::secrets::redirect_target(&response)
+        );
+    }
     if response.status() != StatusCode::OK {
         bail!(
             "{description} request failed with HTTP {}",

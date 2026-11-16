@@ -34,6 +34,23 @@ where
     redact_values(input, standard_secrets().chain(secrets))
 }
 
+/// Where `response` redirects: the origin of its `Location`, resolved against the URL it answers.
+///
+/// A server can echo a credential into any other part of the `Location`, so only the scheme, host, and port are shown, and they are redacted.
+pub(crate) fn redirect_target(response: &reqwest::Response) -> String {
+    response
+        .headers()
+        .get(reqwest::header::LOCATION)
+        .and_then(|location| location.to_str().ok())
+        .and_then(|location| response.url().join(location).ok())
+        .map(|target| target.origin())
+        .filter(|origin| origin.is_tuple())
+        .map_or_else(
+            || "a missing or invalid Location".to_owned(),
+            |origin| redact(&origin.ascii_serialization()),
+        )
+}
+
 fn standard_secrets() -> impl Iterator<Item = String> {
     STANDARD_SECRET_ENV_NAMES
         .into_iter()

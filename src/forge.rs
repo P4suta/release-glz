@@ -1701,6 +1701,7 @@ impl GitHubClient {
             .json(body)
             .send()
             .await?;
+        refuse_redirect(&response, &self.graphql_url)?;
         let status = response.status();
         let response: GraphResponse<T> = json_response(response, &self.graphql_url)
             .await
@@ -2011,7 +2012,21 @@ fn validate_release_upload_url(
     Ok(url)
 }
 
+/// Refuse a redirect, which a GitHub request never follows, so its token reaches no other URL.
+fn refuse_redirect(response: &reqwest::Response, url: &str) -> Result<()> {
+    if response.status().is_redirection() {
+        refuse!(
+            GithubRedirectRefused,
+            "refusing GitHub redirect {} from {url} to {}",
+            response.status(),
+            crate::secrets::redirect_target(response)
+        );
+    }
+    Ok(())
+}
+
 async fn checked(response: reqwest::Response, url: &str) -> Result<reqwest::Response> {
+    refuse_redirect(&response, url)?;
     if response.status().is_success() {
         return Ok(response);
     }
