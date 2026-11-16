@@ -1,35 +1,18 @@
 #![cfg(unix)]
 
 use std::ffi::OsString;
-use std::io::{Read, Write};
-use std::net::TcpListener;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread;
-use std::time::{Duration, Instant};
 
 use release_glz::workflow::{self, WorkflowMode, WorkflowSettings};
+use release_glz_test_support::http::{FakeServer, Request, Response};
 use release_glz_test_support::schema::assert_published_envelope;
 use release_glz_test_support::{git, init_repository, isolated_command, path_searching_first};
-
-/// Seconds the fake server keeps listening when a test never stops it.
-const SERVER_LIFETIME_SECONDS: u64 = 120;
-
-/// Seconds it waits for the rest of a request once a connection arrives.
-const READ_TIMEOUT_SECONDS: u64 = 30;
-
-/// Bytes read from a connection in one call.
-const READ_BUFFER_BYTES: usize = 4096;
-
-/// The blank line that ends an HTTP request's headers.
-const HEADER_TERMINATOR: &[u8] = b"\r\n\r\n";
 
 #[test]
 fn doctor_cli_collects_local_and_github_checks_into_the_command_envelope() {
     let temp = tempfile::tempdir().unwrap();
-    let registry = FakeGitHub::start(vec![""]);
+    let mut registry = fake_github(&[""]);
     std::fs::write(
         temp.path().join("gleam.toml"),
         manifest(&registry.base_url()),
@@ -53,7 +36,7 @@ fn doctor_cli_collects_local_and_github_checks_into_the_command_envelope() {
 
     let gleam = fake_gleam(temp.path(), "#!/bin/sh\nprintf '%s\\n' 'gleam 1.12.3'\n");
 
-    let server = FakeGitHub::start(vec![
+    let mut server = fake_github(&[
         r#"{"private":true,"default_branch":"main","plan":{"name":"enterprise"}}"#,
         r#"{"protection_rules":[{"type":"required_reviewers","prevent_self_review":true,"reviewers":[{"type":"User","reviewer":{"login":"reviewer"}}]}],"deployment_branch_policy":{"protected_branches":true,"custom_branch_policies":false}}"#,
         r#"{"name":"main","protected":true}"#,
@@ -78,10 +61,6 @@ fn doctor_cli_collects_local_and_github_checks_into_the_command_envelope() {
         .env("NO_PROXY", "")
         .output()
         .unwrap();
-    let request_count = server.request_count();
-    let registry_requests = registry.requests();
-    server.stop();
-    registry.stop();
 
     assert!(
         output.status.success(),
@@ -89,6 +68,8 @@ fn doctor_cli_collects_local_and_github_checks_into_the_command_envelope() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+    let request_count = server.finish().len();
+    let registry_requests: Vec<String> = registry.finish().iter().map(Request::text).collect();
     let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_published_envelope(&envelope);
     assert_eq!(envelope["schema"], "command/v1");
@@ -111,7 +92,7 @@ fn doctor_cli_collects_local_and_github_checks_into_the_command_envelope() {
 #[test]
 fn doctor_defaults_to_local_checks_without_contacting_registry_or_github() {
     let temp = tempfile::tempdir().unwrap();
-    let registry = FakeGitHub::start(vec![]);
+    let mut registry = fake_github(&[]);
     std::fs::write(
         temp.path().join("gleam.toml"),
         manifest(&registry.base_url()),
@@ -133,7 +114,7 @@ fn doctor_defaults_to_local_checks_without_contacting_registry_or_github() {
     )
     .unwrap();
     let gleam = fake_gleam(temp.path(), "#!/bin/sh\nprintf '%s\\n' 'gleam 1.12.3'\n");
-    let github = FakeGitHub::start(vec![]);
+    let mut github = fake_github(&[]);
 
     let output = isolated_command(env!("CARGO_BIN_EXE_release-glz"))
         .current_dir(temp.path())
@@ -155,19 +136,17 @@ fn doctor_defaults_to_local_checks_without_contacting_registry_or_github() {
         "{}",
         String::from_utf8_lossy(&output.stdout)
     );
-    assert_eq!(registry.request_count(), 0);
-    assert_eq!(github.request_count(), 0);
+    assert_eq!(registry.finish().len(), 0);
+    assert_eq!(github.finish().len(), 0);
     let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_published_envelope(&envelope);
     assert_eq!(envelope["result"]["state"], "up_to_date");
-    registry.stop();
-    github.stop();
 }
 
 #[test]
 fn candidate_build_reports_the_original_isolated_failure_without_claiming_credential_cause() {
     let temp = tempfile::tempdir().unwrap();
-    let registry = FakeGitHub::start(vec![]);
+    let mut registry = fake_github(&[]);
     std::fs::write(
         temp.path().join("gleam.toml"),
         manifest(&registry.base_url()),
@@ -195,9 +174,9 @@ fn candidate_build_reports_the_original_isolated_failure_without_claiming_creden
         .env("TEST_HEX_TOKEN", "must-not-reach-the-build")
         .output()
         .unwrap();
-    registry.stop();
 
     assert_eq!(output.status.code(), Some(3));
+    registry.finish();
     let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_published_envelope(&envelope);
     let diagnostic = envelope["diagnostics"]
@@ -226,7 +205,7 @@ fn candidate_build_reports_the_original_isolated_failure_without_claiming_creden
 #[test]
 fn doctor_cli_uses_policy_exit_and_unsuccessful_envelope_when_blocked() {
     let temp = tempfile::tempdir().unwrap();
-    let registry = FakeGitHub::start(vec![""]);
+    let mut registry = fake_github(&[""]);
     std::fs::write(
         temp.path().join("gleam.toml"),
         manifest(&registry.base_url()),
@@ -249,7 +228,7 @@ fn doctor_cli_uses_policy_exit_and_unsuccessful_envelope_when_blocked() {
     .unwrap();
 
     let gleam = fake_gleam(temp.path(), "#!/bin/sh\nprintf '%s\\n' 'gleam 9.9.9'\n");
-    let server = FakeGitHub::start(vec![
+    let mut server = fake_github(&[
         r#"{"private":true,"default_branch":"main","plan":{"name":"enterprise"}}"#,
         r#"{"protection_rules":[{"type":"required_reviewers","prevent_self_review":true,"reviewers":[{"type":"User","reviewer":{"login":"reviewer"}}]}],"deployment_branch_policy":{"protected_branches":true,"custom_branch_policies":false}}"#,
         r#"{"name":"main","protected":true}"#,
@@ -270,10 +249,10 @@ fn doctor_cli_uses_policy_exit_and_unsuccessful_envelope_when_blocked() {
         )
         .output()
         .unwrap();
-    server.stop();
-    registry.stop();
 
     assert_eq!(output.status.code(), Some(3));
+    server.finish();
+    registry.finish();
     let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_published_envelope(&envelope);
     assert_eq!(envelope["schema"], "command/v1");
@@ -342,100 +321,13 @@ notes_dir = ".release-glz/notes"
     .replace("REGISTRY_BASE", registry_base)
 }
 
-struct FakeGitHub {
-    address: std::net::SocketAddr,
-    stop: Arc<AtomicBool>,
-    requests: Arc<std::sync::Mutex<Vec<String>>>,
-    thread: Option<thread::JoinHandle<()>>,
-}
-
-impl FakeGitHub {
-    fn start(responses: Vec<&'static str>) -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        listener.set_nonblocking(true).unwrap();
-        let address = listener.local_addr().unwrap();
-        let stop = Arc::new(AtomicBool::new(false));
-        let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let thread_stop = Arc::clone(&stop);
-        let thread_requests = Arc::clone(&requests);
-        let thread = thread::spawn(move || {
-            let mut responses = responses.into_iter();
-            // Both bounds only exist so a test that never calls `stop` cannot leave this thread running.
-            // They have to outlast the slowest gap a loaded runner puts between accepting a connection and the request arriving on it — otherwise the listener gives up first and the assertion blames the product for the machine.
-            let deadline = Instant::now() + Duration::from_secs(SERVER_LIFETIME_SECONDS);
-            while !thread_stop.load(Ordering::Relaxed) && Instant::now() < deadline {
-                match listener.accept() {
-                    Ok((mut stream, _)) => {
-                        stream
-                            .set_read_timeout(Some(Duration::from_secs(READ_TIMEOUT_SECONDS)))
-                            .unwrap();
-                        let mut request = Vec::new();
-                        let mut buffer = [0_u8; READ_BUFFER_BYTES];
-                        // A read error — a timeout, most likely — used to read as a clean end of request, which recorded an empty one and answered it.
-                        // The caller then saw a reply to a request it had not finished sending.
-                        let mut complete = false;
-                        while let Ok(count) = stream.read(&mut buffer) {
-                            if count == 0 {
-                                break;
-                            }
-                            request.extend_from_slice(&buffer[..count]);
-                            if request
-                                .windows(HEADER_TERMINATOR.len())
-                                .any(|window| window == HEADER_TERMINATOR)
-                            {
-                                complete = true;
-                                break;
-                            }
-                        }
-                        // Answering a request that never finished arriving spends one of the queued responses on it, so every later request receives the answer meant for the one before it.
-                        // Drop the connection instead.
-                        if !complete {
-                            continue;
-                        }
-                        thread_requests
-                            .lock()
-                            .unwrap()
-                            .push(String::from_utf8_lossy(&request).into_owned());
-                        let body = responses
-                            .next()
-                            .unwrap_or(r#"{"message":"unexpected request"}"#);
-                        write!(
-                            stream,
-                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                            body.len(),
-                            body
-                        )
-                        .unwrap();
-                    }
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        thread::sleep(Duration::from_millis(5));
-                    }
-                    Err(_) => break,
-                }
-            }
-        });
-        Self {
-            address,
-            stop,
-            requests,
-            thread: Some(thread),
-        }
-    }
-
-    fn base_url(&self) -> String {
-        format!("http://{}", self.address)
-    }
-
-    fn request_count(&self) -> usize {
-        self.requests.lock().unwrap().len()
-    }
-
-    fn requests(&self) -> Vec<String> {
-        self.requests.lock().unwrap().clone()
-    }
-
-    fn stop(mut self) {
-        self.stop.store(true, Ordering::Relaxed);
-        self.thread.take().unwrap().join().unwrap();
-    }
+/// A server that answers its requests in order with `bodies`, each as a JSON 200 response.
+fn fake_github(bodies: &[&str]) -> FakeServer {
+    let server = FakeServer::start();
+    server.script(bodies.iter().map(|body| {
+        Response::new(200)
+            .header("Content-Type", "application/json")
+            .body(*body)
+    }));
+    server
 }

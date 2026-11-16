@@ -20,17 +20,15 @@ use release_glz::model::ReleaseState;
 use release_glz::reconciler::{ApprovalEvidence, ReconcileEffect};
 use release_glz::registry::HexRegistry;
 use release_glz::release::{CandidateReleaseRunner, LiveReleaseTarget};
+use release_glz_test_support::http::{FakeServer, Reply, Request, Response};
 use release_glz_test_support::oidc;
 use semver::Version;
 use sha2::{Digest, Sha256};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
-use tokio::task::JoinHandle;
 
 #[tokio::test]
 async fn live_reconciler_recovers_ambiguous_publish_and_second_run_is_a_no_op() {
-    let registry = FakeRegistry::start().await;
-    let github = FakeGitHub::start().await;
+    let registry = FakeRegistry::start();
+    let github = FakeGitHub::start();
     let fixture = live_fixture(&registry.base_url());
     let runner = live_runner(&fixture, &registry, &github);
 
@@ -77,9 +75,12 @@ async fn live_reconciler_recovers_ambiguous_publish_and_second_run_is_a_no_op() 
     );
     assert_eq!(registry_state.package_posts, 1);
     assert_eq!(registry_state.docs_posts, 1);
-    assert!(registry_state.requests.iter().all(|request| {
-        request.headers.get("authorization").map(String::as_str) == Some("Bearer registry-secret")
-    }));
+    assert!(
+        registry_state
+            .requests
+            .iter()
+            .all(|request| { request.header("authorization") == Some("Bearer registry-secret") })
+    );
 
     let github_state = github.state();
     assert_eq!(
@@ -109,11 +110,14 @@ async fn live_reconciler_recovers_ambiguous_publish_and_second_run_is_a_no_op() 
             .iter()
             .all(|asset| asset.state == "uploaded")
     );
+    assert!(
+        github_state
+            .requests
+            .iter()
+            .all(|request| { request.header("authorization") == Some("Bearer github-secret") })
+    );
     assert!(github_state.requests.iter().all(|request| {
-        request.headers.get("authorization").map(String::as_str) == Some("Bearer github-secret")
-    }));
-    assert!(github_state.requests.iter().all(|request| {
-        !request.path.contains("clobber")
+        !request.target.contains("clobber")
             && !String::from_utf8_lossy(&request.body).contains("replace")
     }));
 
@@ -124,8 +128,8 @@ async fn live_reconciler_recovers_ambiguous_publish_and_second_run_is_a_no_op() 
 /// A failed upload that leaves an unfinished asset stops the run, and the next run deletes only that asset on the draft, uploads the sealed bytes, and finalizes the Release.
 #[tokio::test]
 async fn a_resumed_run_completes_an_asset_that_a_failed_upload_left_unfinished() {
-    let registry = FakeRegistry::start().await;
-    let github = FakeGitHub::start().await;
+    let registry = FakeRegistry::start();
+    let github = FakeGitHub::start();
     let fixture = live_fixture_with(
         &registry.base_url(),
         &[
@@ -188,15 +192,15 @@ async fn a_resumed_run_completes_an_asset_that_a_failed_upload_left_unfinished()
     assert_eq!(deletes.len(), 1, "{deletes:?}");
     let (position, delete) = deletes[0];
     assert_eq!(
-        delete.path,
+        delete.target,
         format!("/repos/owner/widget/releases/assets/{}", unfinished.id)
     );
     let reread = &finished.requests[position - 1];
     assert_eq!(reread.method, "GET");
     assert!(
-        reread.path.starts_with("/repos/owner/widget/releases?"),
+        reread.target.starts_with("/repos/owner/widget/releases?"),
         "the Release must be read again right before the delete, not {}",
-        reread.path
+        reread.target
     );
     assert_eq!(finished.deletions.len(), 1);
     assert_eq!(finished.deletions[0].id, unfinished.id);
@@ -223,8 +227,8 @@ async fn a_resumed_run_completes_an_asset_that_a_failed_upload_left_unfinished()
 /// An unfinished asset on the published Release stops the release as a conflict that says what a person has to do, and the run changes nothing.
 #[tokio::test]
 async fn an_unfinished_asset_on_a_published_release_is_left_to_a_person() {
-    let registry = FakeRegistry::start().await;
-    let github = FakeGitHub::start().await;
+    let registry = FakeRegistry::start();
+    let github = FakeGitHub::start();
     let fixture = live_fixture(&registry.base_url());
     github.hold_release_with_unfinished_asset(&fixture.manifest, false, "sbom.cdx.json");
 
@@ -253,8 +257,8 @@ async fn an_unfinished_asset_on_a_published_release_is_left_to_a_person() {
 /// An unfinished asset that the Candidate doesn't seal stops the release as a conflict, and the run deletes nothing.
 #[tokio::test]
 async fn an_unfinished_asset_outside_the_candidate_is_left_to_a_person() {
-    let registry = FakeRegistry::start().await;
-    let github = FakeGitHub::start().await;
+    let registry = FakeRegistry::start();
+    let github = FakeGitHub::start();
     let fixture = live_fixture(&registry.base_url());
     github.hold_release_with_unfinished_asset(&fixture.manifest, true, "stray.json");
 
@@ -313,8 +317,8 @@ fn every_asset_name_that_a_candidate_seals_keeps_its_name_on_github() {
 /// Docs that the registry holds for a Candidate without docs contradict the Candidate, so the release stops in a conflict before any effect.
 #[tokio::test]
 async fn docs_for_a_candidate_without_docs_stop_the_release_in_a_conflict() {
-    let registry = FakeRegistry::start().await;
-    let github = FakeGitHub::start().await;
+    let registry = FakeRegistry::start();
+    let github = FakeGitHub::start();
     let fixture = live_fixture_without_docs(&registry.base_url());
     registry.hold(
         fixture.package.clone(),
@@ -338,8 +342,8 @@ async fn docs_for_a_candidate_without_docs_stop_the_release_in_a_conflict() {
 /// Two drafts with the tag leave the run unable to tell which one the Candidate owns, so it stops before any effect.
 #[tokio::test]
 async fn two_drafts_with_the_tag_stop_the_release_in_a_conflict() {
-    let registry = FakeRegistry::start().await;
-    let github = FakeGitHub::start().await;
+    let registry = FakeRegistry::start();
+    let github = FakeGitHub::start();
     let fixture = live_fixture(&registry.base_url());
     github.duplicate_the_draft();
 
@@ -363,8 +367,8 @@ async fn two_drafts_with_the_tag_stop_the_release_in_a_conflict() {
 /// Evidence that `verify_approval` gathered from GitHub publishes the whole release, as no hand-built evidence can show.
 #[tokio::test]
 async fn evidence_from_verification_publishes_the_whole_release() {
-    let registry = FakeRegistry::start().await;
-    let github = FakeGitHub::start().await;
+    let registry = FakeRegistry::start();
+    let github = FakeGitHub::start();
     let fixture = live_fixture(&registry.base_url());
     github.answer_approval(&fixture.manifest, &fixture.manifest.intent_digest);
 
@@ -387,8 +391,8 @@ async fn evidence_from_verification_publishes_the_whole_release() {
 /// When the merged Release PR recorded another intent, the evidence that verification gathers publishes nothing.
 #[tokio::test]
 async fn evidence_for_another_intent_publishes_nothing() {
-    let registry = FakeRegistry::start().await;
-    let github = FakeGitHub::start().await;
+    let registry = FakeRegistry::start();
+    let github = FakeGitHub::start();
     let fixture = live_fixture(&registry.base_url());
     github.answer_approval(&fixture.manifest, &"e".repeat(64));
 
@@ -712,94 +716,18 @@ fn approved(manifest: &release_glz::candidate::CandidateManifest) -> ApprovalEvi
     }
 }
 
-#[derive(Clone, Debug)]
-struct HttpRequest {
-    method: String,
-    path: String,
-    headers: BTreeMap<String, String>,
-    body: Vec<u8>,
+/// A JSON response.
+fn json_response(status: u16, value: serde_json::Value) -> Response {
+    Response::new(status)
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_vec(&value).unwrap())
 }
 
-struct HttpResponse {
-    status: u16,
-    content_type: &'static str,
-    body: Vec<u8>,
-}
-
-impl HttpResponse {
-    fn json(status: u16, value: serde_json::Value) -> Self {
-        Self {
-            status,
-            content_type: "application/json",
-            body: serde_json::to_vec(&value).unwrap(),
-        }
-    }
-
-    fn bytes(status: u16, body: Vec<u8>) -> Self {
-        Self {
-            status,
-            content_type: "application/octet-stream",
-            body,
-        }
-    }
-}
-
-async fn read_request(stream: &mut TcpStream) -> HttpRequest {
-    let mut bytes = Vec::new();
-    let mut buffer = [0_u8; 8192];
-    let header_end = loop {
-        let read = stream.read(&mut buffer).await.unwrap();
-        assert!(read > 0, "client disconnected before request headers");
-        bytes.extend_from_slice(&buffer[..read]);
-        if let Some(index) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
-            break index + 4;
-        }
-    };
-    let header_text = String::from_utf8_lossy(&bytes[..header_end]);
-    let mut lines = header_text.lines();
-    let mut request_line = lines.next().unwrap().split_whitespace();
-    let method = request_line.next().unwrap().to_owned();
-    let path = request_line.next().unwrap().to_owned();
-    let mut headers = BTreeMap::new();
-    for line in lines {
-        if let Some((name, value)) = line.split_once(':') {
-            headers.insert(name.to_ascii_lowercase(), value.trim().to_owned());
-        }
-    }
-    let content_length = headers
-        .get("content-length")
-        .map(|value| value.parse::<usize>().unwrap())
-        .unwrap_or_default();
-    while bytes.len() < header_end + content_length {
-        let read = stream.read(&mut buffer).await.unwrap();
-        assert!(read > 0, "client disconnected before request body");
-        bytes.extend_from_slice(&buffer[..read]);
-    }
-    HttpRequest {
-        method,
-        path,
-        headers,
-        body: bytes[header_end..header_end + content_length].to_vec(),
-    }
-}
-
-async fn write_response(stream: &mut TcpStream, response: HttpResponse) {
-    let reason = match response.status {
-        200 => "OK",
-        201 => "Created",
-        204 => "No Content",
-        404 => "Not Found",
-        _ => "Response",
-    };
-    let headers = format!(
-        "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-        response.status,
-        reason,
-        response.content_type,
-        response.body.len()
-    );
-    stream.write_all(headers.as_bytes()).await.unwrap();
-    stream.write_all(&response.body).await.unwrap();
+/// A response of raw bytes.
+fn bytes_response(status: u16, body: Vec<u8>) -> Response {
+    Response::new(status)
+        .header("Content-Type", "application/octet-stream")
+        .body(body)
 }
 
 #[derive(Clone, Debug, Default)]
@@ -808,40 +736,25 @@ struct RegistryState {
     docs: Option<Vec<u8>>,
     package_posts: usize,
     docs_posts: usize,
-    requests: Vec<HttpRequest>,
+    requests: Vec<Request>,
 }
 
 struct FakeRegistry {
-    address: std::net::SocketAddr,
+    server: FakeServer,
     state: Arc<Mutex<RegistryState>>,
-    task: JoinHandle<()>,
 }
 
 impl FakeRegistry {
-    async fn start() -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
+    fn start() -> Self {
+        let server = FakeServer::start();
         let state = Arc::new(Mutex::new(RegistryState::default()));
         let shared = Arc::clone(&state);
-        let task = tokio::spawn(async move {
-            loop {
-                let (mut stream, _) = listener.accept().await.unwrap();
-                let request = read_request(&mut stream).await;
-                let (response, disconnect) = registry_response(&shared, &request);
-                if !disconnect {
-                    write_response(&mut stream, response).await;
-                }
-            }
-        });
-        Self {
-            address,
-            state,
-            task,
-        }
+        server.route(move |request| registry_response(&shared, request));
+        Self { server, state }
     }
 
     fn base_url(&self) -> String {
-        format!("http://{}", self.address)
+        self.server.base_url()
     }
 
     fn state(&self) -> RegistryState {
@@ -855,28 +768,25 @@ impl FakeRegistry {
         state.docs = Some(docs);
     }
 
-    fn stop(self) {
-        self.task.abort();
+    fn stop(mut self) {
+        self.server.finish();
     }
 }
 
-fn registry_response(
-    shared: &Arc<Mutex<RegistryState>>,
-    request: &HttpRequest,
-) -> (HttpResponse, bool) {
+fn registry_response(shared: &Arc<Mutex<RegistryState>>, request: &Request) -> Reply {
     let mut state = shared.lock().unwrap();
     state.requests.push(request.clone());
-    match (request.method.as_str(), request.path.as_str()) {
+    match (request.method.as_str(), request.target.as_str()) {
         ("POST", "/api/publish") => {
             state.package_posts += 1;
             state.package = Some(request.body.clone());
             // The server committed the bytes but the client never saw a response.
-            (HttpResponse::bytes(201, vec![]), true)
+            Reply::Close
         }
         ("POST", "/api/packages/widget/releases/1.2.3/docs") => {
             state.docs_posts += 1;
             state.docs = Some(request.body.clone());
-            (HttpResponse::json(201, serde_json::json!({})), false)
+            json_response(201, serde_json::json!({})).into()
         }
         ("GET", "/api/packages/widget") => {
             let releases = state.package.as_ref().map_or_else(Vec::new, |_| {
@@ -885,31 +795,27 @@ fn registry_response(
                     "has_docs": state.docs.is_some()
                 })]
             });
-            (
-                HttpResponse::json(
-                    200,
-                    serde_json::json!({"releases": releases, "retirements": {}}),
-                ),
-                false,
+            json_response(
+                200,
+                serde_json::json!({"releases": releases, "retirements": {}}),
             )
+            .into()
         }
         ("GET", "/api/packages/widget/releases/1.2.3") => match &state.package {
-            Some(package) => (
-                HttpResponse::json(
-                    200,
-                    serde_json::json!({
-                        "version": "1.2.3",
-                        "checksum": release_glz::hex::lower(&Sha256::digest(package)),
-                        "has_docs": state.docs.is_some()
-                    }),
-                ),
-                false,
-            ),
-            None => (HttpResponse::bytes(404, vec![]), false),
+            Some(package) => json_response(
+                200,
+                serde_json::json!({
+                    "version": "1.2.3",
+                    "checksum": release_glz::hex::lower(&Sha256::digest(package)),
+                    "has_docs": state.docs.is_some()
+                }),
+            )
+            .into(),
+            None => bytes_response(404, vec![]).into(),
         },
         ("GET", "/repo/docs/widget-1.2.3.tar.gz") => match &state.docs {
-            Some(docs) => (HttpResponse::bytes(200, docs.clone()), false),
-            None => (HttpResponse::bytes(404, vec![]), false),
+            Some(docs) => bytes_response(200, docs.clone()).into(),
+            None => bytes_response(404, vec![]).into(),
         },
         _ => panic!("unexpected registry request: {request:?}"),
     }
@@ -931,7 +837,7 @@ struct GitHubState {
     /// Every asset that a DELETE removed, with the state of the Release at that moment.
     deletions: Vec<Deletion>,
     approval: Option<ApprovalAnswers>,
-    requests: Vec<HttpRequest>,
+    requests: Vec<Request>,
     /// Whether the release list holds a second draft with the tag.
     duplicate_draft: bool,
 }
@@ -969,38 +875,25 @@ struct ApprovalAnswers {
 }
 
 struct FakeGitHub {
-    address: std::net::SocketAddr,
+    server: FakeServer,
     state: Arc<Mutex<GitHubState>>,
-    task: JoinHandle<()>,
 }
 
 impl FakeGitHub {
-    async fn start() -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
+    fn start() -> Self {
+        let server = FakeServer::start();
         let state = Arc::new(Mutex::new(GitHubState {
             next_asset_id: 77,
             ..GitHubState::default()
         }));
         let shared = Arc::clone(&state);
-        let base_url = format!("http://{address}");
-        let task = tokio::spawn(async move {
-            loop {
-                let (mut stream, _) = listener.accept().await.unwrap();
-                let request = read_request(&mut stream).await;
-                let response = github_response(&shared, &request, &base_url);
-                write_response(&mut stream, response).await;
-            }
-        });
-        Self {
-            address,
-            state,
-            task,
-        }
+        let base_url = server.base_url();
+        server.route(move |request| github_response(&shared, request, &base_url).into());
+        Self { server, state }
     }
 
     fn base_url(&self) -> String {
-        format!("http://{}", self.address)
+        self.server.base_url()
     }
 
     fn state(&self) -> GitHubState {
@@ -1091,19 +984,19 @@ impl FakeGitHub {
         });
     }
 
-    fn stop(self) {
-        self.task.abort();
+    fn stop(mut self) {
+        self.server.finish();
     }
 }
 
 fn github_response(
     shared: &Arc<Mutex<GitHubState>>,
-    request: &HttpRequest,
+    request: &Request,
     base_url: &str,
-) -> HttpResponse {
+) -> Response {
     let mut state = shared.lock().unwrap();
     state.requests.push(request.clone());
-    let path = request.path.split('?').next().unwrap();
+    let path = request.path();
     if request.method == "GET"
         && let Some(approval) = &state.approval
         && let Some(response) = approval_response(approval, path, base_url)
@@ -1112,16 +1005,16 @@ fn github_response(
     }
     match (request.method.as_str(), path) {
         ("GET", "/repos/owner/widget/git/ref/tags/v1.2.3") => match &state.tag_target {
-            Some(_) => HttpResponse::json(
+            Some(_) => json_response(
                 200,
                 serde_json::json!({
                     "ref": "refs/tags/v1.2.3",
                     "object": {"type": "tag", "sha": "tag-object"}
                 }),
             ),
-            None => HttpResponse::bytes(404, vec![]),
+            None => bytes_response(404, vec![]),
         },
-        ("GET", "/repos/owner/widget/git/tags/tag-object") => HttpResponse::json(
+        ("GET", "/repos/owner/widget/git/tags/tag-object") => json_response(
             200,
             serde_json::json!({
                 "sha": "tag-object",
@@ -1133,7 +1026,7 @@ fn github_response(
             let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
             let target = body["object"].as_str().unwrap().to_owned();
             state.pending_tag_target = Some(target.clone());
-            HttpResponse::json(
+            json_response(
                 201,
                 serde_json::json!({
                     "sha": "tag-object",
@@ -1144,7 +1037,7 @@ fn github_response(
         }
         ("POST", "/repos/owner/widget/git/refs") => {
             state.tag_target = state.pending_tag_target.take();
-            HttpResponse::json(
+            json_response(
                 201,
                 serde_json::json!({
                     "ref": "refs/tags/v1.2.3",
@@ -1155,7 +1048,7 @@ fn github_response(
         // GitHub answers the tag endpoint only with a published Release, and lists drafts only to a token that can write.
         ("GET", "/repos/owner/widget/releases/tags/v1.2.3") => match &state.release_target {
             Some(_) if !state.draft => release_response(&state, base_url),
-            _ => HttpResponse::bytes(404, vec![]),
+            _ => bytes_response(404, vec![]),
         },
         ("GET", "/repos/owner/widget/releases") => {
             let mut releases = state
@@ -1168,7 +1061,7 @@ fn github_response(
                 second["id"] = serde_json::json!(43);
                 releases.push(second);
             }
-            HttpResponse::json(200, serde_json::Value::Array(releases))
+            json_response(200, serde_json::Value::Array(releases))
         }
         ("POST", "/repos/owner/widget/releases") => {
             let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
@@ -1182,10 +1075,10 @@ fn github_response(
             release_response(&state, base_url)
         }
         ("POST", "/repos/owner/widget/releases/42/assets") => {
-            let name = github_asset_name(request.path.split("name=").nth(1).unwrap_or_default());
+            let name = github_asset_name(request.target.split("name=").nth(1).unwrap_or_default());
             // GitHub refuses a second asset with a name while the first one still holds it.
             if state.assets.iter().any(|asset| asset.name == name) {
-                return HttpResponse::json(
+                return json_response(
                     422,
                     serde_json::json!({
                         "message": "Validation Failed",
@@ -1199,10 +1092,9 @@ fn github_response(
                 name,
                 state: if unfinished { "starter" } else { "uploaded" },
                 media_type: request
-                    .headers
-                    .get("content-type")
-                    .cloned()
-                    .unwrap_or_default(),
+                    .header("content-type")
+                    .unwrap_or_default()
+                    .to_owned(),
                 bytes: request.body.clone(),
             };
             state.next_asset_id += 1;
@@ -1210,9 +1102,9 @@ fn github_response(
             state.assets.push(asset);
             if unfinished {
                 state.unfinished_upload = None;
-                return HttpResponse::json(502, serde_json::json!({"message": "Server Error"}));
+                return json_response(502, serde_json::json!({"message": "Server Error"}));
             }
-            HttpResponse::json(201, answer)
+            json_response(201, answer)
         }
         ("DELETE", path) if path.starts_with("/repos/owner/widget/releases/assets/") => {
             let id = path
@@ -1228,9 +1120,9 @@ fn github_response(
                         state: removed.state,
                         draft,
                     });
-                    HttpResponse::bytes(204, vec![])
+                    bytes_response(204, vec![])
                 }
-                None => HttpResponse::json(404, serde_json::json!({"message": "Not Found"})),
+                None => json_response(404, serde_json::json!({"message": "Not Found"})),
             }
         }
         ("PATCH", "/repos/owner/widget/releases/42") => {
@@ -1283,11 +1175,7 @@ fn asset_json(asset: &FakeAsset) -> serde_json::Value {
 }
 
 /// GitHub's answer to one approval check, or `None` for a path that no approval check reads.
-fn approval_response(
-    approval: &ApprovalAnswers,
-    path: &str,
-    base_url: &str,
-) -> Option<HttpResponse> {
+fn approval_response(approval: &ApprovalAnswers, path: &str, base_url: &str) -> Option<Response> {
     let files = release_pr_files();
     let digest = files_digest(&files);
     let head = release_pr_head();
@@ -1366,11 +1254,11 @@ fn approval_response(
         }),
         _ => return None,
     };
-    Some(HttpResponse::json(200, value))
+    Some(json_response(200, value))
 }
 
-fn release_response(state: &GitHubState, base_url: &str) -> HttpResponse {
-    HttpResponse::json(
+fn release_response(state: &GitHubState, base_url: &str) -> Response {
+    json_response(
         if state.draft { 201 } else { 200 },
         release_json(state, base_url),
     )
