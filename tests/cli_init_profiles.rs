@@ -1,12 +1,10 @@
-#![cfg(unix)]
-
 use std::ffi::{OsStr, OsString};
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use release_glz::config::{AuthKind, Manifest, RegistryProvider};
+use release_glz_test_support::fake_tool::{self, Behavior};
 use release_glz_test_support::schema::assert_published_envelope;
-use release_glz_test_support::{git, init_repository, isolated_command, path_searching_first};
+use release_glz_test_support::{git, init_repository, isolated_command};
 
 const ACTION_SHA: &str = "abcdef0123456789abcdef0123456789abcdef01";
 
@@ -24,16 +22,12 @@ fn package(version: &str) -> (tempfile::TempDir, OsString) {
     (temp, gleam)
 }
 
-/// Write a compiler stand-in that reports Gleam 1.18.1, and return a `PATH` that finds it first.
+/// Install a compiler stand-in that reports Gleam 1.18.1, and return a `PATH` that finds it first.
 fn fake_gleam(root: &Path) -> OsString {
-    let directory = root.join("fake-compiler");
-    std::fs::create_dir(&directory).unwrap();
-    let gleam = directory.join("gleam");
-    std::fs::write(&gleam, "#!/bin/sh\nprintf '%s\\n' 'gleam 1.18.1'\n").unwrap();
-    let mut permissions = std::fs::metadata(&gleam).unwrap().permissions();
-    permissions.set_mode(0o755);
-    std::fs::set_permissions(&gleam, permissions).unwrap();
-    path_searching_first(&directory)
+    fake_tool::gleam_on_path(
+        &root.join("fake-compiler"),
+        &Behavior::reporting_version("1.18.1"),
+    )
 }
 
 /// Run `init` with JSON output, and check that output against the published schemas.
@@ -55,9 +49,6 @@ fn public_profile_check_then_update_generates_complete_schema_two_configuration(
     let (temp, gleam) = package("1.0.0");
     let manifest_path = temp.path().join("gleam.toml");
     let original = std::fs::read_to_string(&manifest_path).unwrap();
-    let mut permissions = std::fs::metadata(&manifest_path).unwrap().permissions();
-    permissions.set_mode(0o640);
-    std::fs::set_permissions(&manifest_path, permissions).unwrap();
     let check = init(temp.path(), &gleam, &["--profile", "public", "--check"]);
     assert_eq!(check.status.code(), Some(3));
     assert_eq!(
@@ -98,6 +89,34 @@ fn public_profile_check_then_update_generates_complete_schema_two_configuration(
     assert_eq!(release.compiler.to_string(), "1.18.1");
     assert_eq!(release.registry, Default::default());
     assert_eq!(release.approval.manual_refs, ["refs/heads/trunk"]);
+    let workflow =
+        std::fs::read_to_string(temp.path().join(".github/workflows/release-glz.yml")).unwrap();
+    assert!(workflow.contains(&format!("P4suta/release-glz@{ACTION_SHA}")));
+}
+
+/// The Unix permission bits of the manifest survive the rewrite, which Windows files don't carry.
+#[cfg(unix)]
+#[test]
+fn update_keeps_the_unix_permission_bits_of_the_manifest() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (temp, gleam) = package("1.0.0");
+    let manifest_path = temp.path().join("gleam.toml");
+    std::fs::set_permissions(&manifest_path, std::fs::Permissions::from_mode(0o640)).unwrap();
+
+    let update = init(temp.path(), &gleam, &["--profile", "public", "--update"]);
+
+    assert!(
+        update.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&update.stdout),
+        String::from_utf8_lossy(&update.stderr)
+    );
+    assert!(
+        std::fs::read_to_string(&manifest_path)
+            .unwrap()
+            .contains("\nschema = 2\n")
+    );
     assert_eq!(
         std::fs::metadata(&manifest_path)
             .unwrap()
@@ -106,9 +125,6 @@ fn public_profile_check_then_update_generates_complete_schema_two_configuration(
             & 0o777,
         0o640
     );
-    let workflow =
-        std::fs::read_to_string(temp.path().join(".github/workflows/release-glz.yml")).unwrap();
-    assert!(workflow.contains(&format!("P4suta/release-glz@{ACTION_SHA}")));
 }
 
 #[test]

@@ -11,7 +11,8 @@ Keep secret-redaction assertions on new error paths.
 Tests that build a real package fail when Gleam is missing instead of passing without running.
 `.cargo/config.toml` points every process Cargo runs at the isolated Git configuration in `tests/fixtures/git`, so global settings, signing, hooks, and credential prompts never reach a test.
 A test runs the CLI through `release_glz_test_support::isolated_command`, which passes only an explicit environment and never a developer's token.
-A test that fakes the compiler writes a script named `gleam` into a directory of its own and passes `release_glz_test_support::path_searching_first` of that directory as the CLI's `PATH`.
+A test that fakes the compiler or a hook installs `release_glz_test_support::fake_tool`, a binary that reads its behavior from a file beside it, so the same test runs on every OS.
+`fake_tool::gleam_on_path` installs it as `gleam` in a directory of its own and returns a `PATH` that finds that directory first, and `fake_tool::install` returns the path a hook's argv names.
 Tests run in parallel and write only inside their own temporary directories.
 
 Every parser has a fuzz target in `fuzz/fuzz_targets`, whose properties live in the `invariants` library under `fuzz/invariants` and whose seeds live in `fuzz/corpus`.

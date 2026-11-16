@@ -1,15 +1,13 @@
-#![cfg(unix)]
-
 use std::ffi::{OsStr, OsString};
 use std::io::Write;
-use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
 
 use base64::Engine as _;
 use flate2::{Compression, write::GzEncoder};
+use release_glz_test_support::fake_tool::{self, Action, Behavior, Condition, Destination, Rule};
 use release_glz_test_support::http::{FakeServer, Request, Response};
+use release_glz_test_support::isolated_command;
 use release_glz_test_support::schema::{assert_matches, assert_published_envelope};
-use release_glz_test_support::{isolated_command, path_searching_first};
 use sha2::{Digest, Sha256};
 
 #[test]
@@ -1196,9 +1194,9 @@ fn top_level_diagnostics_redact_the_configured_registry_credential() {
     let source = manifest("https://registry.example.test")
         .replace("TEST_REGISTRY_TOKEN", "CUSTOM_REGISTRY_CREDENTIAL");
     std::fs::write(temp.path().join("gleam.toml"), source).unwrap();
-    let gleam = gleam_on_path(
+    let gleam = fake_tool::gleam_on_path(
         &temp.path().join("failing-compiler"),
-        &format!("#!/bin/sh\nprintf '%s' '{secret}' >&2\nexit 9\n"),
+        &Behavior::always(vec![Action::Stderr(secret.into()), Action::Exit(9)]),
     );
 
     let output = isolated_command(env!("CARGO_BIN_EXE_release-glz"))
@@ -1411,25 +1409,14 @@ fn release_pr_from_plan(
 /// A `PATH` that finds a compiler stand-in that records every run in the returned file and then fails.
 fn refusing_gleam(directory: &std::path::Path) -> (OsString, std::path::PathBuf) {
     let runs = directory.join("refusing-gleam.log");
-    let gleam = gleam_on_path(
+    let gleam = fake_tool::gleam_on_path(
         &directory.join("refusing-compiler"),
-        &format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nexit 97\n",
-            runs.display()
-        ),
+        &Behavior::always(vec![
+            Action::RecordArguments(runs.clone()),
+            Action::Exit(97),
+        ]),
     );
     (gleam, runs)
-}
-
-/// Write `script` as a compiler stand-in named `gleam` in the new `directory`, and return a `PATH` that finds it first.
-fn gleam_on_path(directory: &std::path::Path, script: &str) -> OsString {
-    std::fs::create_dir(directory).unwrap();
-    let gleam = directory.join("gleam");
-    std::fs::write(&gleam, script).unwrap();
-    let mut permissions = std::fs::metadata(&gleam).unwrap().permissions();
-    permissions.set_mode(0o755);
-    std::fs::set_permissions(&gleam, permissions).unwrap();
-    path_searching_first(directory)
 }
 
 fn request_json(request: &str) -> serde_json::Value {
@@ -1450,19 +1437,40 @@ fn json(output: &std::process::Output) -> serde_json::Value {
     serde_json::from_slice(&output.stdout).unwrap()
 }
 
-/// A `PATH` that finds a compiler stand-in that exports `fixture.tar` and `interface.json` from `directory`.
-///
-/// The paths are part of the script, because the compiler inherits no test variables.
+/// A `PATH` that finds a compiler stand-in that exports `fixture.tar` and `interface.json` from `directory`, and refuses every other subcommand.
 fn fake_gleam(directory: &std::path::Path) -> OsString {
-    let package = directory.join("fixture.tar");
-    let interface = directory.join("interface.json");
-    gleam_on_path(
+    let arguments = |arguments: &[&str]| {
+        vec![Condition::ArgumentsStartWith(
+            arguments
+                .iter()
+                .map(|argument| (*argument).to_owned())
+                .collect(),
+        )]
+    };
+    fake_tool::gleam_on_path(
         &directory.join("fake-compiler"),
-        &format!(
-            "#!/bin/sh\nset -eu\nif [ \"${{1:-}}\" = \"--version\" ]; then printf '%s\\n' 'gleam 1.12.3'; exit 0; fi\nif [ \"${{1:-}}\" = \"export\" ] && [ \"${{2:-}}\" = \"hex-tarball\" ]; then mkdir -p build; cp '{}' build/widget-1.0.0.tar; exit 0; fi\nif [ \"${{1:-}}\" = \"export\" ] && [ \"${{2:-}}\" = \"package-interface\" ]; then cp '{}' \"$4\"; exit 0; fi\nexit 64\n",
-            package.display(),
-            interface.display()
-        ),
+        &Behavior {
+            rules: vec![
+                Rule {
+                    when: arguments(&["--version"]),
+                    actions: vec![Action::Stdout("gleam 1.12.3\n".into())],
+                },
+                Rule {
+                    when: arguments(&["export", "hex-tarball"]),
+                    actions: vec![Action::Copy {
+                        from: directory.join("fixture.tar"),
+                        to: Destination::Path("build/widget-1.0.0.tar".into()),
+                    }],
+                },
+                Rule {
+                    when: arguments(&["export", "package-interface"]),
+                    actions: vec![Action::Copy {
+                        from: directory.join("interface.json"),
+                        to: Destination::OutArgument,
+                    }],
+                },
+            ],
+        },
     )
 }
 

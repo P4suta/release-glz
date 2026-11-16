@@ -1,9 +1,8 @@
-#![cfg(unix)]
-
+use std::collections::BTreeMap;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 
-use release_glz_test_support::{isolated_command, path_searching_first};
+use release_glz_test_support::fake_tool::{self, Action, Behavior};
+use release_glz_test_support::isolated_command;
 
 /// One variable from every family that dependency build code must never read.
 const WITHHELD: [(&str, &str); 16] = [
@@ -34,19 +33,14 @@ const RELEASE_GLZ_PREFIX: &str = "RELEASE_GLZ_";
 #[test]
 fn the_compiler_runs_without_tokens_inputs_runner_files_or_registry_credentials() {
     let temp = tempfile::tempdir().unwrap();
-    let record = temp.path().join("environment");
-    let compiler = temp.path().join("fake-compiler");
-    fs::create_dir(&compiler).unwrap();
-    let gleam = compiler.join("gleam");
-    fs::write(
-        &gleam,
-        format!(
-            "#!/bin/sh\nenv > '{}'\nprintf '%s\\n' 'gleam 1.19.2'\n",
-            record.display()
-        ),
-    )
-    .unwrap();
-    fs::set_permissions(&gleam, fs::Permissions::from_mode(0o755)).unwrap();
+    let record = temp.path().join("environment.json");
+    let gleam = fake_tool::gleam_on_path(
+        &temp.path().join("fake-compiler"),
+        &Behavior::always(vec![
+            Action::RecordEnvironment(record.clone()),
+            Action::Stdout("gleam 1.19.2\n".into()),
+        ]),
+    );
     fs::copy(
         concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -60,36 +54,33 @@ fn the_compiler_runs_without_tokens_inputs_runner_files_or_registry_credentials(
     command
         .current_dir(temp.path())
         .args(["--output", "json", "doctor"])
-        .env("PATH", path_searching_first(&compiler))
+        .env("PATH", gleam)
         .env("HOME", temp.path());
     for (name, value) in WITHHELD {
         command.env(name, value);
     }
     let output = command.output().unwrap();
 
-    let recorded = fs::read_to_string(&record).unwrap_or_else(|error| {
+    let recorded = fs::read(&record).unwrap_or_else(|error| {
         panic!(
             "the gleam that PATH finds first never ran ({error}): {}",
             String::from_utf8_lossy(&output.stderr)
         )
     });
-    let names: Vec<_> = recorded
-        .lines()
-        .filter_map(|line| line.split_once('=').map(|(name, _)| name))
-        .collect();
+    let recorded: BTreeMap<String, String> = serde_json::from_slice(&recorded).unwrap();
     for (name, value) in WITHHELD {
-        assert!(!names.contains(&name), "{name} reached the compiler");
+        assert!(!recorded.contains_key(name), "{name} reached the compiler");
         assert!(
-            !recorded.contains(value),
+            recorded.values().all(|seen| !seen.contains(value)),
             "the value of {name} reached the compiler"
         );
     }
     assert!(
-        names
-            .iter()
+        recorded
+            .keys()
             .all(|name| !name.starts_with(RELEASE_GLZ_PREFIX)),
-        "a release-glz variable reached the compiler: {recorded}"
+        "a release-glz variable reached the compiler: {recorded:?}"
     );
-    assert!(names.contains(&"PATH"), "{recorded}");
-    assert!(names.contains(&"HOME"), "{recorded}");
+    assert!(recorded.contains_key("PATH"), "{recorded:?}");
+    assert!(recorded.contains_key("HOME"), "{recorded:?}");
 }
