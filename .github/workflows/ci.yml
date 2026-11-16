@@ -33,7 +33,7 @@ jobs:
           filters: .github/filters/ci.yml
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "24"
+          node-version: "24.22.3"
           package-manager-cache: false
       - name: Install fixed actionlint
         env:
@@ -74,15 +74,15 @@ jobs:
           persist-credentials: false
       - name: Install the pinned Rust toolchain
         run: |
-          rustup toolchain install 1.88.0 --profile minimal --component rustfmt --component clippy --no-self-update
-          rustup default 1.88.0
+          rustup toolchain install 1.100.0 --profile minimal --component rustfmt --component clippy --no-self-update
+          rustup default 1.100.0
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: rust-${{ runner.os }}-1.88.0-${{ hashFiles('Cargo.lock') }}
+          key: rust-${{ runner.os }}-1.100.0-${{ hashFiles('Cargo.lock') }}
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
         with:
           otp-version: "28.5"

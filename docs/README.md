@@ -38,7 +38,7 @@ cargo install --git https://github.com/P4suta/release-glz --locked release-glz
 release-glz --version
 ```
 
-The package requires Rust 1.88 or newer.
+The package requires Rust 1.100 or newer.
 Repeat the source installation command to update.
 Remove a source installation with `cargo uninstall release-glz`.
 The repository includes a GitHub Action definition, but its default run downloads a versioned release binary, and no published release assets are available yet.
