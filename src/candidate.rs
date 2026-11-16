@@ -507,7 +507,7 @@ impl Candidate {
             });
             evidence.push(SidecarArtifact {
                 hook_id: BUILT_IN_HOOK_ID.into(),
-                name: format!("{}-{}.cdx.json", input.package, input.version),
+                name: format!("{}.cdx.json", evidence_stem(&input.package, &input.version)),
                 media_type: "application/vnd.cyclonedx+json".into(),
                 bytes: canonical_json_bytes(&value)?,
                 public,
@@ -554,7 +554,10 @@ impl Candidate {
             });
             evidence.push(SidecarArtifact {
                 hook_id: BUILT_IN_HOOK_ID.into(),
-                name: format!("{}-{}.intoto.jsonl", input.package, input.version),
+                name: format!(
+                    "{}.intoto.jsonl",
+                    evidence_stem(&input.package, &input.version)
+                ),
                 media_type: "application/vnd.in-toto+json".into(),
                 bytes: canonical_json_bytes(&value)?,
                 public,
@@ -1583,8 +1586,8 @@ fn validate_standard_output_artifacts(
         .iter()
         .filter(|artifact| artifact.hook_id == BUILT_IN_HOOK_ID)
         .collect::<Vec<_>>();
-    let sbom_name = format!("{package}-{version}.cdx.json");
-    let provenance_name = format!("{package}-{version}.intoto.jsonl");
+    let sbom_name = format!("{}.cdx.json", evidence_stem(package, version));
+    let provenance_name = format!("{}.intoto.jsonl", evidence_stem(package, version));
     let sbom = built_in.iter().filter(|artifact| {
         artifact.name == sbom_name && artifact.media_type == "application/vnd.cyclonedx+json"
     });
@@ -1622,6 +1625,13 @@ fn validate_standard_output_artifacts(
         );
     }
     Ok(())
+}
+
+/// The asset name stem of built-in evidence, `{package}-{version}` with the version's `+` spelled `_`.
+///
+/// GitHub renames an asset whose name holds `+`, and semantic versioning never uses `_`, so the spelling stays one-to-one.
+fn evidence_stem(package: &str, version: &Version) -> String {
+    format!("{package}-{version}").replace('+', "_")
 }
 
 fn validate_sidecar_identity(hook_id: &str, name: &str, media_type: &str) -> Result<()> {
