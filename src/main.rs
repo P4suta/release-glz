@@ -470,7 +470,7 @@ async fn run(cli: Cli) -> Result<i32> {
                 .map_err(|error| default_failure_class(error, FailureClass::UsageOrConfig))?;
             if let Some(out) = &out {
                 handoff::write_new(out, &plan).map_err(|error| {
-                    classified(FailureClass::UsageOrConfig, format!("{error:#}"))
+                    classified_keeping_reason(FailureClass::UsageOrConfig, error)
                 })?;
             }
             plan
@@ -534,8 +534,9 @@ async fn run(cli: Cli) -> Result<i32> {
                     ));
                 }
                 let github = GitHubClient::from_environment(
-                    GitHubRepository::parse(&sealed.github_repository)
-                        .map_err(|error| classified(FailureClass::ImmutableStateConflict, error))?,
+                    GitHubRepository::parse(&sealed.github_repository).map_err(|error| {
+                        classified_keeping_reason(FailureClass::ImmutableStateConflict, error)
+                    })?,
                 )
                 .map_err(|error| classified_keeping_reason(FailureClass::UsageOrConfig, error))?;
                 let merged = github
@@ -821,7 +822,7 @@ async fn run_init(
         release_glz::workflow::WorkflowMode::Update
     };
     let workflow = release_glz::workflow::sync(repo.root(), &workflow_settings, workflow_mode)
-        .map_err(|error| classified(FailureClass::ImmutableStateConflict, error))?;
+        .map_err(|error| classified_keeping_reason(FailureClass::ImmutableStateConflict, error))?;
     let manifest_changed = initialized_source
         .as_deref()
         .is_some_and(|source| source != manifest.original_source());
@@ -849,9 +850,9 @@ async fn run_init(
         && let Some(source) = initialized_source
         && manifest_changed
     {
-        manifest
-            .replace_source(source)
-            .map_err(|error| classified(FailureClass::ImmutableStateConflict, error))?;
+        manifest.replace_source(source).map_err(|error| {
+            classified_keeping_reason(FailureClass::ImmutableStateConflict, error)
+        })?;
         manifest_written = true;
     }
     let changed = manifest_changed || workflow.changed;
@@ -1046,7 +1047,7 @@ async fn resolve_action_sha(explicit: Option<&str>) -> Result<String> {
     let state = client
         .tag_state(&tag)
         .await
-        .map_err(|error| classified(FailureClass::TemporaryExternal, error))?
+        .map_err(|error| classified_keeping_reason(FailureClass::TemporaryExternal, error))?
         .ok_or_else(|| {
             classified(
                 FailureClass::UsageOrConfig,
@@ -1060,7 +1061,7 @@ async fn resolve_action_sha(explicit: Option<&str>) -> Result<String> {
         ));
     }
     release_glz::workflow::validate_action_sha(&state.target_sha)
-        .map_err(|error| classified(FailureClass::ImmutableStateConflict, error))?;
+        .map_err(|error| classified_keeping_reason(FailureClass::ImmutableStateConflict, error))?;
     Ok(state.target_sha)
 }
 
@@ -1405,7 +1406,7 @@ fn verified_candidate(directory: &Path) -> Result<release_glz::candidate::Candid
         ));
     }
     Candidate::verify(directory)
-        .map_err(|error| classified(FailureClass::ImmutableStateConflict, error))
+        .map_err(|error| classified_keeping_reason(FailureClass::ImmutableStateConflict, error))
 }
 
 /// Bind a verified Candidate to the checkout of its source commit, before any approval, GitHub, or registry client exists.
@@ -1432,7 +1433,7 @@ async fn online_candidate_report(
 ) -> Result<ReleaseReport> {
     // Adapters that can't be built from the Candidate are a policy failure, whatever class a refusal's reason names.
     let target = LiveReleaseTarget::from_candidate(candidate)
-        .map_err(|error| classified(FailureClass::PolicyOrApproval, error))?;
+        .map_err(|error| classified_keeping_reason(FailureClass::PolicyOrApproval, error))?;
     let runner = CandidateReleaseRunner::new(target);
     match run {
         OnlineRun::Inspect => runner.inspect(candidate_directory).await,
@@ -1450,7 +1451,7 @@ async fn approval_from_environment(
 ) -> Result<ApprovalEvidence> {
     let request = ApprovalRequest::from_environment()?;
     let repository = GitHubRepository::parse(&manifest.github_repository)
-        .map_err(|error| classified(FailureClass::PolicyOrApproval, error))?;
+        .map_err(|error| classified_keeping_reason(FailureClass::PolicyOrApproval, error))?;
     let github = GitHubClient::from_environment(repository)
         .map_err(|error| classified_keeping_reason(FailureClass::UsageOrConfig, error))?;
     verify_approval(
