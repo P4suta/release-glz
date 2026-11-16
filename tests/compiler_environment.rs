@@ -3,10 +3,10 @@
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 
-use release_glz_test_support::isolated_command;
+use release_glz_test_support::{isolated_command, path_searching_first};
 
 /// One variable from every family that dependency build code must never read.
-const WITHHELD: [(&str, &str); 15] = [
+const WITHHELD: [(&str, &str); 16] = [
     ("GITHUB_TOKEN", "job-token-value"),
     ("GH_TOKEN", "cli-token-value"),
     ("ACTIONS_RUNTIME_TOKEN", "runtime-token-value"),
@@ -25,13 +25,19 @@ const WITHHELD: [(&str, &str); 15] = [
     ("GITHUB_STEP_SUMMARY", "/runner/command-summary"),
     ("HEXPM_API_KEY", "registry-key-value"),
     ("PRIVATE_HEX_TOKEN", "configured-registry-key-value"),
+    ("RELEASE_GLZ_MANUAL_REASON", "release-glz-value"),
 ];
+
+/// The prefix of the variables that release-glz defines for itself.
+const RELEASE_GLZ_PREFIX: &str = "RELEASE_GLZ_";
 
 #[test]
 fn the_compiler_runs_without_tokens_inputs_runner_files_or_registry_credentials() {
     let temp = tempfile::tempdir().unwrap();
     let record = temp.path().join("environment");
-    let gleam = temp.path().join("fake-gleam");
+    let compiler = temp.path().join("fake-compiler");
+    fs::create_dir(&compiler).unwrap();
+    let gleam = compiler.join("gleam");
     fs::write(
         &gleam,
         format!(
@@ -54,7 +60,7 @@ fn the_compiler_runs_without_tokens_inputs_runner_files_or_registry_credentials(
     command
         .current_dir(temp.path())
         .args(["--output", "json", "doctor"])
-        .env("RELEASE_GLZ_GLEAM", &gleam)
+        .env("PATH", path_searching_first(&compiler))
         .env("HOME", temp.path());
     for (name, value) in WITHHELD {
         command.env(name, value);
@@ -63,7 +69,7 @@ fn the_compiler_runs_without_tokens_inputs_runner_files_or_registry_credentials(
 
     let recorded = fs::read_to_string(&record).unwrap_or_else(|error| {
         panic!(
-            "the fake compiler never ran ({error}): {}",
+            "the gleam that PATH finds first never ran ({error}): {}",
             String::from_utf8_lossy(&output.stderr)
         )
     });
@@ -78,6 +84,12 @@ fn the_compiler_runs_without_tokens_inputs_runner_files_or_registry_credentials(
             "the value of {name} reached the compiler"
         );
     }
+    assert!(
+        names
+            .iter()
+            .all(|name| !name.starts_with(RELEASE_GLZ_PREFIX)),
+        "a release-glz variable reached the compiler: {recorded}"
+    );
     assert!(names.contains(&"PATH"), "{recorded}");
     assert!(names.contains(&"HOME"), "{recorded}");
 }

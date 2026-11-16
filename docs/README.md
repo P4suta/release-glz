@@ -104,7 +104,7 @@ release-glz doctor --online
 release-glz doctor --candidate-build
 ```
 
-`init` detects the exact installed compiler and git default branch.
+release-glz runs the `gleam` that `PATH` finds first, and `init` detects its exact version and the git default branch.
 Use `release-glz init --profile organization --organization NAME --diff` for a Hex.pm Organization, or `release-glz init --profile private --api-url URL --repository-url URL --docs-url URL --credential-env NAME --auth bearer --diff` for a private target.
 The private profile requires all of `--api-url`, `--repository-url`, `--docs-url`, `--credential-env`, and `--auth hex-token|bearer`.
 A package whose version is 0.x additionally requires `--allow-version-zero`.
@@ -191,8 +191,9 @@ Every refusal exits with status 2 before any request to GitHub.
 release-glz reads only a strictly typed `[tools.release-glz]` table with `schema = 2`.
 A table that sets any other `schema`, or none, is refused with exit code 2.
 Without the table, `init` writes it, `doctor` reports `config_missing`, and every other command that reads the configuration exits with code 2 and names `release-glz init`.
-Unknown keys, wrong types, paths outside the repository, unsafe ref prefixes, URLs with embedded credentials, and non-HTTPS registry origins are rejected.
-Explicit HTTP is accepted only for loopback tests.
+Unknown keys, wrong types, paths outside the repository, unsafe ref prefixes, URLs with embedded credentials, and registry origins without HTTPS are rejected.
+The one exception is plain HTTP to a numeric loopback address in `127.0.0.0/8` or `::1`, and no key changes that rule.
+A host name, `localhost` included, needs HTTPS.
 
 ```toml
 [tools.release-glz]

@@ -18,8 +18,9 @@ use crate::artifact::{
 use crate::canonical::{canonical_json_bytes, canonical_sha256};
 use crate::config::{
     ApprovalConfig, AuthKind, BUILT_IN_HOOK_ID, HookConfig, Manifest, OutputConfig,
-    RegistryProvider, url_is_http_loopback, valid_env_name, validate_git_ref, validate_hook_config,
-    validate_package_name, validate_registry_repository, validate_relative_path,
+    RegistryProvider, uses_trusted_transport, valid_env_name, validate_git_ref,
+    validate_hook_config, validate_package_name, validate_registry_repository,
+    validate_relative_path,
 };
 use crate::hooks::SidecarArtifact;
 use crate::sidecar::{
@@ -83,9 +84,6 @@ pub struct RegistryIdentity {
     pub credential_env: String,
     /// How the credential is presented.
     pub auth: AuthKind,
-    /// Whether a loopback `http` origin was permitted.
-    #[serde(default)]
-    pub allow_http_loopback: bool,
 }
 
 /// Which phase a hook ran in.
@@ -385,7 +383,6 @@ impl SealedPolicy {
                 docs_url: registry.docs_url.clone(),
                 credential_env: registry.credential_env.clone(),
                 auth: registry.auth,
-                allow_http_loopback: registry.allow_http_loopback,
             },
             private: registry.provider == RegistryProvider::HexCompatible
                 || registry.repository.is_some(),
@@ -1246,12 +1243,10 @@ fn validate_registry_identity(registry: &RegistryIdentity) -> Result<()> {
         if url.query().is_some() || url.fragment().is_some() {
             bail!("candidate registry {field} must not contain a query or fragment");
         }
-        let loopback = url_is_http_loopback(&url);
-        if (url.scheme() != "https" && !(registry.allow_http_loopback && loopback))
-            || !url.username().is_empty()
-            || url.password().is_some()
-        {
-            bail!("candidate registry {field} must be credential-free HTTPS");
+        if !uses_trusted_transport(&url) || !url.username().is_empty() || url.password().is_some() {
+            bail!(
+                "candidate registry {field} must be credential-free HTTPS, or HTTP to a numeric loopback address"
+            );
         }
     }
     Ok(())
@@ -1564,7 +1559,6 @@ mod tests {
                 docs_url: "https://repo.hex.pm/docs".into(),
                 credential_env: "HEXPM_API_KEY".into(),
                 auth: AuthKind::HexToken,
-                allow_http_loopback: false,
             },
             private: false,
             github_repository: "acme/widget".into(),

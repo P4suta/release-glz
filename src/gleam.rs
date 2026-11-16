@@ -113,11 +113,10 @@ pub struct Gleam {
 }
 
 impl Default for Gleam {
+    /// The `gleam` that `PATH` finds first.
     fn default() -> Self {
         Self {
-            executable: std::env::var_os("RELEASE_GLZ_GLEAM")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from("gleam")),
+            executable: PathBuf::from("gleam"),
         }
     }
 }

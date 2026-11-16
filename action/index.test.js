@@ -28,6 +28,7 @@ const {
   setOutput,
   sha256,
   targetFor,
+  usesTrustedTransport,
   validateArchiveInventory,
   verifyChecksum,
   verifyProvenance,
@@ -297,25 +298,45 @@ test("download follows only same-origin redirects and enforces the byte limit", 
   t.after(() => server.close());
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "release-glz-download-test-"));
   const destination = path.join(directory, "file");
-  await download(`http://127.0.0.1:${port}/redirect`, destination, {
-    maxBytes: 8,
-    allowHttpLoopback: true,
-  });
+  await download(`http://127.0.0.1:${port}/redirect`, destination, { maxBytes: 8 });
   assert.equal(fs.readFileSync(destination, "utf8"), "12345678");
   await assert.rejects(
-    download(`http://127.0.0.1:${port}/cross`, destination, {
-      maxBytes: 8,
-      allowHttpLoopback: true,
-    }),
+    download(`http://127.0.0.1:${port}/cross`, destination, { maxBytes: 8 }),
     /cross-origin/,
   );
   await assert.rejects(
-    download(`http://127.0.0.1:${port}/file`, destination, {
-      maxBytes: 7,
-      allowHttpLoopback: true,
-    }),
+    download(`http://127.0.0.1:${port}/file`, destination, { maxBytes: 7 }),
     /limit/,
   );
+});
+
+test("download transport is HTTPS or HTTP to a numeric loopback address", async () => {
+  assert.equal(new URL("http://[::1]:8080/file").hostname, "[::1]");
+  for (const url of [
+    "https://github.com/file",
+    "https://127.0.0.1/file",
+    "http://127.0.0.1:8080/file",
+    "http://127.8.9.10/file",
+    "http://127.1/file",
+    "http://[::1]:8080/file",
+    "http://[0:0:0:0:0:0:0:1]/file",
+  ]) {
+    assert.equal(usesTrustedTransport(new URL(url)), true, url);
+  }
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "release-glz-transport-test-"));
+  const destination = path.join(directory, "file");
+  for (const url of [
+    "http://github.com/file",
+    "http://localhost:8080/file",
+    "http://192.0.2.1/file",
+    "http://[::ffff:127.0.0.1]/file",
+    "http://127.0.0.1.example.test/file",
+    "ftp://127.0.0.1/file",
+  ]) {
+    assert.equal(usesTrustedTransport(new URL(url)), false, url);
+    await assert.rejects(download(url, destination), /must use HTTPS/, url);
+  }
+  assert.equal(fs.existsSync(destination), false);
 });
 
 test("download stops a server that trickles bytes at its total deadline", {
@@ -345,7 +366,6 @@ test("download stops a server that trickles bytes at its total deadline", {
   const started = Date.now();
   await assert.rejects(
     download(`http://127.0.0.1:${port}/redirect`, destination, {
-      allowHttpLoopback: true,
       timeoutMs: 5_000,
       totalTimeoutMs: 300,
     }),

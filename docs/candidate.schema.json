@@ -63,7 +63,7 @@
     "registry": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["provider", "repository", "api_url", "repository_url", "docs_url", "credential_env", "auth", "allow_http_loopback"],
+      "required": ["provider", "repository", "api_url", "repository_url", "docs_url", "credential_env", "auth"],
       "properties": {
         "provider": { "enum": ["hexpm", "hex-compatible"] },
         "repository": { "type": ["string", "null"] },
@@ -71,8 +71,7 @@
         "repository_url": { "type": "string", "format": "uri" },
         "docs_url": { "type": "string", "format": "uri" },
         "credential_env": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" },
-        "auth": { "enum": ["hex-token", "bearer"] },
-        "allow_http_loopback": { "type": "boolean" }
+        "auth": { "enum": ["hex-token", "bearer"] }
       }
     },
     "approval": {

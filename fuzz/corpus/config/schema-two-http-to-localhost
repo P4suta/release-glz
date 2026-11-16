@@ -1,0 +1,20 @@
+name = "loopback"
+version = "1.4.0"
+
+[tools.release-glz]
+schema = 2
+compiler = "1.18.1"
+
+[tools.release-glz.registry]
+provider = "hex-compatible"
+api_url = "http://localhost:8080/api"
+repository_url = "http://localhost:8080/repository"
+docs_url = "http://localhost:8080/docs"
+credential_env = "PRIVATE_HEX_TOKEN"
+auth = "bearer"
+
+[tools.release-glz.approval]
+normal = "release-pr-and-environment"
+manual = "environment"
+environment = "release"
+manual_refs = ["refs/heads/main"]

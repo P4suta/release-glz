@@ -142,6 +142,13 @@ async fn organization_registry_uses_repos_prefix_and_publishes_exact_bytes() {
 fn registry_adapter_rejects_every_unsafe_base_url_without_contacting_it() {
     let cases = [
         ("http", "http://example.test/api", "HTTPS"),
+        ("http-to-localhost", "http://localhost:9/api", "HTTPS"),
+        ("http-to-a-public-address", "http://192.0.2.1/api", "HTTPS"),
+        (
+            "http-to-a-mapped-address",
+            "http://[::ffff:127.0.0.1]:9/api",
+            "HTTPS",
+        ),
         (
             "credentials",
             "https://user:secret@example.test/api",
@@ -169,6 +176,23 @@ fn registry_adapter_rejects_every_unsafe_base_url_without_contacting_it() {
             .to_string();
         assert!(error.contains(expected), "{name}: {error}");
         assert!(!error.contains("never-print-me"), "{name}: {error}");
+    }
+}
+
+#[test]
+fn registry_adapter_accepts_http_to_a_numeric_loopback_address_without_any_switch() {
+    for base in [
+        "http://127.0.0.1:9",
+        "http://127.8.9.10:9",
+        "http://[::1]:9",
+    ] {
+        let config = RegistryConfig {
+            api_url: format!("{base}/api"),
+            repository_url: format!("{base}/repo"),
+            docs_url: format!("{base}/repo/docs"),
+            ..RegistryConfig::default()
+        };
+        HexRegistry::from_config(&config, None).unwrap();
     }
 }
 
@@ -765,7 +789,6 @@ fn custom_config(base: &str) -> RegistryConfig {
         docs_url: format!("{base}/repo/docs"),
         credential_env: "TEST_TOKEN".into(),
         auth: AuthKind::Bearer,
-        allow_http_loopback: true,
     }
 }
 

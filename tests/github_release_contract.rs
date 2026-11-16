@@ -65,6 +65,34 @@ fn github_api_base_urls_are_absolute_hierarchical_and_query_free() {
     }
 }
 
+#[test]
+fn github_api_base_urls_use_https_or_http_to_a_numeric_loopback_address() {
+    let repository = GitHubRepository::parse("o/r").unwrap();
+    let client = |base: &str| {
+        GitHubClient::new(
+            repository.clone(),
+            base.into(),
+            format!("{base}/graphql"),
+            Some("token".into()),
+        )
+    };
+    for trusted in [
+        "https://api.github.com",
+        "http://127.0.0.1:9",
+        "http://[::1]:9",
+    ] {
+        client(trusted).unwrap();
+    }
+    for untrusted in [
+        "http://api.github.com",
+        "http://localhost:9",
+        "http://192.0.2.1",
+    ] {
+        let error = client(untrusted).unwrap_err().to_string();
+        assert!(error.contains("must use HTTPS"), "{untrusted}: {error}");
+    }
+}
+
 #[tokio::test]
 async fn github_release_is_observed_as_immutable_candidate_state_and_finalized_by_id() {
     let responses = vec![

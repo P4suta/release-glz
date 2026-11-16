@@ -31,7 +31,7 @@ credential_env = "PRIVATE_HEX_TOKEN"
 auth = "bearer"
 ```
 
-All URLs must be HTTPS and credentials in URLs are rejected.
+Every URL must use HTTPS, or plain HTTP to a numeric loopback address in `127.0.0.0/8` or `::1`, and credentials in URLs are rejected.
 The API, repository, and docs origins should be stable, and authenticated redirects may not cross origin.
 `repository` is intentionally omitted for `hex-compatible`.
 

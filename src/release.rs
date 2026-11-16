@@ -170,7 +170,6 @@ impl LiveReleaseTarget {
             docs_url: manifest.registry.docs_url.clone(),
             credential_env: manifest.registry.credential_env.clone(),
             auth: manifest.registry.auth,
-            allow_http_loopback: manifest.registry.allow_http_loopback,
         };
         if manifest.private && std::env::var_os(&registry_config.credential_env).is_none() {
             bail!(

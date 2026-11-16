@@ -1,8 +1,10 @@
 #![cfg(unix)]
 
+use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::os::unix::fs::PermissionsExt;
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
@@ -10,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use release_glz::workflow::{self, WorkflowMode, WorkflowSettings};
 use release_glz_test_support::schema::assert_published_envelope;
-use release_glz_test_support::{git, init_repository, isolated_command};
+use release_glz_test_support::{git, init_repository, isolated_command, path_searching_first};
 
 /// Seconds the fake server keeps listening when a test never stops it.
 const SERVER_LIFETIME_SECONDS: u64 = 120;
@@ -49,11 +51,7 @@ fn doctor_cli_collects_local_and_github_checks_into_envelope_v2() {
     )
     .unwrap();
 
-    let gleam = temp.path().join("fake-gleam");
-    std::fs::write(&gleam, "#!/bin/sh\nprintf '%s\\n' 'gleam 1.12.3'\n").unwrap();
-    let mut permissions = std::fs::metadata(&gleam).unwrap().permissions();
-    permissions.set_mode(0o755);
-    std::fs::set_permissions(&gleam, permissions).unwrap();
+    let gleam = fake_gleam(temp.path(), "#!/bin/sh\nprintf '%s\\n' 'gleam 1.12.3'\n");
 
     let server = FakeGitHub::start(vec![
         r#"{"private":true,"default_branch":"main","plan":{"name":"enterprise"}}"#,
@@ -64,7 +62,7 @@ fn doctor_cli_collects_local_and_github_checks_into_envelope_v2() {
     let output = isolated_command(env!("CARGO_BIN_EXE_release-glz"))
         .current_dir(temp.path())
         .args(["--output", "json", "doctor", "--online"])
-        .env("RELEASE_GLZ_GLEAM", &gleam)
+        .env("PATH", &gleam)
         .env("TEST_HEX_TOKEN", "not-a-real-token")
         .env("GITHUB_TOKEN", "not-a-real-token")
         .env_remove("GH_TOKEN")
@@ -134,17 +132,13 @@ fn doctor_defaults_to_local_checks_without_contacting_registry_or_github() {
         WorkflowMode::Update,
     )
     .unwrap();
-    let gleam = temp.path().join("fake-gleam");
-    std::fs::write(&gleam, "#!/bin/sh\nprintf '%s\\n' 'gleam 1.12.3'\n").unwrap();
-    let mut permissions = std::fs::metadata(&gleam).unwrap().permissions();
-    permissions.set_mode(0o755);
-    std::fs::set_permissions(&gleam, permissions).unwrap();
+    let gleam = fake_gleam(temp.path(), "#!/bin/sh\nprintf '%s\\n' 'gleam 1.12.3'\n");
     let github = FakeGitHub::start(vec![]);
 
     let output = isolated_command(env!("CARGO_BIN_EXE_release-glz"))
         .current_dir(temp.path())
         .args(["--output", "json", "doctor"])
-        .env("RELEASE_GLZ_GLEAM", &gleam)
+        .env("PATH", &gleam)
         .env("TEST_HEX_TOKEN", "must-not-be-sent")
         .env("GITHUB_TOKEN", "must-not-be-sent")
         .env("GITHUB_REPOSITORY", "acme/widget")
@@ -189,20 +183,15 @@ fn candidate_build_reports_the_original_isolated_failure_without_claiming_creden
     git(temp.path(), &["add", "."]);
     git(temp.path(), &["commit", "-m", "initial"]);
 
-    let gleam = temp.path().join("failing-gleam");
-    std::fs::write(
-        &gleam,
+    let gleam = fake_gleam(
+        temp.path(),
         "#!/bin/sh\nset -eu\nif [ \"${1:-}\" = --version ]; then printf '%s\\n' 'gleam 1.12.3'; exit 0; fi\ntest -z \"${TEST_HEX_TOKEN-}\"\nprintf '%s\\n' 'injected compiler failure' >&2\nexit 9\n",
-    )
-    .unwrap();
-    let mut permissions = std::fs::metadata(&gleam).unwrap().permissions();
-    permissions.set_mode(0o755);
-    std::fs::set_permissions(&gleam, permissions).unwrap();
+    );
 
     let output = isolated_command(env!("CARGO_BIN_EXE_release-glz"))
         .current_dir(temp.path())
         .args(["--output", "json", "doctor", "--candidate-build"])
-        .env("RELEASE_GLZ_GLEAM", &gleam)
+        .env("PATH", &gleam)
         .env("TEST_HEX_TOKEN", "must-not-reach-the-build")
         .output()
         .unwrap();
@@ -259,11 +248,7 @@ fn doctor_cli_uses_policy_exit_and_unsuccessful_envelope_when_blocked() {
     )
     .unwrap();
 
-    let gleam = temp.path().join("wrong-gleam");
-    std::fs::write(&gleam, "#!/bin/sh\nprintf '%s\\n' 'gleam 9.9.9'\n").unwrap();
-    let mut permissions = std::fs::metadata(&gleam).unwrap().permissions();
-    permissions.set_mode(0o755);
-    std::fs::set_permissions(&gleam, permissions).unwrap();
+    let gleam = fake_gleam(temp.path(), "#!/bin/sh\nprintf '%s\\n' 'gleam 9.9.9'\n");
     let server = FakeGitHub::start(vec![
         r#"{"private":true,"default_branch":"main","plan":{"name":"enterprise"}}"#,
         r#"{"protection_rules":[{"type":"required_reviewers","prevent_self_review":true,"reviewers":[{"type":"User","reviewer":{"login":"reviewer"}}]}],"deployment_branch_policy":{"protected_branches":true,"custom_branch_policies":false}}"#,
@@ -273,7 +258,7 @@ fn doctor_cli_uses_policy_exit_and_unsuccessful_envelope_when_blocked() {
     let output = isolated_command(env!("CARGO_BIN_EXE_release-glz"))
         .current_dir(temp.path())
         .args(["--output", "json", "doctor", "--online"])
-        .env("RELEASE_GLZ_GLEAM", &gleam)
+        .env("PATH", &gleam)
         .env("TEST_HEX_TOKEN", "not-a-real-token")
         .env("GITHUB_TOKEN", "not-a-real-token")
         .env_remove("GH_TOKEN")
@@ -301,6 +286,18 @@ fn doctor_cli_uses_policy_exit_and_unsuccessful_envelope_when_blocked() {
     );
 }
 
+/// Write `script` as a compiler stand-in named `gleam`, and return a `PATH` that finds it first.
+fn fake_gleam(root: &Path, script: &str) -> OsString {
+    let directory = root.join("fake-compiler");
+    std::fs::create_dir(&directory).unwrap();
+    let gleam = directory.join("gleam");
+    std::fs::write(&gleam, script).unwrap();
+    let mut permissions = std::fs::metadata(&gleam).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&gleam, permissions).unwrap();
+    path_searching_first(&directory)
+}
+
 fn manifest(registry_base: &str) -> String {
     r#"name = "widget"
 version = "1.2.3"
@@ -321,7 +318,6 @@ repository_url = "REGISTRY_BASE/repo"
 docs_url = "REGISTRY_BASE/repo/docs"
 credential_env = "TEST_HEX_TOKEN"
 auth = "hex-token"
-allow_http_loopback = true
 
 [tools.release-glz.approval]
 normal = "release-pr-and-environment"

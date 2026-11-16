@@ -161,16 +161,18 @@ fn candidate_registry_urls_reject_queries_and_fragments_at_the_sealed_boundary()
 }
 
 #[test]
-fn candidate_registry_urls_reject_opaque_credentials_and_unapproved_http_independently() {
+fn candidate_registry_urls_reject_opaque_credentials_and_http_beyond_loopback_independently() {
     let temp = tempfile::tempdir().unwrap();
     for (name, url) in [
         ("opaque", "mailto:registry@example.test"),
         ("password", "https://user:password@hex.pm/api"),
-        ("http-without-opt-in", "http://127.0.0.1:8080/api"),
+        ("http-to-a-host-name", "http://registry.example.test/api"),
+        ("http-to-localhost", "http://localhost:8080/api"),
+        ("http-to-a-public-address", "http://192.0.2.1/api"),
+        ("http-to-a-mapped-address", "http://[::ffff:127.0.0.1]/api"),
     ] {
         let mut input = fresh_candidate_input();
         input.registry.api_url = url.into();
-        input.registry.allow_http_loopback = false;
         assert!(
             Candidate::seal(&temp.path().join(name), input).is_err(),
             "accepted unsafe registry URL case {name}"
@@ -278,10 +280,7 @@ fn candidate_source_registry_branch_notes_and_approval_policy_are_independently_
                 input.registry.provider = RegistryProvider::HexCompatible;
                 input.registry.repository = Some("../acme".into());
             }
-            "external-http" => {
-                input.registry.api_url = "http://192.0.2.1/api".into();
-                input.registry.allow_http_loopback = true;
-            }
+            "external-http" => input.registry.api_url = "http://192.0.2.1/api".into(),
             "credential-url" => input.registry.api_url = "https://token@hex.pm/api".into(),
             "empty-prefix" => input.release_branch_prefix.clear(),
             "refs-prefix" => input.release_branch_prefix = "refs/heads/release/".into(),
@@ -310,13 +309,12 @@ fn candidate_source_registry_branch_notes_and_approval_policy_are_independently_
         );
     }
 
-    for (index, host) in ["localhost", "127.0.0.1", "[::1]"].into_iter().enumerate() {
+    for (index, host) in ["127.0.0.1", "127.8.9.10", "[::1]"].into_iter().enumerate() {
         let mut input = fresh_candidate_input();
         let base = format!("http://{host}:8080");
         input.registry.api_url = format!("{base}/api");
         input.registry.repository_url = base.clone();
         input.registry.docs_url = format!("{base}/docs");
-        input.registry.allow_http_loopback = true;
         input.source.commit_sha = "b".repeat(64);
         input.source.manifest_path = "gleam.toml".into();
         input.approval.private_repository_fallback = Some("workflow-dispatch-digest".into());
@@ -474,6 +472,17 @@ fn candidate_manifest_is_bounded_strict_json_in_a_regular_file() {
         manifest["unsealed"] = true.into();
     });
     assert!(Candidate::verify(&unknown).is_err());
+
+    let loosened = temp.path().join("loosened");
+    Candidate::seal(&loosened, fresh_candidate_input()).unwrap();
+    mutate_candidate_json(&loosened, |manifest| {
+        manifest["registry"]["allow_http_loopback"] = false.into();
+    });
+    let error = format!("{:#}", Candidate::verify(&loosened).unwrap_err());
+    assert!(
+        error.contains("unknown field `allow_http_loopback`"),
+        "{error}"
+    );
 
     let oversized = temp.path().join("oversized");
     Candidate::seal(&oversized, fresh_candidate_input()).unwrap();
@@ -1592,7 +1601,6 @@ fn candidate_input(
             docs_url: "https://repo.hex.pm/docs".into(),
             credential_env: "HEXPM_API_KEY".into(),
             auth: AuthKind::HexToken,
-            allow_http_loopback: false,
         },
         private: false,
         github_repository: "owner/widget".into(),

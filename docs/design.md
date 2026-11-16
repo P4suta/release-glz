@@ -48,6 +48,7 @@ Digests do not rely on filesystem enumeration order or timestamps.
 Registry and forge access sit behind observable adapters.
 Production supports Hex.pm, `/repos/ORG`, standard Hex-compatible endpoints, and GitHub.com.
 Tests use loopback fake services, local bare git repositories, and fake argv-based hooks; no test publishes a real user package.
+release-glz runs the `gleam` that `PATH` finds first, so a test puts a fake compiler first on the `PATH` it passes, as [find the compiler on PATH](adr/find-the-compiler-on-path.md) records.
 
 For a Hex.pm Organization, `api_url` remains the global HTTP API root while repository-scoped package operations add `/repos/ORG`.
 The credential audit continues to use the root `/auth` endpoint.
@@ -55,7 +56,7 @@ The credential audit continues to use the root `/auth` endpoint.
 
 Registry credentials are allowed on reads because private package metadata and artifacts require them.
 Redirects must remain on the configured origin.
-HTTPS is mandatory except for explicit loopback tests.
+Registry, GitHub API, and download URLs use HTTPS, or plain HTTP to a numeric loopback address in `127.0.0.0/8` or `::1`, as [trust loopback HTTP without a switch](adr/trust-loopback-http-without-a-switch.md) records.
 Responses have time and size limits, retry `Retry-After` where safe, and redact credentials from errors.
 
 ## Monotonic reconciler
