@@ -507,6 +507,7 @@ Reason codes are stable, and a code is never reused for another refusal:
 | `github_redirect_refused` | 5 | GitHub answered a request with a redirect, which release-glz never follows, so the token reaches no other URL. |
 | `oidc_redirect_refused` | 3 | The runner answered the GitHub Actions OIDC token request, or the issuer answered its discovery or key set request, with a redirect, which release-glz never follows. |
 | `registry_publish_redirect_refused` | 5 | The registry answered a publish with a redirect, which release-glz never follows, so the archive and the credential reach no other URL. |
+| `canonical_number_non_finite` | 1 | A value that canonical JSON writes holds a number without a finite double value, such as NaN or an infinity, which RFC 8785 refuses. |
 
 A release run that stops after it published part of a release exits 7 whatever stopped it, including a required notify hook that fails after publication.
 Inspection commands, `status`, `verify --online`, and `release --dry-run`, exit 0 whenever they can report a state, and that `state` names what remains.

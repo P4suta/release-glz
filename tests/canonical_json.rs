@@ -4,6 +4,7 @@ use std::fmt;
 use proptest::prelude::*;
 use proptest::sample::select;
 use release_glz::canonical::{canonical_json_bytes, canonical_sha256};
+use release_glz::failure::{RefusalReason, refusal_reason};
 use release_glz_core::utf16_cmp;
 use release_glz_test_support::property;
 use serde::de::{Deserialize, Deserializer, MapAccess, SeqAccess, Visitor};
@@ -51,6 +52,135 @@ fn canonical_json_preserves_the_unsigned_integer_domain() {
     );
 }
 
+const NON_FINITE_DOUBLES: [f64; 3] = [f64::NAN, f64::INFINITY, f64::NEG_INFINITY];
+const NON_FINITE_SINGLES: [f32; 3] = [f32::NAN, f32::INFINITY, f32::NEG_INFINITY];
+
+#[derive(Debug, serde::Serialize)]
+struct Measurement<N> {
+    label: &'static str,
+    value: N,
+}
+
+#[test]
+fn a_non_finite_number_in_a_struct_field_is_refused_with_its_reason() {
+    for value in NON_FINITE_DOUBLES {
+        assert_refused_as_non_finite(&Measurement {
+            label: "f64",
+            value,
+        });
+    }
+    for value in NON_FINITE_SINGLES {
+        assert_refused_as_non_finite(&Measurement {
+            label: "f32",
+            value,
+        });
+    }
+}
+
+#[test]
+fn a_non_finite_number_is_refused_in_every_shape_that_holds_it() {
+    for value in NON_FINITE_DOUBLES {
+        for held in Held::every(value) {
+            assert_refused_as_non_finite(&held);
+        }
+    }
+    for value in NON_FINITE_SINGLES {
+        for held in Held::every(value) {
+            assert_refused_as_non_finite(&held);
+        }
+    }
+}
+
+#[test]
+fn a_finite_float_field_keeps_its_ecmascript_spelling() {
+    #[derive(serde::Serialize)]
+    struct Floats {
+        half: f64,
+        negative_zero: f64,
+        large: f64,
+        smallest: f64,
+        single: f32,
+    }
+    let floats = Floats {
+        half: 1.5,
+        negative_zero: -0.0,
+        large: 1e21,
+        smallest: 5e-324,
+        single: 1.5,
+    };
+    let canonical = String::from_utf8(canonical_json_bytes(&floats).unwrap()).unwrap();
+    assert_eq!(
+        canonical,
+        r#"{"half":1.5,"large":1e+21,"negative_zero":0,"single":1.5,"smallest":5e-324}"#
+    );
+}
+
+/// Canonical JSON refuses `value` with the non-finite number reason instead of writing it.
+fn assert_refused_as_non_finite(value: &(impl Serialize + fmt::Debug)) {
+    match canonical_json_bytes(value) {
+        Ok(bytes) => panic!(
+            "{value:?} was written as {}",
+            String::from_utf8_lossy(&bytes)
+        ),
+        Err(error) => assert_eq!(
+            refusal_reason(&error),
+            Some(RefusalReason::CanonicalNumberNonFinite),
+            "{value:?}: {error:#}"
+        ),
+    }
+}
+
+/// A number in one serde shape, so a check that skips a shape lets the number through there.
+#[derive(Debug, serde::Serialize)]
+enum Held<N> {
+    Optional(Option<N>),
+    Items(Vec<N>),
+    Members(BTreeMap<&'static str, N>),
+    Newtype(Newtype<N>),
+    Tuple((bool, N)),
+    TupleStruct(Pair<N>),
+    TupleVariant(bool, N),
+    StructVariant { label: &'static str, value: N },
+    Key(KeyedBy<N>),
+}
+
+/// A map whose one key is the number.
+#[derive(Debug)]
+struct KeyedBy<N>(N);
+
+impl<N: Serialize> Serialize for KeyedBy<N> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut members = serializer.serialize_map(Some(1))?;
+        members.serialize_entry(&self.0, &true)?;
+        members.end()
+    }
+}
+
+#[derive(Debug, serde::Serialize)]
+struct Newtype<N>(N);
+
+#[derive(Debug, serde::Serialize)]
+struct Pair<N>(bool, N);
+
+impl<N: Copy> Held<N> {
+    fn every(number: N) -> [Self; 9] {
+        [
+            Self::Optional(Some(number)),
+            Self::Items(vec![number]),
+            Self::Members(BTreeMap::from([("member", number)])),
+            Self::Newtype(Newtype(number)),
+            Self::Tuple((true, number)),
+            Self::TupleStruct(Pair(true, number)),
+            Self::TupleVariant(true, number),
+            Self::StructVariant {
+                label: "held",
+                value: number,
+            },
+            Self::Key(KeyedBy(number)),
+        ]
+    }
+}
+
 proptest! {
     #![proptest_config(property::config(512))]
 
@@ -94,6 +224,28 @@ proptest! {
     fn values_outside_the_json_domain_are_refused(value in outside_json()) {
         let error = canonical_json_bytes(&value).unwrap_err();
         prop_assert_eq!(error.to_string(), "value cannot be represented as JSON");
+    }
+
+    /// A non-finite number is refused with its reason, wherever it sits.
+    #[test]
+    fn non_finite_numbers_are_refused_with_their_reason(value in non_finite_inside_json()) {
+        let error = canonical_json_bytes(&value).unwrap_err();
+        prop_assert_eq!(
+            refusal_reason(&error),
+            Some(RefusalReason::CanonicalNumberNonFinite)
+        );
+    }
+
+    /// A finite number in any shape is written as the JSON value that serde makes of it.
+    #[test]
+    fn finite_numbers_are_written_in_every_shape(number in json_float()) {
+        for held in Held::every(number) {
+            let value = serde_json::to_value(&held).unwrap();
+            prop_assert_eq!(
+                canonical_json_bytes(&held).unwrap(),
+                canonical_json_bytes(&value).unwrap()
+            );
+        }
     }
 }
 
@@ -290,6 +442,10 @@ enum OutsideJson {
     Wide(i128),
     /// A map whose keys are byte sequences rather than strings.
     KeyedBySequence(BTreeMap<Vec<u8>, Value>),
+    /// A non-finite double, for which JSON has no number.
+    Double(f64),
+    /// A non-finite single-precision float.
+    Single(f32),
     /// An array with the refused part between ordinary items.
     Array(Vec<Value>, Box<Self>, Vec<Value>),
     /// An object with the refused part as the value of its last member.
@@ -301,6 +457,8 @@ impl Serialize for OutsideJson {
         match self {
             Self::Wide(value) => value.serialize(serializer),
             Self::KeyedBySequence(members) => members.serialize(serializer),
+            Self::Double(value) => value.serialize(serializer),
+            Self::Single(value) => value.serialize(serializer),
             Self::Array(before, refused, after) => {
                 let mut items = serializer.serialize_seq(Some(before.len() + 1 + after.len()))?;
                 for item in before {
@@ -324,9 +482,9 @@ impl Serialize for OutsideJson {
     }
 }
 
-/// Values that canonical JSON refuses, each with its refused part at a generated depth and position.
+/// Values that serde_json can't represent, each with its refused part at a generated depth and position.
 fn outside_json() -> impl Strategy<Value = OutsideJson> {
-    let refused = prop_oneof![
+    nested_in_json(prop_oneof![
         prop_oneof![
             i128::MIN..i128::from(i64::MIN),
             i128::from(u64::MAX) + 1..=i128::MAX,
@@ -334,7 +492,21 @@ fn outside_json() -> impl Strategy<Value = OutsideJson> {
         .prop_map(OutsideJson::Wide),
         prop::collection::btree_map(prop::collection::vec(any::<u8>(), 0..4), json_value(), 1..3)
             .prop_map(OutsideJson::KeyedBySequence),
-    ];
+    ])
+}
+
+/// Non-finite numbers, each at a generated depth and position.
+fn non_finite_inside_json() -> impl Strategy<Value = OutsideJson> {
+    nested_in_json(prop_oneof![
+        select(NON_FINITE_DOUBLES.to_vec()).prop_map(OutsideJson::Double),
+        select(NON_FINITE_SINGLES.to_vec()).prop_map(OutsideJson::Single),
+    ])
+}
+
+/// A refused part alone, or between ordinary items or members of nested arrays and objects.
+fn nested_in_json(
+    refused: impl Strategy<Value = OutsideJson> + 'static,
+) -> impl Strategy<Value = OutsideJson> {
     refused.prop_recursive(3, 8, 1, |inner| {
         prop_oneof![
             (
