@@ -283,7 +283,7 @@ fn organization_and_private_profiles_require_exact_non_secret_inputs() {
 fn malformed_github_environment_urls_return_a_usage_envelope_instead_of_panicking() {
     for variable in ["GITHUB_API_URL", "GITHUB_GRAPHQL_URL"] {
         for (url, code) in [
-            ("not-a-valid-github-url", "usage_or_config"),
+            ("not-a-valid-github-url", "url_malformed"),
             ("http://github.example.test/api", "url_transport_untrusted"),
         ] {
             let (temp, gleam) = package("1.0.0");

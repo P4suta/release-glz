@@ -1920,7 +1920,12 @@ impl GitHubClient {
 }
 
 fn validate_github_url(raw: &str) -> Result<()> {
-    let url = reqwest::Url::parse(raw).context("invalid GitHub API URL")?;
+    let url = reqwest::Url::parse(raw).with_context(|| {
+        Refusal::new(
+            RefusalReason::UrlMalformed,
+            "GitHub API URL is not a valid URL",
+        )
+    })?;
     if url.host_str().is_none() || url.cannot_be_a_base() {
         refuse!(
             UrlNotHierarchical,

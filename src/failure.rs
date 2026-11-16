@@ -412,6 +412,8 @@ refusal_reasons! {
     OidcRedirectRefused => "oidc_redirect_refused", PolicyOrApproval;
     /// The registry answered a publish with a redirect, which release-glz never follows, so the archive and the credential reach no other URL.
     RegistryPublishRedirectRefused => "registry_publish_redirect_refused", TemporaryExternal;
+    /// A value that canonical JSON writes holds a number without a finite double value, such as NaN or an infinity, which RFC 8785 refuses.
+    CanonicalNumberNonFinite => "canonical_number_non_finite", Internal;
 }
 
 /// An error that names its refusal, whose reason decides the class.

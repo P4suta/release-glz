@@ -135,8 +135,12 @@ fn registry_adapter_rejects_every_unsafe_base_url_without_contacting_it() {
             Some(RefusalReason::UrlCredentials),
             "credentials",
         ),
-        // A URL that doesn't parse is no named refusal, so its exact message identifies it.
-        ("relative", "not-a-url", None, "registry.api_url is invalid"),
+        (
+            "relative",
+            "not-a-url",
+            Some(RefusalReason::UrlMalformed),
+            "registry.api_url is invalid",
+        ),
         (
             "query",
             "https://example.test/api?token=x",
