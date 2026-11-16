@@ -332,7 +332,7 @@ impl fmt::Display for Verdict {
 ///
 /// # Errors
 ///
-/// Returns a failure when a manifest or a source can't be read or parsed, a `path` dependency lies outside the workspace, or a proved or shell crate is missing.
+/// Returns a failure when a manifest or a source can't be read or parsed, or a proved or shell crate is missing.
 pub fn findings(root: &Path) -> Result<Vec<Finding>, Failure> {
     let workspace = Workspace::read(root)?;
     let mut found = Vec::new();
@@ -457,7 +457,8 @@ fn normalized(path: &Path) -> PathBuf {
 
 /// The workspace: its root manifest and every member, the root package first.
 ///
-/// A member is a crate that `members` lists or that a member's `path` dependency names, since Cargo adds each such crate to the workspace.
+/// A member is a crate that `members` lists, or a crate inside the root and outside every `exclude` entry that a member's `path` dependency names, as Cargo reads a workspace.
+/// A `path` dependency elsewhere names an external crate, which the gate leaves alone.
 #[derive(Debug)]
 struct Workspace {
     root: PathBuf,
@@ -474,17 +475,23 @@ impl Workspace {
             manifest,
             members: Vec::new(),
         };
+        let excluded = workspace.listed("exclude")?;
+        let joins = |directory: &PathBuf| {
+            directory.starts_with(&workspace.root)
+                && !excluded
+                    .iter()
+                    .any(|exclusion| directory.starts_with(exclusion))
+        };
         let mut pending = VecDeque::new();
         if workspace.manifest.contains_key("package") {
             pending.push_back(workspace.root.clone());
         }
-        pending.extend(workspace.listed()?);
-        pending.extend(workspace.inherited_paths());
+        pending.extend(workspace.listed("members")?);
+        let mut members = Vec::new();
         while let Some(directory) = pending.pop_front() {
-            if workspace
-                .members
+            if members
                 .iter()
-                .any(|member| member.directory == directory)
+                .any(|member: &Member| member.directory == directory)
             {
                 continue;
             }
@@ -492,19 +499,21 @@ impl Workspace {
             pending.extend(
                 dependencies(&member.manifest, workspace.origin(&member.directory))
                     .into_iter()
-                    .filter_map(|dependency| dependency.path),
+                    .filter_map(|dependency| dependency.path)
+                    .filter(joins),
             );
-            workspace.members.push(member);
+            members.push(member);
         }
+        workspace.members = members;
         Ok(workspace)
     }
 
-    /// The directories that `[workspace] members` lists.
-    fn listed(&self) -> Result<Vec<PathBuf>, Failure> {
+    /// The directories that the `[workspace]` array under `key` lists, relative to the root.
+    fn listed(&self, key: &str) -> Result<Vec<PathBuf>, Failure> {
         let listed = self
             .manifest
             .get("workspace")
-            .and_then(|workspace| workspace.get("members"))
+            .and_then(|workspace| workspace.get(key))
             .and_then(Item::as_array);
         listed
             .into_iter()
@@ -514,7 +523,9 @@ impl Workspace {
                     .as_str()
                     .map(|relative| normalized(&self.root.join(relative)))
                     .ok_or_else(|| {
-                        Failure::new("Cargo.toml lists a workspace member that isn't a string")
+                        Failure::new(format!(
+                            "Cargo.toml lists a workspace {key} entry that isn't a string"
+                        ))
                     })
             })
             .collect()
@@ -525,17 +536,6 @@ impl Workspace {
         self.manifest
             .get("workspace")
             .and_then(|workspace| workspace.get("dependencies"))
-    }
-
-    /// The directories that the `path` keys of `[workspace.dependencies]` name.
-    fn inherited_paths(&self) -> Vec<PathBuf> {
-        let origin = self.origin(&self.root);
-        let definitions = self.inherited().and_then(Item::as_table_like);
-        definitions
-            .into_iter()
-            .flat_map(|definitions| definitions.iter())
-            .filter_map(|(key, entry)| Dependency::read(key, entry, Kind::Normal, origin).path)
-            .collect()
     }
 
     /// Where the dependency entries of the manifest in `directory` resolve.
@@ -709,6 +709,7 @@ fn parse(path: &Path) -> Result<syn::File, Failure> {
 #[derive(Debug)]
 struct Load {
     module: String,
+    /// The path as rustc joins it, with each `.` and `..` left for the file system to resolve.
     file: PathBuf,
     /// The name of a non-`mod.rs` module file, whose child modules lie in a directory of that name.
     relative: Option<String>,
@@ -769,7 +770,7 @@ impl Visit<'_> for Loads {
             self.found
                 .extend(targets.into_iter().map(|(file, relative)| Load {
                     module: name.clone(),
-                    file: normalized(&file),
+                    file,
                     relative,
                 }));
         }
@@ -843,9 +844,45 @@ fn readings(path: &Path) -> Vec<Option<String>> {
     readings
 }
 
+/// The first directory of `path` that is a symbolic link with `..` right after it, where the file system leaves through the link's target and a lexical path doesn't.
+fn linked_parent(path: &Path) -> Result<Option<PathBuf>, Failure> {
+    let mut prefix = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if fs::is_symlink(&prefix)? {
+                    return Ok(Some(prefix));
+                }
+                prefix.push(component);
+            }
+            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
+                prefix.push(component);
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// Why the gate can't follow a module declaration's path, when a `..` in it leaves a symbolic link, so the file rustc reads differs from the lexical path.
+fn crossed_link(workspace: &Workspace, load: &Load) -> Result<Option<String>, Failure> {
+    let Some(link) = linked_parent(&load.file)?.map(|link| normalized(&link)) else {
+        return Ok(None);
+    };
+    let place = if link.starts_with(&workspace.root) {
+        format!("the symbolic link {}", workspace.shown(&link)?)
+    } else {
+        "a symbolic link outside the workspace".to_owned()
+    };
+    Ok(Some(format!(
+        "`{}` resolves `..` after {place}",
+        load.module
+    )))
+}
+
 /// Every source of a crate, parsed: each file below its `src`, and each file that a module declaration loads from anywhere else.
 ///
-/// A declaration that loads a file outside the workspace is a finding, since the gate can't name that file.
+/// A declaration whose path leaves a symbolic link by `..`, or that loads a file outside the workspace, is a finding, since the gate can't read the file rustc reads.
 fn crate_sources(
     workspace: &Workspace,
     member: &Member,
@@ -871,21 +908,33 @@ fn crate_sources(
             continue;
         }
         for load in Loads::of(file, &path, relative) {
-            if !sources.contains_key(&load.file) {
-                let Some(text) = fs::read_if_present(&load.file)? else {
+            let target = normalized(&load.file);
+            let refusal = if let Some(item) = crossed_link(workspace, &load)? {
+                Some(item)
+            } else if sources.contains_key(&target) {
+                None
+            } else {
+                let Some(text) = fs::read_if_present(&target)? else {
                     continue;
                 };
-                if !load.file.starts_with(&workspace.root) {
-                    let item = format!("`{}` loads a file outside the workspace", load.module);
-                    let finding = Finding::new(&workspace.shown(&path)?, Rule::ModulePath, item);
-                    if !found.contains(&finding) {
-                        found.push(finding);
-                    }
-                    continue;
+                if target.starts_with(&workspace.root) {
+                    sources.insert(target.clone(), parse_text(&target, &text)?);
+                    None
+                } else {
+                    Some(format!(
+                        "`{}` loads a file outside the workspace",
+                        load.module
+                    ))
                 }
-                sources.insert(load.file.clone(), parse_text(&load.file, &text)?);
+            };
+            if let Some(item) = refusal {
+                let finding = Finding::new(&workspace.shown(&path)?, Rule::ModulePath, item);
+                if !found.contains(&finding) {
+                    found.push(finding);
+                }
+            } else {
+                pending.push((target, load.relative));
             }
-            pending.push((load.file, load.relative));
         }
     }
     Ok(sources)
@@ -2466,6 +2515,41 @@ fn uploaded() {
     }
 
     #[test]
+    fn a_path_dependency_outside_the_workspace_or_under_an_exclusion_is_no_member() {
+        let excluded = ROOT_MANIFEST
+            .replace(
+                "\n[dev-dependencies]",
+                "extra = { path = \"crates/excluded/extra\" }\n\n[dev-dependencies]",
+            )
+            .replace(
+                "\n\n[workspace.lints.clippy]",
+                "\nexclude = [\"crates/excluded\"]\n\n[workspace.lints.clippy]",
+            );
+        assert_eq!(
+            planted_all(&[
+                ("Cargo.toml", &excluded),
+                ("crates/excluded/extra/Cargo.toml", EXTRA_MANIFEST),
+            ]),
+            Vec::<String>::new()
+        );
+        let external = ROOT_MANIFEST.replace(
+            "\n[dev-dependencies]",
+            "outer = { path = \"../outer\" }\n\n[dev-dependencies]",
+        );
+        assert_eq!(planted("Cargo.toml", &external), Vec::<String>::new());
+        let manifest = "crates/release-glz-core/Cargo.toml";
+        assert_eq!(
+            planted(
+                manifest,
+                &format!(
+                    "{CORE_MANIFEST}outer = {{ path = \"../../../outer\", optional = true, default-features = false }}\n"
+                )
+            ),
+            [format!("{manifest}: core-dependency: depends on outer")]
+        );
+    }
+
+    #[test]
     fn an_inherited_dependency_counts_as_its_workspace_definition() {
         let support = "support = { package = \"release-glz-test-support\", path = \"crates/test-support\" }\n";
         assert_eq!(
@@ -2640,6 +2724,33 @@ fn uploaded() {
                 )
             ),
             ["src/lib.rs: module-path: `far` loads a file outside the workspace"]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_module_path_that_climbs_out_of_a_symbolic_link_is_refused() {
+        let root = clean();
+        fs::create_dir_all(root.path().join("outside/nested")).unwrap();
+        put(
+            root.path(),
+            "outside/policy.rs",
+            "const DIGEST_HEX_LEN: usize = 64;\n",
+        );
+        put(root.path(), "src/policy.rs", "");
+        put(
+            root.path(),
+            "src/lib.rs",
+            &format!("{SHELL_LIBRARY}#[path = \"link/../policy.rs\"]\nmod policy;\n"),
+        );
+        std::os::unix::fs::symlink(
+            root.path().join("outside/nested"),
+            root.path().join("src/link"),
+        )
+        .unwrap();
+        assert_eq!(
+            keys(root.path()),
+            ["src/lib.rs: module-path: `policy` resolves `..` after the symbolic link src/link"]
         );
     }
 
