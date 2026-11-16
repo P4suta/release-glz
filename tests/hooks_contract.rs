@@ -551,7 +551,7 @@ async fn hook_output_protocol_is_strict_at_every_field() {
             "invalid JSON",
         ),
         (
-            "positional.sh",
+            "positional",
             r#"["hook/v1",true,"ok",{}]"#,
             "output must be a JSON object",
         ),
@@ -838,7 +838,7 @@ async fn sidecar_artifact_protocol_rejects_every_unsafe_shape() {
             "duplicate artifact",
         ),
         (
-            "positional.sh",
+            "positional",
             r#"{"artifacts":[["evidence.json","application/json","e30=",true]]}"#,
             RefusalReason::SidecarArtifactsInvalid,
             "artifact must be a JSON object",
