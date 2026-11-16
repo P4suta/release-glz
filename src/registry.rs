@@ -87,8 +87,7 @@ pub enum PublishOutcome {
     Accepted,
     /// The result is undetermined and has to be observed.
     ///
-    /// A timeout or a conflict says nothing about whether the bytes landed,
-    /// so the reconciler re-observes instead of retrying blindly.
+    /// A timeout or a conflict says nothing about whether the bytes landed, so the reconciler re-observes instead of retrying blindly.
     Unknown,
 }
 
@@ -199,8 +198,7 @@ impl fmt::Debug for Credential {
 
 /// A Hex API and repository client.
 ///
-/// Redirects are refused and every response is read under a size limit,
-/// so a hostile or misconfigured origin cannot redirect a credential or exhaust memory.
+/// Redirects are refused and every response is read under a size limit, so a hostile or misconfigured origin cannot redirect a credential or exhaust memory.
 #[derive(Debug, Clone)]
 pub struct HexRegistry {
     client: reqwest::Client,

@@ -1,7 +1,6 @@
 //! Git access, through the `git` executable rather than a library.
 //!
-//! Only committed objects are read, and snapshots come from the tree object,
-//! so what a reviewer approved is what a Candidate can contain.
+//! Only committed objects are read, and snapshots come from the tree object, so a Candidate can contain only what a reviewer approved.
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};

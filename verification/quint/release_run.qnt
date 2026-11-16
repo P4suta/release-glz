@@ -483,7 +483,7 @@ module release_run_buggy {
 module release_run_unfloored {
   import release_run_model(BUGGY = false, UNFLOORED = true).*
 
-  // The broken runner reports the newest plan's state after its own call landed, as runs did before the floor.
+  // The broken runner reports the newest plan's state even after its own call landed.
   run forgetsWhatItPublishedTest =
     initFrom(everything, nothing)
       .then(observe).then(callAs(true, true))

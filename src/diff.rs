@@ -5,8 +5,7 @@ const MISSING_FILE: &str = "/dev/null";
 
 /// Render a deterministic, valid unified diff.
 ///
-/// v1 intentionally emits one complete hunk.
-/// Configuration and managed workflow files are small, and a complete hunk avoids platform-specific dependencies while remaining consumable by standard patch tooling.
+/// The diff is one complete hunk, which standard patch tooling accepts without a platform-specific dependency.
 pub fn unified_diff(path: &str, current: &str, rendered: &str) -> String {
     if current == rendered {
         return String::new();

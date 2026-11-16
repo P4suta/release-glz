@@ -296,7 +296,7 @@ fn validate_note(note: &StructuredNote, path: &Path) -> Result<()> {
 
 /// Render a changelog with one version's section inserted.
 ///
-/// Rendering is idempotent: repeating it on the result produces the same bytes, which is what lets the Release PR be updated in place.
+/// Repeating the rendering on its result produces the same bytes, so the Release PR can be updated in place.
 pub fn render(existing: Option<&str>, version: &str, entries: &[ChangeEntry]) -> String {
     let mut changelog = existing.unwrap_or(PREAMBLE).to_owned();
     if !changelog.contains("## [Unreleased]") {

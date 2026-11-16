@@ -1,7 +1,7 @@
 //! Redaction applied to text that can leave the process.
 //!
-//! Standard credential environment variables are redacted unconditionally;
-//! a manifest also names its own `credential_env`, which the caller adds.
+//! Standard credential environment variables are always redacted.
+//! A manifest also names its own `credential_env`, which the caller adds.
 
 use release_glz_core::Segment;
 

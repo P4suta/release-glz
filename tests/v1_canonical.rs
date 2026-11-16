@@ -3,8 +3,8 @@ use serde_json::{Value, json};
 
 #[test]
 fn canonical_json_follows_utf16_property_order() {
-    // RFC 8785 sorts property names by UTF-16 code units. U+10000 therefore
-    // sorts before U+E000 even though its Unicode scalar value is greater.
+    // RFC 8785 sorts property names by UTF-16 code units.
+    // U+10000 therefore sorts before U+E000 even though its Unicode scalar value is greater.
     let value = json!({"\u{10000}": 1, "\u{e000}": 2, "a": 3});
     let canonical = String::from_utf8(canonical_json_bytes(&value).unwrap()).unwrap();
     assert_eq!(canonical, "{\"a\":3,\"𐀀\":1,\"\":2}");

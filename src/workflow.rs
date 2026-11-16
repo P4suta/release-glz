@@ -1,7 +1,6 @@
 //! The managed GitHub Actions workflow that release-glz generates.
 //!
-//! The rendered file is treated as managed state: it records its own digest,
-//! and an update is refused once a maintainer has edited it by hand.
+//! The rendered file records its own digest, and an update is refused once a maintainer has edited it by hand.
 
 use std::fs;
 use std::io::Write;
@@ -103,8 +102,8 @@ pub fn render(default_branch: &str, manifest_path: &Path) -> String {
 
 /// Render the managed workflow for one package.
 ///
-/// Every input is validated before it reaches the template, and external Actions as well as release-glz itself are pinned to full commit SHAs,
-/// so the generated file has no floating reference to resolve later.
+/// Every input is validated before it reaches the template.
+/// External Actions and release-glz itself are pinned to full commit SHAs, so the generated file has no floating reference to resolve later.
 pub fn render_configured(
     default_branch: &str,
     manifest_path: &Path,

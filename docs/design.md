@@ -10,8 +10,7 @@ It joins independent requirements with `none < patch < minor < major` and return
 It changes neither external state nor tracked files, and it builds no Candidate, so it reports no intent digest.
 
 `Candidate` is one immutable package release.
-Rehearsal validates a full commit SHA, exports that commit with `git archive`, builds with the exact configured Gleam compiler, inventories the Hex and docs archives, executes sealed hooks,
-and writes `candidate/v1` plus exact artifacts.
+Rehearsal validates a full commit SHA, exports that commit with `git archive`, builds with the exact configured Gleam compiler, inventories the Hex and docs archives, executes sealed hooks, and writes `candidate/v1` plus exact artifacts.
 `Candidate::verify` rejects missing, unexpected, renamed, or changed files before any online operation.
 
 `ReleaseState` (`state/v1`) is freshly observed external state.
@@ -83,8 +82,7 @@ Optional notify failure is diagnostic only.
 The Candidate job has no publication secret.
 Normal authorization binds the server-side merged managed PR head to `intent_digest`.
 The Environment job downloads an Actions artifact by immutable artifact ID and digest, verifies the Candidate again, and binds `candidate_digest`.
-OIDC validation restricts the repository, Environment, workflow ref, run identity, event path, source SHA,
-and allowed manual ref.
+OIDC validation restricts the repository, Environment, workflow ref, run identity, event path, source SHA, and allowed manual ref.
 
 Private package core artifacts remain inside the Actions artifact.
 Only sidecars marked public by explicit output policy can become GitHub Release assets.
@@ -103,5 +101,4 @@ Notify hooks implement observe/apply with a Candidate-derived idempotency key.
 Machine output is wrapped in `command/v2`; domain data versions independently.
 Within a schema, removing or changing a field is forbidden.
 Repository paths use `/` regardless of host OS.
-Exit codes distinguish usage, policy, conflict,
-temporary external failure, hook failure, and partial release.
+Exit codes distinguish usage, policy, conflict, temporary external failure, hook failure, and partial release.

@@ -305,7 +305,6 @@ pub fn artifacts_equal(old: &[u8], new: &[u8]) -> Result<bool> {
 }
 
 /// Normalize the publish inputs in a package directory without invoking the compiler.
-/// This is used to recover a missing release tag from git history.
 pub fn normalize_package_dir(package_dir: &Path) -> Result<NormalizedArtifact> {
     let mut output = package_publish_inputs(package_dir)?;
     if let Some(contents) = output.get_mut("gleam.toml") {

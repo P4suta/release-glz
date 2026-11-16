@@ -133,8 +133,8 @@ impl GitHubRepository {
 
 /// A GitHub REST and GraphQL client.
 ///
-/// Redirects are refused so a token cannot follow one to another host,
-/// and a token is required explicitly by the calls that change state.
+/// Redirects are refused so a token cannot follow one to another host.
+/// The calls that change state require a token explicitly.
 #[derive(Clone)]
 pub struct GitHubClient {
     client: reqwest::Client,
@@ -530,7 +530,7 @@ impl From<CandidateRun> for release_glz_core::CandidateRun {
 
 /// An Actions artifact whose identity has been checked.
 ///
-/// The fields are private because the type exists to prove that the digest, run, and source commit were verified together.
+/// The fields are private, so a value shows that the digest, run, and source commit were verified together.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifiedActionsArtifact {
     id: u64,
@@ -2062,8 +2062,6 @@ fn parse_marker(body: &str) -> Option<ManagedMarker> {
 }
 
 /// Parse the managed Release PR marker without exposing its internal fields.
-///
-/// This entry point also gives fuzzing and callers a bounded, side-effect-free way to exercise the exact parser used by the GitHub adapter.
 pub fn is_managed_release_pr(body: &str) -> bool {
     parse_marker(body).is_some()
 }
@@ -2147,7 +2145,7 @@ mod tests {
             let marker = marker(intent);
             assert_eq!(parse_marker(&format_marker(&marker)), Some(marker));
         }
-        // Bodies that earlier releases wrote carry this exact text, so the format can't drift unnoticed.
+        // Release PR bodies carry this exact text, so the format can't drift unnoticed.
         assert_eq!(
             format_marker(&marker(None)),
             format!(

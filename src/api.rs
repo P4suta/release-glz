@@ -1,7 +1,6 @@
 //! Public API comparison between a Candidate and its baseline.
 //!
-//! Comparison uses `package-interface.json`, so an API change is detected
-//! from the compiler's own view of the package rather than from source text.
+//! Comparison reads `package-interface.json`, so it sees an API change through the compiler's own view of the package rather than through source text.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -31,9 +30,8 @@ struct Surface {
 
 /// Compare two Gleam `package-interface.json` documents.
 ///
-/// Documentation, deprecation text, and unlabeled argument names are absent
-/// from signatures. Type variable ids are canonicalized by first occurrence,
-/// making compiler-generated alpha-renames equivalent.
+/// Signatures leave out documentation, deprecation text, and unlabeled argument names.
+/// Type variables are numbered by first occurrence, so two interfaces that differ only by the compiler's renaming of type variables compare equal.
 pub fn compare(old: &[u8], new: &[u8]) -> Result<ApiDiff> {
     let old = parse_surface(old).context("invalid baseline package interface")?;
     let new = parse_surface(new).context("invalid local package interface")?;
@@ -356,8 +354,7 @@ fn type_signature(value: &Value, vars: &mut HashMap<String, usize>) -> Result<St
         }
         "tuple" => format!("tuple{}", type_list(value.get("elements"), vars)?),
         other => {
-            // Preserve future interface kinds conservatively. Documentation is
-            // stripped while the remaining shape is canonicalized.
+            // A kind that a later compiler adds keeps every field but its documentation, so any change to it counts.
             let fields = value.as_object().context("type must be an object")?;
             let fields = fields
                 .iter()

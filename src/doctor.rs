@@ -1,7 +1,4 @@
-//! Preflight checks, as a pure assessment of observed inputs.
-//!
-//! The caller observes; this module only decides. That separation is what
-//! lets the local mode run with no network and no credential.
+//! Preflight checks, decided from inputs that the caller observed, so the local mode runs with no network and no credential.
 
 use semver::Version;
 use serde::Serialize;
@@ -12,9 +9,6 @@ use crate::model::{Diagnostic, DiagnosticLevel, NextAction, ReleaseState};
 use crate::registry::RegistryCredentialAudit;
 
 /// Everything the checks are decided from.
-///
-/// Observation is done by the caller so the assessment itself stays pure
-/// and can be tested without a network.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DoctorInput {
     /// Configuration schema found in the manifest.
