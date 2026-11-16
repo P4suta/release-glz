@@ -301,10 +301,14 @@ async fn get_retries_retry_after_but_refuses_cross_origin_redirects() {
         .await
         .unwrap_err();
     assert_eq!(
-        refusal_reason(&error),
-        Some(RefusalReason::RegistryRedirectCrossOrigin)
+        (refusal_reason(&error), error.to_string()),
+        (
+            Some(RefusalReason::RegistryRedirectCrossOrigin),
+            format!(
+                "refusing cross-origin registry redirect from {base}/repo/tarballs/widget-1.2.3.tar to http://example.test"
+            )
+        )
     );
-    assert!(error.to_string().contains("cross-origin"));
     let seen = server.finish();
     assert!(
         seen.iter()
@@ -529,6 +533,42 @@ async fn each_publish_refuses_each_redirect_and_sends_nothing_to_its_location() 
     }
 }
 
+/// A credential that a registry echoes into the publish redirect host is redacted from the refusal, although the parsed host is in lowercase.
+#[tokio::test]
+async fn a_credential_echoed_into_the_publish_redirect_host_is_redacted() {
+    let version = Version::new(1, 2, 3);
+    for (publication, target) in [
+        ("package", "/api/publish"),
+        ("docs", "/api/packages/widget/releases/1.2.3/docs"),
+    ] {
+        let (base, mut server) = server(vec![
+            Response::new(302)
+                .header("Location", "http://Publish-Secret.example.test/x")
+                .into(),
+        ]);
+        let registry =
+            HexRegistry::from_config(&custom_config(&base), Some("Publish-Secret")).unwrap();
+
+        let error = match publication {
+            "package" => registry.publish_package(b"sealed").await,
+            _ => registry.publish_docs("widget", &version, b"sealed").await,
+        }
+        .unwrap_err();
+
+        assert_eq!(
+            (refusal_reason(&error), error.to_string()),
+            (
+                Some(RefusalReason::RegistryPublishRedirectRefused),
+                format!(
+                    "refusing registry publish redirect 302 Found from {base}{target} to http://[REDACTED].example.test"
+                )
+            ),
+            "{publication}"
+        );
+        assert_eq!(server.finish().len(), 1, "{publication}");
+    }
+}
+
 #[tokio::test]
 async fn same_origin_redirects_preserve_auth_while_missing_locations_fail_closed() {
     let redirect = |location: Option<&str>| -> Reply {
@@ -601,11 +641,12 @@ async fn transport_failures_and_redirect_loops_exhaust_a_fixed_read_budget() {
     let registry = HexRegistry::from_config(&custom_config(&base), Some("secret")).unwrap();
     let error = registry.package("loop").await.unwrap_err();
     assert_eq!(
-        refusal_reason(&error),
-        Some(RefusalReason::RegistryRedirectLimitExceeded)
+        (refusal_reason(&error), error.to_string()),
+        (
+            Some(RefusalReason::RegistryRedirectLimitExceeded),
+            format!("too many same-origin redirects from {base}/api/packages/loop")
+        )
     );
-    let error = error.to_string();
-    assert!(error.contains("too many same-origin redirects"), "{error}");
     let requests = redirect_server.finish();
     assert_eq!(requests[0].target, "/api/packages/loop");
     assert!(
@@ -701,15 +742,77 @@ async fn credential_audit_refuses_cross_origin_redirects() {
     let registry = HexRegistry::from_config(&custom_config(&base), Some("secret")).unwrap();
     let error = registry.audit_credential().await.unwrap_err();
     assert_eq!(
-        refusal_reason(&error),
-        Some(RefusalReason::RegistryRedirectCrossOrigin)
+        (refusal_reason(&error), error.to_string()),
+        (
+            Some(RefusalReason::RegistryRedirectCrossOrigin),
+            format!(
+                "refusing cross-origin registry redirect from {base}/api/auth?domain=api&resource=write to https://other.example"
+            )
+        )
     );
-    let error = error.to_string();
-    assert!(error.contains("cross-origin"), "{error}");
     assert_eq!(
         server.finish()[0].target,
         "/api/auth?domain=api&resource=write"
     );
+}
+
+/// A credential that a registry echoes into a read redirect stays out of the refusal.
+///
+/// A message names the URL that release-glz requested and only the origin of a refused target, so neither a hop within the origin nor the target's userinfo, host, path, query, or fragment can carry the credential into it.
+#[tokio::test]
+async fn a_credential_echoed_into_a_read_redirect_is_redacted() {
+    let echo = "http://user:Read-Secret@Read-Secret.example.test/Read-Secret?token=Read-Secret#Read-Secret";
+    let redirect =
+        |location: &str| -> Reply { Response::new(302).header("Location", location).into() };
+    let away = Some(RefusalReason::RegistryRedirectCrossOrigin);
+    let hop = "/api/Read-Secret?token=Read-Secret";
+    // Each message names the requested URL as `{base}` and then the path below it.
+    let cases: [(&str, Vec<Reply>, Option<RefusalReason>, &str); 4] = [
+        (
+            "package",
+            vec![redirect(echo)],
+            away,
+            "refusing cross-origin registry redirect from {base}/api/packages/widget to http://[REDACTED].example.test",
+        ),
+        (
+            "package",
+            vec![redirect(hop), redirect(echo)],
+            away,
+            "refusing cross-origin registry redirect from {base}/api/packages/widget to http://[REDACTED].example.test",
+        ),
+        (
+            "audit",
+            vec![redirect(echo)],
+            away,
+            "refusing cross-origin registry redirect from {base}/api/auth?domain=api&resource=write to http://[REDACTED].example.test",
+        ),
+        (
+            "package",
+            vec![redirect(hop), response(400, b"")],
+            None,
+            "registry GET {base}/api/packages/widget failed with 400 Bad Request",
+        ),
+    ];
+    for (read, replies, reason, message) in cases {
+        let hops = replies.len();
+        let (base, mut server) = server(replies);
+        let registry =
+            HexRegistry::from_config(&custom_config(&base), Some("Read-Secret")).unwrap();
+
+        let error = match read {
+            "audit" => registry.audit_credential().await.map(drop),
+            _ => registry.package("widget").await.map(drop),
+        }
+        .unwrap_err();
+
+        let case = format!("the {read} read with {hops} replies");
+        assert_eq!(
+            (refusal_reason(&error), error.to_string()),
+            (reason, message.replace("{base}", &base)),
+            "{case}"
+        );
+        assert_eq!(server.finish().len(), hops, "{case}");
+    }
 }
 
 #[tokio::test]

@@ -350,15 +350,8 @@ async fn each_oidc_request_refuses_each_redirect_and_sends_nothing_to_its_locati
                 "http://user:runner-secret@{}/runner-secret?token=runner-secret#runner-secret",
                 elsewhere.address()
             );
-            let earlier = [
-                json_reply(&serde_json::json!({"value": "header.payload.signature"})),
-                json_reply(&serde_json::json!({
-                    "issuer": "https://token.actions.githubusercontent.com",
-                    "jwks_uri": format!("{}/jwks", server.base_url())
-                })),
-            ];
             server.script(
-                earlier
+                earlier_replies(&server)
                     .into_iter()
                     .take(redirected)
                     .chain([Response::new(status).header("Location", &location)]),
@@ -401,6 +394,57 @@ async fn each_oidc_request_refuses_each_redirect_and_sends_nothing_to_its_locati
             assert_eq!(elsewhere.connections(), 0, "{case}");
         }
     }
+}
+
+/// A request token that a server echoes into the redirect host is redacted from the refusal, although the parsed host is in lowercase.
+#[tokio::test]
+async fn an_oidc_request_token_echoed_into_the_redirect_host_is_redacted() {
+    for (redirected, (_, description)) in OIDC_REQUESTS.into_iter().enumerate() {
+        let mut server = FakeServer::start();
+        server.script(
+            earlier_replies(&server)
+                .into_iter()
+                .take(redirected)
+                .chain([
+                    Response::new(302).header("Location", "http://Runner-Secret.example.test/x")
+                ]),
+        );
+        let verifier =
+            GithubOidcVerifier::new(&format!("{}/discovery", server.base_url()), true).unwrap();
+
+        let error = verifier
+            .verify_actions_token(
+                &format!("{}/token", server.base_url()),
+                "Runner-Secret",
+                &expectation(),
+                NOW,
+            )
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            (refusal_reason(&error), error.to_string()),
+            (
+                Some(RefusalReason::OidcRedirectRefused),
+                format!(
+                    "refusing {description} redirect 302 Found to http://[REDACTED].example.test"
+                )
+            ),
+            "{description}"
+        );
+        assert_eq!(server.finish().len(), redirected + 1, "{description}");
+    }
+}
+
+/// The replies to the token request and the discovery read of a verifier whose issuer is `server`.
+fn earlier_replies(server: &FakeServer) -> [Response; 2] {
+    [
+        json_reply(&serde_json::json!({"value": "header.payload.signature"})),
+        json_reply(&serde_json::json!({
+            "issuer": "https://token.actions.githubusercontent.com",
+            "jwks_uri": format!("{}/jwks", server.base_url())
+        })),
+    ]
 }
 
 /// A JSON response with `value` as its body.

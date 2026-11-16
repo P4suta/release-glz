@@ -3216,6 +3216,90 @@ async fn a_github_redirect_without_a_location_is_refused_as_a_redirect() {
     assert_eq!(server.finish().len(), 1);
 }
 
+/// A token that a server echoes into the redirect host is redacted from the refusal, although the parsed host is in lowercase.
+#[tokio::test]
+async fn a_github_token_echoed_into_the_redirect_host_is_redacted() {
+    for call in GitHubCall::ALL {
+        for (status, phrase) in REDIRECTS {
+            let case = format!("{call:?} answered with {status}");
+            let mut server = http::FakeServer::start();
+            let mut replies = call.earlier_replies();
+            let earlier = replies.len();
+            replies.push(
+                Response::new(status)
+                    .header("Location", "http://Echoed-Token.example.test/x")
+                    .into(),
+            );
+            server.script(replies);
+            let base = server.base_url();
+            let client = GitHubClient::new(
+                GitHubRepository::parse("o/r").unwrap(),
+                base.clone(),
+                format!("{base}/graphql"),
+                Some("Echoed-Token".into()),
+            )
+            .unwrap();
+
+            let error = call.run(&client, &base).await.unwrap_err();
+
+            let (_, target) = call.redirected();
+            assert_eq!(
+                (refusal_reason(&error), error.to_string()),
+                (
+                    Some(RefusalReason::GithubRedirectRefused),
+                    format!(
+                        "refusing GitHub redirect {phrase} from {base}{target} to http://[REDACTED].example.test"
+                    )
+                ),
+                "{case}"
+            );
+            assert_eq!(server.finish().len(), earlier + 1, "{case}");
+        }
+    }
+}
+
+/// A token that GitHub echoes into an error body or a GraphQL error stays out of the failure.
+#[tokio::test]
+async fn a_github_token_echoed_into_an_error_body_is_redacted() {
+    for (call, reply, failure) in [
+        (
+            GitHubCall::ReleaseLookup,
+            response(403, "Echoed-Token may not read o/r"),
+            "GitHub request to {base}/repos/o/r/releases?per_page=100&page=1 failed with 403 Forbidden: [REDACTED] may not read o/r",
+        ),
+        (
+            GitHubCall::VerifiedCommit,
+            response(
+                200,
+                r#"{"data":null,"errors":[{"message":"Echoed-Token may not push"}]}"#,
+            ),
+            "GitHub could not create verified release commit: [REDACTED] may not push",
+        ),
+    ] {
+        let mut server = http::FakeServer::start();
+        let mut replies = call.earlier_replies();
+        replies.push(reply);
+        server.script(replies);
+        let base = server.base_url();
+        let client = GitHubClient::new(
+            GitHubRepository::parse("o/r").unwrap(),
+            base.clone(),
+            format!("{base}/graphql"),
+            Some("Echoed-Token".into()),
+        )
+        .unwrap();
+
+        let error = call.run(&client, &base).await.unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            failure.replace("{base}", &base),
+            "{call:?}"
+        );
+        server.finish();
+    }
+}
+
 fn test_client(server: &FakeServer, token: Option<&str>) -> GitHubClient {
     GitHubClient::new(
         GitHubRepository::parse("o/r").unwrap(),

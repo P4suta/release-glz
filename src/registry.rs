@@ -412,7 +412,7 @@ impl HexRegistry {
     }
 
     async fn audit_permission_once(&self, url: Url) -> Result<AuditRequest> {
-        let mut current = url;
+        let mut current = url.clone();
         for _ in 0..=MAX_REDIRECTS {
             let request = self.authenticated(
                 self.client
@@ -441,7 +441,8 @@ impl HexRegistry {
                 if !same_origin(&current, &next) {
                     refuse!(
                         RegistryRedirectCrossOrigin,
-                        "refusing cross-origin registry redirect from {current} to {next}"
+                        "refusing cross-origin registry redirect from {url} to {}",
+                        crate::secrets::redirect_target(&response, self.secret_values())
                     );
                 }
                 current = next;
@@ -480,7 +481,7 @@ impl HexRegistry {
     }
 
     async fn get_once(&self, url: Url, optional: bool, limit: u64) -> Result<GetResult> {
-        let mut current = url;
+        let mut current = url.clone();
         for _ in 0..=MAX_REDIRECTS {
             let request = self.authenticated(self.client.get(current.clone()))?;
             let mut response = request.send().await?;
@@ -505,7 +506,8 @@ impl HexRegistry {
                 if !same_origin(&current, &next) {
                     refuse!(
                         RegistryRedirectCrossOrigin,
-                        "refusing cross-origin registry redirect from {current} to {next}"
+                        "refusing cross-origin registry redirect from {url} to {}",
+                        crate::secrets::redirect_target(&response, self.secret_values())
                     );
                 }
                 current = next;
@@ -520,7 +522,7 @@ impl HexRegistry {
                 return Ok(GetResult::Retry(retry_after(response.headers())));
             }
             if !response.status().is_success() {
-                bail!("registry GET {} failed with {}", current, response.status());
+                bail!("registry GET {url} failed with {}", response.status());
             }
             if response
                 .content_length()
@@ -528,7 +530,7 @@ impl HexRegistry {
             {
                 refuse!(
                     RegistryResponseTooLarge,
-                    "registry response from {current} exceeds the download limit"
+                    "registry response from {url} exceeds the download limit"
                 );
             }
             let mut bytes = Vec::new();
@@ -536,7 +538,7 @@ impl HexRegistry {
                 if bytes.len() as u64 + chunk.len() as u64 > limit {
                     refuse!(
                         RegistryResponseTooLarge,
-                        "registry response from {current} exceeds the download limit"
+                        "registry response from {url} exceeds the download limit"
                     );
                 }
                 bytes.extend_from_slice(&chunk);
@@ -545,7 +547,7 @@ impl HexRegistry {
         }
         Err(refused(
             RefusalReason::RegistryRedirectLimitExceeded,
-            format_args!("too many same-origin redirects from {current}"),
+            format_args!("too many same-origin redirects from {url}"),
         ))
     }
 
@@ -561,6 +563,13 @@ impl HexRegistry {
             .context("registry credential is not a valid HTTP header value")?;
         value.set_sensitive(true);
         Ok(request.header(reqwest::header::AUTHORIZATION, value))
+    }
+
+    /// The credential's value, which a message that shows server-chosen text redacts.
+    fn secret_values(&self) -> impl Iterator<Item = &str> {
+        self.credential
+            .iter()
+            .map(|credential| credential.0.as_str())
     }
 
     fn api_endpoint(&self, segments: &[&str]) -> Result<Url> {
@@ -603,7 +612,7 @@ impl HexRegistry {
                 RegistryPublishRedirectRefused,
                 "refusing registry publish redirect {} from {url} to {}",
                 response.status(),
-                crate::secrets::redirect_target(&response)
+                crate::secrets::redirect_target(&response, self.secret_values())
             );
         }
         if response.status() == StatusCode::CONFLICT

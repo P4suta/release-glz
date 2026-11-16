@@ -1509,6 +1509,7 @@ impl GitHubClient {
                 .send()
                 .await?,
             &url,
+            self.token.as_deref(),
         )
         .await?;
         let uploaded: ReleaseAssetResponse = json_response(response, &url)
@@ -1571,7 +1572,12 @@ impl GitHubClient {
             );
         }
         let url = self.url(&format!("releases/assets/{}", asset.id));
-        checked(self.request(Method::DELETE, &url).send().await?, &url).await?;
+        checked(
+            self.request(Method::DELETE, &url).send().await?,
+            &url,
+            self.token.as_deref(),
+        )
+        .await?;
         Ok(())
     }
 
@@ -1701,7 +1707,7 @@ impl GitHubClient {
             .json(body)
             .send()
             .await?;
-        refuse_redirect(&response, &self.graphql_url)?;
+        refuse_redirect(&response, &self.graphql_url, self.token.as_deref())?;
         let status = response.status();
         let response: GraphResponse<T> = json_response(response, &self.graphql_url)
             .await
@@ -1713,7 +1719,7 @@ impl GitHubClient {
                 .map(|error| error.message)
                 .collect::<Vec<_>>()
                 .join("; ");
-            let errors = crate::secrets::redact(&errors);
+            let errors = crate::secrets::redact_with(&errors, self.token.as_deref());
             bail!("GitHub could not {purpose}: {errors}");
         }
         response.data.context("GitHub GraphQL response had no data")
@@ -1808,7 +1814,7 @@ impl GitHubClient {
 
     async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
         let url = self.url(path);
-        let response = checked(self.get_response(&url).await?, &url).await?;
+        let response = checked(self.get_response(&url).await?, &url, self.token.as_deref()).await?;
         json_response(response, &url).await
     }
 
@@ -1818,7 +1824,7 @@ impl GitHubClient {
         if response.status() == StatusCode::NOT_FOUND {
             return Ok(None);
         }
-        let response = checked(response, &url).await?;
+        let response = checked(response, &url, self.token.as_deref()).await?;
         Ok(Some(json_response(response, &url).await?))
     }
 
@@ -1882,7 +1888,7 @@ impl GitHubClient {
         if let Some(body) = body {
             request = request.json(body);
         }
-        let response = checked(request.send().await?, &url).await?;
+        let response = checked(request.send().await?, &url, self.token.as_deref()).await?;
         json_response(response, &url).await
     }
 
@@ -2012,27 +2018,31 @@ fn validate_release_upload_url(
     Ok(url)
 }
 
-/// Refuse a redirect, which a GitHub request never follows, so its token reaches no other URL.
-fn refuse_redirect(response: &reqwest::Response, url: &str) -> Result<()> {
+/// Refuse a redirect, which a GitHub request never follows, so its `token` reaches no other URL and stays out of the message.
+fn refuse_redirect(response: &reqwest::Response, url: &str, token: Option<&str>) -> Result<()> {
     if response.status().is_redirection() {
         refuse!(
             GithubRedirectRefused,
             "refusing GitHub redirect {} from {url} to {}",
             response.status(),
-            crate::secrets::redirect_target(response)
+            crate::secrets::redirect_target(response, token)
         );
     }
     Ok(())
 }
 
-async fn checked(response: reqwest::Response, url: &str) -> Result<reqwest::Response> {
-    refuse_redirect(&response, url)?;
+async fn checked(
+    response: reqwest::Response,
+    url: &str,
+    token: Option<&str>,
+) -> Result<reqwest::Response> {
+    refuse_redirect(&response, url, token)?;
     if response.status().is_success() {
         return Ok(response);
     }
     let status = response.status();
     let body = match read_limited(response, MAX_GITHUB_ERROR_BYTES).await {
-        Ok(bytes) => crate::secrets::redact(&String::from_utf8_lossy(&bytes)),
+        Ok(bytes) => crate::secrets::redact_with(&String::from_utf8_lossy(&bytes), token),
         Err(_) => "[response omitted: size limit exceeded]".into(),
     };
     bail!("GitHub request to {url} failed with {status}: {body}")

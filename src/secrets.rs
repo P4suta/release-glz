@@ -36,8 +36,15 @@ where
 
 /// Where `response` redirects: the origin of its `Location`, resolved against the URL it answers.
 ///
-/// A server can echo a credential into any other part of the `Location`, so only the scheme, host, and port are shown, and they are redacted.
-pub(crate) fn redirect_target(response: &reqwest::Response) -> String {
+/// A server can echo a credential into any part of the `Location`, so only the scheme, host, and port are shown.
+/// They are redacted of the standard credentials and of `credentials`, each also in the lowercase that a parsed host takes.
+pub(crate) fn redirect_target<S>(
+    response: &reqwest::Response,
+    credentials: impl IntoIterator<Item = S>,
+) -> String
+where
+    S: AsRef<str>,
+{
     response
         .headers()
         .get(reqwest::header::LOCATION)
@@ -47,7 +54,16 @@ pub(crate) fn redirect_target(response: &reqwest::Response) -> String {
         .filter(|origin| origin.is_tuple())
         .map_or_else(
             || "a missing or invalid Location".to_owned(),
-            |origin| redact(&origin.ascii_serialization()),
+            |origin| {
+                let secrets = standard_secrets()
+                    .chain(
+                        credentials
+                            .into_iter()
+                            .map(|credential| credential.as_ref().to_owned()),
+                    )
+                    .flat_map(|secret| [secret.to_ascii_lowercase(), secret]);
+                redact_values(&origin.ascii_serialization(), secrets)
+            },
         )
 }
 

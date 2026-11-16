@@ -164,6 +164,7 @@ impl GithubOidcVerifier {
             token_response,
             MAX_TOKEN_RESPONSE_BYTES,
             "GitHub Actions OIDC token",
+            request_token,
         )
         .await?;
         let token_response: ActionsTokenResponse = serde_json::from_slice(&token_response)
@@ -178,8 +179,13 @@ impl GithubOidcVerifier {
             .send()
             .await
             .map_err(|_| anyhow::anyhow!("GitHub OIDC discovery request failed"))?;
-        let discovery =
-            checked_body(discovery, MAX_DISCOVERY_BYTES, "GitHub OIDC discovery").await?;
+        let discovery = checked_body(
+            discovery,
+            MAX_DISCOVERY_BYTES,
+            "GitHub OIDC discovery",
+            request_token,
+        )
+        .await?;
         let discovery: OpenIdConfiguration = serde_json::from_slice(&discovery)
             .map_err(|_| anyhow::anyhow!("GitHub OIDC discovery document is invalid"))?;
         if discovery.issuer != GITHUB_OIDC_ISSUER {
@@ -202,7 +208,7 @@ impl GithubOidcVerifier {
             .send()
             .await
             .map_err(|_| anyhow::anyhow!("GitHub OIDC JWKS request failed"))?;
-        let keys = checked_body(keys, MAX_JWKS_BYTES, "GitHub OIDC JWKS").await?;
+        let keys = checked_body(keys, MAX_JWKS_BYTES, "GitHub OIDC JWKS", request_token).await?;
         let keys: JwkSet = serde_json::from_slice(&keys)
             .map_err(|_| anyhow::anyhow!("GitHub OIDC JWKS is invalid"))?;
         verify_github_oidc_token(&token_response.value, &keys, expected, now_unix_seconds)
@@ -245,17 +251,19 @@ fn validate_oidc_url(raw: &str, allow_http_loopback: bool, kind: OidcUrlKind) ->
     }
 }
 
+/// The body of `response` within `maximum` bytes, refusing a redirect with a message that `request_token` stays out of.
 async fn checked_body(
     mut response: reqwest::Response,
     maximum: usize,
     description: &str,
+    request_token: &str,
 ) -> Result<Vec<u8>> {
     if response.status().is_redirection() {
         refuse!(
             OidcRedirectRefused,
             "refusing {description} redirect {} to {}",
             response.status(),
-            crate::secrets::redirect_target(&response)
+            crate::secrets::redirect_target(&response, [request_token])
         );
     }
     if response.status() != StatusCode::OK {
