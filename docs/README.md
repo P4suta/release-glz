@@ -366,6 +366,7 @@ Reason codes are stable, and a code is never reused for another refusal:
 | `hook_env_protected` | 2 | A hook allows a credential or a GitHub control file that no hook may receive. |
 | `credential_env_invalid` | 2 | The registry credential setting isn't the name of an environment variable. |
 | `registry_repository_invalid` | 2 | The Hex organization isn't a safe single path segment. |
+| `url_malformed` | 2 | A configured URL isn't a well-formed URL. |
 | `url_credentials` | 2 | A configured URL carries credentials. |
 | `url_not_hierarchical` | 2 | A configured URL isn't absolute and hierarchical. |
 | `url_query_or_fragment` | 2 | A configured URL carries a query or a fragment. |

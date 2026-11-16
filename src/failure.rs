@@ -130,6 +130,8 @@ refusal_reasons! {
     CredentialEnvInvalid => "credential_env_invalid", UsageOrConfig;
     /// The Hex organization isn't a safe single path segment.
     RegistryRepositoryInvalid => "registry_repository_invalid", UsageOrConfig;
+    /// A configured URL isn't a well-formed URL.
+    UrlMalformed => "url_malformed", UsageOrConfig;
     /// A configured URL carries credentials.
     UrlCredentials => "url_credentials", UsageOrConfig;
     /// A configured URL isn't absolute and hierarchical.
