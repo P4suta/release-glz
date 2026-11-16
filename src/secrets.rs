@@ -89,10 +89,11 @@ where
     let text = input.as_bytes();
     let mut output = Vec::with_capacity(text.len());
     for segment in release_glz_core::redaction_segments(text, &secrets) {
-        match segment {
-            Segment::Kept(range) => output.extend_from_slice(&text[range]),
-            Segment::Redacted(_) => output.extend_from_slice(b"[REDACTED]"),
-        }
+        let kept = match segment {
+            Segment::Kept(range) => text.get(range),
+            Segment::Redacted(_) => None,
+        };
+        output.extend_from_slice(kept.unwrap_or(b"[REDACTED]"));
     }
     String::from_utf8_lossy(&output).into_owned()
 }
@@ -167,7 +168,10 @@ mod tests {
         let mut covered = vec![false; text.len()];
         for secret in secrets.iter().filter(|secret| !secret.is_empty()) {
             for (start, _) in text.char_indices() {
-                if text[start..].starts_with(secret) {
+                if text
+                    .get(start..)
+                    .is_some_and(|rest| rest.starts_with(secret))
+                {
                     covered[start..start + secret.len()].fill(true);
                 }
             }

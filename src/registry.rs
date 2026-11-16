@@ -284,7 +284,7 @@ pub struct HexRegistry {
 
 impl HexRegistry {
     /// Build a client for a loopback test registry.
-    pub fn new(api_url: impl Into<String>, repository_url: impl Into<String>) -> Self {
+    pub fn new(api_url: impl Into<String>, repository_url: impl Into<String>) -> Result<Self> {
         let repository_url = repository_url.into();
         let config = RegistryConfig {
             api_url: api_url.into(),
@@ -292,7 +292,7 @@ impl HexRegistry {
             repository_url,
             ..RegistryConfig::default()
         };
-        Self::from_config(&config, None).expect("valid registry URLs")
+        Self::from_config(&config, None)
     }
 
     /// Build a client from configuration and an explicit credential.
@@ -1388,7 +1388,8 @@ mod tests {
     /// A registry observes twenty times three seconds apart, so its wait gives up just under a minute after it starts, unless a caller sets another poll.
     #[tokio::test(start_paused = true)]
     async fn visibility_polling_waits_a_minute_unless_a_caller_sets_it() {
-        let registry = HexRegistry::new("http://127.0.0.1:9/api", "http://127.0.0.1:9/repository");
+        let registry =
+            HexRegistry::new("http://127.0.0.1:9/api", "http://127.0.0.1:9/repository").unwrap();
         assert_eq!(
             schedule(registry.visibility_poll, None).await,
             (
@@ -1435,7 +1436,8 @@ mod tests {
 
     #[tokio::test]
     async fn byte_downloads_never_fabricate_a_value_after_a_transport_error() {
-        let registry = HexRegistry::new("http://127.0.0.1:9/api", "http://127.0.0.1:9/repository");
+        let registry =
+            HexRegistry::new("http://127.0.0.1:9/api", "http://127.0.0.1:9/repository").unwrap();
         let unsupported = Url::parse("file:///release-glz-must-not-be-read").unwrap();
         let error = registry
             .get_bytes(unsupported, false, 16)

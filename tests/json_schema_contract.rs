@@ -563,12 +563,13 @@ fn named_formats(directory: &Path) -> BTreeSet<String> {
         }
         let source = fs::read_to_string(&path).unwrap();
         for prefix in ["schema: \"", "\"schema\": \"", "SCHEMA: &'static str = \""] {
-            for (start, _) in source.match_indices(prefix) {
-                let literal = &source[start + prefix.len()..];
-                let identifier = &literal[..literal.find('"').unwrap()];
+            let mut rest = source.as_str();
+            while let Some((_, literal)) = rest.split_once(prefix) {
+                let (identifier, _) = literal.split_once('"').unwrap();
                 if is_format_identifier(identifier) {
                     formats.insert(identifier.to_owned());
                 }
+                rest = literal;
             }
         }
     }

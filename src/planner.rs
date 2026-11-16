@@ -734,9 +734,7 @@ fn validated_api_exception(
     else {
         return Ok(None);
     };
-    let expires = chrono::NaiveDate::parse_from_str(&exception.expires, "%Y-%m-%d")
-        .expect("API exception dates are validated while parsing configuration");
-    if expires < chrono::Utc::now().date_naive() {
+    if exception.expiry()? < chrono::Utc::now().date_naive() {
         refuse!(
             ApiExceptionExpired,
             "API exception for {version} expired on {}; remove it or complete a newly reviewed exception",

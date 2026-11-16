@@ -2,7 +2,7 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
-use anyhow::{Result, bail};
+use anyhow::{Result, bail, ensure};
 use release_glz::artifact::normalize_hex_tarball;
 use release_glz::candidate::Candidate;
 use release_glz::failure::{RefusalReason, refusal_reason};
@@ -83,12 +83,12 @@ manual_refs = ["refs/heads/main"]
             output: output.clone(),
         })
         .await?;
-    assert_eq!(manifest.source.commit_sha, sha);
-    assert_eq!(manifest.source.manifest_path, "gleam.toml");
-    assert!(manifest.artifacts.docs.is_some());
+    ensure!(manifest.source.commit_sha == sha);
+    ensure!(manifest.source.manifest_path == "gleam.toml");
+    ensure!(manifest.artifacts.docs.is_some());
 
     let verified = Candidate::verify(&output)?;
-    assert!(
+    ensure!(
         verified
             .release_notes
             .contains("The first committed release."),
@@ -97,15 +97,12 @@ manual_refs = ["refs/heads/main"]
     );
     // The working tree is dirty, but publication reads the policy from the commit that rehearsal sealed.
     let bound = SourceBoundCandidate::bind(verified.clone(), &repository.join("gleam.toml"))?;
-    assert_eq!(bound.manifest(), &verified);
+    ensure!(bound.manifest() == &verified);
     let package = Candidate::package_bytes(&output, &verified)?;
     let files = normalize_hex_tarball(&package)?;
-    assert_eq!(
-        files["src/rehearse_fixture.gleam"],
-        b"pub fn committed() -> Int { 1 }\n"
-    );
-    assert!(!String::from_utf8_lossy(&files["src/rehearse_fixture.gleam"]).contains("dirty"));
-    assert!(
+    ensure!(files["src/rehearse_fixture.gleam"] == b"pub fn committed() -> Int { 1 }\n");
+    ensure!(!String::from_utf8_lossy(&files["src/rehearse_fixture.gleam"]).contains("dirty"));
+    ensure!(
         !repository.join("build").exists(),
         "rehearse dirtied the checkout"
     );
@@ -219,16 +216,13 @@ async fn rehearsal_rejects_missing_symbolic_unconfigured_and_wrong_compiler_sour
         })
         .await
         .unwrap_err();
-    assert_eq!(
-        refusal_reason(&missing),
-        Some(RefusalReason::SourceCommitUnresolved)
-    );
+    ensure!(refusal_reason(&missing) == Some(RefusalReason::SourceCommitUnresolved));
     let missing = missing.to_string();
-    assert!(
+    ensure!(
         missing.contains("source commit does not exist"),
         "{missing}"
     );
-    assert!(!missing_output.exists());
+    ensure!(!missing_output.exists());
 
     // A SHA-256 object ID in a SHA-1 repository names no commit that GitHub serves.
     let sha256_output = temp.path().join("sha256-candidate");
@@ -240,16 +234,13 @@ async fn rehearsal_rejects_missing_symbolic_unconfigured_and_wrong_compiler_sour
         })
         .await
         .unwrap_err();
-    assert_eq!(
-        refusal_reason(&sha256),
-        Some(RefusalReason::CandidateSourceCommitInvalid)
-    );
+    ensure!(refusal_reason(&sha256) == Some(RefusalReason::CandidateSourceCommitInvalid));
     let sha256 = sha256.to_string();
-    assert!(
+    ensure!(
         sha256.contains("a SHA-256 object ID isn't a GitHub commit ID"),
         "{sha256}"
     );
-    assert!(!sha256_output.exists());
+    ensure!(!sha256_output.exists());
 
     // An annotated tag's object ID is a full object ID that peels to a different commit ID, which the guard against symbolic refs refuses.
     git(
@@ -257,7 +248,7 @@ async fn rehearsal_rejects_missing_symbolic_unconfigured_and_wrong_compiler_sour
         &["tag", "--annotate", "guard", "--message", "guard"],
     )?;
     let symbolic_ref = git_stdout(&repository, &["rev-parse", "refs/tags/guard"])?;
-    assert_ne!(symbolic_ref, sha);
+    ensure!(symbolic_ref != sha);
     let symbolic_output = temp.path().join("symbolic-candidate");
     let symbolic = Rehearsal::default()
         .run(&RehearseOptions {
@@ -267,13 +258,10 @@ async fn rehearsal_rejects_missing_symbolic_unconfigured_and_wrong_compiler_sour
         })
         .await
         .unwrap_err();
-    assert_eq!(
-        refusal_reason(&symbolic),
-        Some(RefusalReason::SourceCommitUnresolved)
-    );
+    ensure!(refusal_reason(&symbolic) == Some(RefusalReason::SourceCommitUnresolved));
     let symbolic = symbolic.to_string();
-    assert!(symbolic.contains("exact full commit SHA"), "{symbolic}");
-    assert!(!symbolic_output.exists());
+    ensure!(symbolic.contains("exact full commit SHA"), "{symbolic}");
+    ensure!(!symbolic_output.exists());
 
     let unconfigured_output = temp.path().join("unconfigured-candidate");
     let unconfigured = Rehearsal::default()
@@ -284,16 +272,13 @@ async fn rehearsal_rejects_missing_symbolic_unconfigured_and_wrong_compiler_sour
         })
         .await
         .unwrap_err();
-    assert_eq!(
-        refusal_reason(&unconfigured),
-        Some(RefusalReason::ConfigMissing)
-    );
+    ensure!(refusal_reason(&unconfigured) == Some(RefusalReason::ConfigMissing));
     let unconfigured = unconfigured.to_string();
-    assert!(
+    ensure!(
         unconfigured.contains("[tools.release-glz]") && unconfigured.contains("release-glz init"),
         "{unconfigured}"
     );
-    assert!(!unconfigured_output.exists());
+    ensure!(!unconfigured_output.exists());
 
     require_gleam();
     fs::write(
@@ -315,16 +300,13 @@ async fn rehearsal_rejects_missing_symbolic_unconfigured_and_wrong_compiler_sour
         })
         .await
         .unwrap_err();
-    assert_eq!(
-        refusal_reason(&wrong),
-        Some(RefusalReason::GleamCompilerMismatch)
-    );
+    ensure!(refusal_reason(&wrong) == Some(RefusalReason::GleamCompilerMismatch));
     let wrong = wrong.to_string();
-    assert!(
+    ensure!(
         wrong.contains("configured Gleam compiler 99.0.0"),
         "{wrong}"
     );
-    assert!(!wrong_output.exists());
+    ensure!(!wrong_output.exists());
     Ok(())
 }
 
@@ -367,9 +349,9 @@ async fn rehearsal_marks_both_organization_and_compatible_registries_private() -
                 output: output.clone(),
             })
             .await?;
-        assert!(sealed.private);
-        assert_eq!(sealed.registry.repository.as_deref(), repository);
-        assert!(sealed.artifacts.docs.is_none());
+        ensure!(sealed.private);
+        ensure!(sealed.registry.repository.as_deref() == repository);
+        ensure!(sealed.artifacts.docs.is_none());
         Candidate::verify(&output)?;
     }
     Ok(())

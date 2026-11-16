@@ -130,7 +130,7 @@ fn history_contains_only_full_ids_of_head_and_its_ancestors() {
         "f".repeat(40),
         "f".repeat(64),
         first.to_ascii_uppercase(),
-        first[..7].to_owned(),
+        first.chars().take(7).collect(),
         "HEAD".to_owned(),
         "HEAD~1".to_owned(),
         "side".to_owned(),

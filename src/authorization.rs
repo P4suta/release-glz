@@ -450,12 +450,13 @@ fn validate_github_claims(
             "GitHub OIDC repository does not match the sealed Candidate"
         );
     }
-    if claims.environment.as_deref() != Some(expected.environment.as_str()) {
-        refuse!(
+    let environment = match claims.environment {
+        Some(environment) if environment == expected.environment => environment,
+        _ => refuse!(
             OidcClaimsMismatch,
             "GitHub OIDC environment does not match the sealed Candidate"
-        );
-    }
+        ),
+    };
     let expected_subject = format!(
         "repo:{}:environment:{}",
         expected.repository, expected.environment
@@ -535,7 +536,7 @@ fn validate_github_claims(
 
     Ok(VerifiedGithubOidc {
         repository: claims.repository,
-        environment: claims.environment.expect("validated environment"),
+        environment,
         workflow_ref: claims.workflow_ref,
         git_ref: claims.git_ref,
         source_sha: claims.source_sha,
@@ -953,7 +954,7 @@ mod tests {
                     keys.keys[0].exponent = "%".into();
                     (token.clone(), "OIDC JWK exponent is not valid base64url")
                 }
-                _ => unreachable!(),
+                _ => panic!("unknown case {case}"),
             };
             assert_eq!(
                 token_refusal(&candidate, &keys),

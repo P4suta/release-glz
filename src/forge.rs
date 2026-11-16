@@ -2176,16 +2176,19 @@ fn format_marker(marker: &ManagedMarker) -> String {
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
-/// Byte offset of the one marker that ends a body, if the body has exactly one there.
+/// The text before the one marker that ends a body, and that marker, if the body has exactly one there.
 ///
 /// Trailing whitespace counts for nothing, so the core searches the trimmed body.
-fn trailing_marker_start(body: &str) -> Option<usize> {
-    release_glz_core::marker_start(body.trim_end().as_bytes())
+fn split_trailing_marker(body: &str) -> Option<(&str, &str)> {
+    let trimmed = body.trim_end();
+    trimmed.split_at_checked(release_glz_core::marker_start(trimmed.as_bytes())?)
 }
 
 fn parse_marker(body: &str) -> Option<ManagedMarker> {
-    let start = trailing_marker_start(body)? + MARKER_PREFIX.len();
-    let fields = body.trim_end()[start..].strip_suffix(MARKER_SUFFIX)?;
+    let (_, marker) = split_trailing_marker(body)?;
+    let fields = marker
+        .strip_prefix(MARKER_PREFIX)?
+        .strip_suffix(MARKER_SUFFIX)?;
     let values = release_glz_core::marker_values(fields.split_whitespace().map(str::as_bytes))?;
     let [package, branch, head, digest, version, intent] =
         values.map(|value| std::str::from_utf8(value).ok());
@@ -2222,13 +2225,13 @@ fn parse_candidate_digest(body: &str) -> Option<String> {
 }
 
 fn replace_managed_marker(body: &str, marker: &ManagedMarker) -> Result<String> {
-    let start = trailing_marker_start(body).ok_or_else(|| {
+    let (before, _) = split_trailing_marker(body).ok_or_else(|| {
         refused(
             RefusalReason::ReleasePrMarkerNotTrailing,
             "managed Release PR body does not end in exactly one marker",
         )
     })?;
-    let output = format!("{}{}", &body[..start], format_marker(marker));
+    let output = format!("{before}{}", format_marker(marker));
     if parse_marker(&output).as_ref() != Some(marker) {
         bail!("the updated Release PR body does not carry exactly its own marker");
     }
@@ -2241,8 +2244,7 @@ fn encode_segment(value: &str) -> String {
         if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
             output.push(char::from(byte));
         } else {
-            use std::fmt::Write;
-            write!(&mut output, "%{byte:02X}").expect("writing to String cannot fail");
+            output.push_str(&format!("%{byte:02X}"));
         }
     }
     output

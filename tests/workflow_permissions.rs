@@ -50,12 +50,12 @@ fn action_commands() -> BTreeSet<String> {
 fn always_set(value: &str) -> bool {
     let mut literal = String::new();
     let mut rest = value;
-    while let Some(start) = rest.find("${{") {
-        literal.push_str(&rest[..start]);
-        let Some(end) = rest[start..].find("}}") else {
+    while let Some((before, expression)) = rest.split_once("${{") {
+        literal.push_str(before);
+        let Some((_, after)) = expression.split_once("}}") else {
             return false;
         };
-        rest = &rest[start + end + 2..];
+        rest = after;
     }
     literal.push_str(rest);
     !literal.trim().is_empty()

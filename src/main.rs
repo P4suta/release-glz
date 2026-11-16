@@ -314,10 +314,7 @@ async fn main() {
                     }],
                     vec![],
                 );
-                println!(
-                    "{}",
-                    serde_json::to_string(&envelope).expect("usage envelope is serializable")
-                );
+                print_failure_envelope(&envelope);
             } else {
                 print_usage(&error);
             }
@@ -351,10 +348,7 @@ async fn main() {
                     }],
                     vec![],
                 );
-                println!(
-                    "{}",
-                    serde_json::to_string(&envelope).expect("error envelope is serializable")
-                );
+                print_failure_envelope(&envelope);
             } else {
                 eprintln!("{command}: failed");
                 eprintln!("  Error [{}]: {message}", error_code(&error));
@@ -364,12 +358,21 @@ async fn main() {
     }
 }
 
+/// Print a failure envelope, or report on stderr that its serialization failed, while the exit status still names the failure class.
+fn print_failure_envelope(envelope: &release_glz::model::CommandEnvelope<serde_json::Value>) {
+    match serde_json::to_string(envelope) {
+        Ok(json) => println!("{json}"),
+        Err(error) => eprintln!("failed to serialize the failure envelope: {error}"),
+    }
+}
+
 fn requested_json_output(arguments: &[std::ffi::OsString]) -> bool {
-    arguments.windows(2).any(|pair| {
-        pair[0] == std::ffi::OsStr::new("--output") && pair[1] == std::ffi::OsStr::new("json")
-    }) || arguments
-        .iter()
-        .any(|argument| argument == std::ffi::OsStr::new("--output=json"))
+    arguments
+        .windows(2)
+        .any(|pair| matches!(pair, [flag, value] if flag == "--output" && value == "json"))
+        || arguments
+            .iter()
+            .any(|argument| argument == std::ffi::OsStr::new("--output=json"))
 }
 
 fn requested_command(arguments: &[std::ffi::OsString]) -> String {
@@ -410,51 +413,48 @@ fn error_code(error: &anyhow::Error) -> &'static str {
 
 async fn run(cli: Cli) -> Result<i32> {
     let command_name = cli.command.name();
-    if let Command::Completion { shell } = &cli.command {
-        let source = completion_source(*shell);
-        match cli.output {
-            Output::Human => print!("{source}"),
-            Output::Json => print_result(
-                "completion",
-                &serde_json::json!({
-                    "schema": "completion/v1",
-                    "shell": shell_name(*shell),
-                    "source": source,
-                }),
-                cli.output,
-            )?,
-        }
-        return Ok(0);
-    }
-    if let Command::Init {
-        profile,
-        action_sha,
-        mode,
-    } = &cli.command
-    {
-        return run_init(
-            &cli.manifest_path,
-            cli.output,
-            profile,
-            action_sha.as_deref(),
-            *mode,
-        )
-        .await;
-    }
-    if let Command::Doctor {
-        online,
-        candidate_build,
-    } = &cli.command
-    {
-        return run_doctor(&cli.manifest_path, cli.output, *online, *candidate_build).await;
-    }
-
     let base_options = PlanOptions {
         manifest_path: cli.manifest_path.clone(),
         ..PlanOptions::default()
     };
 
     let plan = match cli.command {
+        Command::Completion { shell } => {
+            let source = completion_source(shell)?;
+            match cli.output {
+                Output::Human => print!("{source}"),
+                Output::Json => print_result(
+                    "completion",
+                    &serde_json::json!({
+                        "schema": "completion/v1",
+                        "shell": shell_name(shell),
+                        "source": source,
+                    }),
+                    cli.output,
+                )?,
+            }
+            return Ok(0);
+        }
+        Command::Init {
+            profile,
+            action_sha,
+            mode,
+        } => {
+            return run_init(
+                &cli.manifest_path,
+                cli.output,
+                &profile,
+                action_sha.as_deref(),
+                mode,
+            )
+            .await;
+        }
+        Command::Doctor {
+            online,
+            candidate_build,
+        } => {
+            return run_doctor(&cli.manifest_path, cli.output, online, candidate_build).await;
+        }
         Command::Plan { out } => {
             if let Some(out) = &out
                 && out.exists()
@@ -663,9 +663,6 @@ async fn run(cli: Cli) -> Result<i32> {
                 .await
                 .map_err(|error| default_failure_class(error, FailureClass::UsageOrConfig))?
         }
-        Command::Doctor { .. } | Command::Init { .. } => {
-            unreachable!("handled before planning")
-        }
         Command::SetVersion { version, dry_run } => {
             let options = PlanOptions {
                 version_override: Some(version.clone()),
@@ -725,7 +722,6 @@ async fn run(cli: Cli) -> Result<i32> {
             plan.prerelease = selected_channel;
             plan
         }
-        Command::Completion { .. } => unreachable!("handled before planning"),
     };
 
     print_plan(&plan, cli.output, command_name)?;
@@ -1243,10 +1239,10 @@ async fn credential_free_candidate_build(manifest: &Manifest) -> Result<()> {
     let detail = serde_json::from_slice::<serde_json::Value>(&output.stdout)
         .ok()
         .and_then(|envelope| {
-            envelope["diagnostics"].as_array().map(|diagnostics| {
+            envelope.get("diagnostics")?.as_array().map(|diagnostics| {
                 diagnostics
                     .iter()
-                    .filter_map(|diagnostic| diagnostic["message"].as_str())
+                    .filter_map(|diagnostic| diagnostic.get("message")?.as_str())
                     .collect::<Vec<_>>()
                     .join("; ")
             })
@@ -1661,7 +1657,7 @@ fn managed_workflow_is_current(
     Ok(!outcome.changed)
 }
 
-fn completion_source(shell: CompletionShell) -> String {
+fn completion_source(shell: CompletionShell) -> Result<String> {
     let mut command = Cli::command();
     let mut source = Vec::new();
     match shell {
@@ -1672,7 +1668,8 @@ fn completion_source(shell: CompletionShell) -> String {
             generate(shells::PowerShell, &mut command, "release-glz", &mut source)
         }
     }
-    String::from_utf8(source).expect("clap completion generators emit UTF-8")
+    String::from_utf8(source)
+        .context("the shell completion generator emitted text that is not UTF-8")
 }
 
 fn shell_name(shell: CompletionShell) -> &'static str {
@@ -1978,7 +1975,7 @@ mod tests {
             ),
         ] {
             assert_eq!(shell_name(shell), name);
-            assert!(completion_source(shell).contains(marker));
+            assert!(completion_source(shell).unwrap().contains(marker));
         }
 
         print_result(
