@@ -168,6 +168,32 @@ fn a_written_plan_reads_back_unchanged_and_is_never_replaced() {
     assert_eq!(std::fs::read(&path).unwrap(), bytes);
 }
 
+/// `plan --out` writes only a plan file that the reader accepts, so a plan larger than the reader's limit leaves no file.
+#[test]
+fn a_plan_larger_than_the_reader_accepts_is_never_written() {
+    let directory = tempfile::tempdir().unwrap();
+    let limit = usize::try_from(MAX_PLAN_BYTES).unwrap();
+    let titled = |length: usize| {
+        let mut titled = plan(None);
+        titled.changes[0].title = "x".repeat(length);
+        titled
+    };
+    let untitled = serde_json::to_vec_pretty(&titled(0)).unwrap().len();
+    let at_limit = titled(limit - untitled);
+    assert_eq!(serde_json::to_vec_pretty(&at_limit).unwrap().len(), limit);
+    let path = directory.path().join("at-limit.json");
+    handoff::write_new(&path, &at_limit).unwrap();
+    assert_eq!(
+        serde_json::to_value(handoff::read(&path).unwrap()).unwrap(),
+        serde_json::to_value(&at_limit).unwrap()
+    );
+
+    let path = directory.path().join("above-limit.json");
+    let error = handoff::write_new(&path, &titled(limit - untitled + 1)).unwrap_err();
+    assert_eq!(refusal(&error), &Refusal::TooLarge);
+    assert!(!path.exists(), "a refused plan left `{}`", path.display());
+}
+
 #[test]
 fn a_file_that_plan_out_could_not_have_written_is_refused_with_its_reason() {
     let history = History::new();

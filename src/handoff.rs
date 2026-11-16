@@ -25,7 +25,7 @@ pub const UNWRITTEN_SPELLING: &str = "it spells a value in a form that `plan --o
 /// Why a handed-off plan cannot describe the Release PR that this checkout would write.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Refusal {
-    /// The file is larger than [`MAX_PLAN_BYTES`].
+    /// The file, or the file that `plan --out` would write, is larger than [`MAX_PLAN_BYTES`].
     TooLarge,
     /// The file is not a `plan/v1` document, it carries a field the format lacks, or it spells a value in a form that `plan --out` never writes.
     NotAPlan(String),
@@ -77,15 +77,26 @@ impl fmt::Display for Refusal {
 impl std::error::Error for Refusal {}
 
 /// Write `plan` to a file that must not exist yet, so a handed-off plan is never replaced.
+///
+/// A plan whose file would be larger than [`read`] accepts is refused with [`Refusal::TooLarge`] before any file exists.
 pub fn write_new(path: &Path, plan: &ReleasePlan) -> Result<()> {
+    let bytes = serde_json::to_vec_pretty(plan)?;
+    if exceeds_limit(&bytes) {
+        return Err(Refusal::TooLarge.into());
+    }
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(path)
         .with_context(|| format!("failed to create plan `{}`", path.display()))?;
-    file.write_all(&serde_json::to_vec_pretty(plan)?)?;
+    file.write_all(&bytes)?;
     file.sync_all()?;
     Ok(())
+}
+
+/// Whether a plan file of `bytes` is larger than [`MAX_PLAN_BYTES`].
+fn exceeds_limit(bytes: &[u8]) -> bool {
+    u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_PLAN_BYTES
 }
 
 /// Read a plan file that `plan --out` wrote, refusing anything that `plan --out` could not have written.
@@ -99,7 +110,7 @@ pub fn read(path: &Path) -> Result<ReleasePlan> {
 
 /// Read the bytes of a plan file that `plan --out` wrote, refusing anything that `plan --out` could not have written.
 pub fn parse(bytes: &[u8]) -> Result<ReleasePlan> {
-    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_PLAN_BYTES {
+    if exceeds_limit(bytes) {
         return Err(Refusal::TooLarge.into());
     }
     let plan: ReleasePlan =

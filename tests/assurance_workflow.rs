@@ -281,33 +281,293 @@ fn declared_function(line: &str) -> Option<&str> {
     (!name.is_empty()).then_some(name)
 }
 
-/// The `file::function` of each call in `sources` that deserializes, outside comments and `mod tests`.
-///
-/// A call outside every function, such as an import, counts as `file::<module>`.
-fn deserializing_functions(sources: &BTreeMap<String, String>) -> BTreeSet<String> {
-    let mut found = BTreeSet::new();
-    for (file, source) in sources {
-        let mut function = "<module>";
-        let mut in_tests = false;
-        for line in source.lines() {
-            if in_tests {
-                in_tests = line != "}";
+/// The modules whose `from_` functions deserialize.
+const DESERIALIZING_MODULES: [&str; 3] = ["serde_json", "serde_norway", "toml_edit::de"];
+
+/// The type whose `parse` deserializes a TOML document.
+const DOCUMENT: &str = "toml_edit::DocumentMut";
+
+/// The lines of `source` outside `mod tests`.
+fn code_lines(source: &str) -> Vec<&str> {
+    let mut lines = Vec::new();
+    let mut tests_end: Option<String> = None;
+    for line in source.lines() {
+        if let Some(end) = &tests_end {
+            if line == end {
+                tests_end = None;
+            }
+            continue;
+        }
+        if line.trim() == "mod tests {" {
+            let indent = line.len() - line.trim_start().len();
+            tests_end = Some(format!("{}}}", " ".repeat(indent)));
+            continue;
+        }
+        lines.push(line);
+    }
+    lines
+}
+
+/// Whether `code` starts a `use` item.
+fn starts_use(code: &str) -> bool {
+    ["use ", "pub use ", "pub(crate) use "]
+        .iter()
+        .any(|start| code.starts_with(start))
+}
+
+/// The items of a brace group, split at its outermost commas.
+fn group_items(group: &str) -> Vec<String> {
+    let mut items = vec![String::new()];
+    let mut depth = 0_usize;
+    for character in group.chars() {
+        match character {
+            '{' => depth += 1,
+            '}' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                items.push(String::new());
                 continue;
             }
-            if line.trim() == "mod tests {" {
-                in_tests = true;
-                continue;
-            }
-            if let Some(name) = declared_function(line) {
-                function = name;
-            }
-            let code = line.trim_start();
-            if !code.starts_with("//") && DESERIALIZERS.iter().any(|call| code.contains(call)) {
-                found.insert(format!("{file}::{function}"));
-            }
+            _ => {}
+        }
+        if let Some(item) = items.last_mut() {
+            item.push(character);
         }
     }
-    found
+    items
+}
+
+fn joined(prefix: &str, path: &str) -> String {
+    match (prefix.is_empty(), path.is_empty()) {
+        (true, _) => path.to_owned(),
+        (false, true) => prefix.to_owned(),
+        (false, false) => format!("{prefix}::{path}"),
+    }
+}
+
+/// Each path that the `use` tree `tree` imports below `prefix`, with the name that it takes in the file.
+fn imports(prefix: &str, tree: &str) -> Vec<(String, String)> {
+    let tree = tree.trim();
+    if let Some((head, group)) = tree.split_once('{') {
+        let base = joined(prefix, head.trim().trim_end_matches("::"));
+        let group = group.trim_end();
+        let group = group.strip_suffix('}').unwrap_or(group);
+        return group_items(group)
+            .iter()
+            .flat_map(|item| imports(&base, item))
+            .collect();
+    }
+    if tree.is_empty() {
+        return Vec::new();
+    }
+    let (path, alias) = match tree.split_once(" as ") {
+        Some((path, alias)) => (path.trim(), Some(alias.trim())),
+        None => (tree, None),
+    };
+    let path = if path == "self" {
+        prefix.to_owned()
+    } else {
+        joined(prefix, path)
+    };
+    let name = alias
+        .or_else(|| path.rsplit("::").next())
+        .unwrap_or_default()
+        .to_owned();
+    vec![(path, name)]
+}
+
+/// A spelling of a deserializer call, which a name imported by a `use` item spells only where no path or method call comes before it.
+#[derive(Debug)]
+struct Spelling {
+    text: String,
+    bounded: bool,
+}
+
+/// Every spelling of a deserializer call in `lines`: each qualified path, and each name that a `use` item gives a deserializer.
+fn spellings(lines: &[&str]) -> Vec<Spelling> {
+    let mut spellings: Vec<_> = DESERIALIZERS
+        .iter()
+        .map(|text| Spelling {
+            text: (*text).to_owned(),
+            bounded: false,
+        })
+        .collect();
+    let mut item: Option<String> = None;
+    for line in lines {
+        let code = line.trim();
+        let current = match item.take() {
+            Some(open) => format!("{open} {code}"),
+            None if starts_use(code) => code.to_owned(),
+            None => continue,
+        };
+        if !current.contains(';') {
+            item = Some(current);
+            continue;
+        }
+        let tree = current
+            .split_once("use ")
+            .map_or(current.as_str(), |(_, tree)| tree);
+        let tree = tree.split(';').next().unwrap_or_default();
+        for (path, name) in imports("", tree) {
+            let imported = if DESERIALIZING_MODULES.contains(&path.as_str()) {
+                vec![format!("{name}::from_")]
+            } else if path == DOCUMENT {
+                vec![format!("{name}>()")]
+            } else if path == "toml_edit" {
+                vec![
+                    format!("{name}::de::from_"),
+                    format!("{name}::DocumentMut>()"),
+                ]
+            } else if path.rsplit_once("::").is_some_and(|(module, function)| {
+                DESERIALIZING_MODULES.contains(&module) && function.starts_with("from_")
+            }) {
+                vec![format!("{name}(")]
+            } else {
+                Vec::new()
+            };
+            spellings.extend(imported.into_iter().map(|text| Spelling {
+                text,
+                bounded: true,
+            }));
+        }
+    }
+    spellings
+}
+
+/// Whether `code` calls a deserializer that one of `spellings` spells.
+fn calls_deserializer(code: &str, spellings: &[Spelling]) -> bool {
+    spellings.iter().any(|spelling| {
+        code.match_indices(&spelling.text).any(|(start, _)| {
+            !spelling.bounded
+                || code
+                    .get(..start)
+                    .and_then(|before| before.chars().next_back())
+                    .is_none_or(|before| {
+                        !(before.is_ascii_alphanumeric() || matches!(before, '_' | ':' | '.'))
+                    })
+        })
+    })
+}
+
+/// The part of `text` after the generic parameters that it starts with, if it starts with any.
+fn after_generics(text: &str) -> &str {
+    if !text.starts_with('<') {
+        return text;
+    }
+    let mut depth = 0_usize;
+    let mut previous = ' ';
+    for (index, character) in text.char_indices() {
+        match character {
+            '<' => depth += 1,
+            '>' if previous != '-' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return text.get(index + 1..).unwrap_or_default();
+                }
+            }
+            _ => {}
+        }
+        previous = character;
+    }
+    ""
+}
+
+/// The name of the type or module whose block `code` opens, if it opens an `impl` or a `mod` block.
+fn opened_scope(code: &str) -> Option<String> {
+    let header = code.strip_prefix("unsafe ").unwrap_or(code);
+    if let Some(rest) = header.strip_prefix("impl")
+        && (rest.starts_with('<') || rest.starts_with(' '))
+    {
+        let rest = after_generics(rest.trim_start());
+        let rest = rest.split(" where").next().unwrap_or_default();
+        let rest = rest.trim_end_matches('{').trim();
+        let self_type = rest
+            .rsplit_once(" for ")
+            .map_or(rest, |(_, type_name)| type_name);
+        let name = self_type
+            .split('<')
+            .next()
+            .and_then(|path| path.rsplit("::").next())
+            .unwrap_or_default()
+            .trim();
+        return (!name.is_empty()).then(|| name.to_owned());
+    }
+    let module = ["mod ", "pub mod ", "pub(crate) mod "]
+        .iter()
+        .find_map(|start| code.strip_prefix(start))?;
+    let name = module.strip_suffix('{')?.trim();
+    (!name.is_empty()).then(|| name.to_owned())
+}
+
+/// The functions that a source declares and the functions in it that deserialize, each named by the `mod` and `impl` blocks around it.
+#[derive(Debug, Default)]
+struct Scan {
+    declared: BTreeSet<String>,
+    deserializing: BTreeSet<String>,
+}
+
+/// The functions that `source` declares and the ones that deserialize, outside comments, `use` items, and `mod tests`.
+///
+/// A call outside every function counts as `<module>`.
+fn scan(source: &str) -> Scan {
+    let lines = code_lines(source);
+    let spellings = spellings(&lines);
+    let mut scan = Scan::default();
+    let mut scopes: Vec<(usize, String)> = Vec::new();
+    let mut pending: Option<(usize, String)> = None;
+    let mut function = "<module>".to_owned();
+    let mut in_use = false;
+    for line in lines {
+        let indent = line.len() - line.trim_start().len();
+        let code = line.trim();
+        if in_use || starts_use(code) {
+            in_use = !code.contains(';');
+            continue;
+        }
+        if code.starts_with("//") {
+            continue;
+        }
+        if code.starts_with('}') && scopes.last().is_some_and(|(open, _)| *open == indent) {
+            scopes.pop();
+        }
+        if let Some(name) = opened_scope(code) {
+            if code.ends_with('{') {
+                scopes.push((indent, name));
+            } else {
+                pending = Some((indent, name));
+            }
+            continue;
+        }
+        if code == "{" && pending.as_ref().is_some_and(|(open, _)| *open == indent) {
+            scopes.extend(pending.take());
+            continue;
+        }
+        if let Some(name) = declared_function(line) {
+            function = scopes
+                .iter()
+                .map(|(_, scope)| scope.as_str())
+                .chain([name])
+                .collect::<Vec<_>>()
+                .join("::");
+            scan.declared.insert(function.clone());
+        }
+        if calls_deserializer(code, &spellings) {
+            scan.deserializing.insert(function.clone());
+        }
+    }
+    scan
+}
+
+/// The `file::function` of each function in `sources` that deserializes, where `function` names the `mod` and `impl` blocks around it.
+fn deserializing_functions(sources: &BTreeMap<String, String>) -> BTreeSet<String> {
+    sources
+        .iter()
+        .flat_map(|(file, source)| {
+            scan(source)
+                .deserializing
+                .into_iter()
+                .map(move |function| format!("{file}::{function}"))
+        })
+        .collect()
 }
 
 /// What the parser inventory gets wrong about the fuzz `targets` and the `sources` of `src`, in sorted order.
@@ -344,12 +604,9 @@ fn inventory_findings(
         ));
     }
     for entry in fuzzed.iter().copied().chain(inventory.exempt.keys()) {
-        let declared = entry.rsplit_once("::").is_some_and(|(file, function)| {
-            read(file).is_some_and(|source| {
-                source
-                    .lines()
-                    .any(|line| declared_function(line) == Some(function))
-            })
+        let declared = entry.split_once(".rs::").is_some_and(|(file, function)| {
+            read(&format!("{file}.rs"))
+                .is_some_and(|source| scan(&source).declared.contains(function))
         });
         if !declared {
             findings.push(format!("`{entry}` names no function in its file"));
@@ -528,11 +785,89 @@ fn the_parser_inventory_refuses_each_gap_between_targets_parsers_and_seeds() {
         "[package.metadata.parsers.fuzzed] names `gone`, which isn't a fuzz target".to_owned(),
         "`src/gone.rs::parse_gone` names no function in its file".to_owned(),
         "`src/stale.rs::old` names no function in its file".to_owned(),
-        unfuzzed("src/cache.rs::<module>"),
         unfuzzed("src/notes.rs::parse_label"),
         "the exemption of `src/stale.rs::old` matches no deserializing call".to_owned(),
         "the exemption of `src/stale.rs::old` gives no reason".to_owned(),
         "`src/notes.rs::parse_note` is both fuzzed and exempt".to_owned(),
+    ];
+    expected.sort();
+    assert_eq!(findings, expected);
+}
+
+/// A deserializer called through a name that a `use` item gives it is still a call, and a method is named with its type, so two `parse` methods in one file stay apart.
+#[test]
+fn the_parser_inventory_follows_imported_names_and_tells_methods_of_two_types_apart() {
+    let inventory = ParserInventory {
+        fuzzed: BTreeMap::from([(
+            "candidate".to_owned(),
+            vec![
+                "src/candidate.rs::CandidateManifest::parse".to_owned(),
+                "src/candidate.rs::parse".to_owned(),
+            ],
+        )]),
+        exempt: BTreeMap::new(),
+    };
+    let sources = BTreeMap::from([(
+        "src/candidate.rs".to_owned(),
+        [
+            "use serde_json as json;",
+            "use serde_json::{Value, from_str as parse_json};",
+            "use toml_edit::de as toml;",
+            "use toml_edit::{",
+            "    DocumentMut as Document,",
+            "    Item,",
+            "};",
+            "",
+            "impl CandidateManifest {",
+            "    pub fn parse(bytes: &[u8]) -> Result<Self> {",
+            "        Ok(json::from_slice(bytes)?)",
+            "    }",
+            "}",
+            "",
+            "impl<'a> Read for OtherInput<'a>",
+            "where",
+            "    Self: Sized,",
+            "{",
+            "    fn parse(text: &str) -> Result<Self> {",
+            "        Ok(parse_json(text)?)",
+            "    }",
+            "}",
+            "",
+            "mod notes {",
+            "    pub(crate) fn note(text: &str) -> Result<Note> {",
+            "        Ok(toml::from_str(text)?)",
+            "    }",
+            "}",
+            "",
+            "fn manifest(text: &str) -> Result<Item> {",
+            "    let document = text.parse::<Document>()?;",
+            "    Ok(document.as_item().clone())",
+            "}",
+            "",
+            "fn unrelated(text: &str) -> Version {",
+            "    Version::from_str(text).unwrap_or(fallback_json::from_slice(text))",
+            "}",
+        ]
+        .join("\n"),
+    )]);
+    let targets = BTreeSet::from(["candidate".to_owned()]);
+    let findings = inventory_findings(
+        &inventory,
+        &targets,
+        &sources,
+        |file| sources.get(file).cloned(),
+        |_| true,
+    );
+    let unfuzzed = |site: &str| {
+        format!(
+            "`{site}` deserializes bytes without a fuzz target: add a target whose invariants reach it to [package.metadata.parsers.fuzzed], or give the reason it needs none in [package.metadata.parsers.exempt]"
+        )
+    };
+    let mut expected = vec![
+        "`src/candidate.rs::parse` names no function in its file".to_owned(),
+        unfuzzed("src/candidate.rs::OtherInput::parse"),
+        unfuzzed("src/candidate.rs::notes::note"),
+        unfuzzed("src/candidate.rs::manifest"),
     ];
     expected.sort();
     assert_eq!(findings, expected);

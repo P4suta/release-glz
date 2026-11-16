@@ -1,10 +1,12 @@
 //! Properties of the readers of registry and GitHub API responses.
 //!
 //! An accepted response keeps every value that an independent reading of its JSON finds, and its rendering reads back as the same value.
+//! The readers accept members they don't know, so the independent reading skips every member that they skip, even one holding a number beyond `f64`.
 //! A registry refusal names the typed reason of its response, and a GitHub refusal is one of the two documented errors of a page.
 //! An input is read as a registry package response, a registry release response, a page of GitHub Releases, and a page of GitHub pull requests.
 
 use std::cmp::Ordering;
+use std::fmt;
 
 use release_glz::failure::{RefusalReason, refusal_reason};
 use release_glz::forge::{
@@ -14,7 +16,164 @@ use release_glz::registry::{
     HexRelease, PackageState, RegistryRelease, parse_package_response, parse_release_response,
 };
 use semver::Version;
+use serde::Deserialize;
+use serde::de::{DeserializeSeed, Deserializer, Error, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde_json::{Map, Value, json};
+
+/// What the independent reading keeps of a JSON value.
+#[derive(Clone, Copy, Debug)]
+enum Shape {
+    /// The whole value, which the typed reader reads whole too.
+    Whole,
+    /// The named members of an object, each with its own shape, which skips every other member as the typed reader does.
+    ///
+    /// Serde also reads a struct from a list of its members by position, which this reading keeps as an empty list that no comparison reads.
+    Object(&'static [(&'static str, Shape)]),
+    /// Each item of a list.
+    List(&'static Shape),
+}
+
+const WHOLE: Shape = Shape::Whole;
+const REGISTRY_ENTRY: Shape = Shape::Object(&[("version", WHOLE), ("has_docs", WHOLE)]);
+const PACKAGE: Shape = Shape::Object(&[
+    ("releases", Shape::List(&REGISTRY_ENTRY)),
+    ("retirements", WHOLE),
+]);
+const RELEASE: Shape = Shape::Object(&[
+    ("version", WHOLE),
+    ("checksum", WHOLE),
+    ("has_docs", WHOLE),
+    ("retirement", WHOLE),
+]);
+const ASSET: Shape = Shape::Object(&[
+    ("id", WHOLE),
+    ("name", WHOLE),
+    ("state", WHOLE),
+    ("content_type", WHOLE),
+    ("size", WHOLE),
+    ("digest", WHOLE),
+]);
+const GITHUB_RELEASE: Shape = Shape::Object(&[
+    ("id", WHOLE),
+    ("html_url", WHOLE),
+    ("tag_name", WHOLE),
+    ("target_commitish", WHOLE),
+    ("body", WHOLE),
+    ("draft", WHOLE),
+    ("upload_url", WHOLE),
+    ("assets", Shape::List(&ASSET)),
+]);
+const REPOSITORY: Shape = Shape::Object(&[("full_name", WHOLE), ("default_branch", WHOLE)]);
+const USER: Shape = Shape::Object(&[("login", WHOLE)]);
+const LABEL: Shape = Shape::Object(&[("name", WHOLE)]);
+const PULL_REQUEST: Shape = Shape::Object(&[
+    ("number", WHOLE),
+    ("title", WHOLE),
+    ("body", WHOLE),
+    ("html_url", WHOLE),
+    ("merge_commit_sha", WHOLE),
+    ("merged_at", WHOLE),
+    ("user", USER),
+    ("labels", Shape::List(&LABEL)),
+    (
+        "head",
+        Shape::Object(&[("ref", WHOLE), ("sha", WHOLE), ("repo", REPOSITORY)]),
+    ),
+    (
+        "base",
+        Shape::Object(&[("ref", WHOLE), ("repo", REPOSITORY)]),
+    ),
+]);
+const NOTHING: Shape = Shape::Object(&[]);
+
+impl<'de> DeserializeSeed<'de> for Shape {
+    type Value = Value;
+
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<Value, D::Error> {
+        match self {
+            Self::Whole => Value::deserialize(deserializer),
+            Self::Object(_) | Self::List(_) => deserializer.deserialize_any(self),
+        }
+    }
+}
+
+impl<'de> Visitor<'de> for Shape {
+    type Value = Value;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "a JSON value of shape {self:?}")
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Value, A::Error> {
+        let mut kept = Map::new();
+        while let Some(name) = map.next_key::<String>()? {
+            let member = match self {
+                Self::Object(members) => members.iter().find(|(member, _)| *member == name),
+                Self::Whole | Self::List(_) => None,
+            };
+            match member {
+                Some((_, shape)) => {
+                    let value = map.next_value_seed(*shape)?;
+                    kept.insert(name, value);
+                }
+                None => {
+                    map.next_value::<IgnoredAny>()?;
+                }
+            }
+        }
+        Ok(Value::Object(kept))
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Value, A::Error> {
+        let mut items = Vec::new();
+        if let Self::List(item) = self {
+            while let Some(value) = seq.next_element_seed(*item)? {
+                items.push(value);
+            }
+        } else {
+            while seq.next_element::<IgnoredAny>()?.is_some() {}
+        }
+        Ok(Value::Array(items))
+    }
+
+    fn visit_bool<E: Error>(self, value: bool) -> Result<Value, E> {
+        Ok(Value::Bool(value))
+    }
+
+    fn visit_i64<E: Error>(self, value: i64) -> Result<Value, E> {
+        Ok(Value::from(value))
+    }
+
+    fn visit_u64<E: Error>(self, value: u64) -> Result<Value, E> {
+        Ok(Value::from(value))
+    }
+
+    fn visit_f64<E: Error>(self, value: f64) -> Result<Value, E> {
+        Ok(Value::from(value))
+    }
+
+    fn visit_str<E: Error>(self, value: &str) -> Result<Value, E> {
+        Ok(Value::from(value))
+    }
+
+    fn visit_unit<E: Error>(self) -> Result<Value, E> {
+        Ok(Value::Null)
+    }
+}
+
+/// The members of `data` that `shape` keeps, or `None` when `data` isn't JSON.
+fn projected(data: &[u8], shape: Shape) -> Option<Value> {
+    let mut deserializer = serde_json::Deserializer::from_slice(data);
+    let value = shape.deserialize(&mut deserializer).ok()?;
+    deserializer.end().ok()?;
+    Some(value)
+}
+
+/// The members of an accepted response that its typed reader reads, which an independent reader checks the accepted value against.
+fn read(data: &[u8], shape: Shape) -> Value {
+    projected(data, shape)
+        .expect("an accepted response reads with the members that its reader reads")
+}
 
 /// The version that a release response is observed for when the input names no valid one.
 const FALLBACK_VERSION: Version = Version::new(1, 2, 3);
@@ -56,11 +215,6 @@ fn assert_refused(error: &anyhow::Error, reason: RefusalReason) {
     assert_eq!(refusal_reason(error), Some(reason), "{error:#}");
 }
 
-/// The JSON value of an accepted response, which an independent reader checks the accepted value against.
-fn json_of(data: &[u8]) -> Value {
-    serde_json::from_slice(data).expect("an accepted response is JSON")
-}
-
 fn package(data: &[u8]) -> bool {
     let state = match parse_package_response(data) {
         Ok(state) => state,
@@ -69,7 +223,7 @@ fn package(data: &[u8]) -> bool {
             return false;
         }
     };
-    let value = json_of(data);
+    let value = read(data, PACKAGE);
     if let Some(members) = object(&value) {
         let listed = list(members, "releases");
         assert_eq!(state.releases.len(), listed.len());
@@ -159,8 +313,7 @@ fn render_package(state: &PackageState) -> Vec<u8> {
 
 /// The valid version that an object input names, which a release response is observed for so that a valid input can be accepted.
 fn named_version(data: &[u8]) -> Option<Version> {
-    serde_json::from_slice::<Value>(data)
-        .ok()?
+    projected(data, RELEASE)?
         .as_object()?
         .get("version")?
         .as_str()?
@@ -193,7 +346,7 @@ fn release(data: &[u8]) -> bool {
         .outer_checksum
         .as_ref()
         .expect("an accepted release names its checksum");
-    if let Some(members) = object(&json_of(data)) {
+    if let Some(members) = object(&read(data, RELEASE)) {
         assert_eq!(
             checksum.as_str(),
             text_or(members, "checksum", "").to_ascii_lowercase()
@@ -231,8 +384,8 @@ fn assert_page_refused(error: &anyhow::Error, data: &[u8], oversized: &str) {
     assert_eq!(refusal_reason(error), None, "{error:#}");
     let message = error.to_string();
     if message == oversized {
-        let entries =
-            serde_json::from_slice::<Vec<Value>>(data).expect("an oversized page is a list");
+        let page = read(data, Shape::List(&NOTHING));
+        let entries = page.as_array().expect("an oversized page is a list");
         assert!(entries.len() > PAGE_SIZE);
     } else {
         assert_eq!(message, format!("invalid GitHub response from {PAGE_URL}"));
@@ -241,7 +394,7 @@ fn assert_page_refused(error: &anyhow::Error, data: &[u8], oversized: &str) {
 
 /// The members of a JSON object, which an independent reader compares with an accepted value.
 ///
-/// Serde also reads a struct from an array by position, and such an entry is checked only by its round trip.
+/// Serde also reads a struct from a list by position, and such an entry is checked only by its round trip.
 fn object(value: &Value) -> Option<&Map<String, Value>> {
     value.as_object()
 }
@@ -293,9 +446,10 @@ fn github_releases(data: &[u8]) -> bool {
         }
     };
     assert!(releases.len() <= PAGE_SIZE);
-    let entries: Vec<Value> = serde_json::from_slice(data).expect("an accepted page is a list");
+    let page = read(data, Shape::List(&GITHUB_RELEASE));
+    let entries = page.as_array().expect("an accepted page is a list");
     assert_eq!(releases.len(), entries.len());
-    for (release, entry) in releases.iter().zip(&entries) {
+    for (release, entry) in releases.iter().zip(entries) {
         if let Some(expected) = object(entry).and_then(expected_release) {
             assert_eq!(release, &expected);
         }
@@ -399,10 +553,11 @@ fn pull_requests(data: &[u8]) -> bool {
         }
     };
     assert!(pulls.len() <= PAGE_SIZE);
-    let entries: Vec<Value> = serde_json::from_slice(data).expect("an accepted page is a list");
+    let page = read(data, Shape::List(&PULL_REQUEST));
+    let entries = page.as_array().expect("an accepted page is a list");
     assert_eq!(pulls.len(), entries.len());
     let rendered: Vec<_> = pulls.iter().map(render_pull_request).collect();
-    for (rendered, entry) in rendered.iter().zip(&entries) {
+    for (rendered, entry) in rendered.iter().zip(entries) {
         if let Some(expected) = object(entry).and_then(expected_pull_request) {
             assert_eq!(rendered, &expected);
         }

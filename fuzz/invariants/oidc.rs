@@ -78,7 +78,9 @@ const SOURCE_SHA: &str = "0123456789abcdef0123456789abcdef01234567";
 const RUN_ID: &str = "4242";
 const CLOCK_SKEW_SECONDS: i64 = 30;
 const MAX_COMPACT_JWT_BYTES: usize = 32 * 1024;
-const MAX_JWT_PART_BYTES: usize = 16 * 1024;
+
+/// Bytes of base64url that one part of a compact token may hold.
+pub const MAX_JWT_PART_BYTES: usize = 16 * 1024;
 
 /// A reader that accepted an input.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -370,16 +372,22 @@ fn audience_names_release_glz(audience: &OidcAudience) -> bool {
     }
 }
 
+/// Whether the verifier refuses a token of `payload` for its form alone: an empty payload, or a part or token beyond its size limit.
+fn unsignable(payload: &[u8], token: &str) -> bool {
+    payload.is_empty()
+        || URL_SAFE_NO_PAD.encode(payload).len() > MAX_JWT_PART_BYTES
+        || token.len() > MAX_COMPACT_JWT_BYTES
+}
+
 fn claims(data: &[u8]) -> bool {
     let token = signed_token(data);
-    let unsignable = data.is_empty()
-        || URL_SAFE_NO_PAD.encode(data).len() > MAX_JWT_PART_BYTES
-        || token.len() > MAX_COMPACT_JWT_BYTES;
     let verified = match verify(&token, &rfc_key_set()) {
         Ok(verified) => verified,
         Err(error) => {
             match refusal_reason(&error) {
-                Some(RefusalReason::OidcTokenUnverified) => assert!(unsignable, "{error:#}"),
+                Some(RefusalReason::OidcTokenUnverified) => {
+                    assert!(unsignable(data, &token), "{error:#}");
+                }
                 Some(reason) => assert!(
                     matches!(
                         reason,
@@ -398,11 +406,19 @@ fn claims(data: &[u8]) -> bool {
     let claims: GithubOidcClaims =
         serde_json::from_slice(data).expect("verified claims are the claims JSON");
     assert_canonical(&claims, &verified);
-    let resigned = signed_token(&serde_json::to_vec(&claims).expect("claims serialize"));
-    assert_eq!(
-        verify(&resigned, &rfc_key_set()).expect("re-signed claims verify"),
-        verified
-    );
+    let serialized = serde_json::to_vec(&claims).expect("claims serialize");
+    let resigned = signed_token(&serialized);
+    let reverified = verify(&resigned, &rfc_key_set());
+    if unsignable(&serialized, &resigned) {
+        let error = reverified.expect_err("a token beyond its size limit is refused");
+        assert_eq!(
+            refusal_reason(&error),
+            Some(RefusalReason::OidcTokenUnverified),
+            "{error:#}"
+        );
+    } else {
+        assert_eq!(reverified.expect("re-signed claims verify"), verified);
+    }
     true
 }
 

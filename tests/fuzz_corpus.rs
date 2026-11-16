@@ -293,6 +293,19 @@ fn overflowing_sidecars_seed() -> Vec<u8> {
     release_glz::canonical::canonical_json_bytes(&manifest).unwrap()
 }
 
+/// Valid claims whose base64 fills a token part exactly, so the claims that the verifier serializes again, with `nbf` as null, no longer fit in one.
+fn claims_filling_a_token_part() -> Vec<u8> {
+    let filled = oidc::MAX_JWT_PART_BYTES / 4 * 3;
+    let padded = |padding: usize| {
+        let mut claims = oidc::valid_claims();
+        claims["aud"] = serde_json::json!([claims["aud"].clone(), "a".repeat(padding)]);
+        claims.to_string().into_bytes()
+    };
+    let claims = padded(filled - padded(0).len());
+    assert_eq!(claims.len(), filled);
+    claims
+}
+
 /// Seeds that hold NUL bytes, a signature, or a canonical spelling, which this suite builds so that a reader can review their builder.
 ///
 /// Each new target also starts from the empty input, which libFuzzer runs first.
@@ -314,6 +327,11 @@ fn built_seeds() -> Vec<(&'static str, &'static str, Vec<u8>)> {
         "candidate",
         "sidecar-sizes-overflow",
         overflowing_sidecars_seed(),
+    ));
+    seeds.push((
+        "oidc",
+        "claims-filling-a-token-part",
+        claims_filling_a_token_part(),
     ));
     seeds.extend([
         (

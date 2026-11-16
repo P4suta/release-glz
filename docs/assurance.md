@@ -384,7 +384,8 @@ That fold rests on `icu_normalizer` and the tests, and it approximates the defau
 No proof covers these parsers.
 Fuzzing checks them, and every pull request replays the committed corpus of each fuzz target.
 `fuzz/Cargo.toml` names the functions that each target reaches, and a test refuses a function in `src` that deserializes bytes without a target or a stated reason that it needs none.
-That test finds a parser by its call to a deserializer, so it can't see a parser written by hand, which the manifest names directly.
+That test finds a parser by its call to a deserializer, also through a name that a `use` item gives one, and it names each function with the `mod` and `impl` blocks around it.
+It can't see a parser written by hand, which the manifest names directly.
 
 - Fuzz: `api_interface`
 - Fuzz: `api_responses`
@@ -401,6 +402,7 @@ That test finds a parser by its call to a deserializer, so it can't see a parser
 - Test: `tests/fuzz_corpus.rs::every_fuzz_target_runs_shared_invariants_that_this_suite_replays`
 - Test: `tests/assurance_workflow.rs::every_untrusted_parser_has_a_fuzz_target_with_invariants_and_seeds`
 - Test: `tests/assurance_workflow.rs::the_parser_inventory_refuses_each_gap_between_targets_parsers_and_seeds`
+- Test: `tests/assurance_workflow.rs::the_parser_inventory_follows_imported_names_and_tells_methods_of_two_types_apart`
 - Test: `tests/plan_handoff.rs::a_file_that_plan_out_could_not_have_written_is_refused_with_its_reason`
 - Test: `tests/hooks_contract.rs::hook_output_protocol_is_strict_at_every_field`
 

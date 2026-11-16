@@ -1,6 +1,6 @@
 //! Properties of the reader of a plan file that one job hands to another.
 //!
-//! An accepted file names schema `plan/v1` and no Release PR, and the bytes that `plan --out` writes for its plan read back as the same plan.
+//! An accepted file names schema `plan/v1` and no Release PR, and the bytes that `plan --out` writes for its plan read back as the same plan, unless they're larger than the reader accepts, which `plan --out` refuses to write.
 //! Each member of an accepted file is a member of that rendering, so the file differs from what `plan --out` writes only by members that take their default.
 //! A refused file carries the handoff refusal that names what it got wrong, and reading bytes never refuses for a reason that needs a checkout.
 
@@ -30,11 +30,17 @@ pub fn check(data: &[u8]) -> Vec<Reached> {
     assert_eq!(plan.release_pr_head, None);
     let rendered = serde_json::to_value(&plan).expect("a plan serializes");
     let written = serde_json::to_vec_pretty(&plan).expect("a plan serializes");
-    let reread = parse(&written).expect("the plan file that `plan --out` writes reads back");
-    assert_eq!(
-        serde_json::to_value(&reread).expect("a plan serializes"),
-        rendered
-    );
+    match parse(&written) {
+        Ok(reread) => assert_eq!(
+            serde_json::to_value(&reread).expect("a plan serializes"),
+            rendered
+        ),
+        Err(error) => assert_eq!(
+            error.downcast_ref::<Refusal>(),
+            Some(&Refusal::TooLarge),
+            "`plan --out` refuses only a plan larger than the reader accepts: {error:#}"
+        ),
+    }
     let file: Value = serde_json::from_slice(data).expect("an accepted plan file is JSON");
     assert!(
         is_within(&file, &rendered),
