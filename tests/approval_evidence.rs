@@ -277,7 +277,6 @@ fn manifest() -> CandidateManifest {
             docs_url: "https://repo.hex.pm/docs".into(),
             credential_env: "HEXPM_API_KEY".into(),
             auth: AuthKind::HexToken,
-            allow_http_loopback: false,
         },
         private: false,
         github_repository: REPOSITORY.into(),

@@ -1,6 +1,6 @@
 //! Strictly typed `gleam.toml` configuration.
 //!
-//! Unknown keys, wrong types, paths outside the repository, unsafe ref prefixes, URLs carrying credentials, and non-HTTPS registry origins are rejected here rather than at the point of use, so an invalid manifest cannot reach a publication path at all.
+//! Unknown keys, wrong types, paths outside the repository, unsafe ref prefixes, URLs carrying credentials, and registry origins that use neither HTTPS nor plain HTTP to a numeric loopback address are rejected here rather than at the point of use, so an invalid manifest cannot reach a publication path at all.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -126,11 +126,6 @@ pub struct RegistryConfig {
     pub credential_env: String,
     /// How to present the credential.
     pub auth: AuthKind,
-    /// Permit plain `http` to a loopback origin.
-    ///
-    /// Exists for the loopback fake registries the tests run against; every other origin must be HTTPS.
-    #[serde(default)]
-    pub allow_http_loopback: bool,
 }
 
 impl Default for RegistryConfig {
@@ -143,7 +138,6 @@ impl Default for RegistryConfig {
             docs_url: HEXPM_DOCS_URL.into(),
             credential_env: "HEXPM_API_KEY".into(),
             auth: AuthKind::HexToken,
-            allow_http_loopback: false,
         }
     }
 }
@@ -504,8 +498,7 @@ api_url = {}\n\
 repository_url = {}\n\
 docs_url = {}\n\
 credential_env = {}\n\
-auth = {}\n\
-allow_http_loopback = {}\n\n\
+auth = {}\n\n\
 [tools.release-glz.approval]\n\
 normal = \"release-pr-and-environment\"\n\
 manual = \"environment\"\n\
@@ -547,7 +540,6 @@ notes_dir = \".release-glz/notes\"\n\n\
                 AuthKind::HexToken => "hex-token",
                 AuthKind::Bearer => "bearer",
             }),
-            registry.allow_http_loopback,
             toml_string(&format!("refs/heads/{}", settings.default_branch)),
         ));
         Self::parse(self.path.clone(), rendered.clone())
@@ -882,10 +874,8 @@ fn validate_registry(registry: &RegistryConfig) -> Result<()> {
         if url.query().is_some() || url.fragment().is_some() {
             bail!("registry.{name} must not contain a query or fragment");
         }
-        let secure = url.scheme() == "https";
-        let loopback = url_is_http_loopback(&url);
-        if !(secure || registry.allow_http_loopback && loopback) {
-            bail!("registry.{name} must use HTTPS (HTTP is test-only on loopback)");
+        if !uses_trusted_transport(&url) {
+            bail!("registry.{name} must use HTTPS, or HTTP to a numeric loopback address");
         }
     }
     Ok(())
@@ -899,12 +889,17 @@ pub fn host_is_loopback_ip(host: &str) -> bool {
         .is_ok_and(|address| address.is_loopback())
 }
 
-/// Whether a URL is plain `http` to a loopback origin.
+/// Whether a URL is plain `http` to a numeric loopback address in `127.0.0.0/8` or `::1`.
 pub fn url_is_http_loopback(url: &reqwest::Url) -> bool {
-    url.scheme() == "http"
-        && url
-            .host_str()
-            .is_some_and(|host| host.eq_ignore_ascii_case("localhost") || host_is_loopback_ip(host))
+    url.scheme() == "http" && url.host_str().is_some_and(host_is_loopback_ip)
+}
+
+/// Whether a URL uses HTTPS, or plain `http` to a numeric loopback address in `127.0.0.0/8` or `::1`.
+///
+/// A host name, `localhost` included, needs HTTPS, because resolving it can leave the host.
+/// No configuration key changes this rule.
+pub fn uses_trusted_transport(url: &reqwest::Url) -> bool {
+    url.scheme() == "https" || url_is_http_loopback(url)
 }
 
 /// Reject an organization name that is not a safe path segment.
@@ -1293,8 +1288,34 @@ prerelease = ""
             .unwrap_err();
         assert_eq!(
             error.to_string(),
-            "registry.api_url must use HTTPS (HTTP is test-only on loopback)"
+            "registry.api_url must use HTTPS, or HTTP to a numeric loopback address"
         );
+    }
+
+    #[test]
+    fn trusted_transport_is_https_or_http_to_a_numeric_loopback_address() {
+        for (raw, trusted) in [
+            ("https://hex.pm/api", true),
+            ("https://localhost/api", true),
+            ("http://127.0.0.1:8080/api", true),
+            ("http://127.255.255.254/api", true),
+            ("http://127.1/api", true),
+            ("http://[::1]:8080/api", true),
+            ("http://[0:0:0:0:0:0:0:1]/api", true),
+            ("http://localhost:8080/api", false),
+            ("http://LOCALHOST/api", false),
+            ("http://hex.pm/api", false),
+            ("http://127.0.0.1.example.test/api", false),
+            ("http://192.0.2.1/api", false),
+            ("http://128.0.0.1/api", false),
+            ("http://[::2]/api", false),
+            ("http://[::ffff:127.0.0.1]/api", false),
+            ("ftp://127.0.0.1/api", false),
+            ("ws://127.0.0.1/api", false),
+        ] {
+            let url = reqwest::Url::parse(raw).unwrap();
+            assert_eq!(uses_trusted_transport(&url), trusted, "{raw}");
+        }
     }
 
     #[test]

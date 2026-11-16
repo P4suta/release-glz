@@ -14,7 +14,10 @@ use semver::Version;
 use serde::Deserialize;
 
 use crate::canonical::SHA256_HEX_LEN;
-use crate::config::{AuthKind, RegistryConfig, url_is_http_loopback, validate_registry_repository};
+use crate::config::{
+    AuthKind, RegistryConfig, url_is_http_loopback, uses_trusted_transport,
+    validate_registry_repository,
+};
 use crate::units::MIB;
 
 /// Size a JSON response may reach before it is refused.
@@ -219,7 +222,6 @@ impl HexRegistry {
             api_url: api_url.into(),
             docs_url: format!("{}/docs", repository_url.trim_end_matches('/')),
             repository_url,
-            allow_http_loopback: true,
             ..RegistryConfig::default()
         };
         Self::from_config(&config, None).expect("valid registry URLs")
@@ -228,13 +230,9 @@ impl HexRegistry {
     /// Build a client from configuration and an explicit credential.
     pub fn from_config(config: &RegistryConfig, credential: Option<&str>) -> Result<Self> {
         validate_registry_repository(config.provider, config.repository.as_deref())?;
-        let api_url = parse_base_url(&config.api_url, config.allow_http_loopback, "api_url")?;
-        let repository_url = parse_base_url(
-            &config.repository_url,
-            config.allow_http_loopback,
-            "repository_url",
-        )?;
-        let docs_url = parse_base_url(&config.docs_url, config.allow_http_loopback, "docs_url")?;
+        let api_url = parse_base_url(&config.api_url, "api_url")?;
+        let repository_url = parse_base_url(&config.repository_url, "repository_url")?;
+        let docs_url = parse_base_url(&config.docs_url, "docs_url")?;
         let loopback_only = [&api_url, &repository_url, &docs_url]
             .into_iter()
             .all(url_is_http_loopback);
@@ -679,11 +677,10 @@ fn append_segments(base: &Url, segments: &[&str]) -> Result<Url> {
     Ok(url)
 }
 
-fn parse_base_url(raw: &str, allow_http_loopback: bool, field: &str) -> Result<Url> {
+fn parse_base_url(raw: &str, field: &str) -> Result<Url> {
     let url = Url::parse(raw).with_context(|| format!("registry.{field} is invalid"))?;
-    let loopback = url_is_http_loopback(&url);
-    if url.scheme() != "https" && !(allow_http_loopback && loopback) {
-        bail!("registry.{field} must use HTTPS");
+    if !uses_trusted_transport(&url) {
+        bail!("registry.{field} must use HTTPS, or HTTP to a numeric loopback address");
     }
     if !url.username().is_empty() {
         bail!("registry.{field} must not contain credentials");
@@ -827,7 +824,6 @@ mod tests {
                 api_url: "http://127.0.0.1:9/api".into(),
                 repository_url: "http://127.0.0.1:9/repo".into(),
                 docs_url: "http://127.0.0.1:9/docs".into(),
-                allow_http_loopback: true,
                 ..RegistryConfig::default()
             },
             Some("never-print-me"),
@@ -867,7 +863,6 @@ mod tests {
             docs_url: "https://docs.example.test/releases".into(),
             credential_env: "RELEASE_GLZ_TEST_ENV_THAT_MUST_NOT_EXIST_9E57".into(),
             auth: AuthKind::Bearer,
-            allow_http_loopback: false,
         };
 
         let registry = HexRegistry::from_environment(&config).unwrap();
@@ -912,15 +907,19 @@ mod tests {
 
     #[test]
     fn base_urls_enforce_each_security_boundary_independently() {
-        assert!(parse_base_url("https://example.test/api", false, "api_url").is_ok());
-        assert!(parse_base_url("http://127.0.0.1:8080/api", true, "api_url").is_ok());
-        assert!(parse_base_url("http://127.0.0.1:8080/api", false, "api_url").is_err());
-        assert!(parse_base_url("http://example.test/api", true, "api_url").is_err());
-        assert!(parse_base_url("https://user@example.test/api", false, "api_url").is_err());
-        assert!(parse_base_url("https://:pass@example.test/api", false, "api_url").is_err());
-        assert!(parse_base_url("https://", false, "api_url").is_err());
-        assert!(parse_base_url("https://example.test/api?q=1", false, "api_url").is_err());
-        assert!(parse_base_url("https://example.test/api#frag", false, "api_url").is_err());
+        assert!(parse_base_url("https://example.test/api", "api_url").is_ok());
+        assert!(parse_base_url("http://127.0.0.1:8080/api", "api_url").is_ok());
+        assert!(parse_base_url("http://[::1]:8080/api", "api_url").is_ok());
+        assert!(parse_base_url("http://localhost:8080/api", "api_url").is_err());
+        assert!(parse_base_url("http://example.test/api", "api_url").is_err());
+        assert!(parse_base_url("http://192.0.2.1/api", "api_url").is_err());
+        assert!(parse_base_url("https://user@example.test/api", "api_url").is_err());
+        assert!(parse_base_url("https://:pass@example.test/api", "api_url").is_err());
+        assert!(parse_base_url("http://user@127.0.0.1:8080/api", "api_url").is_err());
+        assert!(parse_base_url("https://", "api_url").is_err());
+        assert!(parse_base_url("https://example.test/api?q=1", "api_url").is_err());
+        assert!(parse_base_url("http://127.0.0.1:8080/api?q=1", "api_url").is_err());
+        assert!(parse_base_url("https://example.test/api#frag", "api_url").is_err());
     }
 
     #[test]

@@ -642,7 +642,6 @@ fn candidate_fixture_with_options(
                 docs_url: "https://repo.hex.pm/docs".into(),
                 credential_env: "HEXPM_API_KEY".into(),
                 auth: release_glz::config::AuthKind::HexToken,
-                allow_http_loopback: false,
             },
             private: false,
             github_repository: "owner/widget".into(),

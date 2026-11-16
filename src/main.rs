@@ -1027,7 +1027,6 @@ fn initialization_registry(
                     InitAuth::HexToken => AuthKind::HexToken,
                     InitAuth::Bearer => AuthKind::Bearer,
                 },
-                allow_http_loopback: false,
             })
         }
     }
@@ -1217,7 +1216,6 @@ async fn credential_free_candidate_build(manifest: &Manifest) -> Result<()> {
         .env("XDG_CACHE_HOME", &cache);
     for name in [
         "PATH",
-        "RELEASE_GLZ_GLEAM",
         "SSL_CERT_FILE",
         "SSL_CERT_DIR",
         "SYSTEMROOT",

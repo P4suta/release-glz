@@ -1,15 +1,16 @@
 #![cfg(unix)]
 
+use std::ffi::{OsStr, OsString};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use release_glz::config::{AuthKind, Manifest, RegistryProvider};
 use release_glz_test_support::schema::assert_published_envelope;
-use release_glz_test_support::{git, init_repository, isolated_command};
+use release_glz_test_support::{git, init_repository, isolated_command, path_searching_first};
 
 const ACTION_SHA: &str = "abcdef0123456789abcdef0123456789abcdef01";
 
-fn package(version: &str) -> (tempfile::TempDir, PathBuf) {
+fn package(version: &str) -> (tempfile::TempDir, OsString) {
     let temp = tempfile::tempdir().unwrap();
     git(temp.path(), &["init", "--initial-branch=trunk"]);
     std::fs::write(
@@ -19,19 +20,27 @@ fn package(version: &str) -> (tempfile::TempDir, PathBuf) {
         ),
     )
     .unwrap();
-    let gleam = temp.path().join("fake-gleam");
+    let gleam = fake_gleam(temp.path());
+    (temp, gleam)
+}
+
+/// Write a compiler stand-in that reports Gleam 1.18.1, and return a `PATH` that finds it first.
+fn fake_gleam(root: &Path) -> OsString {
+    let directory = root.join("fake-compiler");
+    std::fs::create_dir(&directory).unwrap();
+    let gleam = directory.join("gleam");
     std::fs::write(&gleam, "#!/bin/sh\nprintf '%s\\n' 'gleam 1.18.1'\n").unwrap();
     let mut permissions = std::fs::metadata(&gleam).unwrap().permissions();
     permissions.set_mode(0o755);
     std::fs::set_permissions(&gleam, permissions).unwrap();
-    (temp, gleam)
+    path_searching_first(&directory)
 }
 
 /// Run `init` with JSON output, and check that output against the published schemas.
-fn init(root: &Path, gleam: &Path, arguments: &[&str]) -> std::process::Output {
+fn init(root: &Path, gleam: &OsStr, arguments: &[&str]) -> std::process::Output {
     let output = isolated_command(env!("CARGO_BIN_EXE_release-glz"))
         .current_dir(root)
-        .env("RELEASE_GLZ_GLEAM", gleam)
+        .env("PATH", gleam)
         .args(["--output", "json", "init"])
         .args(arguments)
         .args(["--action-sha", ACTION_SHA])
@@ -260,7 +269,7 @@ fn malformed_github_environment_urls_return_a_usage_envelope_instead_of_panickin
         let (temp, gleam) = package("1.0.0");
         let output = isolated_command(env!("CARGO_BIN_EXE_release-glz"))
             .current_dir(temp.path())
-            .env("RELEASE_GLZ_GLEAM", &gleam)
+            .env("PATH", &gleam)
             .env(variable, "not-a-valid-github-url")
             .args(["--output", "json", "init", "--profile", "public", "--check"])
             .output()
@@ -390,15 +399,11 @@ fn manifest_paths_with_spaces_remain_single_canonical_argv_elements() {
         "name = \"widget\"\nversion = \"1.0.0\"\n",
     )
     .unwrap();
-    let gleam = temp.path().join("fake-gleam");
-    std::fs::write(&gleam, "#!/bin/sh\nprintf '%s\\n' 'gleam 1.18.1'\n").unwrap();
-    let mut permissions = std::fs::metadata(&gleam).unwrap().permissions();
-    permissions.set_mode(0o755);
-    std::fs::set_permissions(&gleam, permissions).unwrap();
+    let gleam = fake_gleam(temp.path());
     let relative = "package with space/gleam.toml";
     let check = isolated_command(env!("CARGO_BIN_EXE_release-glz"))
         .current_dir(temp.path())
-        .env("RELEASE_GLZ_GLEAM", &gleam)
+        .env("PATH", &gleam)
         .args([
             "--manifest-path",
             relative,
@@ -435,11 +440,7 @@ fn init_reports_the_manifest_path_relative_to_the_repository_from_any_directory(
         "name = \"widget\"\nversion = \"1.0.0\"\n",
     )
     .unwrap();
-    let gleam = temp.path().join("fake-gleam");
-    std::fs::write(&gleam, "#!/bin/sh\nprintf '%s\\n' 'gleam 1.18.1'\n").unwrap();
-    let mut permissions = std::fs::metadata(&gleam).unwrap().permissions();
-    permissions.set_mode(0o755);
-    std::fs::set_permissions(&gleam, permissions).unwrap();
+    let gleam = fake_gleam(temp.path());
     let absolute = package.join("gleam.toml");
     for (directory, manifest) in [
         (temp.path().to_path_buf(), absolute.clone()),
@@ -447,7 +448,7 @@ fn init_reports_the_manifest_path_relative_to_the_repository_from_any_directory(
     ] {
         let diff = isolated_command(env!("CARGO_BIN_EXE_release-glz"))
             .current_dir(&directory)
-            .env("RELEASE_GLZ_GLEAM", &gleam)
+            .env("PATH", &gleam)
             .arg("--manifest-path")
             .arg(&manifest)
             .args(["--output", "json", "init", "--profile", "public", "--diff"])

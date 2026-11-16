@@ -180,9 +180,14 @@ fn every_public_serializer_validates_against_its_complete_draft_2020_schema() {
         &serde_json::to_value(CommandEnvelope::success("plan", plan(), vec![], vec![])).unwrap(),
     );
 
-    let mut candidate = serde_json::to_value(candidate()).unwrap();
-    candidate["registry"]["unexpected"] = json!(true);
-    assert!(!violations("candidate.schema.json", &candidate).is_empty());
+    for key in ["unexpected", "allow_http_loopback"] {
+        let mut candidate = serde_json::to_value(candidate()).unwrap();
+        candidate["registry"][key] = json!(true);
+        assert!(
+            !violations("candidate.schema.json", &candidate).is_empty(),
+            "{key}"
+        );
+    }
 }
 
 /// Each case breaks one rule of a schema and names the schema that has to refuse it.
@@ -511,7 +516,6 @@ fn candidate() -> CandidateManifest {
             docs_url: "https://repo.hex.pm/docs".into(),
             credential_env: "HEXPM_API_KEY".into(),
             auth: AuthKind::HexToken,
-            allow_http_loopback: false,
         },
         private: false,
         github_repository: "owner/widget".into(),

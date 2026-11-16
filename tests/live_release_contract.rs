@@ -421,7 +421,6 @@ fn live_runner(
         docs_url: format!("{}/repo/docs", registry.base_url()),
         credential_env: "TEST_REGISTRY_TOKEN".into(),
         auth: AuthKind::Bearer,
-        allow_http_loopback: true,
     };
     let registry_adapter =
         HexRegistry::from_config(&registry_config, Some("registry-secret")).unwrap();
@@ -601,7 +600,6 @@ fn candidate_input(
             docs_url: format!("{registry_base}/repo/docs"),
             credential_env: "TEST_REGISTRY_TOKEN".into(),
             auth: AuthKind::Bearer,
-            allow_http_loopback: true,
         },
         private: true,
         github_repository: "owner/widget".into(),

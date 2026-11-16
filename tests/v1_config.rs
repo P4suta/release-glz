@@ -205,6 +205,23 @@ fn schema_two_refuses_the_keys_that_its_tables_replace() {
 }
 
 #[test]
+fn the_registry_has_no_key_that_loosens_its_transport() {
+    for value in ["true", "false"] {
+        let source = complete_config("").replace(
+            "auth = \"hex-token\"",
+            &format!("auth = \"hex-token\"\nallow_http_loopback = {value}"),
+        );
+        let error = Manifest::parse(PathBuf::from("gleam.toml"), source)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("unknown field `allow_http_loopback`"),
+            "{error}"
+        );
+    }
+}
+
+#[test]
 fn schema_two_refuses_malformed_channels_and_baseline_refs() {
     let valid =
         complete_config("[tools.release-glz.baseline_refs]\n\"1.0.0\" = \"refs/tags/v1.0.0\"")
@@ -286,30 +303,28 @@ fn no_hook_may_take_the_id_of_release_glz_evidence() {
 }
 
 #[test]
-fn registry_requires_https_except_explicit_loopback_tests() {
-    let insecure = complete_config("").replace("https://hex.pm/api", "http://hex.pm/api");
-    assert!(Manifest::parse(PathBuf::from("gleam.toml"), insecure).is_err());
-
-    let loopback = complete_config("")
-        .replace("https://hex.pm/api", "http://127.0.0.1:8080/api")
-        .replace(
-            "https://repo.hex.pm/repos/acme",
-            "http://127.0.0.1:8080/repos/acme",
-        )
-        .replace(
-            "https://repo.hex.pm/repos/acme/docs",
-            "http://127.0.0.1:8080/repos/acme/docs",
-        )
-        .replace(
-            "auth = \"hex-token\"",
-            "auth = \"hex-token\"\nallow_http_loopback = true",
-        );
-    assert!(Manifest::parse(PathBuf::from("gleam.toml"), loopback).is_ok());
+fn registry_requires_https_or_http_to_a_numeric_loopback_address() {
+    for host in ["127.0.0.1", "127.8.9.10", "[::1]"] {
+        let base = format!("http://{host}:8080");
+        let loopback = complete_config("")
+            .replace("https://hex.pm/api", &format!("{base}/api"))
+            .replace(
+                "https://repo.hex.pm/repos/acme",
+                &format!("{base}/repos/acme"),
+            );
+        Manifest::parse(PathBuf::from("gleam.toml"), loopback).unwrap();
+    }
 
     for unsafe_url in [
+        "http://hex.pm/api",
+        "http://localhost:8080/api",
+        "http://192.0.2.1/api",
+        "http://[::ffff:127.0.0.1]/api",
+        "http://127.0.0.1.example.test/api",
         "https://hex.pm/api?redirect=https://evil.test",
         "https://hex.pm/api#fragment",
         "https://user:password@hex.pm/api",
+        "http://user:password@127.0.0.1:8080/api",
         "ftp://hex.pm/api",
     ] {
         let source = complete_config("").replace("https://hex.pm/api", unsafe_url);
@@ -571,32 +586,6 @@ fn approval_and_registry_variants_are_strict_but_cover_supported_forms() {
         Some("acme")
     );
 
-    for host in ["localhost", "127.0.0.1", "[::1]"] {
-        let base = format!("http://{host}:8080");
-        let loopback = complete_config("")
-            .replace("https://hex.pm/api", &format!("{base}/api"))
-            .replace(
-                "https://repo.hex.pm/repos/acme",
-                &format!("{base}/repos/acme"),
-            )
-            .replace(
-                "https://repo.hex.pm/repos/acme/docs",
-                &format!("{base}/repos/acme/docs"),
-            )
-            .replace(
-                "auth = \"hex-token\"",
-                "auth = \"hex-token\"\nallow_http_loopback = true",
-            );
-        Manifest::parse(PathBuf::from("gleam.toml"), loopback).unwrap();
-    }
-
-    let external_http = complete_config("")
-        .replace("https://hex.pm/api", "http://192.0.2.1/api")
-        .replace(
-            "auth = \"hex-token\"",
-            "auth = \"hex-token\"\nallow_http_loopback = true",
-        );
-    assert!(Manifest::parse(PathBuf::from("gleam.toml"), external_http).is_err());
     let non_hierarchical = complete_config("").replace("https://hex.pm/api", "file:///api");
     assert!(Manifest::parse(PathBuf::from("gleam.toml"), non_hierarchical).is_err());
 }

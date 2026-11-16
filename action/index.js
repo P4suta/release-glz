@@ -5,6 +5,7 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const http = require("node:http");
 const https = require("node:https");
+const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
 const zlib = require("node:zlib");
@@ -299,11 +300,17 @@ function verifyProvenance(file, expectedDigest, filename, archiveDigest) {
 }
 
 /**
- * @param {string} hostname
+ * Whether `url` uses HTTPS, or plain HTTP to a numeric loopback address in 127.0.0.0/8 or ::1.
+ * A host name, `localhost` included, needs HTTPS, because resolving it can leave the host.
+ * The URL parser writes an IPv4 host in dotted decimal and an IPv6 host in brackets.
+ * @param {URL} url
  * @returns {boolean}
  */
-function isLoopback(hostname) {
-  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
+function usesTrustedTransport(url) {
+  if (url.protocol === "https:") return true;
+  if (url.protocol !== "http:") return false;
+  const host = url.hostname;
+  return host === "[::1]" || (net.isIPv4(host) && host.startsWith("127."));
 }
 
 const GITHUB_RELEASE_ASSET_HOSTS = new Set([
@@ -337,7 +344,6 @@ function isAllowedDownloadRedirect(initial, target) {
  * @property {number} [timeoutMs] Milliseconds the connection may stay silent.
  * @property {number} [totalTimeoutMs] Milliseconds the download may take across its redirects.
  * @property {number} [deadline] Epoch milliseconds the download has to finish by.
- * @property {boolean} [allowHttpLoopback] Whether a loopback URL may use plain HTTP.
  * @property {number} [redirects] Redirects already followed.
  * @property {string | URL} [initialUrl] URL the download started from.
  */
@@ -354,7 +360,6 @@ function download(url, destination, options = {}) {
   const timeoutMs = options.timeoutMs ?? DOWNLOAD_TIMEOUT_MS;
   const totalTimeoutMs = options.totalTimeoutMs ?? DOWNLOAD_TOTAL_TIMEOUT_MS;
   const deadline = options.deadline ?? Date.now() + totalTimeoutMs;
-  const allowHttpLoopback = options.allowHttpLoopback === true;
   const redirects = options.redirects ?? 0;
   const initialUrl = options.initialUrl ?? url;
   if (redirects > 8) return Promise.reject(new Error(`Too many redirects downloading ${url}`));
@@ -363,11 +368,10 @@ function download(url, destination, options = {}) {
   if (parsed.username || parsed.password) {
     return Promise.reject(new Error("Download URLs must not contain credentials"));
   }
-  if (
-    parsed.protocol !== "https:" &&
-    !(allowHttpLoopback && parsed.protocol === "http:" && isLoopback(parsed.hostname))
-  ) {
-    return Promise.reject(new Error(`Download URL must use HTTPS: ${url}`));
+  if (!usesTrustedTransport(parsed)) {
+    return Promise.reject(
+      new Error(`Download URL must use HTTPS, or HTTP to a numeric loopback address: ${url}`),
+    );
   }
   if (!isAllowedDownloadRedirect(initialUrl, parsed)) {
     return Promise.reject(new Error(`Refusing cross-origin redirect to ${parsed.origin}`));
@@ -421,7 +425,6 @@ function download(url, destination, options = {}) {
             timeoutMs,
             totalTimeoutMs,
             deadline,
-            allowHttpLoopback,
             redirects: redirects + 1,
             initialUrl,
           }).then(resolve, reject);
@@ -1369,6 +1372,7 @@ module.exports = {
   setOutput,
   sha256,
   targetFor,
+  usesTrustedTransport,
   validateArchiveInventory,
   verifyChecksum,
   verifyProvenance,

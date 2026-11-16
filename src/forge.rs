@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 
 use crate::changelog::default_category;
-use crate::config::url_is_http_loopback;
+use crate::config::{url_is_http_loopback, uses_trusted_transport};
 use crate::git::Commit;
 use crate::model::{ChangeEntry, ReleasePlan, bump_name};
 use crate::units::GIB;
@@ -1828,9 +1828,8 @@ fn validate_github_url(raw: &str) -> Result<()> {
     if url.query().is_some() || url.fragment().is_some() {
         bail!("GitHub API URL must not contain a query or fragment");
     }
-    let loopback = url_is_http_loopback(&url);
-    if url.scheme() != "https" && !loopback {
-        bail!("GitHub API URLs must use HTTPS (HTTP is test-only on loopback)");
+    if !uses_trusted_transport(&url) {
+        bail!("GitHub API URLs must use HTTPS, or HTTP to a numeric loopback address");
     }
     if !url.username().is_empty() || url.password().is_some() {
         bail!("GitHub API URLs must not contain credentials");

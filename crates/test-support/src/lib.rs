@@ -2,7 +2,7 @@
 //!
 //! A helper that cannot do what it names panics with the reason, so a missing tool or a failed command fails the test instead of letting it pass.
 
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::path::Path;
 use std::process::{Command, Output};
 
@@ -58,6 +58,26 @@ pub fn isolated_command(program: impl AsRef<OsStr>) -> Command {
         }
     }
     command
+}
+
+/// A `PATH` that searches `directory` before every directory of the inherited `PATH`.
+///
+/// A test that writes a fake `gleam` into `directory` passes this as the binary's `PATH`, so release-glz runs the fake.
+///
+/// # Panics
+///
+/// When `directory` contains the platform's `PATH` separator.
+#[must_use]
+pub fn path_searching_first(directory: &Path) -> OsString {
+    let inherited = std::env::var_os("PATH");
+    let directories = std::iter::once(directory.to_path_buf())
+        .chain(inherited.iter().flat_map(std::env::split_paths));
+    std::env::join_paths(directories).unwrap_or_else(|error| {
+        fail(format_args!(
+            "`{}` can't lead a PATH: {error}",
+            directory.display()
+        ))
+    })
 }
 
 /// Panic with the command's output unless it exited successfully.
@@ -147,8 +167,22 @@ pub fn read_some(reader: &mut impl std::io::Read, buffer: &mut [u8]) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::read_some;
+    use super::{path_searching_first, read_some};
     use std::io::{self, Read};
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn the_directory_comes_before_the_whole_inherited_path() {
+        let directory = Path::new("fake-compiler");
+        let searched: Vec<PathBuf> =
+            std::env::split_paths(&path_searching_first(directory)).collect();
+        let inherited: Vec<PathBuf> = std::env::var_os("PATH")
+            .iter()
+            .flat_map(std::env::split_paths)
+            .collect();
+        assert_eq!(searched.first().map(PathBuf::as_path), Some(directory));
+        assert_eq!(searched.get(1..), Some(inherited.as_slice()));
+    }
 
     /// Fails its first read with `error`, then serves `data`.
     struct FailsFirst {

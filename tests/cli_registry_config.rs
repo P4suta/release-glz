@@ -1,6 +1,7 @@
 #![cfg(unix)]
 
 use std::collections::VecDeque;
+use std::ffi::{OsStr, OsString};
 use std::io::Write;
 use std::net::{TcpListener, TcpStream};
 use std::os::unix::fs::PermissionsExt;
@@ -11,7 +12,7 @@ use std::thread;
 use base64::Engine as _;
 use flate2::{Compression, write::GzEncoder};
 use release_glz_test_support::schema::{assert_matches, assert_published_envelope};
-use release_glz_test_support::{isolated_command, read_some};
+use release_glz_test_support::{isolated_command, path_searching_first, read_some};
 use sha2::{Digest, Sha256};
 
 #[test]
@@ -287,7 +288,7 @@ fn plan_uses_the_strict_manifest_registry_adapter_and_private_read_credential() 
     let output = isolated_command(env!("CARGO_BIN_EXE_release-glz"))
         .current_dir(temp.path())
         .args(["--output", "json", "plan"])
-        .env("RELEASE_GLZ_GLEAM", &gleam)
+        .env("PATH", &gleam)
         .env("TEST_REGISTRY_TOKEN", "private-read-value")
         .env("RELEASE_GLZ_HEX_API_URL", "http://127.0.0.1:9")
         .env("RELEASE_GLZ_HEX_REPOSITORY_URL", "http://127.0.0.1:9")
@@ -390,7 +391,7 @@ fn release_pr_closes_a_stale_verified_managed_pr_when_no_release_is_required() {
     let output = isolated_command(env!("CARGO_BIN_EXE_release-glz"))
         .current_dir(temp.path())
         .args(["--output", "json", "release-pr"])
-        .env("RELEASE_GLZ_GLEAM", &gleam)
+        .env("PATH", &gleam)
         .env("TEST_REGISTRY_TOKEN", "private-read-value")
         .env("GITHUB_TOKEN", "github-value")
         .env_remove("GH_TOKEN")
@@ -948,7 +949,7 @@ fn a_candidate_whose_head_the_release_pr_left_binds_nothing_and_succeeds() {
         .current_dir(temp.path())
         .args(["--output", "json", "release-pr", "--candidate"])
         .arg(&candidate)
-        .env("RELEASE_GLZ_GLEAM", &refusing)
+        .env("PATH", &refusing)
         .env("GITHUB_TOKEN", "github-value")
         .env("GITHUB_API_URL", &github_url)
         .env("GITHUB_GRAPHQL_URL", format!("{github_url}/graphql"))
@@ -1022,7 +1023,7 @@ fn a_merged_release_pr_authorizes_a_candidate_only_with_the_intent_it_recorded()
             .current_dir(temp.path())
             .args(["--output", "json", "release-pr", "--dry-run", "--candidate"])
             .arg(&candidate)
-            .env("RELEASE_GLZ_GLEAM", &refusing)
+            .env("PATH", &refusing)
             .env("GITHUB_TOKEN", "github-value")
             .env("GITHUB_API_URL", &github_url)
             .env("GITHUB_GRAPHQL_URL", format!("{github_url}/graphql"))
@@ -1157,7 +1158,7 @@ fn an_inspection_of_a_world_that_contradicts_the_candidate_is_an_immutable_confl
 }
 
 /// Rehearse the committed package in `directory` into a Candidate and return its directory.
-fn rehearsed_candidate(directory: &std::path::Path, gleam: &std::path::Path) -> std::path::PathBuf {
+fn rehearsed_candidate(directory: &std::path::Path, gleam: &OsStr) -> std::path::PathBuf {
     let source_sha = git_output(directory, &["rev-parse", "HEAD"]);
     let candidate = directory.join("candidate");
     let rehearse = candidate_command(directory, gleam)
@@ -1216,19 +1217,14 @@ fn top_level_diagnostics_redact_the_configured_registry_credential() {
     let source = manifest("https://registry.example.test")
         .replace("TEST_REGISTRY_TOKEN", "CUSTOM_REGISTRY_CREDENTIAL");
     std::fs::write(temp.path().join("gleam.toml"), source).unwrap();
-    let gleam = temp.path().join("failing-gleam");
-    std::fs::write(
-        &gleam,
-        format!("#!/bin/sh\nprintf '%s' '{secret}' >&2\nexit 9\n"),
-    )
-    .unwrap();
-    let mut permissions = std::fs::metadata(&gleam).unwrap().permissions();
-    permissions.set_mode(0o700);
-    std::fs::set_permissions(&gleam, permissions).unwrap();
+    let gleam = gleam_on_path(
+        &temp.path().join("failing-compiler"),
+        &format!("#!/bin/sh\nprintf '%s' '{secret}' >&2\nexit 9\n"),
+    );
 
     let output = isolated_command(env!("CARGO_BIN_EXE_release-glz"))
         .current_dir(temp.path())
-        .env("RELEASE_GLZ_GLEAM", &gleam)
+        .env("PATH", &gleam)
         .env("CUSTOM_REGISTRY_CREDENTIAL", secret)
         .args(["--output", "json", "plan"])
         .output()
@@ -1264,7 +1260,6 @@ repository_url = "__BASE__/repo"
 docs_url = "__BASE__/repo/docs"
 credential_env = "TEST_REGISTRY_TOKEN"
 auth = "bearer"
-allow_http_loopback = true
 
 [tools.release-glz.approval]
 normal = "release-pr-and-environment"
@@ -1490,11 +1485,8 @@ fn git_output(directory: &std::path::Path, args: &[&str]) -> String {
     String::from_utf8(output.stdout).unwrap().trim().to_owned()
 }
 
-/// Commit an unpublished package and return the compiler stand-in that exports its fixtures.
-fn initialize_initial_package(
-    directory: &std::path::Path,
-    registry_url: &str,
-) -> std::path::PathBuf {
+/// Commit an unpublished package and return a `PATH` that finds the compiler stand-in that exports its fixtures.
+fn initialize_initial_package(directory: &std::path::Path, registry_url: &str) -> OsString {
     let manifest = manifest(registry_url).replace("docs = true", "docs = false");
     let readme = b"# Widget\n";
     let source = b"pub fn widget() -> Int { 1 }\n";
@@ -1521,11 +1513,11 @@ fn initialize_initial_package(
     fake_gleam(directory)
 }
 
-fn candidate_command(directory: &std::path::Path, gleam: &std::path::Path) -> Command {
+fn candidate_command(directory: &std::path::Path, gleam: &OsStr) -> Command {
     let mut command = isolated_command(env!("CARGO_BIN_EXE_release-glz"));
     command
         .current_dir(directory)
-        .env("RELEASE_GLZ_GLEAM", gleam)
+        .env("PATH", gleam)
         .env("TEST_REGISTRY_TOKEN", "private-read-value")
         .env_remove("GITHUB_TOKEN")
         .env_remove("GH_TOKEN");
@@ -1536,7 +1528,7 @@ fn candidate_command(directory: &std::path::Path, gleam: &std::path::Path) -> Co
 fn release_pr_from_plan(
     directory: &std::path::Path,
     plan: &std::path::Path,
-    gleam: &std::path::Path,
+    gleam: &OsStr,
     github_url: &str,
 ) -> Command {
     let mut command = isolated_command(env!("CARGO_BIN_EXE_release-glz"));
@@ -1544,7 +1536,7 @@ fn release_pr_from_plan(
         .current_dir(directory)
         .args(["--output", "json", "release-pr", "--plan"])
         .arg(plan)
-        .env("RELEASE_GLZ_GLEAM", gleam)
+        .env("PATH", gleam)
         .env("GITHUB_TOKEN", "github-value")
         .env("GITHUB_REPOSITORY", "acme/widget")
         .env("GITHUB_API_URL", github_url)
@@ -1552,22 +1544,28 @@ fn release_pr_from_plan(
     command
 }
 
-/// A compiler stand-in that records every run in the returned file and then fails.
-fn refusing_gleam(directory: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
-    let gleam = directory.join("refusing-gleam");
+/// A `PATH` that finds a compiler stand-in that records every run in the returned file and then fails.
+fn refusing_gleam(directory: &std::path::Path) -> (OsString, std::path::PathBuf) {
     let runs = directory.join("refusing-gleam.log");
-    std::fs::write(
-        &gleam,
-        format!(
+    let gleam = gleam_on_path(
+        &directory.join("refusing-compiler"),
+        &format!(
             "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nexit 97\n",
             runs.display()
         ),
-    )
-    .unwrap();
+    );
+    (gleam, runs)
+}
+
+/// Write `script` as a compiler stand-in named `gleam` in the new `directory`, and return a `PATH` that finds it first.
+fn gleam_on_path(directory: &std::path::Path, script: &str) -> OsString {
+    std::fs::create_dir(directory).unwrap();
+    let gleam = directory.join("gleam");
+    std::fs::write(&gleam, script).unwrap();
     let mut permissions = std::fs::metadata(&gleam).unwrap().permissions();
     permissions.set_mode(0o755);
     std::fs::set_permissions(&gleam, permissions).unwrap();
-    (gleam, runs)
+    path_searching_first(directory)
 }
 
 fn request_json(request: &str) -> serde_json::Value {
@@ -1588,26 +1586,20 @@ fn json(output: &std::process::Output) -> serde_json::Value {
     serde_json::from_slice(&output.stdout).unwrap()
 }
 
-/// A compiler stand-in that exports `fixture.tar` and `interface.json` from its own directory.
+/// A `PATH` that finds a compiler stand-in that exports `fixture.tar` and `interface.json` from `directory`.
 ///
 /// The paths are part of the script, because the compiler inherits no test variables.
-fn fake_gleam(directory: &std::path::Path) -> std::path::PathBuf {
-    let gleam = directory.join("fake-gleam");
+fn fake_gleam(directory: &std::path::Path) -> OsString {
     let package = directory.join("fixture.tar");
     let interface = directory.join("interface.json");
-    std::fs::write(
-        &gleam,
-        format!(
+    gleam_on_path(
+        &directory.join("fake-compiler"),
+        &format!(
             "#!/bin/sh\nset -eu\nif [ \"${{1:-}}\" = \"--version\" ]; then printf '%s\\n' 'gleam 1.12.3'; exit 0; fi\nif [ \"${{1:-}}\" = \"export\" ] && [ \"${{2:-}}\" = \"hex-tarball\" ]; then mkdir -p build; cp '{}' build/widget-1.0.0.tar; exit 0; fi\nif [ \"${{1:-}}\" = \"export\" ] && [ \"${{2:-}}\" = \"package-interface\" ]; then cp '{}' \"$4\"; exit 0; fi\nexit 64\n",
             package.display(),
             interface.display()
         ),
     )
-    .unwrap();
-    let mut permissions = std::fs::metadata(&gleam).unwrap().permissions();
-    permissions.set_mode(0o755);
-    std::fs::set_permissions(&gleam, permissions).unwrap();
-    gleam
 }
 
 fn hex_package() -> Vec<u8> {
