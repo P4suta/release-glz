@@ -3030,6 +3030,276 @@ async fn a_release_lookup_pages_through_the_list_and_refuses_an_ambiguous_tag() 
     );
 }
 
+/// Each redirect status with the reason phrase that a refusal names.
+const REDIRECTS: [(u16, &str); 4] = [
+    (301, "301 Moved Permanently"),
+    (302, "302 Found"),
+    (307, "307 Temporary Redirect"),
+    (308, "308 Permanent Redirect"),
+];
+
+/// The token that every redirected GitHub request carries.
+const REDIRECTED_TOKEN: &str = "redirected-token";
+
+/// A GitHub call that a redirect can answer.
+#[derive(Clone, Copy, Debug)]
+enum GitHubCall {
+    /// A REST read.
+    ReleaseLookup,
+    /// A REST write that creates an object.
+    DraftCreation,
+    /// A REST write that changes an object.
+    Finalization,
+    /// A REST write to the Release upload URL.
+    AssetUpload,
+    /// A GraphQL write.
+    VerifiedCommit,
+}
+
+impl GitHubCall {
+    const ALL: [Self; 5] = [
+        Self::ReleaseLookup,
+        Self::DraftCreation,
+        Self::Finalization,
+        Self::AssetUpload,
+        Self::VerifiedCommit,
+    ];
+
+    /// The replies to the requests that the call sends before the one that the redirect answers.
+    fn earlier_replies(self) -> Vec<Reply> {
+        match self {
+            Self::VerifiedCommit => vec![
+                response(200, "[]"),
+                response(404, "{}"),
+                response(201, "{}"),
+            ],
+            Self::ReleaseLookup | Self::DraftCreation | Self::Finalization | Self::AssetUpload => {
+                vec![]
+            }
+        }
+    }
+
+    /// The method and target of the request that the redirect answers.
+    const fn redirected(self) -> (&'static str, &'static str) {
+        match self {
+            Self::ReleaseLookup => ("GET", "/repos/o/r/releases?per_page=100&page=1"),
+            Self::DraftCreation => ("POST", "/repos/o/r/releases"),
+            Self::Finalization => ("PATCH", "/repos/o/r/releases/42"),
+            Self::AssetUpload => ("POST", "/repos/o/r/releases/42/assets?name=sbom.cdx.json"),
+            Self::VerifiedCommit => ("POST", "/graphql"),
+        }
+    }
+
+    /// Make the call through `client`, whose API is at `base`.
+    async fn run(self, client: &GitHubClient, base: &str) -> anyhow::Result<()> {
+        match self {
+            Self::ReleaseLookup => client.release_details_for_tag("v1.2.3").await.map(drop),
+            Self::DraftCreation => client
+                .create_draft_release("v1.2.3", &"a".repeat(40), "notes", &"d".repeat(64), false)
+                .await
+                .map(drop),
+            Self::Finalization => client.finalize_release(42).await.map(drop),
+            Self::AssetUpload => client
+                .upload_release_asset(
+                    &upload_release(
+                        &format!("{base}/repos/o/r/releases/42/assets{{?name,label}}"),
+                        true,
+                    ),
+                    "sbom.cdx.json",
+                    "application/vnd.cyclonedx+json",
+                    b"{}",
+                )
+                .await
+                .map(drop),
+            Self::VerifiedCommit => client
+                .upsert_release_pr(
+                    &release_plan(),
+                    &default_branch(&"a".repeat(40)),
+                    "release-glz/",
+                    &release_files(),
+                )
+                .await
+                .map(drop),
+        }
+    }
+}
+
+/// A redirect to `elsewhere` whose userinfo, path, query, and fragment each carry the redirected token.
+fn redirect_to(status: u16, elsewhere: &http::FakeServer) -> Reply {
+    let location = format!(
+        "http://user:{REDIRECTED_TOKEN}@{}/{REDIRECTED_TOKEN}?access_token={REDIRECTED_TOKEN}#{REDIRECTED_TOKEN}",
+        elsewhere.address()
+    );
+    Response::new(status).header("Location", &location).into()
+}
+
+/// A GitHub request refuses every redirect, so its token reaches no origin but the configured one.
+#[tokio::test]
+async fn each_github_request_refuses_each_redirect_and_sends_nothing_to_its_location() {
+    for call in GitHubCall::ALL {
+        for (status, phrase) in REDIRECTS {
+            let case = format!("{call:?} answered with {status}");
+            let mut server = http::FakeServer::start();
+            let mut elsewhere = http::FakeServer::start();
+            let mut replies = call.earlier_replies();
+            let earlier = replies.len();
+            replies.push(redirect_to(status, &elsewhere));
+            server.script(replies);
+            let base = server.base_url();
+            let client = GitHubClient::new(
+                GitHubRepository::parse("o/r").unwrap(),
+                base.clone(),
+                format!("{base}/graphql"),
+                Some(REDIRECTED_TOKEN.into()),
+            )
+            .unwrap();
+
+            let error = call.run(&client, &base).await.unwrap_err();
+
+            let (method, target) = call.redirected();
+            assert_eq!(
+                (refusal_reason(&error), error.to_string()),
+                (
+                    Some(RefusalReason::GithubRedirectRefused),
+                    format!(
+                        "refusing GitHub redirect {phrase} from {base}{target} to {}",
+                        elsewhere.base_url()
+                    )
+                ),
+                "{case}"
+            );
+            let requests = server.finish();
+            assert_eq!(requests.len(), earlier + 1, "{case}");
+            let redirected = requests.last().unwrap();
+            assert_eq!(
+                (
+                    redirected.method.as_str(),
+                    redirected.target.as_str(),
+                    redirected.header("authorization")
+                ),
+                (method, target, Some("Bearer redirected-token")),
+                "{case}"
+            );
+            assert_eq!(elsewhere.finish(), [], "{case}");
+            assert_eq!(elsewhere.connections(), 0, "{case}");
+        }
+    }
+}
+
+/// A redirect without a usable `Location` is refused for the same reason, and its message says so.
+#[tokio::test]
+async fn a_github_redirect_without_a_location_is_refused_as_a_redirect() {
+    let mut server = http::FakeServer::start();
+    server.script([Response::new(302)]);
+    let base = server.base_url();
+
+    let error = GitHubClient::new(
+        GitHubRepository::parse("o/r").unwrap(),
+        base.clone(),
+        format!("{base}/graphql"),
+        Some("token".into()),
+    )
+    .unwrap()
+    .release_details_for_tag("v1.2.3")
+    .await
+    .unwrap_err();
+
+    assert_eq!(
+        (refusal_reason(&error), error.to_string()),
+        (
+            Some(RefusalReason::GithubRedirectRefused),
+            format!(
+                "refusing GitHub redirect 302 Found from {base}/repos/o/r/releases?per_page=100&page=1 to a missing or invalid Location"
+            )
+        )
+    );
+    assert_eq!(server.finish().len(), 1);
+}
+
+/// A token that a server echoes into the redirect host is redacted from the refusal, although the parsed host is in lowercase.
+#[tokio::test]
+async fn a_github_token_echoed_into_the_redirect_host_is_redacted() {
+    for call in GitHubCall::ALL {
+        for (status, phrase) in REDIRECTS {
+            let case = format!("{call:?} answered with {status}");
+            let mut server = http::FakeServer::start();
+            let mut replies = call.earlier_replies();
+            let earlier = replies.len();
+            replies.push(
+                Response::new(status)
+                    .header("Location", "http://Echoed-Token.example.test/x")
+                    .into(),
+            );
+            server.script(replies);
+            let base = server.base_url();
+            let client = GitHubClient::new(
+                GitHubRepository::parse("o/r").unwrap(),
+                base.clone(),
+                format!("{base}/graphql"),
+                Some("Echoed-Token".into()),
+            )
+            .unwrap();
+
+            let error = call.run(&client, &base).await.unwrap_err();
+
+            let (_, target) = call.redirected();
+            assert_eq!(
+                (refusal_reason(&error), error.to_string()),
+                (
+                    Some(RefusalReason::GithubRedirectRefused),
+                    format!(
+                        "refusing GitHub redirect {phrase} from {base}{target} to http://[REDACTED].example.test"
+                    )
+                ),
+                "{case}"
+            );
+            assert_eq!(server.finish().len(), earlier + 1, "{case}");
+        }
+    }
+}
+
+/// A token that GitHub echoes into an error body or a GraphQL error stays out of the failure.
+#[tokio::test]
+async fn a_github_token_echoed_into_an_error_body_is_redacted() {
+    for (call, reply, failure) in [
+        (
+            GitHubCall::ReleaseLookup,
+            response(403, "Echoed-Token may not read o/r"),
+            "GitHub request to {base}/repos/o/r/releases?per_page=100&page=1 failed with 403 Forbidden: [REDACTED] may not read o/r",
+        ),
+        (
+            GitHubCall::VerifiedCommit,
+            response(
+                200,
+                r#"{"data":null,"errors":[{"message":"Echoed-Token may not push"}]}"#,
+            ),
+            "GitHub could not create verified release commit: [REDACTED] may not push",
+        ),
+    ] {
+        let mut server = http::FakeServer::start();
+        let mut replies = call.earlier_replies();
+        replies.push(reply);
+        server.script(replies);
+        let base = server.base_url();
+        let client = GitHubClient::new(
+            GitHubRepository::parse("o/r").unwrap(),
+            base.clone(),
+            format!("{base}/graphql"),
+            Some("Echoed-Token".into()),
+        )
+        .unwrap();
+
+        let error = call.run(&client, &base).await.unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            failure.replace("{base}", &base),
+            "{call:?}"
+        );
+        server.finish();
+    }
+}
+
 fn test_client(server: &FakeServer, token: Option<&str>) -> GitHubClient {
     GitHubClient::new(
         GitHubRepository::parse("o/r").unwrap(),

@@ -406,6 +406,12 @@ refusal_reasons! {
     RepositoryObjectFormatUnsupported => "repository_object_format_unsupported", UsageOrConfig;
     /// Two registry releases share the highest precedence, among every release or among the stable ones, and differ in build metadata, so neither is the latest.
     RegistryReleasePrecedenceTie => "registry_release_precedence_tie", ImmutableStateConflict;
+    /// GitHub answered a request with a redirect, which release-glz never follows, so the token reaches no other URL.
+    GithubRedirectRefused => "github_redirect_refused", TemporaryExternal;
+    /// The runner answered the GitHub Actions OIDC token request, or the issuer answered its discovery or key set request, with a redirect, which release-glz never follows.
+    OidcRedirectRefused => "oidc_redirect_refused", PolicyOrApproval;
+    /// The registry answered a publish with a redirect, which release-glz never follows, so the archive and the credential reach no other URL.
+    RegistryPublishRedirectRefused => "registry_publish_redirect_refused", TemporaryExternal;
 }
 
 /// An error that names its refusal, whose reason decides the class.

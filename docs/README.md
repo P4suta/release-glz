@@ -504,6 +504,9 @@ Reason codes are stable, and a code is never reused for another refusal:
 | `approval_release_pr_missing` | 3 | A push release has no server-verified merged managed Release PR for its Candidate. |
 | `repository_object_format_unsupported` | 2 | The repository that a rehearsal builds from names its objects with a hash other than SHA-1, so GitHub can't serve its commits. |
 | `registry_release_precedence_tie` | 4 | Two registry releases share the highest precedence, among every release or among the stable ones, and differ in build metadata, so neither is the latest. |
+| `github_redirect_refused` | 5 | GitHub answered a request with a redirect, which release-glz never follows, so the token reaches no other URL. |
+| `oidc_redirect_refused` | 3 | The runner answered the GitHub Actions OIDC token request, or the issuer answered its discovery or key set request, with a redirect, which release-glz never follows. |
+| `registry_publish_redirect_refused` | 5 | The registry answered a publish with a redirect, which release-glz never follows, so the archive and the credential reach no other URL. |
 
 A release run that stops after it published part of a release exits 7 whatever stopped it, including a required notify hook that fails after publication.
 Inspection commands, `status`, `verify --online`, and `release --dry-run`, exit 0 whenever they can report a state, and that `state` names what remains.
