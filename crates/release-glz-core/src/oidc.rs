@@ -12,7 +12,7 @@ pub const OIDC_ISSUER_HOST: &[u8] = b"token.actions.githubusercontent.com";
 pub const RUNNER_TOKEN_ZONE: &[u8] = b"actions.githubusercontent.com";
 
 /// The base of the decimal digits that a run attempt is written in.
-const DECIMAL_BASE: u64 = 10;
+const DECIMAL_BASE: u32 = 10;
 
 /// The times that a token states, in Unix seconds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,6 +40,10 @@ pub enum WindowRefusal {
 /// Whether a token with `times` is valid at `now`, or the first check it fails.
 ///
 /// The token has to expire after `now`, and neither its issue time nor the start of its validity may lie more than [`CLOCK_SKEW_SECONDS`] after `now`.
+///
+/// # Errors
+///
+/// Returns the [`WindowRefusal`] of the first check that fails, in the order expiry, issue time, and start of validity.
 pub fn token_window(times: TokenTimes, now: i64) -> Result<(), WindowRefusal> {
     if expired(times.expires_at, now) {
         return Err(WindowRefusal::Expired);
@@ -57,46 +61,47 @@ pub fn token_window(times: TokenTimes, now: i64) -> Result<(), WindowRefusal> {
     Ok(())
 }
 
-fn expired(expires_at: i64, now: i64) -> bool {
+const fn expired(expires_at: i64, now: i64) -> bool {
     #[cfg(feature = "negative-control-token-expiry")]
-    if let Some(expired) = negative_control_token_expiry(expires_at, now) {
+    if let core::ops::ControlFlow::Break(expired) = negative_control_token_expiry(expires_at, now) {
         return expired;
     }
     expires_at <= now
 }
 
 /// The latest issue time or start of validity that a token may state at `now`, which stays at the largest time instead of wrapping.
-fn latest_start(now: i64) -> i64 {
+const fn latest_start(now: i64) -> i64 {
     #[cfg(feature = "negative-control-token-skew-wrap")]
-    if let Some(latest) = negative_control_token_skew_wrap(now) {
+    if let core::ops::ControlFlow::Break(latest) = negative_control_token_skew_wrap(now) {
         return latest;
     }
     now.saturating_add(CLOCK_SKEW_SECONDS)
 }
 
 /// Whether `text` is a run ID: one or more ASCII digits.
+#[must_use]
 pub fn is_run_id(text: &[u8]) -> bool {
     !text.is_empty() && text.iter().all(u8::is_ascii_digit)
 }
 
 /// The attempt number that `text` names, when it is one or more ASCII digits for a positive number that fits in 64 bits.
+#[must_use]
 pub fn run_attempt(text: &[u8]) -> Option<u64> {
     #[cfg(feature = "negative-control-signed-attempt")]
-    if let Some(attempt) = negative_control_signed_attempt(text) {
+    if let core::ops::ControlFlow::Break(attempt) = negative_control_signed_attempt(text) {
         return attempt;
     }
     positive_decimal(text)
 }
 
+/// The positive number that `text` spells in ASCII digits, when it fits in 64 bits.
 fn positive_decimal(text: &[u8]) -> Option<u64> {
-    if !is_run_id(text) {
-        return None;
-    }
     let mut value: u64 = 0;
     for &byte in text {
+        let digit = char::from(byte).to_digit(DECIMAL_BASE)?;
         value = value
-            .checked_mul(DECIMAL_BASE)?
-            .checked_add(u64::from(byte - b'0'))?;
+            .checked_mul(u64::from(DECIMAL_BASE))?
+            .checked_add(u64::from(digit))?;
     }
     (value > 0).then_some(value)
 }
@@ -125,6 +130,15 @@ pub enum OriginRefusal {
 /// Whether a URL of `kind` with `scheme` and `host` names GitHub's own origin, or why not.
 ///
 /// `loopback` tells whether the host is a loopback IP address, which a test may use over plain HTTP when `allow_http_loopback` is set.
+///
+/// # Errors
+///
+/// Returns [`OriginRefusal::NotHttps`] for a scheme other than HTTPS outside that exception, and [`OriginRefusal::UntrustedHost`] for a host other than GitHub's for `kind`.
+#[expect(
+    clippy::too_many_arguments,
+    clippy::fn_params_excessive_bools,
+    reason = "the five parameters are the parts of a parsed URL, the loopback fact, and the test setting that the shell passes, and an_oidc_url_trusts_no_host_but_githubs_own proves the decision over them"
+)]
 pub fn oidc_origin(
     kind: OidcUrlKind,
     scheme: &[u8],
@@ -153,7 +167,7 @@ pub fn oidc_origin(
 /// Whether `host` names a host inside `zone`: a label and a dot come before `zone`, in any letter case.
 fn in_zone(host: &[u8], zone: &[u8]) -> bool {
     #[cfg(feature = "negative-control-zone-without-dot")]
-    if let Some(inside) = negative_control_zone_without_dot(host, zone) {
+    if let core::ops::ControlFlow::Break(inside) = negative_control_zone_without_dot(host, zone) {
         return inside;
     }
     let Some(start) = host.len().checked_sub(zone.len()) else {
@@ -165,27 +179,38 @@ fn in_zone(host: &[u8], zone: &[u8]) -> bool {
 
 /// Accepts a token at the second it expires.
 #[cfg(feature = "negative-control-token-expiry")]
-fn negative_control_token_expiry(expires_at: i64, now: i64) -> Option<bool> {
-    Some(expires_at < now)
+const fn negative_control_token_expiry(expires_at: i64, now: i64) -> core::ops::ControlFlow<bool> {
+    core::ops::ControlFlow::Break(expires_at < now)
 }
 
 /// Adds the clock skew with wrapping, so a clock near the largest time refuses every token.
 #[cfg(feature = "negative-control-token-skew-wrap")]
-fn negative_control_token_skew_wrap(now: i64) -> Option<i64> {
-    Some(now.wrapping_add(CLOCK_SKEW_SECONDS))
+const fn negative_control_token_skew_wrap(now: i64) -> core::ops::ControlFlow<i64> {
+    core::ops::ControlFlow::Break(now.wrapping_add(CLOCK_SKEW_SECONDS))
 }
 
 /// Reads a leading `+` as part of the number, as `u64::from_str` does.
 #[cfg(feature = "negative-control-signed-attempt")]
-fn negative_control_signed_attempt(text: &[u8]) -> Option<Option<u64>> {
-    text.strip_prefix(b"+").map(positive_decimal)
+fn negative_control_signed_attempt(text: &[u8]) -> core::ops::ControlFlow<Option<u64>> {
+    text.strip_prefix(b"+")
+        .map_or(core::ops::ControlFlow::Continue(()), |digits| {
+            core::ops::ControlFlow::Break(positive_decimal(digits))
+        })
 }
 
 /// Accepts any host that ends with the zone, even when no dot separates the two.
 #[cfg(feature = "negative-control-zone-without-dot")]
-fn negative_control_zone_without_dot(host: &[u8], zone: &[u8]) -> Option<bool> {
-    let start = host.len().checked_sub(zone.len())?;
-    Some(start > 0 && host[start..].eq_ignore_ascii_case(zone))
+fn negative_control_zone_without_dot(host: &[u8], zone: &[u8]) -> core::ops::ControlFlow<bool> {
+    host.len()
+        .checked_sub(zone.len())
+        .map_or(core::ops::ControlFlow::Continue(()), |start| {
+            core::ops::ControlFlow::Break(
+                start > 0
+                    && host
+                        .get(start..)
+                        .is_some_and(|tail| tail.eq_ignore_ascii_case(zone)),
+            )
+        })
 }
 
 #[cfg(kani)]

@@ -51,15 +51,15 @@ fn occurrence_end(text: &[u8], secret: &[u8], at: usize) -> Option<usize> {
         return None;
     }
     #[cfg(feature = "negative-control-redaction-partial")]
-    if let Some(end) = negative_control_redaction_partial(secret, at) {
+    if let core::ops::ControlFlow::Break(end) = negative_control_redaction_partial(secret, at) {
         return end;
     }
     #[cfg(feature = "negative-control-redaction-overreach")]
-    if let Some(end) = negative_control_redaction_overreach(secret, at) {
+    if let core::ops::ControlFlow::Break(end) = negative_control_redaction_overreach(secret, at) {
         return end;
     }
     #[cfg(feature = "negative-control-redaction-midchar")]
-    if let Some(end) = negative_control_redaction_midchar(at) {
+    if let core::ops::ControlFlow::Break(end) = negative_control_redaction_midchar(at) {
         return end;
     }
     at.checked_add(secret.len())
@@ -76,20 +76,36 @@ fn occurs_at(text: &[u8], secret: &[u8], at: usize) -> bool {
 
 /// Leaves the last byte of each secret occurrence unredacted.
 #[cfg(feature = "negative-control-redaction-partial")]
-fn negative_control_redaction_partial(secret: &[u8], at: usize) -> Option<Option<usize>> {
-    Some(at.checked_add(secret.len() - 1))
+fn negative_control_redaction_partial(
+    secret: &[u8],
+    at: usize,
+) -> core::ops::ControlFlow<Option<usize>> {
+    core::ops::ControlFlow::Break(
+        secret
+            .len()
+            .checked_sub(1)
+            .and_then(|last| at.checked_add(last)),
+    )
 }
 
 /// Redacts the byte after each secret occurrence too.
 #[cfg(feature = "negative-control-redaction-overreach")]
-fn negative_control_redaction_overreach(secret: &[u8], at: usize) -> Option<Option<usize>> {
-    Some(at.checked_add(secret.len() + 1))
+fn negative_control_redaction_overreach(
+    secret: &[u8],
+    at: usize,
+) -> core::ops::ControlFlow<Option<usize>> {
+    core::ops::ControlFlow::Break(
+        secret
+            .len()
+            .checked_add(1)
+            .and_then(|past| at.checked_add(past)),
+    )
 }
 
 /// Redacts only the first byte of each secret occurrence, which can end inside a character.
 #[cfg(feature = "negative-control-redaction-midchar")]
-fn negative_control_redaction_midchar(at: usize) -> Option<Option<usize>> {
-    Some(at.checked_add(1))
+const fn negative_control_redaction_midchar(at: usize) -> core::ops::ControlFlow<Option<usize>> {
+    core::ops::ControlFlow::Break(at.checked_add(1))
 }
 
 /// The maximal runs of equal decisions, as kept and redacted segments.
@@ -125,13 +141,17 @@ impl<I: Iterator<Item = bool>> Iterator for Runs<I> {
 }
 
 /// The end of the run that starts at `start` with `redacted`, after taking every equal decision that follows it.
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "redaction_replaces_each_maximal_covered_run_once proves that a run ends at most at the number of decisions, which is the length of a text"
+)]
 fn run_end<I: Iterator<Item = bool>>(
     decisions: &mut Peekable<I>,
     redacted: bool,
     start: usize,
 ) -> usize {
     #[cfg(feature = "negative-control-redaction-split")]
-    if let Some(end) = negative_control_redaction_split(start) {
+    if let core::ops::ControlFlow::Break(end) = negative_control_redaction_split(start) {
         return end;
     }
     let mut end = start + 1;
@@ -143,8 +163,11 @@ fn run_end<I: Iterator<Item = bool>>(
 
 /// Ends every run after one decision, so one covered run becomes several segments.
 #[cfg(feature = "negative-control-redaction-split")]
-fn negative_control_redaction_split(start: usize) -> Option<usize> {
-    Some(start + 1)
+fn negative_control_redaction_split(start: usize) -> core::ops::ControlFlow<usize> {
+    start.checked_add(1).map_or(
+        core::ops::ControlFlow::Continue(()),
+        core::ops::ControlFlow::Break,
+    )
 }
 
 #[cfg(kani)]

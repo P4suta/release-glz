@@ -14,5 +14,5 @@ negative-control-incomplete-run = []
 # Admitting a negative control run in which another check failed too.
 negative-control-extra-failure = []
 
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+[lints]
+workspace = true

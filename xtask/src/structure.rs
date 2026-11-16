@@ -189,9 +189,6 @@ pub const DEBT: &[&str] = &[
     "Cargo.toml: lint-exception: [lints.clippy] allows disallowed_types",
     "Cargo.toml: lint-exception: [lints.clippy] allows enum_variant_names",
     "Cargo.toml: lint-exception: [lints.clippy] allows too_many_arguments",
-    // The core adopts the lint baseline together with the Kani harnesses it moves.
-    "crates/release-glz-core/Cargo.toml: lint-exception: [lints.clippy] allows disallowed_methods",
-    "crates/release-glz-core/Cargo.toml: lint-exception: [lints.clippy] allows too_many_arguments",
 ];
 
 /// The rule that a finding breaks.

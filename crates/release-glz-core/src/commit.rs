@@ -6,6 +6,7 @@ use crate::Bump;
 ///
 /// A `!` right before the colon of the header, or a body line that starts with `BREAKING CHANGE:` or `BREAKING-CHANGE:`, asks for a major release.
 /// Otherwise the type decides in any letter case: `feat` asks for a minor release, and `fix` or `perf` for a patch.
+#[must_use]
 pub fn conventional_bump(subject: &[u8], body: &[u8]) -> Bump {
     let header = before(subject, b':');
     if header.last() == Some(&b'!') || has_breaking_footer(body) {
@@ -23,39 +24,22 @@ pub fn conventional_bump(subject: &[u8], body: &[u8]) -> Bump {
 
 /// The bytes of `text` before its first `separator`, or all of them.
 fn before(text: &[u8], separator: u8) -> &[u8] {
-    let mut end = 0;
-    while let Some(byte) = text.get(end)
-        && *byte != separator
-    {
-        end += 1;
-    }
-    text.get(..end).unwrap_or(text)
+    text.split(|byte| *byte == separator).next().unwrap_or(text)
 }
 
 /// Whether a line of `body` opens a breaking-change footer.
-///
-/// One indexed scan visits every line start, which a proof unwinds once per byte.
 fn has_breaking_footer(body: &[u8]) -> bool {
     #[cfg(feature = "negative-control-marker-anywhere")]
-    if let Some(found) = negative_control_marker_anywhere(body) {
+    if let core::ops::ControlFlow::Break(found) = negative_control_marker_anywhere(body) {
         return found;
     }
-    let mut index = 0;
-    let mut line_start = true;
-    while let Some(byte) = body.get(index) {
-        if line_start && breaking_footer(body.get(index..).unwrap_or_default()) {
-            return true;
-        }
-        line_start = *byte == b'\n';
-        index += 1;
-    }
-    false
+    body.split(|byte| *byte == b'\n').any(breaking_footer)
 }
 
 /// Whether a body line opens a breaking-change footer, which Conventional Commits spells only in uppercase.
 fn breaking_footer(line: &[u8]) -> bool {
     #[cfg(feature = "negative-control-breaking-footer")]
-    if let Some(footer) = negative_control_spaced_footer_only(line) {
+    if let core::ops::ControlFlow::Break(footer) = negative_control_spaced_footer_only(line) {
         return footer;
     }
     line.starts_with(b"BREAKING CHANGE:") || line.starts_with(b"BREAKING-CHANGE:")
@@ -63,30 +47,34 @@ fn breaking_footer(line: &[u8]) -> bool {
 
 /// Misses the hyphenated breaking-change footer.
 #[cfg(feature = "negative-control-breaking-footer")]
-fn negative_control_spaced_footer_only(line: &[u8]) -> Option<bool> {
-    Some(line.starts_with(b"BREAKING CHANGE:"))
+fn negative_control_spaced_footer_only(line: &[u8]) -> core::ops::ControlFlow<bool> {
+    core::ops::ControlFlow::Break(line.starts_with(b"BREAKING CHANGE:"))
 }
 
 /// Takes a breaking-change marker anywhere in the body as a footer, inside a line too.
 #[cfg(feature = "negative-control-marker-anywhere")]
-fn negative_control_marker_anywhere(body: &[u8]) -> Option<bool> {
-    let mut index = 0;
-    while let Some(rest) = body.get(index..) {
-        if rest.is_empty() {
-            break;
-        }
+fn negative_control_marker_anywhere(body: &[u8]) -> core::ops::ControlFlow<bool> {
+    let mut rest = body;
+    while let [_, after @ ..] = rest {
         if breaking_footer(rest) {
-            return Some(true);
+            return core::ops::ControlFlow::Break(true);
         }
-        index += 1;
+        rest = after;
     }
-    Some(false)
+    core::ops::ControlFlow::Break(false)
 }
 
 /// Whether a commit type is `name` in any letter case.
+#[cfg_attr(
+    not(feature = "negative-control-commit-type-case"),
+    expect(
+        clippy::missing_const_for_fn,
+        reason = "the commit-type-case negative control compares the bytes with `==`, which no const fn may call"
+    )
+)]
 fn names(kind: &[u8], name: &[u8]) -> bool {
     #[cfg(feature = "negative-control-commit-type-case")]
-    if let Some(named) = negative_control_exact_case(kind, name) {
+    if let core::ops::ControlFlow::Break(named) = negative_control_exact_case(kind, name) {
         return named;
     }
     kind.eq_ignore_ascii_case(name)
@@ -94,8 +82,8 @@ fn names(kind: &[u8], name: &[u8]) -> bool {
 
 /// Matches commit types in lowercase only.
 #[cfg(feature = "negative-control-commit-type-case")]
-fn negative_control_exact_case(kind: &[u8], name: &[u8]) -> Option<bool> {
-    Some(kind == name)
+fn negative_control_exact_case(kind: &[u8], name: &[u8]) -> core::ops::ControlFlow<bool> {
+    core::ops::ControlFlow::Break(kind == name)
 }
 
 #[cfg(kani)]

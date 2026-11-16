@@ -24,9 +24,15 @@ pub enum RunRefusal {
 /// The run whose Candidate a publish job that `event` started may consume, given whether the Candidate names the job's own run.
 ///
 /// A push publishes only the Candidate that its own run prepared, and a manual promotion only one that another run prepared.
-pub fn candidate_run(event: &[u8], own_run: bool) -> Result<CandidateRun, RunRefusal> {
+///
+/// # Errors
+///
+/// Returns the [`RunRefusal`] that names why the job may consume no Candidate: a push of another run's Candidate, a promotion of its own run's, or another event.
+pub const fn candidate_run(event: &[u8], own_run: bool) -> Result<CandidateRun, RunRefusal> {
     #[cfg(feature = "negative-control-push-from-another-run")]
-    if let Some(run) = negative_control_push_from_another_run(event, own_run) {
+    if let core::ops::ControlFlow::Break(run) =
+        negative_control_push_from_another_run(event, own_run)
+    {
         return run;
     }
     match (event, own_run) {
@@ -40,6 +46,7 @@ pub fn candidate_run(event: &[u8], own_run: bool) -> Result<CandidateRun, RunRef
 
 impl CandidateRun {
     /// Whether a run that GitHub reports with `status` and `conclusion` can be the run this names.
+    #[must_use]
     pub fn admits(self, status: &[u8], conclusion: Option<&[u8]>) -> bool {
         match self {
             Self::Current => status == b"in_progress",
@@ -50,11 +57,15 @@ impl CandidateRun {
 
 /// Lets a push consume the Candidate of another run.
 #[cfg(feature = "negative-control-push-from-another-run")]
-fn negative_control_push_from_another_run(
+const fn negative_control_push_from_another_run(
     event: &[u8],
     own_run: bool,
-) -> Option<Result<CandidateRun, RunRefusal>> {
-    (event == b"push" && !own_run).then_some(Ok(CandidateRun::Completed))
+) -> core::ops::ControlFlow<Result<CandidateRun, RunRefusal>> {
+    if matches!(event, b"push") && !own_run {
+        core::ops::ControlFlow::Break(Ok(CandidateRun::Completed))
+    } else {
+        core::ops::ControlFlow::Continue(())
+    }
 }
 
 #[cfg(kani)]

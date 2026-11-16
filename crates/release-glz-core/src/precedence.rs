@@ -21,6 +21,7 @@ pub enum Channel {
 
 impl Channel {
     /// The label that names this channel in a version.
+    #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
             Self::Alpha => "alpha",
@@ -45,6 +46,7 @@ impl<'a> Pre<'a> {
     /// The prerelease that `text` spells.
     ///
     /// Empty text is stable, and valid text that is exactly `<channel>.<number>` is that train.
+    #[must_use]
     pub fn parse(text: &'a [u8]) -> Self {
         if text.is_empty() {
             return Self::Stable;
@@ -69,6 +71,7 @@ impl<'a> Pre<'a> {
     }
 
     /// Whether the first identifier is the label of `channel`.
+    #[must_use]
     pub fn starts_with(self, channel: Channel) -> bool {
         match self {
             Self::Stable => false,
@@ -100,7 +103,7 @@ impl<'a> Pre<'a> {
 /// Whether `<label>.<number>` text is valid, so that it reads as a train.
 fn spells_a_train(pre: Pre<'_>) -> bool {
     #[cfg(feature = "negative-control-unchecked-train")]
-    if let Some(valid) = negative_control_unchecked_train() {
+    if let core::ops::ControlFlow::Break(valid) = negative_control_unchecked_train() {
         return valid;
     }
     pre.is_valid()
@@ -108,8 +111,8 @@ fn spells_a_train(pre: Pre<'_>) -> bool {
 
 /// Reads `<label>.<number>` text as a train without checking its grammar, so a number with a leading zero passes.
 #[cfg(feature = "negative-control-unchecked-train")]
-fn negative_control_unchecked_train() -> Option<bool> {
-    Some(true)
+const fn negative_control_unchecked_train() -> core::ops::ControlFlow<bool> {
+    core::ops::ControlFlow::Break(true)
 }
 
 /// The byte that separates prerelease identifiers.
@@ -128,66 +131,41 @@ impl Segment<'_> {
     fn is_valid(self) -> bool {
         if self.numeric {
             #[cfg(feature = "negative-control-leading-zero")]
-            if let Some(valid) = negative_control_leading_zero() {
+            if let core::ops::ControlFlow::Break(valid) = negative_control_leading_zero() {
                 return valid;
             }
             return self.bytes.len() == 1 || self.bytes.first() != Some(&b'0');
         }
-        let mut index = 0;
-        while let Some(byte) = self.bytes.get(index) {
-            if !(byte.is_ascii_alphanumeric() || *byte == b'-') {
-                return false;
-            }
-            index += 1;
-        }
-        index > 0
+        !self.bytes.is_empty()
+            && self
+                .bytes
+                .iter()
+                .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'-')
     }
 }
 
 /// Admits a numeric identifier with a leading zero.
 #[cfg(feature = "negative-control-leading-zero")]
-fn negative_control_leading_zero() -> Option<bool> {
-    Some(true)
+const fn negative_control_leading_zero() -> core::ops::ControlFlow<bool> {
+    core::ops::ControlFlow::Break(true)
 }
 
 /// The dot-separated identifiers of a prerelease's text, in order.
 ///
-/// Each identifier takes one indexed scan, which a proof unwinds once per byte.
-struct Segments<'a> {
-    text: &'a [u8],
-    start: usize,
-}
-
-fn segments(text: &[u8]) -> Segments<'_> {
-    Segments { text, start: 0 }
-}
-
-impl<'a> Iterator for Segments<'a> {
-    type Item = Segment<'a>;
-
-    fn next(&mut self) -> Option<Segment<'a>> {
-        let start = self.start;
-        if start > self.text.len() {
-            return None;
-        }
-        let mut end = start;
-        let mut numeric = true;
-        while let Some(&byte) = self.text.get(end)
-            && byte != DOT
-        {
-            numeric &= byte.is_ascii_digit();
-            end += 1;
-        }
-        self.start = end + 1;
-        Some(Segment {
-            bytes: self.text.get(start..end)?,
-            numeric: numeric && end > start,
-        })
-    }
+/// The split at the dots and the check for digits each take one step per byte, which a proof unwinds once per byte.
+fn segments(text: &[u8]) -> impl Iterator<Item = Segment<'_>> {
+    text.split(|byte| *byte == DOT).map(|bytes| Segment {
+        bytes,
+        numeric: !bytes.is_empty() && bytes.iter().all(u8::is_ascii_digit),
+    })
 }
 
 /// The first identifier of a numbered prerelease, as a release train ranks it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "the crate root doesn't export `Label`, so rustc's unreachable_pub requires `pub(crate)` for the selection module to read it"
+)]
 pub(crate) enum Label {
     /// The label of a channel.
     Channel(Channel),
@@ -196,7 +174,7 @@ pub(crate) enum Label {
 }
 
 impl Label {
-    fn of(text: &[u8]) -> Self {
+    const fn of(text: &[u8]) -> Self {
         match text {
             b"alpha" => Self::Channel(Channel::Alpha),
             b"beta" => Self::Channel(Channel::Beta),
@@ -227,6 +205,7 @@ pub struct Version<'a> {
 
 impl Version<'_> {
     /// The stable version with `core`.
+    #[must_use]
     pub const fn stable(core: VersionCore) -> Self {
         Self {
             core,
@@ -235,15 +214,18 @@ impl Version<'_> {
     }
 
     /// Whether this version has a higher precedence than `other`.
+    #[must_use]
     pub fn follows(&self, other: &Version<'_>) -> bool {
         compare(self, other) == Ordering::Greater
     }
 }
 
 /// The precedence of `left` relative to `right`.
+#[must_use]
 pub fn compare(left: &Version<'_>, right: &Version<'_>) -> Ordering {
     #[cfg(feature = "negative-control-prerelease-first")]
-    if let Some(ordering) = negative_control_prerelease_first(left, right) {
+    if let core::ops::ControlFlow::Break(ordering) = negative_control_prerelease_first(left, right)
+    {
         return ordering;
     }
     left.core
@@ -253,8 +235,13 @@ pub fn compare(left: &Version<'_>, right: &Version<'_>) -> Ordering {
 
 /// Compares the prereleases before the cores.
 #[cfg(feature = "negative-control-prerelease-first")]
-fn negative_control_prerelease_first(left: &Version<'_>, right: &Version<'_>) -> Option<Ordering> {
-    Some(compare_prereleases(left.pre, right.pre).then_with(|| left.core.cmp(&right.core)))
+fn negative_control_prerelease_first(
+    left: &Version<'_>,
+    right: &Version<'_>,
+) -> core::ops::ControlFlow<Ordering> {
+    core::ops::ControlFlow::Break(
+        compare_prereleases(left.pre, right.pre).then_with(|| left.core.cmp(&right.core)),
+    )
 }
 
 fn compare_prereleases(left: Pre<'_>, right: Pre<'_>) -> Ordering {
@@ -281,9 +268,9 @@ fn compare_prereleases(left: Pre<'_>, right: Pre<'_>) -> Ordering {
 }
 
 /// A stable version's precedence relative to a prerelease of its core.
-fn stable_after_prerelease() -> Ordering {
+const fn stable_after_prerelease() -> Ordering {
     #[cfg(feature = "negative-control-stable-before-prerelease")]
-    if let Some(ordering) = negative_control_stable_first() {
+    if let core::ops::ControlFlow::Break(ordering) = negative_control_stable_first() {
         return ordering;
     }
     Ordering::Greater
@@ -291,14 +278,14 @@ fn stable_after_prerelease() -> Ordering {
 
 /// Orders a stable version before the prereleases of its core.
 #[cfg(feature = "negative-control-stable-before-prerelease")]
-fn negative_control_stable_first() -> Option<Ordering> {
-    Some(Ordering::Less)
+const fn negative_control_stable_first() -> core::ops::ControlFlow<Ordering> {
+    core::ops::ControlFlow::Break(Ordering::Less)
 }
 
 /// The precedence of two prereleases with the same identifiers.
-fn same_identifiers() -> Ordering {
+const fn same_identifiers() -> Ordering {
     #[cfg(feature = "negative-control-equal-prereleases")]
-    if let Some(ordering) = negative_control_unequal() {
+    if let core::ops::ControlFlow::Break(ordering) = negative_control_unequal() {
         return ordering;
     }
     Ordering::Equal
@@ -306,8 +293,8 @@ fn same_identifiers() -> Ordering {
 
 /// Orders two prereleases with the same identifiers as unequal.
 #[cfg(feature = "negative-control-equal-prereleases")]
-fn negative_control_unequal() -> Option<Ordering> {
-    Some(Ordering::Less)
+const fn negative_control_unequal() -> core::ops::ControlFlow<Ordering> {
+    core::ops::ControlFlow::Break(Ordering::Less)
 }
 
 /// A train's prerelease relative to prerelease text, compared as the identifiers `<label>.<number>` that spell the train.
@@ -336,9 +323,9 @@ fn train_against_text(channel: Channel, number: u64, text: &[u8]) -> Ordering {
 }
 
 /// The label that spells a train of `channel` when it meets prerelease text.
-fn train_label(channel: Channel) -> &'static [u8] {
+const fn train_label(channel: Channel) -> &'static [u8] {
     #[cfg(feature = "negative-control-one-label")]
-    if let Some(label) = negative_control_one_label() {
+    if let core::ops::ControlFlow::Break(label) = negative_control_one_label() {
         return label;
     }
     channel.label().as_bytes()
@@ -346,8 +333,8 @@ fn train_label(channel: Channel) -> &'static [u8] {
 
 /// Spells every train with the first channel's label.
 #[cfg(feature = "negative-control-one-label")]
-fn negative_control_one_label() -> Option<&'static [u8]> {
-    Some(Channel::Alpha.label().as_bytes())
+const fn negative_control_one_label() -> core::ops::ControlFlow<&'static [u8]> {
+    core::ops::ControlFlow::Break(Channel::Alpha.label().as_bytes())
 }
 
 /// Two prerelease texts, compared identifier by identifier, where the text that runs out of identifiers first comes first.
@@ -361,7 +348,7 @@ fn compare_texts(left: &[u8], right: &[u8]) -> Ordering {
             (Some(_), None) => return Ordering::Greater,
             (Some(left), Some(right)) => match compare_segments(left, right) {
                 Ordering::Equal => {}
-                decided => return decided,
+                decided @ (Ordering::Less | Ordering::Greater) => return decided,
             },
         }
     }
@@ -387,14 +374,12 @@ fn compare_segments(left: Segment<'_>, right: Segment<'_>) -> Ordering {
 
 /// The lexicographic order of two byte strings, as `<[u8]>::cmp` orders them.
 ///
-/// One indexed loop compares them, which a proof unwinds once per byte.
+/// One loop over the paired bytes compares them, which a proof unwinds once per byte.
 fn compare_bytes(left: &[u8], right: &[u8]) -> Ordering {
-    let mut index = 0;
-    while let (Some(left_byte), Some(right_byte)) = (left.get(index), right.get(index)) {
+    for (left_byte, right_byte) in left.iter().zip(right) {
         if left_byte != right_byte {
             return left_byte.cmp(right_byte);
         }
-        index += 1;
     }
     left.len().cmp(&right.len())
 }
@@ -406,7 +391,7 @@ fn number_against_digits(number: u64, digits: &[u8]) -> Ordering {
 
 fn compare_numbers(left: u64, right: u64) -> Ordering {
     #[cfg(feature = "negative-control-reverse-numbers")]
-    if let Some(ordering) = negative_control_reversed(left, right) {
+    if let core::ops::ControlFlow::Break(ordering) = negative_control_reversed(left, right) {
         return ordering;
     }
     left.cmp(&right)
@@ -414,8 +399,8 @@ fn compare_numbers(left: u64, right: u64) -> Ordering {
 
 /// Orders numbers backward.
 #[cfg(feature = "negative-control-reverse-numbers")]
-fn negative_control_reversed(left: u64, right: u64) -> Option<Ordering> {
-    Some(right.cmp(&left))
+fn negative_control_reversed(left: u64, right: u64) -> core::ops::ControlFlow<Ordering> {
+    core::ops::ControlFlow::Break(right.cmp(&left))
 }
 
 /// The base that numeric identifiers are written in.
@@ -424,15 +409,13 @@ const DECIMAL: u32 = 10;
 /// The value of a non-empty run of ASCII digits, or `None` when it has another byte or exceeds 64 bits.
 fn parse_number(digits: &[u8]) -> Option<u64> {
     let mut value = 0_u64;
-    let mut index = 0;
-    while let Some(digit) = digits.get(index) {
+    for digit in digits {
         let digit = char::from(*digit).to_digit(DECIMAL)?;
         value = value
             .checked_mul(u64::from(DECIMAL))?
             .checked_add(u64::from(digit))?;
-        index += 1;
     }
-    (index > 0).then_some(value)
+    (!digits.is_empty()).then_some(value)
 }
 
 /// Symbolic versions for the proofs of this crate.

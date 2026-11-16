@@ -16,6 +16,10 @@ pub const FAILED_EXIT: i32 = 1;
 /// What the audit found in the report of a run of every proof harness.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(kani, derive(kani::Arbitrary))]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag is one independent finding of the report audit, and a_proof_run_is_admitted_only_when_every_expected_harness_verified ranges over every combination"
+)]
 pub struct ProofRun {
     /// Harnesses the committed inventory expects.
     pub expected: usize,
@@ -42,6 +46,10 @@ pub struct ProofRun {
 /// What the audit found in the report of a run of one negative control.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(kani, derive(kani::Arbitrary))]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag is one independent finding of the report audit, and a_control_run_is_admitted_only_when_exactly_its_assertion_failed ranges over every combination"
+)]
 pub struct ControlRun {
     /// Harnesses the report counts.
     pub total: usize,
@@ -94,6 +102,7 @@ pub enum Admission {
 }
 
 /// Admit a run of every proof harness only when Kani verified exactly the inventory and nothing in the report or the logs undermines it.
+#[must_use]
 pub const fn admit_proofs(exit_code: Option<i32>, run: ProofRun) -> Admission {
     #[cfg(feature = "negative-control-incomplete-run")]
     let run = negative_control_incomplete_run(run);
@@ -129,6 +138,7 @@ pub const fn admit_proofs(exit_code: Option<i32>, run: ProofRun) -> Admission {
 }
 
 /// Admit a run of one negative control only when Kani failed exactly its harness, on exactly the expected assertion.
+#[must_use]
 pub const fn admit_control(exit_code: Option<i32>, run: ControlRun) -> Admission {
     #[cfg(feature = "negative-control-extra-failure")]
     let run = negative_control_extra_failure(run);

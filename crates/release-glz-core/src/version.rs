@@ -1,6 +1,6 @@
 //! The release requirement lattice and the version arithmetic it drives.
 
-/// The ordered SemVer release requirement lattice.
+/// The ordered release requirement lattice of semantic versioning.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(
     feature = "serde",
@@ -24,9 +24,10 @@ impl Bump {
     /// The stronger of two requirements.
     ///
     /// Signals combine by maximum, so no single signal can lower what another one already requires.
+    #[must_use]
     pub fn max(self, other: Self) -> Self {
         #[cfg(feature = "negative-control-join")]
-        if let Some(joined) = negative_control_join(self, other) {
+        if let core::ops::ControlFlow::Break(joined) = negative_control_join(self, other) {
             return joined;
         }
         core::cmp::max(self, other)
@@ -35,8 +36,8 @@ impl Bump {
 
 /// Joins two bumps into the smaller one.
 #[cfg(feature = "negative-control-join")]
-fn negative_control_join(bump: Bump, other: Bump) -> Option<Bump> {
-    Some(core::cmp::min(bump, other))
+fn negative_control_join(bump: Bump, other: Bump) -> core::ops::ControlFlow<Bump> {
+    core::ops::ControlFlow::Break(core::cmp::min(bump, other))
 }
 
 /// The numeric part of a semantic version.
@@ -53,6 +54,7 @@ pub struct VersionCore {
 
 impl VersionCore {
     /// The smallest version core that `bump` requires after this one, or `None` when the bumped component is `u64::MAX`.
+    #[must_use]
     pub fn bumped(self, bump: Bump) -> Option<Self> {
         match bump {
             Bump::None => Some(self),
@@ -75,9 +77,10 @@ impl VersionCore {
 }
 
 /// One more than `value`, or `None` when `value` is `u64::MAX`.
-pub fn increment(value: u64) -> Option<u64> {
+#[must_use]
+pub const fn increment(value: u64) -> Option<u64> {
     #[cfg(feature = "negative-control-increment")]
-    if let Some(next) = negative_control_increment(value) {
+    if let core::ops::ControlFlow::Break(next) = negative_control_increment(value) {
         return next;
     }
     value.checked_add(1)
@@ -85,8 +88,8 @@ pub fn increment(value: u64) -> Option<u64> {
 
 /// Wraps around instead of reporting the largest value.
 #[cfg(feature = "negative-control-increment")]
-fn negative_control_increment(value: u64) -> Option<Option<u64>> {
-    Some(Some(value.wrapping_add(1)))
+const fn negative_control_increment(value: u64) -> core::ops::ControlFlow<Option<u64>> {
+    core::ops::ControlFlow::Break(Some(value.wrapping_add(1)))
 }
 
 #[cfg(kani)]
