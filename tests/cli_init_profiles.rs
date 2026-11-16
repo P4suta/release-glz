@@ -266,23 +266,25 @@ fn organization_and_private_profiles_require_exact_non_secret_inputs() {
 #[test]
 fn malformed_github_environment_urls_return_a_usage_envelope_instead_of_panicking() {
     for variable in ["GITHUB_API_URL", "GITHUB_GRAPHQL_URL"] {
-        let (temp, gleam) = package("1.0.0");
-        let output = isolated_command(env!("CARGO_BIN_EXE_release-glz"))
-            .current_dir(temp.path())
-            .env("PATH", &gleam)
-            .env(variable, "not-a-valid-github-url")
-            .args(["--output", "json", "init", "--profile", "public", "--check"])
-            .output()
-            .unwrap();
-        assert_eq!(output.status.code(), Some(2), "{variable}");
-        assert!(output.stderr.is_empty(), "{variable}");
-        let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-        assert_published_envelope(&envelope);
-        assert_eq!(envelope["ok"], false, "{variable}");
-        assert_eq!(
-            envelope["diagnostics"][0]["code"], "usage_or_config",
-            "{variable}"
-        );
+        for (url, code) in [
+            ("not-a-valid-github-url", "usage_or_config"),
+            ("http://github.example.test/api", "url_transport_untrusted"),
+        ] {
+            let (temp, gleam) = package("1.0.0");
+            let output = isolated_command(env!("CARGO_BIN_EXE_release-glz"))
+                .current_dir(temp.path())
+                .env("PATH", &gleam)
+                .env(variable, url)
+                .args(["--output", "json", "init", "--profile", "public", "--check"])
+                .output()
+                .unwrap();
+            assert_eq!(output.status.code(), Some(2), "{variable}={url}");
+            assert!(output.stderr.is_empty(), "{variable}={url}");
+            let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_published_envelope(&envelope);
+            assert_eq!(envelope["ok"], false, "{variable}={url}");
+            assert_eq!(envelope["diagnostics"][0]["code"], code, "{variable}={url}");
+        }
     }
 }
 

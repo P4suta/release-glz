@@ -491,10 +491,17 @@ pub fn classified(class: FailureClass, error: impl fmt::Display) -> Error {
 ///
 /// The message is flattened as [`classified`] flattens it, so only the reason survives, and the class is `class` either way.
 pub fn classified_keeping_reason(class: FailureClass, error: Error) -> Error {
-    match decide(&error) {
-        Decision::Refusal(reason) if reason.class() == class => refused(reason, error),
-        _ => classified(class, error),
+    match reason_of_class(class, &error) {
+        Some(reason) => refused(reason, error),
+        None => classified(class, error),
     }
+}
+
+/// The reason of the typed refusal that decides `error`, when that reason has `class`.
+///
+/// Every boundary that imposes a class names a refusal through this rule, so a diagnostic never pairs a reason with another class's exit status.
+pub(crate) fn reason_of_class(class: FailureClass, error: &Error) -> Option<RefusalReason> {
+    refusal_reason(error).filter(|reason| reason.class() == class)
 }
 
 /// Attach a boundary-specific class without replacing a more precise class already carried by the source error.
@@ -535,7 +542,10 @@ fn decide(error: &Error) -> Decision {
         return Decision::Class(classified.class());
     }
     if let Some(release) = error.downcast_ref::<crate::release::ReleaseRunError>() {
-        return Decision::Class(release.failure_class());
+        return match release.refusal_reason() {
+            Some(reason) => Decision::Refusal(reason),
+            None => Decision::Class(release.failure_class()),
+        };
     }
     if let Some(refusal) = error.downcast_ref::<Refusal>() {
         return Decision::Refusal(refusal.reason());
@@ -671,6 +681,7 @@ mod tests {
             Some(RefusalReason::CandidateChecksumMismatch)
         );
         assert_eq!(classify(&kept), boundary);
+        assert_eq!(diagnostic_code(&kept), "candidate_checksum_mismatch");
         assert_eq!(
             format!("{kept:#}"),
             "while verifying the Candidate: checksum differs"
@@ -681,12 +692,34 @@ mod tests {
         let reclassified = classified_keeping_reason(boundary, mismatched);
         assert_eq!(refusal_reason(&reclassified), None);
         assert_eq!(classify(&reclassified), boundary);
+        assert_eq!(diagnostic_code(&reclassified), "immutable_state_conflict");
         assert_eq!(format!("{reclassified:#}"), "no release table");
 
         let untyped = classified_keeping_reason(boundary, anyhow::anyhow!("unreadable"));
         assert_eq!(refusal_reason(&untyped), None);
         assert_eq!(classify(&untyped), boundary);
+        assert_eq!(diagnostic_code(&untyped), "immutable_state_conflict");
         assert_eq!(format!("{untyped:#}"), "unreadable");
+    }
+
+    #[test]
+    fn a_boundary_keeps_its_class_whatever_refusal_reaches_it() {
+        for class in FailureClass::ALL {
+            for &reason in RefusalReason::ALL {
+                let boundary = classified_keeping_reason(
+                    class,
+                    refused(reason, "message text is not classification"),
+                );
+                let named = (reason.class() == class).then_some(reason);
+                assert_eq!(classify(&boundary), class, "{class:?} {reason:?}");
+                assert_eq!(refusal_reason(&boundary), named, "{class:?} {reason:?}");
+                assert_eq!(
+                    diagnostic_code(&boundary),
+                    named.map_or(class.diagnostic_code(), RefusalReason::code),
+                    "{class:?} {reason:?}"
+                );
+            }
+        }
     }
 
     #[test]
