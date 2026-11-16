@@ -110,34 +110,8 @@ jobs:
           printf '%s\n' "$TOOL_DIR" >> "$GITHUB_PATH"
           rustup toolchain install 1.97.0 --profile minimal
           cargo +1.97.0 install --locked zizmor --version 1.31.1
-      - name: Render the exact managed workflow into an isolated repository
-        env:
-          ACTION_SHA: ${{ github.sha }}
-          GENERATED_ROOT: ${{ runner.temp }}/release-glz-generated
-        run: |
-          mkdir -p "$GENERATED_ROOT"
-          cp tests/fixtures/workflow/gleam.toml "$GENERATED_ROOT/gleam.toml"
-          git -C "$GENERATED_ROOT" init --initial-branch=main
-          cargo run --locked --manifest-path Cargo.toml -- \
-            --manifest-path "$GENERATED_ROOT/gleam.toml" init --update --action-sha "$ACTION_SHA"
-          test -s "$GENERATED_ROOT/.github/workflows/release-glz.yml"
-          grep -F "P4suta/release-glz@$ACTION_SHA" "$GENERATED_ROOT/.github/workflows/release-glz.yml"
-      - name: Validate GitHub workflow syntax
-        env:
-          GENERATED_WORKFLOW: ${{ runner.temp }}/release-glz-generated/.github/workflows/release-glz.yml
-        run: actionlint -color .github/workflows/*.yml "$GENERATED_WORKFLOW"
-      - name: Reject high-severity workflow findings
-        env:
-          GENERATED_WORKFLOW: ${{ runner.temp }}/release-glz-generated/.github/workflows/release-glz.yml
-        run: zizmor --persona auditor --min-severity high --no-online-audits .github/workflows action.yml "$GENERATED_WORKFLOW"
-      - name: Verify least privilege and immutable dependencies
-        env:
-          GENERATED_WORKFLOW: ${{ runner.temp }}/release-glz-generated/.github/workflows/release-glz.yml
-        run: node scripts/verify-workflows.js .github/workflows "$GENERATED_WORKFLOW"
-      - name: Reject expression-to-shell injection paths
-        env:
-          GENERATED_WORKFLOW: ${{ runner.temp }}/release-glz-generated/.github/workflows/release-glz.yml
-        run: node scripts/de-shell.js .github/workflows "$GENERATED_WORKFLOW"
+      - name: Check the repository workflows and the generated workflow at every severity, and fail planted defects
+        run: cargo xtask check --workflows
 
   coverage:
     name: Line and branch coverage

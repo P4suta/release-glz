@@ -92,6 +92,8 @@ just check
 
 The gate checks formatting, TOML, and spelling, then runs Clippy, the tests, the documentation, the dependency policy, the Action, and the workflow checks.
 It runs every step and names each one that failed.
+The workflow checks run actionlint, zizmor at every severity, `scripts/verify-workflows.js`, and `scripts/de-shell.js` over the repository workflows and over the workflow that `release-glz init` generates for `tests/fixtures/workflow/gleam.toml`.
+Once the generated workflow passes, zizmor and `scripts/verify-workflows.js` have to refuse a copy of it with an unpinned action, and zizmor a copy whose checkout keeps its credentials.
 Lefthook runs `just check-staged` before a commit, the commit message gate after it, and `just check` before a push.
 CI runs the same `cargo xtask check` on every pull request.
 `just check-linux` and `just check-win` run the steps that depend on the operating system on the other development hosts.
@@ -109,7 +111,7 @@ It also supports an explicit manual run.
 It checks dependency policy, generated workflows, coverage, all configured critical-path mutations, every parser fuzz target, and every Kani harness with its negative control.
 Parser fuzz smoke uses 10,000 runs per target with seed 1.
 Release coverage requires at least 90% lines and 85% branches, with no viable critical-path mutation survivors.
-Workflow changes must pass zizmor against both repository workflows and the generated consumer workflow during shipping assurance.
+Shipping assurance runs the workflow checks of the fast gate again on the candidate through `cargo xtask check --workflows`.
 
 Public JSON is a compatibility contract.
 Commands use `command/v1`, and every result format, `hook/v1`, and `state/v1` evolve independently with the schemas that [docs/README.md](docs/README.md#machine-readable-contract) lists.
