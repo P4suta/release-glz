@@ -1807,6 +1807,38 @@ fn public_sidecars_require_an_unambiguous_explicit_upload_policy() {
 }
 
 #[test]
+fn built_in_evidence_of_a_version_with_build_metadata_spells_its_plus_as_an_underscore() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut input = candidate_input(
+        hex_package(&[(
+            "gleam.toml",
+            b"name = \"widget\"\nversion = \"1.0.0+build.1\"\n",
+        )]),
+        None,
+        br#"{"modules":{}}"#.to_vec(),
+    );
+    input.version = "1.0.0+build.1".parse().unwrap();
+    input.tag = "v1.0.0+build.1".into();
+    input.outputs.sbom = true;
+    input.outputs.provenance = true;
+    input.sidecars = Candidate::built_in_evidence(&input).unwrap();
+
+    let sealed = Candidate::seal(&temp.path().join("candidate"), input).unwrap();
+
+    assert_eq!(
+        sealed
+            .sidecars
+            .iter()
+            .map(|sidecar| sidecar.name.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "widget-1.0.0_build.1.cdx.json",
+            "widget-1.0.0_build.1.intoto.jsonl"
+        ]
+    );
+}
+
+#[test]
 fn requested_sbom_and_provenance_are_built_in_deterministic_evidence() {
     let temp = tempfile::tempdir().unwrap();
     let mut input = candidate_input(
@@ -2630,16 +2662,6 @@ fn candidate_inputs() -> impl Strategy<Value = CandidateInput> {
                 (verify_hook_definitions, hook_evidence, notify_hook_definitions),
             ),
         )| {
-            // Sealing refuses built-in evidence named after a version with build metadata, because no asset name may hold its `+`.
-            // Only a version without built-in evidence keeps its build metadata, so this property leaves that refusal to a naming decision.
-            let version = if sbom || provenance {
-                Version {
-                    build: BuildMetadata::EMPTY,
-                    ..version
-                }
-            } else {
-                version
-            };
             let mut input = CandidateInput {
                 tag: format!("{tag_prefix}v{version}"),
                 package,
