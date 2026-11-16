@@ -38,7 +38,7 @@
     "pr_url": { "$ref": "#/$defs/nullableString" },
     "release_pr_head": {
       "anyOf": [
-        { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+        { "type": "string", "pattern": "^[0-9a-f]{40}$" },
         { "type": "null" }
       ]
     },
@@ -85,7 +85,7 @@
         "git_ref": { "type": ["string", "null"] },
         "sha": {
           "anyOf": [
-            { "type": "string", "pattern": "^(?:[a-f0-9]{40}|[a-f0-9]{64})$" },
+            { "type": "string", "pattern": "^[0-9a-f]{40}$" },
             { "type": "null" }
           ]
         },

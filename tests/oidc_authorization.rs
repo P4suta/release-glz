@@ -228,6 +228,10 @@ fn claim_values_that_match_textually_still_require_canonical_safe_shapes() {
             "invalid-sha-format",
             "GitHub OIDC source SHA does not match the sealed Candidate",
         ),
+        (
+            "sha256-sha",
+            "GitHub OIDC source SHA does not match the sealed Candidate",
+        ),
         ("empty-run-id", invalid_run_id),
         ("nondigit-run-id", invalid_run_id),
         ("invalid-attempt", invalid_attempt),
@@ -244,6 +248,10 @@ fn claim_values_that_match_textually_still_require_canonical_safe_shapes() {
             }
             "invalid-sha-format" => {
                 candidate.source_sha = "A".repeat(40);
+                expected.source_sha = candidate.source_sha.clone();
+            }
+            "sha256-sha" => {
+                candidate.source_sha = "a".repeat(64);
                 expected.source_sha = candidate.source_sha.clone();
             }
             "empty-run-id" => {

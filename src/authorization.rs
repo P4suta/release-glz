@@ -6,6 +6,7 @@
 use anyhow::{Result, bail};
 use base64::Engine;
 use release_glz_core::{OidcUrlKind, OriginRefusal, TokenTimes, WindowRefusal};
+use release_glz_domain::CommitId;
 use reqwest::{Client, StatusCode, Url};
 use ring::signature;
 use serde::{Deserialize, Serialize};
@@ -464,7 +465,7 @@ fn validate_github_claims(
             "GitHub OIDC workflow is not the managed release workflow"
         );
     }
-    if claims.source_sha != expected.source_sha || !is_full_sha(&claims.source_sha) {
+    if claims.source_sha != expected.source_sha || CommitId::parse(&claims.source_sha).is_err() {
         refuse!(
             OidcClaimsMismatch,
             "GitHub OIDC source SHA does not match the sealed Candidate"
@@ -539,10 +540,6 @@ pub fn verify_github_oidc_token(
     let claims: GithubOidcClaims = serde_json::from_slice(&payload)
         .map_err(|_| anyhow::anyhow!("GitHub OIDC JWT claims are invalid"))?;
     validate_github_claims(claims, expected, now_unix_seconds)
-}
-
-fn is_full_sha(value: &str) -> bool {
-    release_glz_core::is_object_id(value.as_bytes())
 }
 
 fn verify_rs256_signature(

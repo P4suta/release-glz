@@ -224,7 +224,7 @@ refusal_reasons! {
     CandidateNotDirectory => "candidate_not_directory", UsageOrConfig;
     /// The Candidate destination already exists, and a sealed Candidate is never replaced.
     CandidateDestinationExists => "candidate_destination_exists", ImmutableStateConflict;
-    /// The Candidate source commit isn't a full lowercase SHA.
+    /// The Candidate source commit isn't a commit ID of 40 lowercase hexadecimal digits.
     CandidateSourceCommitInvalid => "candidate_source_commit_invalid", UsageOrConfig;
     /// The Candidate tag is a full ref or a peeled ref.
     CandidateTagUnsafe => "candidate_tag_unsafe", UsageOrConfig;
@@ -400,6 +400,8 @@ refusal_reasons! {
     ApprovalRequestIncomplete => "approval_request_incomplete", PolicyOrApproval;
     /// A push release has no server-verified merged managed Release PR for its Candidate.
     ApprovalReleasePrMissing => "approval_release_pr_missing", PolicyOrApproval;
+    /// The repository that a rehearsal builds from names its objects with a hash other than SHA-1, so GitHub can't serve its commits.
+    RepositoryObjectFormatUnsupported => "repository_object_format_unsupported", UsageOrConfig;
 }
 
 /// An error that names its refusal, whose reason decides the class.

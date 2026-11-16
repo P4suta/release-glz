@@ -5,6 +5,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use release_glz_domain::{CommitId, CommitIdRefusal};
 
 use crate::candidate::{
     Candidate, CandidateInput, CandidateManifest, CandidateSource, SealedPolicy,
@@ -15,6 +16,9 @@ use crate::git::GitRepo;
 use crate::gleam::Gleam;
 use crate::hooks::{HookContext, HookRunner};
 use crate::refuse;
+
+/// The object format of a repository whose commits GitHub serves.
+const SHA1_OBJECT_FORMAT: &str = "sha1";
 
 /// Inputs for one rehearsal.
 #[derive(Debug, Clone)]
@@ -38,16 +42,30 @@ impl Rehearsal {
     ///
     /// The configured compiler must match the installed one exactly, so the bytes a reviewer approved are the bytes that can later be published.
     pub async fn run(&self, options: &RehearseOptions) -> Result<CandidateManifest> {
-        validate_full_sha(&options.source_ref)?;
+        let source = CommitId::parse(&options.source_ref);
+        // A SHA-256 object ID most likely names a commit of a SHA-256 repository, which the repository's own refusal below names.
+        if let Err(refusal) = source
+            && refusal != CommitIdRefusal::Sha256ObjectId
+        {
+            return Err(source_refusal(refusal));
+        }
         let (repo, relative_manifest) = locate_manifest(&options.manifest_path)?;
+        let object_format = repo.object_format()?;
+        if object_format != SHA1_OBJECT_FORMAT {
+            refuse!(
+                RepositoryObjectFormatUnsupported,
+                "rehearse refuses a repository whose object format is `{object_format}`, because GitHub serves only commit IDs of `{SHA1_OBJECT_FORMAT}` repositories"
+            );
+        }
+        let source = source.map_err(source_refusal)?;
         let package_relative = relative_manifest.parent().unwrap_or_else(|| Path::new(""));
-        let resolved = repo.resolve(&options.source_ref)?.ok_or_else(|| {
+        let resolved = repo.resolve(source.as_str())?.ok_or_else(|| {
             refused(
                 RefusalReason::SourceCommitUnresolved,
                 "requested source commit does not exist",
             )
         })?;
-        if resolved != options.source_ref {
+        if resolved != source.as_str() {
             refuse!(
                 SourceCommitUnresolved,
                 "rehearse requires the exact full commit SHA, not an abbreviated or symbolic ref"
@@ -56,7 +74,7 @@ impl Rehearsal {
 
         let snapshot = self
             .gleam
-            .snapshot_from_git(&repo, &resolved, package_relative)?;
+            .snapshot_from_git(&repo, source.as_str(), package_relative)?;
         let manifest = Manifest::load(snapshot.package_dir().join("gleam.toml"))?;
         let release = manifest.release()?;
         let compiler = self.gleam.ensure_supported()?;
@@ -75,7 +93,7 @@ impl Rehearsal {
                 &HookContext {
                     package: manifest.package.clone(),
                     version: manifest.version.clone(),
-                    source_sha: resolved.clone(),
+                    source_sha: source.to_string(),
                     intent_digest: None,
                     candidate_digest: None,
                     idempotency_key: None,
@@ -124,7 +142,7 @@ impl Rehearsal {
             version,
             tag,
             source: CandidateSource {
-                commit_sha: resolved,
+                commit_sha: source.into(),
                 manifest_path,
             },
             compiler,
@@ -204,34 +222,9 @@ fn absolute(path: &Path) -> Result<PathBuf> {
     }
 }
 
-fn validate_full_sha(value: &str) -> Result<()> {
-    if !release_glz_core::is_commit_id(value.as_bytes()) {
-        refuse!(
-            CandidateSourceCommitInvalid,
-            "--ref must be a full lowercase commit SHA"
-        );
-    }
-    Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::validate_full_sha;
-
-    #[test]
-    fn a_source_ref_is_a_full_lowercase_commit_id_of_either_object_format() {
-        for accepted in ["a".repeat(40), "0".repeat(64)] {
-            validate_full_sha(&accepted).unwrap();
-        }
-        for refused in [
-            "a".repeat(39),
-            "a".repeat(41),
-            "A".repeat(40),
-            "g".repeat(64),
-            "HEAD".to_owned(),
-        ] {
-            let error = validate_full_sha(&refused).unwrap_err().to_string();
-            assert_eq!(error, "--ref must be a full lowercase commit SHA");
-        }
-    }
+fn source_refusal(refusal: CommitIdRefusal) -> anyhow::Error {
+    refused(
+        RefusalReason::CandidateSourceCommitInvalid,
+        format_args!("--ref must be a full lowercase commit SHA: {refusal}"),
+    )
 }

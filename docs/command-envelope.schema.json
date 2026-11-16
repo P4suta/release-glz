@@ -107,7 +107,8 @@
         "baseline_not_found", "release_file_outside_repository", "registry_package_invalid",
         "registry_redirect_cross_origin", "registry_redirect_limit_exceeded",
         "registry_redirect_location_invalid", "registry_response_too_large", "release_asset_unfinished",
-        "approval_request_incomplete", "approval_release_pr_missing"
+        "approval_request_incomplete", "approval_release_pr_missing",
+        "repository_object_format_unsupported"
       ]
     },
     "diagnostic": {
