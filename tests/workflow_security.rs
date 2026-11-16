@@ -1,5 +1,7 @@
 use std::fs;
 
+use serde_norway::{Mapping, Value};
+
 #[test]
 fn distribution_builds_and_smokes_every_supported_native_target() {
     let yaml = fs::read_to_string(".github/workflows/distribute.yml").unwrap();
@@ -42,6 +44,113 @@ fn pinned_to_a_commit(yaml: &str, action: &str) -> bool {
     })
 }
 
+/// Check that the workflow grants no default permission and that only the `release` job may sign with the run's OIDC token or write attestations.
+fn only_the_release_job_attests(workflow: &Value) -> Result<(), String> {
+    if workflow["permissions"].as_mapping().map(Mapping::len) != Some(0) {
+        return Err("the workflow grants a default permission".into());
+    }
+    let jobs = workflow["jobs"]
+        .as_mapping()
+        .ok_or("the workflow has no jobs")?;
+    if !jobs.contains_key("release") {
+        return Err("the workflow has no release job".into());
+    }
+    for (name, job) in jobs {
+        let name = name.as_str().ok_or("a job name is not a string")?;
+        // Only the job that attests and publishes the release signs with the run's OIDC token.
+        let attests = name == "release";
+        for scope in ["id-token", "attestations"] {
+            if grants_write(job.get("permissions"), scope)? != attests {
+                return Err(format!("{name}: {scope}"));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Whether a job's `permissions` grants `write` on `scope`, in each form that GitHub Actions accepts.
+///
+/// `write-all` grants every scope.
+/// `read-all`, an empty mapping, and an absent key, which inherits the empty workflow default, grant none.
+fn grants_write(permissions: Option<&Value>, scope: &str) -> Result<bool, String> {
+    match permissions {
+        None => Ok(false),
+        Some(Value::Mapping(scopes)) => {
+            Ok(scopes.get(scope).and_then(Value::as_str) == Some("write"))
+        }
+        Some(Value::String(all)) if all == "write-all" => Ok(true),
+        Some(Value::String(all)) if all == "read-all" => Ok(false),
+        Some(other) => Err(format!("unsupported job permissions {other:?}")),
+    }
+}
+
+/// `workflow` with the `permissions` of job `name` replaced by `permissions`, or removed for `None`.
+fn with_job_permissions(workflow: &Value, name: &str, permissions: Option<&str>) -> Value {
+    let mut planted = workflow.clone();
+    let job = planted["jobs"][name].as_mapping_mut().unwrap();
+    match permissions {
+        Some(permissions) => job.insert("permissions".into(), permissions.into()),
+        None => job.remove("permissions"),
+    };
+    planted
+}
+
+#[test]
+fn a_scalar_job_permission_can_neither_widen_nor_hide_the_attesting_job() {
+    let workflow: Value =
+        serde_norway::from_str(&fs::read_to_string(".github/workflows/distribute.yml").unwrap())
+            .unwrap();
+    assert_eq!(only_the_release_job_attests(&workflow), Ok(()));
+    let others = workflow["jobs"]
+        .as_mapping()
+        .unwrap()
+        .keys()
+        .filter_map(Value::as_str)
+        .filter(|name| *name != "release")
+        .collect::<Vec<_>>();
+    assert!(!others.is_empty());
+    for name in others {
+        assert_eq!(
+            only_the_release_job_attests(&with_job_permissions(&workflow, name, Some("write-all"))),
+            Err(format!("{name}: id-token")),
+            "{name}: write-all"
+        );
+        assert_eq!(
+            only_the_release_job_attests(&with_job_permissions(&workflow, name, Some("read-all"))),
+            Ok(()),
+            "{name}: read-all"
+        );
+        assert_eq!(
+            only_the_release_job_attests(&with_job_permissions(&workflow, name, None)),
+            Ok(()),
+            "{name}: inherited"
+        );
+        for unknown in ["write", "none", ""] {
+            assert_eq!(
+                only_the_release_job_attests(&with_job_permissions(&workflow, name, Some(unknown))),
+                Err(format!(
+                    "unsupported job permissions {:?}",
+                    Value::from(unknown)
+                )),
+                "{name}: {unknown:?}"
+            );
+        }
+    }
+    for permissions in [Some("read-all"), None] {
+        assert_eq!(
+            only_the_release_job_attests(&with_job_permissions(&workflow, "release", permissions)),
+            Err("release: id-token".to_owned()),
+            "release: {permissions:?}"
+        );
+    }
+    let mut writable = workflow;
+    writable["permissions"] = "write-all".into();
+    assert_eq!(
+        only_the_release_job_attests(&writable),
+        Err("the workflow grants a default permission".to_owned())
+    );
+}
+
 #[test]
 fn distribution_is_attested_and_uploaded_to_a_draft_exactly_once() {
     let yaml = fs::read_to_string(".github/workflows/distribute.yml")
@@ -51,24 +160,8 @@ fn distribution_is_attested_and_uploaded_to_a_draft_exactly_once() {
     // GitHub's tag endpoint answers only with a published Release, so it can't find the draft.
     assert!(!yaml.contains("releases/tags/"));
     assert!(yaml.contains("gh release view \"$TAG\" --json databaseId"));
-    let workflow: serde_norway::Value = serde_norway::from_str(&yaml).unwrap();
-    assert_eq!(
-        workflow["permissions"]
-            .as_mapping()
-            .map(serde_norway::Mapping::len),
-        Some(0),
-        "the workflow grants no default permission"
-    );
-    let jobs = workflow["jobs"].as_mapping().unwrap();
-    assert!(jobs.contains_key("release"));
-    for (name, job) in jobs {
-        let name = name.as_str().unwrap();
-        let writes = |scope: &str| job["permissions"][scope].as_str() == Some("write");
-        // Only the job that attests and publishes the release signs with the run's OIDC token.
-        let attests = name == "release";
-        assert_eq!(writes("id-token"), attests, "{name}: id-token");
-        assert_eq!(writes("attestations"), attests, "{name}: attestations");
-    }
+    let workflow: Value = serde_norway::from_str(&yaml).unwrap();
+    assert_eq!(only_the_release_job_attests(&workflow), Ok(()));
     assert!(
         pinned_to_a_commit(&yaml, "actions/attest"),
         "attestation must run from an action pinned to a full commit SHA"
