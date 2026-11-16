@@ -6,9 +6,9 @@
 use crate::container::Failure;
 use crate::fs;
 use proc_macro2::{TokenStream, TokenTree};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use syn::punctuated::Punctuated;
 use syn::visit::Visit;
 use toml_edit::{DocumentMut, Item, TableLike};
@@ -115,6 +115,9 @@ const POLICY_TEXTS: [&str; 2] = ["workflow-dispatch-digest", "uploaded"];
 /// The prefix of the functions that hold the negative controls.
 const NEGATIVE_CONTROL: &str = "negative_control_";
 
+/// The prefix of the features that each build one negative control.
+const CONTROL_FEATURE: &str = "negative-control-";
+
 /// The one lint the workspace manifest may allow, which its comment explains.
 const WORKSPACE_ALLOWED: (&str, &str) = ("clippy", "multiple_crate_versions");
 
@@ -203,6 +206,7 @@ enum Rule {
     DomainOpen,
     CrateEdge,
     UnmappedCrate,
+    ModulePath,
     LintException,
 }
 
@@ -218,6 +222,7 @@ impl Rule {
             Self::DomainOpen => "domain-open",
             Self::CrateEdge => "crate-edge",
             Self::UnmappedCrate => "unmapped-crate",
+            Self::ModulePath => "module-path",
             Self::LintException => "lint-exception",
         }
     }
@@ -235,7 +240,7 @@ impl Rule {
                 "take `&[u8]` or a fact enum and return an enum, and put the owned checked type in release-glz-domain"
             }
             Self::CoreUnproved => {
-                "prove the module's decision in a `#[cfg(kani)] mod proofs` in the same file, and tie each harness to a negative control in xtask/src/inventory.rs"
+                "prove the module's decision in a `#[cfg(kani)] mod proofs` inside that module, and tie each harness to a negative control in xtask/src/inventory.rs"
             }
             Self::CoreRuleCopy => {
                 "construct the checked type in release-glz-domain, whose constructor calls the core predicate"
@@ -247,6 +252,9 @@ impl Rule {
                 "keep to EDGES in xtask/src/structure.rs: put a shared decision in release-glz-core and a shared owned type in release-glz-domain"
             }
             Self::UnmappedCrate => "add a row for the crate to EDGES in xtask/src/structure.rs",
+            Self::ModulePath => {
+                "keep the module's file inside the workspace, so the gate reads it with the rest of the crate"
+            }
             Self::LintException => "meet the lint and delete the entry",
         }
     }
@@ -324,21 +332,21 @@ impl fmt::Display for Verdict {
 ///
 /// # Errors
 ///
-/// Returns a failure when a manifest or a source can't be read or parsed, or a proved or shell crate is missing.
+/// Returns a failure when a manifest or a source can't be read or parsed, a `path` dependency lies outside the workspace, or a proved or shell crate is missing.
 pub fn findings(root: &Path) -> Result<Vec<Finding>, Failure> {
     let workspace = Workspace::read(root)?;
     let mut found = Vec::new();
     for (name, allowed) in PROVED_CRATES {
         let member = workspace.required(name)?;
-        core_dependencies(member, allowed, &mut found);
+        core_dependencies(&workspace, member, allowed, &mut found);
         core_sources(&workspace, member, &mut found)?;
     }
     for name in SHELL_CRATES {
         let member = workspace.required(name)?;
-        scan_sources(&workspace, &member.directory, Place::Shell, &mut found)?;
+        scan_sources(&workspace, member, Place::Shell, &mut found)?;
     }
     if let Some(domain) = workspace.member(DOMAIN) {
-        scan_sources(&workspace, &domain.directory, Place::Domain, &mut found)?;
+        scan_sources(&workspace, domain, Place::Domain, &mut found)?;
     }
     edges(&workspace, &mut found);
     lint_exceptions(&workspace, &mut found);
@@ -426,7 +434,30 @@ fn manifest_at(directory: &Path, shown: &str) -> Result<DocumentMut, Failure> {
         .map_err(|error| Failure::new(format!("parsing {shown} failed: {error}")))
 }
 
+/// The path that `path` names once each `.` and `..` component is resolved without the file system, so two spellings of one file compare equal.
+fn normalized(path: &Path) -> PathBuf {
+    let mut resolved = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => match resolved.components().next_back() {
+                Some(Component::Normal(_)) => {
+                    resolved.pop();
+                }
+                Some(Component::RootDir | Component::Prefix(_)) => {}
+                Some(Component::CurDir | Component::ParentDir) | None => resolved.push(component),
+            },
+            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
+                resolved.push(component);
+            }
+        }
+    }
+    resolved
+}
+
 /// The workspace: its root manifest and every member, the root package first.
+///
+/// A member is a crate that `members` lists or that a member's `path` dependency names, since Cargo adds each such crate to the workspace.
 #[derive(Debug)]
 struct Workspace {
     root: PathBuf,
@@ -436,33 +467,90 @@ struct Workspace {
 
 impl Workspace {
     fn read(root: &Path) -> Result<Self, Failure> {
-        let manifest = manifest_at(root, "Cargo.toml")?;
-        let mut members = Vec::new();
-        if manifest.contains_key("package") {
-            members.push(Member::new(
-                root.to_path_buf(),
-                "Cargo.toml".to_owned(),
-                manifest.clone(),
-            )?);
+        let root = normalized(root);
+        let manifest = manifest_at(&root, "Cargo.toml")?;
+        let mut workspace = Self {
+            root,
+            manifest,
+            members: Vec::new(),
+        };
+        let mut pending = VecDeque::new();
+        if workspace.manifest.contains_key("package") {
+            pending.push_back(workspace.root.clone());
         }
-        let listed = manifest
+        pending.extend(workspace.listed()?);
+        pending.extend(workspace.inherited_paths());
+        while let Some(directory) = pending.pop_front() {
+            if workspace
+                .members
+                .iter()
+                .any(|member| member.directory == directory)
+            {
+                continue;
+            }
+            let member = workspace.member_at(directory)?;
+            pending.extend(
+                dependencies(&member.manifest, workspace.origin(&member.directory))
+                    .into_iter()
+                    .filter_map(|dependency| dependency.path),
+            );
+            workspace.members.push(member);
+        }
+        Ok(workspace)
+    }
+
+    /// The directories that `[workspace] members` lists.
+    fn listed(&self) -> Result<Vec<PathBuf>, Failure> {
+        let listed = self
+            .manifest
             .get("workspace")
             .and_then(|workspace| workspace.get("members"))
             .and_then(Item::as_array);
-        for entry in listed.into_iter().flat_map(toml_edit::Array::iter) {
-            let relative = entry.as_str().ok_or_else(|| {
-                Failure::new("Cargo.toml lists a workspace member that isn't a string")
-            })?;
-            let shown = format!("{relative}/Cargo.toml");
-            let directory = root.join(relative);
-            let member_manifest = manifest_at(&directory, &shown)?;
-            members.push(Member::new(directory, shown, member_manifest)?);
+        listed
+            .into_iter()
+            .flat_map(toml_edit::Array::iter)
+            .map(|entry| {
+                entry
+                    .as_str()
+                    .map(|relative| normalized(&self.root.join(relative)))
+                    .ok_or_else(|| {
+                        Failure::new("Cargo.toml lists a workspace member that isn't a string")
+                    })
+            })
+            .collect()
+    }
+
+    /// The `[workspace.dependencies]` table, whose entries a member's `workspace = true` entry inherits.
+    fn inherited(&self) -> Option<&Item> {
+        self.manifest
+            .get("workspace")
+            .and_then(|workspace| workspace.get("dependencies"))
+    }
+
+    /// The directories that the `path` keys of `[workspace.dependencies]` name.
+    fn inherited_paths(&self) -> Vec<PathBuf> {
+        let origin = self.origin(&self.root);
+        let definitions = self.inherited().and_then(Item::as_table_like);
+        definitions
+            .into_iter()
+            .flat_map(|definitions| definitions.iter())
+            .filter_map(|(key, entry)| Dependency::read(key, entry, Kind::Normal, origin).path)
+            .collect()
+    }
+
+    /// Where the dependency entries of the manifest in `directory` resolve.
+    fn origin<'a>(&'a self, directory: &'a Path) -> Origin<'a> {
+        Origin {
+            directory,
+            root: &self.root,
+            inherited: self.inherited(),
         }
-        Ok(Self {
-            root: root.to_path_buf(),
-            manifest,
-            members,
-        })
+    }
+
+    fn member_at(&self, directory: PathBuf) -> Result<Member, Failure> {
+        let manifest_path = self.shown(&directory.join("Cargo.toml"))?;
+        let manifest = manifest_at(&directory, &manifest_path)?;
+        Member::new(directory, manifest_path, manifest)
     }
 
     fn member(&self, name: &str) -> Option<&Member> {
@@ -501,39 +589,66 @@ enum Kind {
     Build,
 }
 
+/// Where the entries of one manifest's dependency tables resolve.
+#[derive(Debug, Clone, Copy)]
+struct Origin<'a> {
+    /// The directory of the manifest, against which its own `path` keys resolve.
+    directory: &'a Path,
+    /// The workspace root, against which an inherited `path` key resolves.
+    root: &'a Path,
+    /// The `[workspace.dependencies]` table, whose entries a `workspace = true` entry inherits.
+    inherited: Option<&'a Item>,
+}
+
 /// One entry of a dependency table.
 #[derive(Debug)]
 struct Dependency {
     /// The package it names, which a `package` key may rename.
     package: String,
+    /// The directory of a local crate that a `path` key names.
+    path: Option<PathBuf>,
     kind: Kind,
     optional: bool,
     default_features: bool,
 }
 
 impl Dependency {
-    fn read(key: &str, entry: &Item, kind: Kind) -> Self {
+    /// Reads one entry, whose `package` and `path` come from the workspace's definition when the entry inherits it.
+    ///
+    /// An inherited entry has default features unless the definition turns them off and the entry doesn't turn them back on, as Cargo reads it.
+    fn read(key: &str, entry: &Item, kind: Kind, origin: Origin<'_>) -> Self {
+        let inherits = entry.get("workspace").and_then(Item::as_bool) == Some(true);
+        let definition = origin
+            .inherited
+            .filter(|_| inherits)
+            .and_then(|definitions| definitions.get(key));
+        let (source, base) = definition.map_or((entry, origin.directory), |definition| {
+            (definition, origin.root)
+        });
+        let declared = |item: &Item| item.get("default-features").and_then(Item::as_bool);
         Self {
-            package: entry
+            package: source
                 .get("package")
                 .and_then(Item::as_str)
                 .unwrap_or(key)
                 .to_owned(),
+            path: source
+                .get("path")
+                .and_then(Item::as_str)
+                .map(|path| normalized(&base.join(path))),
             kind,
             optional: entry
                 .get("optional")
                 .and_then(Item::as_bool)
                 .unwrap_or(false),
-            default_features: entry
-                .get("default-features")
-                .and_then(Item::as_bool)
-                .unwrap_or(true),
+            default_features: declared(source).unwrap_or(true)
+                || (definition.is_some() && declared(entry) == Some(true)),
         }
     }
 }
 
 /// Every entry of every dependency table of `manifest`, the per-target ones included.
-fn dependencies(manifest: &DocumentMut) -> Vec<Dependency> {
+fn dependencies(manifest: &DocumentMut, origin: Origin<'_>) -> Vec<Dependency> {
     let mut tables: Vec<&dyn TableLike> = vec![manifest.as_table()];
     if let Some(targets) = manifest.get("target").and_then(Item::as_table_like) {
         tables.extend(
@@ -549,7 +664,7 @@ fn dependencies(manifest: &DocumentMut) -> Vec<Dependency> {
                 found.extend(
                     entries
                         .iter()
-                        .map(|(key, entry)| Dependency::read(key, entry, kind)),
+                        .map(|(key, entry)| Dependency::read(key, entry, kind, origin)),
                 );
             }
         }
@@ -558,8 +673,13 @@ fn dependencies(manifest: &DocumentMut) -> Vec<Dependency> {
 }
 
 /// A proved crate names no dependency but those `allowed` in `[dependencies]`, each optional and without default features.
-fn core_dependencies(member: &Member, allowed: &[&str], found: &mut Vec<Finding>) {
-    for dependency in dependencies(&member.manifest) {
+fn core_dependencies(
+    workspace: &Workspace,
+    member: &Member,
+    allowed: &[&str],
+    found: &mut Vec<Finding>,
+) {
+    for dependency in dependencies(&member.manifest, workspace.origin(&member.directory)) {
         let package = &dependency.package;
         let item = if dependency.kind != Kind::Normal || !allowed.contains(&package.as_str()) {
             format!("depends on {package}")
@@ -576,10 +696,203 @@ fn core_dependencies(member: &Member, allowed: &[&str], found: &mut Vec<Finding>
     }
 }
 
-fn parse(path: &Path) -> Result<syn::File, Failure> {
-    syn::parse_file(&fs::read_to_string(path)?)
+fn parse_text(path: &Path, text: &str) -> Result<syn::File, Failure> {
+    syn::parse_file(text)
         .map_err(|error| Failure::new(format!("parsing {} failed: {error}", path.display())))
 }
+
+fn parse(path: &Path) -> Result<syn::File, Failure> {
+    parse_text(path, &fs::read_to_string(path)?)
+}
+
+/// A module file that a declaration loads.
+#[derive(Debug)]
+struct Load {
+    module: String,
+    file: PathBuf,
+    /// The name of a non-`mod.rs` module file, whose child modules lie in a directory of that name.
+    relative: Option<String>,
+}
+
+/// The walk over one source that finds the files its module declarations load, the way rustc resolves them.
+#[derive(Debug)]
+struct Loads {
+    /// The directory against which the current module's declarations resolve.
+    directory: PathBuf,
+    /// The name of a non-`mod.rs` module file, which its inline and child modules add to their directory.
+    relative: Option<String>,
+    found: Vec<Load>,
+}
+
+impl Loads {
+    /// The files that the declarations of `file` at `path` load, where `relative` names `path` when rustc reads it as a non-`mod.rs` module.
+    fn of(file: &syn::File, path: &Path, relative: Option<String>) -> Vec<Load> {
+        let mut loads = Self {
+            directory: path.parent().map_or_default(Path::to_path_buf),
+            relative,
+            found: Vec::new(),
+        };
+        loads.visit_file(file);
+        loads.found
+    }
+}
+
+impl Visit<'_> for Loads {
+    fn visit_item_mod(&mut self, node: &syn::ItemMod) {
+        let (paths, always) = module_paths(&node.attrs);
+        let name = node.ident.to_string();
+        let nested = self.relative.as_ref().map_or_else(
+            || self.directory.clone(),
+            |relative| self.directory.join(relative),
+        );
+        let mut targets: Vec<(PathBuf, Option<String>)> = paths
+            .iter()
+            .map(|path| (self.directory.join(path), None))
+            .collect();
+        if let Some((_, items)) = &node.content {
+            if !always {
+                targets.push((nested.join(&name), None));
+            }
+            let outer = (self.directory.clone(), self.relative.take());
+            for (directory, _) in targets {
+                self.directory = directory;
+                for item in items {
+                    self.visit_item(item);
+                }
+            }
+            (self.directory, self.relative) = outer;
+        } else {
+            if !always {
+                targets.push((nested.join(format!("{name}.rs")), Some(name.clone())));
+                targets.push((nested.join(&name).join("mod.rs"), None));
+            }
+            self.found
+                .extend(targets.into_iter().map(|(file, relative)| Load {
+                    module: name.clone(),
+                    file: normalized(&file),
+                    relative,
+                }));
+        }
+    }
+
+    /// A block keeps the directory of its module but drops the file name, as rustc does.
+    fn visit_block(&mut self, node: &syn::Block) {
+        let outer = self.relative.take();
+        syn::visit::visit_block(self, node);
+        self.relative = outer;
+    }
+}
+
+/// The text of a `path = "..."` attribute.
+fn path_value(meta: &syn::Meta) -> Option<String> {
+    let syn::Meta::NameValue(pair) = meta else {
+        return None;
+    };
+    let syn::Expr::Lit(syn::ExprLit {
+        lit: syn::Lit::Str(text),
+        ..
+    }) = &pair.value
+    else {
+        return None;
+    };
+    pair.path.is_ident("path").then(|| text.value())
+}
+
+/// The paths that the attributes of a `cfg_attr` name, which apply only when its predicate holds.
+fn conditional_paths(meta: &syn::Meta, paths: &mut Vec<String>) {
+    let syn::Meta::List(list) = meta else {
+        return;
+    };
+    let Ok(nested) =
+        list.parse_args_with(Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated)
+    else {
+        return;
+    };
+    for attribute in nested.iter().skip(1) {
+        if let Some(path) = path_value(attribute) {
+            paths.push(path);
+        } else if attribute.path().is_ident("cfg_attr") {
+            conditional_paths(attribute, paths);
+        }
+    }
+}
+
+/// The paths that a module's `#[path]` attributes name, directly or inside `cfg_attr`, and whether one names it in every build.
+fn module_paths(attributes: &[syn::Attribute]) -> (Vec<String>, bool) {
+    let mut paths = Vec::new();
+    let mut always = false;
+    for attribute in attributes {
+        if let Some(path) = path_value(&attribute.meta) {
+            paths.push(path);
+            always = true;
+        } else if attribute.path().is_ident("cfg_attr") {
+            conditional_paths(&attribute.meta, &mut paths);
+        }
+    }
+    (paths, always)
+}
+
+/// The ways rustc may read the file at `path`: as a `mod.rs`-like file, and, unless it is named `mod.rs`, as a module of its own name.
+fn readings(path: &Path) -> Vec<Option<String>> {
+    let stem = path
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .filter(|stem| stem != "mod");
+    let mut readings = vec![None];
+    readings.extend(stem.map(Some));
+    readings
+}
+
+/// Every source of a crate, parsed: each file below its `src`, and each file that a module declaration loads from anywhere else.
+///
+/// A declaration that loads a file outside the workspace is a finding, since the gate can't name that file.
+fn crate_sources(
+    workspace: &Workspace,
+    member: &Member,
+    found: &mut Vec<Finding>,
+) -> Result<BTreeMap<PathBuf, syn::File>, Failure> {
+    let mut sources = BTreeMap::new();
+    let mut pending = Vec::new();
+    for path in fs::files_with_suffix(&member.directory.join("src"), ".rs")? {
+        let file = parse(&path)?;
+        pending.extend(
+            readings(&path)
+                .into_iter()
+                .map(|relative| (path.clone(), relative)),
+        );
+        sources.insert(path, file);
+    }
+    let mut seen = BTreeSet::new();
+    while let Some((path, relative)) = pending.pop() {
+        let Some(file) = sources.get(&path) else {
+            continue;
+        };
+        if !seen.insert((path.clone(), relative.clone())) {
+            continue;
+        }
+        for load in Loads::of(file, &path, relative) {
+            if !sources.contains_key(&load.file) {
+                let Some(text) = fs::read_if_present(&load.file)? else {
+                    continue;
+                };
+                if !load.file.starts_with(&workspace.root) {
+                    let item = format!("`{}` loads a file outside the workspace", load.module);
+                    let finding = Finding::new(&workspace.shown(&path)?, Rule::ModulePath, item);
+                    if !found.contains(&finding) {
+                        found.push(finding);
+                    }
+                    continue;
+                }
+                sources.insert(load.file.clone(), parse_text(&load.file, &text)?);
+            }
+            pending.push((load.file, load.relative));
+        }
+    }
+    Ok(sources)
+}
+
+/// The text of a finding about a module without proofs.
+const UNPROVED: &str = "holds no #[cfg(kani)] mod proofs with a #[kani::proof] harness";
 
 /// The root attributes, the proofs, and the syntax of each source of a proved crate.
 fn core_sources(
@@ -588,20 +901,24 @@ fn core_sources(
     found: &mut Vec<Finding>,
 ) -> Result<(), Failure> {
     let library = member.directory.join("src").join("lib.rs");
-    for path in fs::files_with_suffix(&member.directory.join("src"), ".rs")? {
+    for (path, file) in crate_sources(workspace, member, found)? {
         let shown = workspace.shown(&path)?;
-        let file = parse(&path)?;
+        let around = path != library && !has_proofs(&file.items);
         if path == library {
             root_findings(&shown, &file, found);
-        } else if !has_proofs(&file) {
-            found.push(Finding::new(
-                &shown,
-                Rule::CoreUnproved,
-                "holds no #[cfg(kani)] mod proofs with a #[kani::proof] harness",
-            ));
+        } else if around {
+            found.push(Finding::new(&shown, Rule::CoreUnproved, UNPROVED));
         }
+        let mut unproved = Unproved {
+            around,
+            ..Unproved::default()
+        };
+        unproved.visit_file(&file);
+        found.extend(unproved.found.into_iter().map(|module| {
+            Finding::new(&shown, Rule::CoreUnproved, format!("`{module}` {UNPROVED}"))
+        }));
         found.extend(
-            Scan::hits(&file, Place::Core)
+            Scan::hits(&file, Place::Core, &BTreeSet::new(), false)
                 .into_iter()
                 .map(|(rule, item)| Finding::new(&shown, rule, item)),
         );
@@ -609,18 +926,24 @@ fn core_sources(
     Ok(())
 }
 
-/// The syntax findings of every source of the crate in `directory` for the rules of `place`.
+/// The syntax findings of every source of a crate for the rules of `place`.
 fn scan_sources(
     workspace: &Workspace,
-    directory: &Path,
+    member: &Member,
     place: Place,
     found: &mut Vec<Finding>,
 ) -> Result<(), Failure> {
-    for path in fs::files_with_suffix(&directory.join("src"), ".rs")? {
-        let shown = workspace.shown(&path)?;
-        let file = parse(&path)?;
+    let sources = crate_sources(workspace, member, found)?;
+    let src = member.directory.join("src");
+    let prelude: BTreeSet<String> = sources
+        .iter()
+        .filter(|(path, _)| is_crate_root(&src, path))
+        .flat_map(|(_, file)| core_aliases(file))
+        .collect();
+    for (path, file) in &sources {
+        let shown = workspace.shown(path)?;
         found.extend(
-            Scan::hits(&file, place)
+            Scan::hits(file, place, &prelude, is_crate_root(&src, path))
                 .into_iter()
                 .map(|(rule, item)| Finding::new(&shown, rule, item)),
         );
@@ -705,9 +1028,26 @@ fn is_harness(item: &syn::Item) -> bool {
         .any(|attribute| rendered(attribute.path()) == "kani::proof")
 }
 
-/// Whether a module holds a `#[cfg(kani)] mod proofs` with a `#[kani::proof]` harness.
-fn has_proofs(file: &syn::File) -> bool {
-    file.items.iter().any(|item| {
+/// Whether an attribute is `#[cfg(feature = "negative-control-...")]`, which only the build of one negative control enables.
+fn is_control_guard(attribute: &syn::Attribute) -> bool {
+    attribute.path().is_ident("cfg")
+        && attribute
+            .parse_args::<syn::MetaNameValue>()
+            .is_ok_and(|pair| {
+                let syn::Expr::Lit(syn::ExprLit {
+                    lit: syn::Lit::Str(feature),
+                    ..
+                }) = &pair.value
+                else {
+                    return false;
+                };
+                pair.path.is_ident("feature") && feature.value().starts_with(CONTROL_FEATURE)
+            })
+}
+
+/// Whether the items of a module hold a `#[cfg(kani)] mod proofs` with a `#[kani::proof]` harness.
+fn has_proofs(items: &[syn::Item]) -> bool {
+    items.iter().any(|item| {
         let syn::Item::Mod(module) = item else {
             return false;
         };
@@ -719,8 +1059,45 @@ fn has_proofs(file: &syn::File) -> bool {
             && module
                 .content
                 .as_ref()
-                .is_some_and(|(_, items)| items.iter().any(is_harness))
+                .is_some_and(|(_, proofs)| proofs.iter().any(is_harness))
     })
+}
+
+/// Whether a module stays out of every build that ships, as proofs, tests, and negative controls do, so it needs no harness of its own.
+fn is_exempt(module: &syn::ItemMod) -> bool {
+    module.attrs.iter().any(|attribute| {
+        is_cfg(attribute, "kani") || is_test(attribute) || is_control_guard(attribute)
+    })
+}
+
+/// The walk over one source of a proved crate that names each inline module, at any depth, that holds no proofs of its own.
+#[derive(Debug, Default)]
+struct Unproved {
+    /// The names of the modules around the current one, outermost first.
+    context: Vec<String>,
+    /// Whether the module around the current one holds no proofs, whose finding already covers a `mod proofs` without `cfg(kani)` inside it.
+    around: bool,
+    found: Vec<String>,
+}
+
+impl Visit<'_> for Unproved {
+    fn visit_item_mod(&mut self, node: &syn::ItemMod) {
+        let Some((_, items)) = &node.content else {
+            return;
+        };
+        if is_exempt(node) {
+            return;
+        }
+        let unproved = !has_proofs(items);
+        self.context.push(node.ident.to_string());
+        if unproved && !(self.around && node.ident == "proofs") {
+            self.found.push(self.context.join("::"));
+        }
+        let around = std::mem::replace(&mut self.around, unproved);
+        syn::visit::visit_item_mod(self, node);
+        self.around = around;
+        self.context.pop();
+    }
 }
 
 /// Each member depends on other members only along [`EDGES`], and every member has a row there.
@@ -740,7 +1117,7 @@ fn edges(workspace: &Workspace, found: &mut Vec<Finding>) {
             ));
             continue;
         };
-        for dependency in dependencies(&member.manifest) {
+        for dependency in dependencies(&member.manifest, workspace.origin(&member.directory)) {
             let to = dependency.package.as_str();
             let dev = dependency.kind == Kind::Dev && row.dev.contains(&to);
             if !known.contains(&to) || row.normal.contains(&to) || dev {
@@ -808,6 +1185,17 @@ enum Place {
     Domain,
 }
 
+/// How the negative controls enclose a piece of syntax.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum Control {
+    #[default]
+    Outside,
+    /// Inside an item that only a negative control's feature compiles.
+    Guarded,
+    /// Inside a negative control: an item named as one, which only a negative control's feature compiles.
+    Inside,
+}
+
 /// The items around a piece of syntax that exempt it from a rule.
 #[derive(Debug, Clone, Copy, Default)]
 struct Flags {
@@ -815,16 +1203,24 @@ struct Flags {
     kani: bool,
     /// Inside a test item, which may spell values.
     test: bool,
-    /// Inside a negative control, which only its own feature compiles.
-    control: bool,
+    control: Control,
 }
 
 impl Flags {
     fn within(self, attributes: &[syn::Attribute], name: &str) -> Self {
+        let guarded = self.control != Control::Outside || attributes.iter().any(is_control_guard);
+        let control =
+            if self.control == Control::Inside || (guarded && name.starts_with(NEGATIVE_CONTROL)) {
+                Control::Inside
+            } else if guarded {
+                Control::Guarded
+            } else {
+                Control::Outside
+            };
         Self {
             kani: self.kani || attributes.iter().any(|attribute| is_cfg(attribute, "kani")),
             test: self.test || attributes.iter().any(is_test),
-            control: self.control || name.starts_with(NEGATIVE_CONTROL),
+            control,
         }
     }
 }
@@ -833,7 +1229,9 @@ impl Place {
     const fn keeps(self, rule: Rule, flags: Flags) -> bool {
         match (self, rule) {
             (Self::Core, Rule::CoreStd) => true,
-            (Self::Core, Rule::CoreOwned) => !flags.kani && !flags.control,
+            (Self::Core, Rule::CoreOwned) => {
+                !flags.kani && !matches!(flags.control, Control::Inside)
+            }
             (Self::Shell, Rule::CoreRuleCopy) | (Self::Domain, Rule::DomainOpen) => !flags.test,
             _ => false,
         }
@@ -856,6 +1254,14 @@ fn use_leaves(tree: &syn::UseTree, prefix: &[String], leaves: &mut Vec<Leaf>) {
     };
     match tree {
         syn::UseTree::Path(path) => use_leaves(&path.tree, &joined(&path.ident), leaves),
+        syn::UseTree::Name(name) if name.ident == "self" => leaves.push(Leaf {
+            path: prefix.to_vec(),
+            local: prefix.last().cloned(),
+        }),
+        syn::UseTree::Rename(rename) if rename.ident == "self" => leaves.push(Leaf {
+            path: prefix.to_vec(),
+            local: Some(rename.rename.to_string()),
+        }),
         syn::UseTree::Name(name) => leaves.push(Leaf {
             path: joined(&name.ident),
             local: Some(name.ident.to_string()),
@@ -876,36 +1282,66 @@ fn use_leaves(tree: &syn::UseTree, prefix: &[String], leaves: &mut Vec<Leaf>) {
     }
 }
 
-/// The local names of a file's core predicates, each with the path of the predicate.
-#[derive(Debug, Default)]
-struct Imports(BTreeMap<String, String>);
-
-impl Visit<'_> for Imports {
-    fn visit_item_use(&mut self, node: &syn::ItemUse) {
-        let mut leaves = Vec::new();
-        use_leaves(&node.tree, &[], &mut leaves);
-        for leaf in leaves {
-            let from_core = leaf.path.first().is_some_and(|first| first == CORE_CRATE);
-            match leaf.local {
-                Some(local) if from_core => {
-                    if let Some(rule) = leaf
-                        .path
-                        .last()
-                        .filter(|last| CORE_RULES.contains(&last.as_str()))
-                    {
-                        self.0.insert(local, format!("{CORE_CRATE}::{rule}"));
-                    }
-                }
-                None if from_core && leaf.path.len() == 1 => {
-                    for rule in CORE_RULES {
-                        self.0
-                            .insert(rule.to_owned(), format!("{CORE_CRATE}::{rule}"));
-                    }
-                }
-                Some(_) | None => {}
-            }
+/// The names that the `use` and `extern crate` items among `items` bind.
+fn scope_leaves(items: &[&syn::Item]) -> Vec<Leaf> {
+    let mut leaves = Vec::new();
+    for item in items {
+        if let syn::Item::Use(node) = item {
+            use_leaves(&node.tree, &[], &mut leaves);
+        } else if let syn::Item::ExternCrate(node) = item
+            && let Some((_, alias)) = &node.rename
+        {
+            leaves.push(Leaf {
+                path: vec![node.ident.to_string()],
+                local: Some(alias.to_string()),
+            });
         }
     }
+    leaves
+}
+
+/// The names that the `extern crate` items of a crate root give the core crate, which every module of the crate may use.
+fn core_aliases(file: &syn::File) -> impl Iterator<Item = String> + '_ {
+    file.items.iter().filter_map(|item| {
+        let syn::Item::ExternCrate(node) = item else {
+            return None;
+        };
+        let (_, alias) = node.rename.as_ref()?;
+        (node.ident == CORE_CRATE).then(|| alias.to_string())
+    })
+}
+
+/// Whether rustc reads the file at `path` as the root of a library or binary crate whose sources lie in `src`.
+fn is_crate_root(src: &Path, path: &Path) -> bool {
+    let bin = src.join("bin");
+    path == src.join("lib.rs")
+        || path == src.join("main.rs")
+        || path.parent() == Some(bin.as_path())
+        || (path.ends_with("main.rs")
+            && path.parent().and_then(Path::parent) == Some(bin.as_path()))
+}
+
+/// The path segments that name a module relative to the current one.
+const RELATIVE: [&str; 3] = ["self", "super", "crate"];
+
+/// The names that one module or block binds to the core crate and to its predicates.
+#[derive(Debug, Clone, Default)]
+struct Scope {
+    /// Whether a module opens the scope, so `self` and `super` count from it, rather than a block.
+    module: bool,
+    /// The local names of the core crate.
+    crates: BTreeSet<String>,
+    /// The local names of the core predicates, each with the predicate it names.
+    rules: BTreeMap<String, String>,
+}
+
+/// One name that a scope binds into the core crate.
+#[derive(Debug)]
+enum Binding {
+    /// A name of the core crate itself.
+    Crate(String),
+    /// A name of a core predicate, with the predicate.
+    Rule(String, String),
 }
 
 /// The name of the type an `impl` block is for.
@@ -966,7 +1402,12 @@ fn schema_number(field: &syn::Expr, value: &syn::Expr) -> Option<String> {
 #[derive(Debug)]
 struct Scan {
     place: Place,
-    imports: BTreeMap<String, String>,
+    /// The module and block scopes around the current syntax, outermost first.
+    scopes: Vec<Scope>,
+    /// The names that the crate root's `extern crate` items give the core crate.
+    prelude: BTreeSet<String>,
+    /// Whether the file is its crate's root, which `crate` names.
+    root: bool,
     /// The names of the items around the current one, outermost first.
     context: Vec<String>,
     flags: Flags,
@@ -976,19 +1417,169 @@ struct Scan {
 }
 
 impl Scan {
-    fn hits(file: &syn::File, place: Place) -> Vec<(Rule, String)> {
-        let mut imports = Imports::default();
-        imports.visit_file(file);
+    fn hits(
+        file: &syn::File,
+        place: Place,
+        prelude: &BTreeSet<String>,
+        root: bool,
+    ) -> Vec<(Rule, String)> {
         let mut scan = Self {
             place,
-            imports: imports.0,
+            scopes: Vec::new(),
+            prelude: prelude.clone(),
+            root,
             context: Vec::new(),
             flags: Flags::default().within(&file.attrs, ""),
             typed: 0,
             hits: Vec::new(),
         };
+        scan.open(true, &file.items.iter().collect::<Vec<_>>());
         scan.visit_file(file);
         scan.hits
+    }
+
+    /// Opens a module scope, or a block scope that keeps the names of the scope around it, and binds the names its `items` import.
+    fn open(&mut self, module: bool, items: &[&syn::Item]) {
+        let inherited = if module {
+            Scope::default()
+        } else {
+            self.scopes.last().cloned().unwrap_or_default()
+        };
+        self.scopes.push(Scope {
+            module,
+            ..inherited
+        });
+        self.bind(items);
+    }
+
+    /// Binds, in the scope on top, the names that `items` import into the core crate, once the inherited names they shadow leave it.
+    ///
+    /// An import may name another import of the same scope, so the binding repeats until no name joins.
+    fn bind(&mut self, items: &[&syn::Item]) {
+        let leaves = scope_leaves(items);
+        let explicit: BTreeSet<String> = leaves
+            .iter()
+            .filter_map(|leaf| leaf.local.clone())
+            .collect();
+        let Some(index) = self.scopes.len().checked_sub(1) else {
+            return;
+        };
+        if let Some(scope) = self.scopes.last_mut() {
+            scope.crates.retain(|name| !explicit.contains(name));
+            scope.rules.retain(|name, _| !explicit.contains(name));
+        }
+        loop {
+            let bindings = self.bindings(index, &leaves, &explicit);
+            let Some(scope) = self.scopes.last_mut() else {
+                return;
+            };
+            let mut joined = false;
+            for binding in bindings {
+                joined |= match binding {
+                    Binding::Crate(name) => scope.crates.insert(name),
+                    Binding::Rule(name, rule) => scope.rules.insert(name, rule).is_none(),
+                };
+            }
+            if !joined {
+                return;
+            }
+        }
+    }
+
+    /// The names that `leaves` bind into the core crate in the scope at `index`, where an `explicit` name shadows a glob's.
+    fn bindings(&self, index: usize, leaves: &[Leaf], explicit: &BTreeSet<String>) -> Vec<Binding> {
+        let mut bindings = Vec::new();
+        for leaf in leaves {
+            match (&leaf.local, self.resolve(index, &leaf.path)) {
+                (Some(local), Some(path)) => {
+                    if path.len() == 1 {
+                        bindings.push(Binding::Crate(local.clone()));
+                    } else if let Some(rule) = path
+                        .last()
+                        .filter(|last| CORE_RULES.contains(&last.as_str()))
+                    {
+                        bindings.push(Binding::Rule(local.clone(), rule.clone()));
+                    }
+                }
+                (None, Some(path)) if path.len() == 1 => bindings.extend(
+                    CORE_RULES
+                        .iter()
+                        .filter(|rule| !explicit.contains(**rule))
+                        .map(|rule| Binding::Rule((*rule).to_owned(), (*rule).to_owned())),
+                ),
+                (None, None) => {
+                    let from = self
+                        .scope_of(index, &leaf.path)
+                        .filter(|from| *from != index)
+                        .and_then(|from| self.scopes.get(from));
+                    if let Some(scope) = from {
+                        let open = |name: &&String| !explicit.contains(*name);
+                        bindings.extend(
+                            scope
+                                .crates
+                                .iter()
+                                .filter(open)
+                                .cloned()
+                                .map(Binding::Crate),
+                        );
+                        bindings.extend(
+                            scope
+                                .rules
+                                .iter()
+                                .filter(|(name, _)| open(name))
+                                .map(|(name, rule)| Binding::Rule(name.clone(), rule.clone())),
+                        );
+                    }
+                }
+                (Some(_), None) | (None, Some(_)) => {}
+            }
+        }
+        bindings
+    }
+
+    /// The module scope around the scope at `index`, which `self` names.
+    fn module_at(&self, index: usize) -> Option<usize> {
+        self.scopes
+            .get(..=index)?
+            .iter()
+            .rposition(|scope| scope.module)
+    }
+
+    /// The scope that a path of only `self`, `super`, and `crate` names from the scope at `index`.
+    fn scope_of(&self, index: usize, names: &[String]) -> Option<usize> {
+        let mut at = index;
+        for (position, name) in names.iter().enumerate() {
+            at = match name.as_str() {
+                "self" => self.module_at(at)?,
+                "super" => self.module_at(self.module_at(at)?.checked_sub(1)?)?,
+                "crate" if position == 0 && self.root => 0,
+                _ => return None,
+            };
+        }
+        Some(at)
+    }
+
+    /// The path from the core crate's own name that `names` reach from the scope at `index`, when its scopes bind them into the core crate.
+    fn resolve(&self, index: usize, names: &[String]) -> Option<Vec<String>> {
+        let relative = names
+            .iter()
+            .take_while(|name| RELATIVE.contains(&name.as_str()))
+            .count();
+        let (prefix, rest) = names.split_at_checked(relative)?;
+        let scope = self.scopes.get(self.scope_of(index, prefix)?)?;
+        let (first, after) = rest.split_first()?;
+        let external = prefix.is_empty() && (first == CORE_CRATE || self.prelude.contains(first));
+        let core = || std::iter::once(CORE_CRATE.to_owned());
+        if external || scope.crates.contains(first) {
+            Some(core().chain(after.iter().cloned()).collect())
+        } else if after.is_empty() {
+            scope
+                .rules
+                .get(first)
+                .map(|rule| core().chain([rule.clone()]).collect())
+        } else {
+            None
+        }
     }
 
     fn record(&mut self, rule: Rule, item: String) {
@@ -1036,14 +1627,14 @@ impl Scan {
         if first == "alloc" || owned {
             self.record(Rule::CoreOwned, format!("{context} names {shown}"));
         }
-        let called = if first == CORE_CRATE && CORE_RULES.contains(&last.as_str()) {
-            Some(shown.clone())
-        } else if names.len() == 1 {
-            self.imports.get(first).cloned()
-        } else {
-            None
-        };
+        let called = self
+            .resolve(self.scopes.len().saturating_sub(1), names)
+            .filter(|path| {
+                path.last()
+                    .is_some_and(|rule| CORE_RULES.contains(&rule.as_str()))
+            });
         if let Some(called) = called {
+            let called = called.join("::");
             self.record(Rule::CoreRuleCopy, format!("{context} calls {called}"));
         }
         if last == HEX_DIGIT {
@@ -1105,8 +1696,31 @@ impl Visit<'_> for Scan {
 
     fn visit_item_mod(&mut self, node: &syn::ItemMod) {
         self.enter(&node.attrs, Some(node.ident.to_string()), |scan| {
+            let items = node
+                .content
+                .as_ref()
+                .map_or_default(|(_, items)| items.iter().collect::<Vec<_>>());
+            scan.open(true, &items);
             syn::visit::visit_item_mod(scan, node);
+            scan.scopes.pop();
         });
+    }
+
+    fn visit_block(&mut self, node: &syn::Block) {
+        let items: Vec<&syn::Item> = node
+            .stmts
+            .iter()
+            .filter_map(|statement| {
+                if let syn::Stmt::Item(item) = statement {
+                    Some(item)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        self.open(false, &items);
+        syn::visit::visit_block(self, node);
+        self.scopes.pop();
     }
 
     fn visit_item_fn(&mut self, node: &syn::ItemFn) {
@@ -1340,6 +1954,7 @@ pub fn admit(value: &[u8]) -> Option<Channel> {
     (!value.is_empty()).then_some(Channel::Rc)
 }
 
+#[cfg(feature = \"negative-control-admit\")]
 fn negative_control_admit() -> Option<String> {
     Some(format!(\"broken\"))
 }
@@ -1355,11 +1970,19 @@ mod proofs {
 
     const RULE: &str = "crates/release-glz-core/src/rule.rs";
 
+    /// The library of the release engine in a clean workspace.
+    const SHELL_LIBRARY: &str = "pub fn shell(value: &str) -> String { value.to_owned() }\n";
+
     fn core_root() -> String {
         format!(
             "#![no_std]\n#![forbid(unsafe_code)]\n#![deny({})]\n#![cfg_attr(kani, allow(clippy::panic))]\n",
             DENIED.join(", ")
         )
+    }
+
+    /// The library of the release decisions in a clean workspace.
+    fn core_library() -> String {
+        format!("{}extern crate alloc;\nmod rule;\n", core_root())
     }
 
     fn put(root: &Path, relative: &str, contents: &str) {
@@ -1373,10 +1996,7 @@ mod proofs {
         let root = tempfile::tempdir().unwrap();
         let files = [
             ("Cargo.toml", ROOT_MANIFEST),
-            (
-                "src/lib.rs",
-                "pub fn shell(value: &str) -> String { value.to_owned() }\n",
-            ),
+            ("src/lib.rs", SHELL_LIBRARY),
             ("tests/contract.rs", "const DIGEST_HEX_LEN: usize = 64;\n"),
             ("crates/release-glz-core/Cargo.toml", CORE_MANIFEST),
             (RULE, PROVED),
@@ -1392,13 +2012,16 @@ mod proofs {
         for (relative, contents) in files {
             put(root.path(), relative, contents);
         }
-        let core_root = core_root();
         put(
             root.path(),
             "crates/release-glz-core/src/lib.rs",
-            &format!("{core_root}extern crate alloc;\nmod rule;\n"),
+            &core_library(),
         );
-        put(root.path(), "crates/assurance-core/src/lib.rs", &core_root);
+        put(
+            root.path(),
+            "crates/assurance-core/src/lib.rs",
+            &core_root(),
+        );
         root
     }
 
@@ -1412,8 +2035,15 @@ mod proofs {
 
     /// What the gate finds in a clean workspace once `contents` replaces the file at `relative`.
     fn planted(relative: &str, contents: &str) -> Vec<String> {
+        planted_all(&[(relative, contents)])
+    }
+
+    /// What the gate finds in a clean workspace once each pair's contents replace the file at its path.
+    fn planted_all(files: &[(&str, &str)]) -> Vec<String> {
         let root = clean();
-        put(root.path(), relative, contents);
+        for (relative, contents) in files {
+            put(root.path(), relative, contents);
+        }
         keys(root.path())
     }
 
@@ -1757,6 +2387,378 @@ fn uploaded() {
                 &format!("{ROOT_MANIFEST}too_many_lines = \"allow\"\n")
             ),
             ["Cargo.toml: lint-exception: [workspace.lints.clippy] allows too_many_lines"]
+        );
+    }
+
+    /// A crate that no `members` entry lists, which allows a lint.
+    const EXTRA_MANIFEST: &str =
+        "[package]\nname = \"extra\"\n\n[lints.clippy]\npanic = \"allow\"\n";
+
+    /// The findings of the crate of [`EXTRA_MANIFEST`] at `crates/extra`.
+    const EXTRA: [&str; 2] = [
+        "crates/extra/Cargo.toml: unmapped-crate: extra has no row in EDGES",
+        "crates/extra/Cargo.toml: lint-exception: [lints.clippy] allows panic",
+    ];
+
+    #[test]
+    fn a_path_dependency_joins_the_workspace_without_a_members_entry() {
+        let dependency = "extra = { path = \"crates/extra\" }\n";
+        let plain = ROOT_MANIFEST.replace(
+            "\n[dev-dependencies]",
+            &format!("{dependency}\n[dev-dependencies]"),
+        );
+        let targeted =
+            format!("{ROOT_MANIFEST}\n[target.'cfg(unix)'.build-dependencies]\n{dependency}");
+        for root in [plain, targeted] {
+            assert_eq!(
+                planted_all(&[
+                    ("Cargo.toml", &root),
+                    ("crates/extra/Cargo.toml", EXTRA_MANIFEST)
+                ]),
+                [
+                    "Cargo.toml: crate-edge: release-glz depends on extra",
+                    EXTRA[0],
+                    EXTRA[1]
+                ]
+            );
+        }
+        assert_eq!(
+            planted_all(&[
+                (
+                    "Cargo.toml",
+                    &format!("{ROOT_MANIFEST}\n[workspace.dependencies]\n{dependency}")
+                ),
+                (
+                    "xtask/Cargo.toml",
+                    &format!("{XTASK_MANIFEST}extra = {{ workspace = true }}\n")
+                ),
+                ("crates/extra/Cargo.toml", EXTRA_MANIFEST),
+            ]),
+            [
+                EXTRA[0],
+                EXTRA[1],
+                "xtask/Cargo.toml: crate-edge: xtask depends on extra"
+            ]
+        );
+        assert_eq!(
+            planted_all(&[
+                (
+                    "crates/test-support/Cargo.toml",
+                    &TEST_SUPPORT_MANIFEST
+                        .replace("\n[lints]", "extra = { path = \"../extra\" }\n\n[lints]")
+                ),
+                (
+                    "crates/extra/Cargo.toml",
+                    &EXTRA_MANIFEST.replace(
+                        "\n[lints",
+                        "\n[dependencies]\ndeeper = { path = \"../deeper\" }\n\n[lints"
+                    )
+                ),
+                ("crates/deeper/Cargo.toml", "[package]\nname = \"deeper\"\n"),
+            ]),
+            [
+                "crates/deeper/Cargo.toml: unmapped-crate: deeper has no row in EDGES",
+                EXTRA[0],
+                EXTRA[1],
+                "crates/test-support/Cargo.toml: crate-edge: release-glz-test-support depends on extra",
+            ]
+        );
+    }
+
+    #[test]
+    fn an_inherited_dependency_counts_as_its_workspace_definition() {
+        let support = "support = { package = \"release-glz-test-support\", path = \"crates/test-support\" }\n";
+        assert_eq!(
+            planted_all(&[
+                (
+                    "Cargo.toml",
+                    &format!("{ROOT_MANIFEST}\n[workspace.dependencies]\n{support}")
+                ),
+                (
+                    "xtask/Cargo.toml",
+                    &format!("{XTASK_MANIFEST}support = {{ workspace = true }}\n")
+                ),
+            ]),
+            ["xtask/Cargo.toml: crate-edge: xtask depends on release-glz-test-support"]
+        );
+        let manifest = "crates/release-glz-core/Cargo.toml";
+        let inherited = "serde = { workspace = true, optional = true }\n";
+        let lean = "serde = { version = \"1\", default-features = false }\n";
+        let defaults = Some("serde without optional = true and default-features = false");
+        let cases = [
+            (inherited, "serde = { version = \"1\" }\n", defaults),
+            (inherited, lean, None),
+            (
+                "serde = { workspace = true, optional = true, default-features = true }\n",
+                lean,
+                defaults,
+            ),
+            (
+                "json = { workspace = true, optional = true }\n",
+                "json = { package = \"serde_json\", version = \"1\", default-features = false }\n",
+                Some("serde_json"),
+            ),
+        ];
+        for (entry, definition, item) in cases {
+            let core = format!("[package]\nname = \"release-glz-core\"\n\n[dependencies]\n{entry}");
+            assert_eq!(
+                planted_all(&[
+                    (
+                        "Cargo.toml",
+                        &format!("{ROOT_MANIFEST}\n[workspace.dependencies]\n{definition}")
+                    ),
+                    (manifest, &core),
+                ]),
+                item.map(|item| format!("{manifest}: core-dependency: depends on {item}"))
+                    .into_iter()
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
+    fn every_inline_core_module_proves_its_decision() {
+        let unproved = |path: &str, module: &str| {
+            format!(
+                "{path}: core-unproved: `{module}` holds no #[cfg(kani)] mod proofs with a #[kani::proof] harness"
+            )
+        };
+        assert_eq!(
+            planted(
+                RULE,
+                &format!("{PROVED}pub mod hidden {{\n    pub fn admit() -> bool {{ true }}\n}}\n")
+            ),
+            [unproved(RULE, "hidden")]
+        );
+        assert_eq!(
+            planted(
+                RULE,
+                &format!(
+                    "{PROVED}mod outer {{\n    mod inner {{}}\n\n    #[cfg(kani)]\n    mod proofs {{\n        #[kani::proof]\n        fn admits() {{}}\n    }}\n}}\n"
+                )
+            ),
+            [unproved(RULE, "outer::inner")]
+        );
+        let library = "crates/release-glz-core/src/lib.rs";
+        let shipped = "mod proofs {\n    pub fn admit() -> bool { true }\n}\n";
+        assert_eq!(
+            planted(
+                library,
+                &format!("{}mod hidden {{}}\n{shipped}", core_library())
+            ),
+            [unproved(library, "hidden"), unproved(library, "proofs")]
+        );
+        assert_eq!(
+            planted(RULE, &format!("{PROVED}#[cfg(not(kani))]\n{shipped}")),
+            [unproved(RULE, "proofs")]
+        );
+        assert_eq!(
+            planted(
+                RULE,
+                &format!(
+                    "{PROVED}#[cfg(test)]\nmod tests {{}}\n\n#[cfg(kani)]\nmod symbolic {{}}\n\n#[cfg(feature = \"negative-control-admit\")]\nmod controls {{}}\n"
+                )
+            ),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn a_path_attribute_brings_its_file_under_the_shell_rules() {
+        let copy = "const DIGEST_HEX_LEN: usize = 64;\n";
+        let defines =
+            |path: &str| format!("{path}: core-rule-copy: the module defines DIGEST_HEX_LEN");
+        let declared = |declaration: &str| format!("{SHELL_LIBRARY}{declaration}\nmod copy;\n");
+        for declaration in [
+            "#[path = \"../outside/copy.rs\"]",
+            "#[cfg_attr(unix, path = \"../outside/copy.rs\")]",
+        ] {
+            assert_eq!(
+                planted_all(&[
+                    ("src/lib.rs", &declared(declaration)),
+                    ("outside/copy.rs", &format!("{copy}mod deeper;\n")),
+                    (
+                        "outside/deeper.rs",
+                        "fn hex(value: &str) -> bool { value.bytes().all(|byte| byte.is_ascii_hexdigit()) }\n"
+                    ),
+                ]),
+                [
+                    defines("outside/copy.rs"),
+                    "outside/deeper.rs: core-rule-copy: `hex` calls is_ascii_hexdigit".to_owned()
+                ]
+            );
+        }
+        assert_eq!(
+            planted_all(&[
+                ("src/lib.rs", &declared("#[path = \"copy.txt\"]")),
+                ("src/copy.txt", copy),
+            ]),
+            [defines("src/copy.txt")]
+        );
+        assert_eq!(
+            planted_all(&[
+                (
+                    "src/nested.rs",
+                    "mod inline {\n    #[path = \"../../../outside/copy.rs\"]\n    mod copy;\n}\n"
+                ),
+                ("outside/copy.rs", copy),
+            ]),
+            [defines("outside/copy.rs")]
+        );
+    }
+
+    #[test]
+    fn a_path_attribute_brings_its_file_under_the_core_rules() {
+        assert_eq!(
+            planted_all(&[
+                (
+                    "crates/release-glz-core/src/lib.rs",
+                    &format!(
+                        "{}#[path = \"../../../outside/rule.rs\"]\nmod sneaky;\n",
+                        core_library()
+                    )
+                ),
+                (
+                    "outside/rule.rs",
+                    "pub fn read() { let _ = std::env::args(); }\n"
+                ),
+            ]),
+            [
+                "outside/rule.rs: core-std: `read` names std::env::args",
+                "outside/rule.rs: core-unproved: holds no #[cfg(kani)] mod proofs with a #[kani::proof] harness",
+            ]
+        );
+        let far = tempfile::tempdir().unwrap();
+        let outside = far.path().join("far.rs");
+        fs::write(&outside, "").unwrap();
+        assert_eq!(
+            planted(
+                "src/lib.rs",
+                &format!(
+                    "{SHELL_LIBRARY}#[path = r\"{}\"]\nmod far;\n",
+                    outside.display()
+                )
+            ),
+            ["src/lib.rs: module-path: `far` loads a file outside the workspace"]
+        );
+    }
+
+    #[test]
+    fn a_negative_control_needs_its_feature_guard() {
+        let cases = [
+            (
+                "fn negative_control_unguarded() -> Option<String> { None }\n",
+                Some("`negative_control_unguarded` names String"),
+            ),
+            (
+                "#[cfg(not(feature = \"negative-control-broken\"))]\nfn negative_control_broken() -> Option<String> { None }\n",
+                Some("`negative_control_broken` names String"),
+            ),
+            (
+                "#[cfg(feature = \"negative-control-broken\")]\nfn broken() -> Option<String> { None }\n",
+                Some("`broken` names String"),
+            ),
+            (
+                "#[cfg(feature = \"negative-control-broken\")]\nimpl Channel {\n    fn helper() -> Option<String> { None }\n}\n",
+                Some("`Channel::helper` names String"),
+            ),
+            (
+                "#[cfg(feature = \"negative-control-broken\")]\nimpl Channel {\n    fn negative_control_broken() -> Option<String> { None }\n}\n",
+                None,
+            ),
+        ];
+        for (source, item) in cases {
+            assert_eq!(
+                planted(RULE, &format!("{PROVED}{source}")),
+                item.map(|item| format!("{RULE}: core-owned: {item}"))
+                    .into_iter()
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
+    fn a_crate_alias_names_the_core() {
+        let call = "fn pin(value: &str) -> bool { policy::is_object_id(value.as_bytes()) }\n";
+        let calls = ["src/copy.rs: core-rule-copy: `pin` calls release_glz_core::is_object_id"];
+        for alias in [
+            "use release_glz_core as policy;\n",
+            "use ::release_glz_core::{self as policy};\n",
+            "extern crate release_glz_core as policy;\n",
+        ] {
+            assert_eq!(planted("src/copy.rs", &format!("{alias}{call}")), calls);
+        }
+        assert_eq!(
+            planted(
+                "src/copy.rs",
+                "use policy::is_object_id as valid;\nuse release_glz_core as policy;\nfn pin(value: &str) -> bool { valid(value.as_bytes()) }\n"
+            ),
+            calls
+        );
+        assert_eq!(
+            planted_all(&[
+                (
+                    "src/lib.rs",
+                    &format!("{SHELL_LIBRARY}extern crate release_glz_core as policy;\n")
+                ),
+                ("src/copy.rs", call),
+            ]),
+            calls
+        );
+    }
+
+    #[test]
+    fn an_import_binds_only_inside_its_scope() {
+        let import = "use release_glz_core::is_object_id as valid;\n";
+        let cases = [
+            (
+                format!(
+                    "#[cfg(test)]\nmod tests {{\n    {import}}}\n\nfn valid(value: &str) -> bool {{ !value.is_empty() }}\n\nfn check(value: &str) -> bool {{ valid(value) }}\n"
+                ),
+                None,
+            ),
+            (
+                format!(
+                    "fn first(value: &str) -> bool {{\n    {import}    valid(value.as_bytes())\n}}\n\nfn second(value: &str) -> bool {{ valid(value) }}\n"
+                ),
+                Some("first"),
+            ),
+            (
+                format!(
+                    "{import}\nfn local(value: &str) -> bool {{\n    use crate::checks::valid;\n    valid(value)\n}}\n"
+                ),
+                None,
+            ),
+            (
+                format!(
+                    "{import}\nmod inner {{\n    use super::valid;\n\n    fn pin(value: &[u8]) -> bool {{ valid(value) }}\n}}\n"
+                ),
+                Some("inner::pin"),
+            ),
+            (
+                format!(
+                    "{import}\nmod inner {{\n    use super::*;\n\n    fn pin(value: &[u8]) -> bool {{ valid(value) }}\n}}\n"
+                ),
+                Some("inner::pin"),
+            ),
+        ];
+        for (source, context) in cases {
+            assert_eq!(
+                planted("src/copy.rs", &source),
+                context
+                    .map(|context| format!("src/copy.rs: core-rule-copy: `{context}` calls release_glz_core::is_object_id"))
+                    .into_iter()
+                    .collect::<Vec<_>>()
+            );
+        }
+        assert_eq!(
+            planted(
+                "src/lib.rs",
+                &format!(
+                    "{import}\nmod inner {{\n    use crate::valid;\n\n    fn pin(value: &[u8]) -> bool {{ valid(value) }}\n}}\n"
+                )
+            ),
+            ["src/lib.rs: core-rule-copy: `inner::pin` calls release_glz_core::is_object_id"]
         );
     }
 
