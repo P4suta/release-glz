@@ -203,6 +203,7 @@ enum Rule {
     CoreOwned,
     CoreUnproved,
     CoreRuleCopy,
+    CoreAlias,
     DomainOpen,
     CrateEdge,
     UnmappedCrate,
@@ -219,6 +220,7 @@ impl Rule {
             Self::CoreOwned => "core-owned",
             Self::CoreUnproved => "core-unproved",
             Self::CoreRuleCopy => "core-rule-copy",
+            Self::CoreAlias => "core-alias",
             Self::DomainOpen => "domain-open",
             Self::CrateEdge => "crate-edge",
             Self::UnmappedCrate => "unmapped-crate",
@@ -244,6 +246,9 @@ impl Rule {
             }
             Self::CoreRuleCopy => {
                 "construct the checked type in release-glz-domain, whose constructor calls the core predicate"
+            }
+            Self::CoreAlias => {
+                "name `release_glz_core` directly instead of renaming it, so the gate sees each call of a core predicate"
             }
             Self::DomainOpen => {
                 "keep the fields private, and construct the type only through a checked constructor that calls the core predicate"
@@ -967,7 +972,7 @@ fn core_sources(
             Finding::new(&shown, Rule::CoreUnproved, format!("`{module}` {UNPROVED}"))
         }));
         found.extend(
-            Scan::hits(&file, Place::Core, &BTreeSet::new(), false)
+            Scan::hits(&file, Place::Core, &CrateNames::default(), false)
                 .into_iter()
                 .map(|(rule, item)| Finding::new(&shown, rule, item)),
         );
@@ -984,15 +989,11 @@ fn scan_sources(
 ) -> Result<(), Failure> {
     let sources = crate_sources(workspace, member, found)?;
     let src = member.directory.join("src");
-    let prelude: BTreeSet<String> = sources
-        .iter()
-        .filter(|(path, _)| is_crate_root(&src, path))
-        .flat_map(|(_, file)| core_aliases(file))
-        .collect();
+    let names = CrateNames::of(&sources, &src, place);
     for (path, file) in &sources {
         let shown = workspace.shown(path)?;
         found.extend(
-            Scan::hits(file, place, &prelude, is_crate_root(&src, path))
+            Scan::hits(file, place, &names, is_crate_root(&src, path))
                 .into_iter()
                 .map(|(rule, item)| Finding::new(&shown, rule, item)),
         );
@@ -1281,7 +1282,8 @@ impl Place {
             (Self::Core, Rule::CoreOwned) => {
                 !flags.kani && !matches!(flags.control, Control::Inside)
             }
-            (Self::Shell, Rule::CoreRuleCopy) | (Self::Domain, Rule::DomainOpen) => !flags.test,
+            (Self::Shell, Rule::CoreRuleCopy | Rule::CoreAlias)
+            | (Self::Domain, Rule::DomainOpen) => !flags.test,
             _ => false,
         }
     }
@@ -1384,6 +1386,49 @@ struct Scope {
     rules: BTreeMap<String, String>,
 }
 
+/// A scope that a path names: one around the current syntax, or the root scope of the crate in another file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Named {
+    Around(usize),
+    CrateRoot,
+}
+
+/// What every file of a crate may reach outside itself: the core aliases of the root's `extern crate` items, and the names that the root binds, which `crate::` reaches.
+#[derive(Debug, Clone, Default)]
+struct CrateNames {
+    prelude: BTreeSet<String>,
+    root: Scope,
+}
+
+impl CrateNames {
+    /// The names of the crate whose parsed `sources` lie in `src`, where a library and its binaries share one set of root names.
+    fn of(sources: &BTreeMap<PathBuf, syn::File>, src: &Path, place: Place) -> Self {
+        let roots: Vec<&syn::File> = sources
+            .iter()
+            .filter(|(path, _)| is_crate_root(src, path))
+            .map(|(_, file)| file)
+            .collect();
+        let mut names = Self {
+            prelude: roots.iter().flat_map(|file| core_aliases(file)).collect(),
+            root: Scope::default(),
+        };
+        let mut root = Scope::default();
+        for file in roots {
+            if let Some(scope) = Scan::new(file, place, &names, true).scopes.first() {
+                root.crates.extend(scope.crates.iter().cloned());
+                root.rules.extend(
+                    scope
+                        .rules
+                        .iter()
+                        .map(|(name, rule)| (name.clone(), rule.clone())),
+                );
+            }
+        }
+        names.root = root;
+        names
+    }
+}
+
 /// One name that a scope binds into the core crate.
 #[derive(Debug)]
 enum Binding {
@@ -1453,9 +1498,9 @@ struct Scan {
     place: Place,
     /// The module and block scopes around the current syntax, outermost first.
     scopes: Vec<Scope>,
-    /// The names that the crate root's `extern crate` items give the core crate.
-    prelude: BTreeSet<String>,
-    /// Whether the file is its crate's root, which `crate` names.
+    /// The names that the crate's root gives the core crate and its predicates.
+    names: CrateNames,
+    /// Whether the file is its crate's root, whose own outermost scope `crate` names.
     root: bool,
     /// The names of the items around the current one, outermost first.
     context: Vec<String>,
@@ -1466,16 +1511,12 @@ struct Scan {
 }
 
 impl Scan {
-    fn hits(
-        file: &syn::File,
-        place: Place,
-        prelude: &BTreeSet<String>,
-        root: bool,
-    ) -> Vec<(Rule, String)> {
+    /// A scan of `file` with its outermost scope bound, where `root` tells whether the file is its crate's root.
+    fn new(file: &syn::File, place: Place, names: &CrateNames, root: bool) -> Self {
         let mut scan = Self {
             place,
             scopes: Vec::new(),
-            prelude: prelude.clone(),
+            names: names.clone(),
             root,
             context: Vec::new(),
             flags: Flags::default().within(&file.attrs, ""),
@@ -1483,6 +1524,11 @@ impl Scan {
             hits: Vec::new(),
         };
         scan.open(true, &file.items.iter().collect::<Vec<_>>());
+        scan
+    }
+
+    fn hits(file: &syn::File, place: Place, names: &CrateNames, root: bool) -> Vec<(Rule, String)> {
+        let mut scan = Self::new(file, place, names, root);
         scan.visit_file(file);
         scan.hits
     }
@@ -1559,8 +1605,8 @@ impl Scan {
                 (None, None) => {
                     let from = self
                         .scope_of(index, &leaf.path)
-                        .filter(|from| *from != index)
-                        .and_then(|from| self.scopes.get(from));
+                        .filter(|from| *from != Named::Around(index))
+                        .and_then(|from| self.scope(from));
                     if let Some(scope) = from {
                         let open = |name: &&String| !explicit.contains(*name);
                         bindings.extend(
@@ -1595,29 +1641,42 @@ impl Scan {
     }
 
     /// The scope that a path of only `self`, `super`, and `crate` names from the scope at `index`.
-    fn scope_of(&self, index: usize, names: &[String]) -> Option<usize> {
-        let mut at = index;
+    fn scope_of(&self, index: usize, names: &[String]) -> Option<Named> {
+        let mut at = Named::Around(index);
         for (position, name) in names.iter().enumerate() {
-            at = match name.as_str() {
-                "self" => self.module_at(at)?,
-                "super" => self.module_at(self.module_at(at)?.checked_sub(1)?)?,
-                "crate" if position == 0 && self.root => 0,
+            at = match (at, name.as_str()) {
+                (Named::Around(at), "self") => Named::Around(self.module_at(at)?),
+                (Named::Around(at), "super") => {
+                    Named::Around(self.module_at(self.module_at(at)?.checked_sub(1)?)?)
+                }
+                (_, "crate") if position == 0 && self.root => Named::Around(0),
+                (_, "crate") if position == 0 => Named::CrateRoot,
                 _ => return None,
             };
         }
         Some(at)
     }
 
-    /// The path from the core crate's own name that `names` reach from the scope at `index`, when its scopes bind them into the core crate.
+    fn scope(&self, named: Named) -> Option<&Scope> {
+        match named {
+            Named::Around(index) => self.scopes.get(index),
+            Named::CrateRoot => Some(&self.names.root),
+        }
+    }
+
+    /// The path from the core crate's own name that `names` reach from the scope at `index`, when its scopes, or the crate root's names that `crate::` reaches, bind them into the core crate.
+    ///
+    /// A re-export through a module other than the crate root stays unresolved, and the `core-alias` rule and the crate root's names cover every form the shell can write without one.
     fn resolve(&self, index: usize, names: &[String]) -> Option<Vec<String>> {
         let relative = names
             .iter()
             .take_while(|name| RELATIVE.contains(&name.as_str()))
             .count();
         let (prefix, rest) = names.split_at_checked(relative)?;
-        let scope = self.scopes.get(self.scope_of(index, prefix)?)?;
+        let scope = self.scope(self.scope_of(index, prefix)?)?;
         let (first, after) = rest.split_first()?;
-        let external = prefix.is_empty() && (first == CORE_CRATE || self.prelude.contains(first));
+        let external =
+            prefix.is_empty() && (first == CORE_CRATE || self.names.prelude.contains(first));
         let core = || std::iter::once(CORE_CRATE.to_owned());
         if external || scope.crates.contains(first) {
             Some(core().chain(after.iter().cloned()).collect())
@@ -1728,6 +1787,7 @@ impl Scan {
         let mut leaves = Vec::new();
         use_leaves(&node.tree, &[], &mut leaves);
         let context = self.context();
+        let top = self.scopes.len().saturating_sub(1);
         for leaf in leaves {
             let shown = leaf.path.join("::");
             let first = leaf.path.first().map(String::as_str);
@@ -1735,6 +1795,15 @@ impl Scan {
                 self.record(Rule::CoreStd, format!("{context} imports {shown}"));
             } else if first == Some("alloc") {
                 self.record(Rule::CoreOwned, format!("{context} imports {shown}"));
+            }
+            let names_core = self
+                .resolve(top, &leaf.path)
+                .is_some_and(|path| path.len() == 1);
+            if let Some(local) = leaf.local.filter(|local| names_core && local != CORE_CRATE) {
+                self.record(
+                    Rule::CoreAlias,
+                    format!("{context} renames {CORE_CRATE} as {local}"),
+                );
             }
         }
     }
@@ -1858,6 +1927,13 @@ impl Visit<'_> for Scan {
         if node.ident == "std" {
             let item = format!("{} declares extern crate std", self.context());
             self.enter(&node.attrs, None, |scan| scan.record(Rule::CoreStd, item));
+        }
+        if let Some((_, alias)) = &node.rename
+            && node.ident == CORE_CRATE
+            && alias != CORE_CRATE
+        {
+            let item = format!("{} renames {CORE_CRATE} as {alias}", self.context());
+            self.enter(&node.attrs, None, |scan| scan.record(Rule::CoreAlias, item));
         }
     }
 
@@ -2788,10 +2864,16 @@ fn uploaded() {
         }
     }
 
+    /// The finding of a `use` or `extern crate` item of the module at `path` that renames the core crate `policy`.
+    fn renamed(path: &str) -> String {
+        format!("{path}: core-alias: the module renames release_glz_core as policy")
+    }
+
     #[test]
     fn a_crate_alias_names_the_core() {
         let call = "fn pin(value: &str) -> bool { policy::is_object_id(value.as_bytes()) }\n";
-        let calls = ["src/copy.rs: core-rule-copy: `pin` calls release_glz_core::is_object_id"];
+        let called = "src/copy.rs: core-rule-copy: `pin` calls release_glz_core::is_object_id";
+        let calls = [called.to_owned(), renamed("src/copy.rs")];
         for alias in [
             "use release_glz_core as policy;\n",
             "use ::release_glz_core::{self as policy};\n",
@@ -2814,8 +2896,89 @@ fn uploaded() {
                 ),
                 ("src/copy.rs", call),
             ]),
-            calls
+            [called.to_owned(), renamed("src/lib.rs")]
         );
+    }
+
+    #[test]
+    fn the_shell_names_the_core_crate_only_by_its_own_name() {
+        let cases = [
+            ("use release_glz_core as policy;\n", Some("the module")),
+            (
+                "use ::release_glz_core::{self as policy};\n",
+                Some("the module"),
+            ),
+            (
+                "extern crate release_glz_core as policy;\n",
+                Some("the module"),
+            ),
+            (
+                "fn pin() {\n    use release_glz_core as policy;\n}\n",
+                Some("`pin`"),
+            ),
+            (
+                "#[cfg(test)]\nmod tests {\n    use release_glz_core as policy;\n}\n",
+                None,
+            ),
+            ("use release_glz_core;\n", None),
+        ];
+        for (source, context) in cases {
+            assert_eq!(
+                planted("src/copy.rs", source),
+                context
+                    .map(|context| format!(
+                        "src/copy.rs: core-alias: {context} renames release_glz_core as policy"
+                    ))
+                    .into_iter()
+                    .collect::<Vec<_>>()
+            );
+        }
+        let support = "crates/test-support/src/copy.rs";
+        assert_eq!(
+            planted(support, "use release_glz_core as policy;\n"),
+            [renamed(support)]
+        );
+    }
+
+    #[test]
+    fn a_crate_path_reaches_the_bindings_of_the_crate_root() {
+        let calls = "src/copy.rs: core-rule-copy: `pin` calls release_glz_core::is_object_id";
+        let cases = [
+            (
+                "use release_glz_core as policy;\nmod copy;\n",
+                "fn pin(value: &[u8]) -> bool { crate::policy::is_object_id(value) }\n",
+                vec![calls.to_owned(), renamed("src/lib.rs")],
+            ),
+            (
+                "pub use release_glz_core::is_object_id;\n",
+                "fn pin(value: &[u8]) -> bool { crate::is_object_id(value) }\n",
+                vec![calls.to_owned()],
+            ),
+            (
+                "pub use release_glz_core::is_object_id as valid;\n",
+                "fn pin(value: &[u8]) -> bool { crate::valid(value) }\n",
+                vec![calls.to_owned()],
+            ),
+            (
+                "pub use release_glz_core::is_object_id as valid;\n",
+                "use crate::valid;\nfn pin(value: &[u8]) -> bool { valid(value) }\n",
+                vec![calls.to_owned()],
+            ),
+            (
+                "pub fn valid(value: &[u8]) -> bool { !value.is_empty() }\n",
+                "fn pin(value: &[u8]) -> bool { crate::valid(value) }\n",
+                Vec::new(),
+            ),
+        ];
+        for (root, copy, expected) in cases {
+            assert_eq!(
+                planted_all(&[
+                    ("src/lib.rs", &format!("{SHELL_LIBRARY}{root}")),
+                    ("src/copy.rs", copy),
+                ]),
+                expected
+            );
+        }
     }
 
     #[test]
