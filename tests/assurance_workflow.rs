@@ -5,11 +5,13 @@ use std::path::Path;
 const WINDOWS_HEX_TARBALL_REGRESSION: &str = "1.18.1";
 
 fn pinned_tool(tool: &str) -> String {
-    fs::read_to_string("mise.toml")
+    let manifest = fs::read_to_string("mise.toml")
         .unwrap()
         .parse::<toml_edit::DocumentMut>()
-        .unwrap()["tools"][tool]
-        .as_str()
+        .unwrap();
+    let pin = &manifest["tools"][tool];
+    pin.as_str()
+        .or_else(|| pin.get("version").and_then(toml_edit::Item::as_str))
         .unwrap_or_else(|| panic!("mise.toml pins no {tool}"))
         .to_owned()
 }

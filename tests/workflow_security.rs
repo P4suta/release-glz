@@ -174,7 +174,7 @@ fn distribution_prepares_checksums_without_mutating_a_release_before_the_tag() {
     assert!(yaml.contains("name: action-checksums-${{ needs.validate.outputs.version }}"));
     assert!(yaml.contains("path: action-checksums.json"));
     assert!(yaml.contains("github.event_name == 'push'"));
-    assert!(yaml.contains("toolchain: 1.88.0"));
+    assert!(yaml.contains("toolchain: 1.100.0"));
     assert!(!yaml.contains("RELEASE_GLZ_ACTION_SHA"));
     assert!(yaml.contains("git cat-file -t \"$GITHUB_REF\""));
     assert!(yaml.contains("git rev-parse \"$GITHUB_REF^{}\""));
