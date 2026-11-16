@@ -48,9 +48,9 @@ fn complete_marker(body: &str) -> String {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect();
+    let branch: String = digest.chars().take(BRANCH_SUFFIX_LENGTH).collect();
+    let head: String = digest.chars().take(OBJECT_HEX_LENGTH).collect();
     format!(
-        "{MARKER_PREFIX}package=widget branch=release-glz/{} head={} digest={digest} version=1.2.3 intent=pending{MARKER_SUFFIX}",
-        &digest[..BRANCH_SUFFIX_LENGTH],
-        &digest[..OBJECT_HEX_LENGTH],
+        "{MARKER_PREFIX}package=widget branch=release-glz/{branch} head={head} digest={digest} version=1.2.3 intent=pending{MARKER_SUFFIX}",
     )
 }

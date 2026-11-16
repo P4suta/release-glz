@@ -253,7 +253,7 @@ fn a_plan_for_another_checkout_is_refused_with_its_reason() {
         history.side.clone(),
         "f".repeat(40),
         history.first.to_ascii_uppercase(),
-        history.first[..7].to_owned(),
+        history.first.chars().take(7).collect(),
         "HEAD".to_owned(),
         "main".to_owned(),
     ] {

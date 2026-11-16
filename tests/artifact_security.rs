@@ -713,7 +713,7 @@ fn extension_tar_gz(kind: tar::EntryType) -> Vec<u8> {
         tar::EntryType::XHeader | tar::EntryType::XGlobalHeader => {
             pax_record("path", "nested/file.txt")
         }
-        _ => unreachable!(),
+        other => panic!("{other:?} is not an extension header"),
     };
     extension_tar_gz_with_contents(kind, &contents)
 }

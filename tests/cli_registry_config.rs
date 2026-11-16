@@ -808,7 +808,9 @@ fn a_handed_off_plan_that_does_not_describe_the_checkout_is_refused_before_any_r
         ),
         (
             "an abbreviated baseline",
-            edit(&|plan| plan["baseline"]["sha"] = first[..7].into()),
+            edit(&|plan| {
+                plan["baseline"]["sha"] = first.chars().take(7).collect::<String>().into()
+            }),
         ),
         (
             "another schema",

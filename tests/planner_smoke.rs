@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::Path;
 
-use anyhow::{Result, bail};
+use anyhow::{Result, bail, ensure};
 use async_trait::async_trait;
 use flate2::{Compression, write::GzEncoder};
 use release_glz::config::Manifest;
@@ -146,13 +146,13 @@ async fn planning_refuses_releases_that_tie_at_the_highest_precedence_before_any
             })
             .await
             .unwrap_err();
-        assert_eq!(
-            (refusal_reason(&error), format!("{error:#}")),
-            (
-                Some(RefusalReason::RegistryReleasePrecedenceTie),
-                message.to_owned()
-            ),
-            "{listed:?}"
+        ensure!(
+            (refusal_reason(&error), format!("{error:#}"))
+                == (
+                    Some(RefusalReason::RegistryReleasePrecedenceTie),
+                    message.to_owned()
+                ),
+            "{listed:?}: {error:#}"
         );
     }
     Ok(())
@@ -175,10 +175,10 @@ async fn initial_plan_covers_empty_registry_version_floor_and_prerelease_train_e
                 ..PlanOptions::default()
             })
             .await?;
-        assert_eq!(plan.version, Version::new(1, 0, 0));
-        assert_eq!(plan.baseline.source, BaselineSource::Initial);
-        assert_eq!(plan.reasons[0].kind, ReasonKind::InitialRelease);
-        assert_eq!(plan.hex_url, None, "an unpublished release has no page");
+        ensure!(plan.version == Version::new(1, 0, 0));
+        ensure!(plan.baseline.source == BaselineSource::Initial);
+        ensure!(plan.reasons[0].kind == ReasonKind::InitialRelease);
+        ensure!(plan.hex_url.is_none(), "an unpublished release has no page");
     }
 
     let planner = uncached_planner(
@@ -195,12 +195,9 @@ async fn initial_plan_covers_empty_registry_version_floor_and_prerelease_train_e
         })
         .await
         .unwrap_err();
-    assert_eq!(
-        refusal_reason(&error),
-        Some(RefusalReason::VersionLoweringForbidden)
-    );
+    ensure!(refusal_reason(&error) == Some(RefusalReason::VersionLoweringForbidden));
     let error = error.to_string();
-    assert!(error.contains("forbids lowering"), "{error}");
+    ensure!(error.contains("forbids lowering"), "{error}");
 
     let alpha = planner
         .plan(&PlanOptions {
@@ -210,7 +207,7 @@ async fn initial_plan_covers_empty_registry_version_floor_and_prerelease_train_e
             ..PlanOptions::default()
         })
         .await?;
-    assert_eq!(alpha.version.to_string(), "1.1.0-alpha.1");
+    ensure!(alpha.version.to_string() == "1.1.0-alpha.1");
 
     let beta = planner
         .plan(&PlanOptions {
@@ -220,7 +217,7 @@ async fn initial_plan_covers_empty_registry_version_floor_and_prerelease_train_e
             ..PlanOptions::default()
         })
         .await?;
-    assert_eq!(beta.version.to_string(), "1.1.0-beta.7");
+    ensure!(beta.version.to_string() == "1.1.0-beta.7");
 
     let mismatched = planner
         .plan(&PlanOptions {
@@ -231,12 +228,9 @@ async fn initial_plan_covers_empty_registry_version_floor_and_prerelease_train_e
         })
         .await
         .unwrap_err();
-    assert_eq!(
-        refusal_reason(&mismatched),
-        Some(RefusalReason::ExplicitVersionRefused)
-    );
+    ensure!(refusal_reason(&mismatched) == Some(RefusalReason::ExplicitVersionRefused));
     let mismatched = mismatched.to_string();
-    assert!(mismatched.contains("does not belong"), "{mismatched}");
+    ensure!(mismatched.contains("does not belong"), "{mismatched}");
     Ok(())
 }
 
@@ -267,15 +261,12 @@ async fn unchanged_existing_release_is_noop_but_explicit_train_and_retirement_ar
             ..PlanOptions::default()
         })
         .await?;
-    assert_eq!(plan.state, ReleaseState::UpToDate);
-    assert!(!plan.release_required);
-    assert!(!plan.artifacts_changed);
-    assert!(plan.required_approvals.is_empty());
-    assert!(plan.stages.is_empty());
-    assert_eq!(
-        plan.hex_url.as_deref(),
-        Some("https://hex.pm/packages/noop_fixture/1.0.0")
-    );
+    ensure!(plan.state == ReleaseState::UpToDate);
+    ensure!(!plan.release_required);
+    ensure!(!plan.artifacts_changed);
+    ensure!(plan.required_approvals.is_empty());
+    ensure!(plan.stages.is_empty());
+    ensure!(plan.hex_url.as_deref() == Some("https://hex.pm/packages/noop_fixture/1.0.0"));
 
     let explicit = uncached_planner(registry(false), gleam.clone())
         .plan(&PlanOptions {
@@ -284,9 +275,9 @@ async fn unchanged_existing_release_is_noop_but_explicit_train_and_retirement_ar
             ..PlanOptions::default()
         })
         .await?;
-    assert_eq!(explicit.version, Version::new(1, 0, 1));
-    assert_eq!(explicit.bump, Bump::Patch);
-    assert!(
+    ensure!(explicit.version == Version::new(1, 0, 1));
+    ensure!(explicit.bump == Bump::Patch);
+    ensure!(
         explicit
             .reasons
             .iter()
@@ -300,8 +291,8 @@ async fn unchanged_existing_release_is_noop_but_explicit_train_and_retirement_ar
             ..PlanOptions::default()
         })
         .await?;
-    assert_eq!(alpha.version.to_string(), "1.0.1-alpha.1");
-    assert!(
+    ensure!(alpha.version.to_string() == "1.0.1-alpha.1");
+    ensure!(
         alpha
             .reasons
             .iter()
@@ -314,8 +305,8 @@ async fn unchanged_existing_release_is_noop_but_explicit_train_and_retirement_ar
             ..PlanOptions::default()
         })
         .await?;
-    assert_eq!(retired.state, ReleaseState::UpToDate);
-    assert!(
+    ensure!(retired.state == ReleaseState::UpToDate);
+    ensure!(
         retired
             .reasons
             .iter()
@@ -337,12 +328,9 @@ async fn unchanged_existing_release_is_noop_but_explicit_train_and_retirement_ar
     })
     .await
     .unwrap_err();
-    assert_eq!(
-        refusal_reason(&behind),
-        Some(RefusalReason::ManifestVersionBehindPublished)
-    );
+    ensure!(refusal_reason(&behind) == Some(RefusalReason::ManifestVersionBehindPublished));
     let behind = behind.to_string();
-    assert!(behind.contains("behind the latest"), "{behind}");
+    ensure!(behind.contains("behind the latest"), "{behind}");
     Ok(())
 }
 
@@ -375,7 +363,7 @@ async fn existing_prerelease_trains_move_forward_promote_and_reject_backward_cor
             ..PlanOptions::default()
         })
         .await?;
-    assert_eq!(promoted.version, Version::new(1, 1, 0));
+    ensure!(promoted.version == Version::new(1, 1, 0));
 
     let same = uncached_planner(registry("1.1.0-rc.1".parse()?), gleam.clone())
         .plan(&PlanOptions {
@@ -384,8 +372,8 @@ async fn existing_prerelease_trains_move_forward_promote_and_reject_backward_cor
             ..PlanOptions::default()
         })
         .await?;
-    assert_eq!(same.state, ReleaseState::UpToDate);
-    assert_eq!(same.version.to_string(), "1.1.0-rc.1");
+    ensure!(same.state == ReleaseState::UpToDate);
+    ensure!(same.version.to_string() == "1.1.0-rc.1");
 
     let backward = uncached_planner(registry("1.1.0-rc.1".parse()?), gleam.clone())
         .plan(&PlanOptions {
@@ -395,12 +383,9 @@ async fn existing_prerelease_trains_move_forward_promote_and_reject_backward_cor
         })
         .await
         .unwrap_err();
-    assert_eq!(
-        refusal_reason(&backward),
-        Some(RefusalReason::PrereleaseTrainBackward)
-    );
+    ensure!(refusal_reason(&backward) == Some(RefusalReason::PrereleaseTrainBackward));
     let backward = backward.to_string();
-    assert!(backward.contains("backward"), "{backward}");
+    ensure!(backward.contains("backward"), "{backward}");
 
     let beta = uncached_planner(registry("1.1.0-alpha.1".parse()?), gleam)
         .plan(&PlanOptions {
@@ -410,7 +395,7 @@ async fn existing_prerelease_trains_move_forward_promote_and_reject_backward_cor
             ..PlanOptions::default()
         })
         .await?;
-    assert_eq!(beta.version.to_string(), "1.1.0-beta.1");
+    ensure!(beta.version.to_string() == "1.1.0-beta.1");
     Ok(())
 }
 
@@ -439,9 +424,9 @@ async fn planning_refuses_a_manifest_without_release_configuration() -> Result<(
     })
     .await
     .unwrap_err();
-    assert_eq!(refusal_reason(&error), Some(RefusalReason::ConfigMissing));
-    assert!(error.to_string().contains("release-glz init"), "{error}");
-    assert_eq!(fs::read_to_string(package.join("gleam.toml"))?, source);
+    ensure!(refusal_reason(&error) == Some(RefusalReason::ConfigMissing));
+    ensure!(error.to_string().contains("release-glz init"), "{error}");
+    ensure!(fs::read_to_string(package.join("gleam.toml"))? == source);
     Ok(())
 }
 
@@ -477,11 +462,8 @@ async fn planning_refuses_a_compiler_other_than_the_configured_one() -> Result<(
     })
     .await
     .unwrap_err();
-    assert_eq!(
-        refusal_reason(&error),
-        Some(RefusalReason::GleamCompilerMismatch)
-    );
-    assert!(
+    ensure!(refusal_reason(&error) == Some(RefusalReason::GleamCompilerMismatch));
+    ensure!(
         error
             .to_string()
             .contains("configured Gleam compiler 99.0.0 is required"),
@@ -545,9 +527,9 @@ expires = "2999-12-31"
         ..PlanOptions::default()
     })
     .await?;
-    assert_eq!(plan.baseline.source, BaselineSource::Config);
-    assert_eq!(plan.api.status, ApiStatus::UnknownAllowed);
-    assert!(plan.reasons.iter().any(|reason| {
+    ensure!(plan.baseline.source == BaselineSource::Config);
+    ensure!(plan.api.status == ApiStatus::UnknownAllowed);
+    ensure!(plan.reasons.iter().any(|reason| {
         reason
             .summary
             .contains("The baseline documentation has no package interface")
@@ -627,22 +609,19 @@ async fn plan_uses_hex_api_and_tag_without_dirtying_the_package() -> Result<()> 
     };
 
     let plan = planner.plan(&options).await?;
-    assert_eq!(plan.version, Version::new(1, 1, 0));
-    assert_eq!(plan.bump, Bump::Minor);
-    assert!(plan.artifacts_changed);
-    assert_eq!(plan.api.impact, Bump::Minor);
-    assert_eq!(plan.baseline.source, BaselineSource::Tag);
-    assert!(!plan.api.changes.is_empty() && !plan.changes.is_empty());
+    ensure!(plan.version == Version::new(1, 1, 0));
+    ensure!(plan.bump == Bump::Minor);
+    ensure!(plan.artifacts_changed);
+    ensure!(plan.api.impact == Bump::Minor);
+    ensure!(plan.baseline.source == BaselineSource::Tag);
+    ensure!(!plan.api.changes.is_empty() && !plan.changes.is_empty());
     assert_published_result(&serde_json::to_value(&plan)?);
-    assert!(!package.join("build").exists(), "plan dirtied the package");
+    ensure!(!package.join("build").exists(), "plan dirtied the package");
 
     git(package, &["tag", "--delete", "v1.0.0"])?;
     let recovered = planner.plan(&options).await?;
-    assert_eq!(
-        recovered.baseline.source,
-        BaselineSource::ArtifactFingerprint
-    );
-    assert!(
+    ensure!(recovered.baseline.source == BaselineSource::ArtifactFingerprint);
+    ensure!(
         cache.join("release-glz/baselines").is_dir(),
         "successful bounded fingerprint search was not cached"
     );
@@ -651,7 +630,7 @@ async fn plan_uses_hex_api_and_tag_without_dirtying_the_package() -> Result<()> 
         .with_baseline_search_limit(1)
         .plan(&options)
         .await?;
-    assert_eq!(cached.baseline.source, BaselineSource::ArtifactFingerprint);
+    ensure!(cached.baseline.source == BaselineSource::ArtifactFingerprint);
 
     let cache_directory = cache.join("release-glz/baselines");
     let cache_file = fs::read_dir(&cache_directory)?
@@ -668,12 +647,9 @@ async fn plan_uses_hex_api_and_tag_without_dirtying_the_package() -> Result<()> 
         .plan(&options)
         .await
         .unwrap_err();
-    assert_eq!(
-        refusal_reason(&poisoned),
-        Some(RefusalReason::BaselineNotFound)
-    );
+    ensure!(refusal_reason(&poisoned) == Some(RefusalReason::BaselineNotFound));
     let poisoned = poisoned.to_string();
-    assert!(poisoned.contains("bounded"), "{poisoned}");
+    ensure!(poisoned.contains("bounded"), "{poisoned}");
 
     let bounded = uncached_planner(registry, gleam.clone())
         .with_baseline_cache_dir(None)
@@ -681,14 +657,11 @@ async fn plan_uses_hex_api_and_tag_without_dirtying_the_package() -> Result<()> 
         .plan(&options)
         .await
         .unwrap_err();
-    assert_eq!(
-        refusal_reason(&bounded),
-        Some(RefusalReason::BaselineNotFound)
-    );
+    ensure!(refusal_reason(&bounded) == Some(RefusalReason::BaselineNotFound));
     let bounded = bounded.to_string();
-    assert!(bounded.contains("bounded"), "{bounded}");
-    assert!(bounded.contains("1 commit"), "{bounded}");
-    assert!(
+    ensure!(bounded.contains("bounded"), "{bounded}");
+    ensure!(bounded.contains("1 commit"), "{bounded}");
+    ensure!(
         !package.join("build").exists(),
         "fingerprint recovery dirtied the package"
     );
@@ -699,8 +672,8 @@ async fn plan_uses_hex_api_and_tag_without_dirtying_the_package() -> Result<()> 
         "fn private_only() -> Int { 99 }\n",
     )?;
     let committed = planner.plan(&options).await?;
-    assert_eq!(committed.version, Version::new(1, 1, 0));
-    assert_eq!(committed.api.impact, Bump::Minor);
+    ensure!(committed.version == Version::new(1, 1, 0));
+    ensure!(committed.api.impact == Bump::Minor);
 
     let fallback = uncached_planner(
         MockRegistry {
@@ -711,7 +684,7 @@ async fn plan_uses_hex_api_and_tag_without_dirtying_the_package() -> Result<()> 
         Gleam::default(),
     );
     let fallback_plan = fallback.plan(&options).await?;
-    assert_eq!(fallback_plan.api.impact, Bump::Minor);
+    ensure!(fallback_plan.api.impact == Bump::Minor);
     Ok(())
 }
 
@@ -770,9 +743,9 @@ async fn breaking_zero_major_release_stays_on_the_zero_major_line() -> Result<()
             ..PlanOptions::default()
         })
         .await?;
-    assert_eq!(plan.api.impact, Bump::Major);
-    assert_eq!(plan.bump, Bump::Minor);
-    assert_eq!(plan.version, Version::new(0, 5, 0));
+    ensure!(plan.api.impact == Bump::Major);
+    ensure!(plan.bump == Bump::Minor);
+    ensure!(plan.version == Version::new(0, 5, 0));
     assert_published_result(&serde_json::to_value(&plan)?);
     Ok(())
 }
@@ -826,8 +799,8 @@ async fn structured_api_exception_requires_an_active_expiry_and_resolvable_basel
         ..PlanOptions::default()
     };
     let allowed = planner.plan(&options).await?;
-    assert_eq!(allowed.api.status, ApiStatus::UnknownAllowed);
-    assert!(allowed.reasons.iter().any(|reason| {
+    ensure!(allowed.api.status == ApiStatus::UnknownAllowed);
+    ensure!(allowed.reasons.iter().any(|reason| {
         reason
             .summary
             .contains("Historical compiler output is unavailable")
@@ -841,13 +814,10 @@ async fn structured_api_exception_requires_an_active_expiry_and_resolvable_basel
     git(package, &["add", "gleam.toml"])?;
     git(package, &["commit", "-m", "test: expire exception"])?;
     let expired = planner.plan(&options).await.unwrap_err();
-    assert_eq!(
-        refusal_reason(&expired),
-        Some(RefusalReason::ApiExceptionExpired)
-    );
+    ensure!(refusal_reason(&expired) == Some(RefusalReason::ApiExceptionExpired));
     let expired = expired.to_string();
-    assert!(expired.contains("expired"), "{expired}");
-    assert!(expired.contains("2000-01-01"), "{expired}");
+    ensure!(expired.contains("expired"), "{expired}");
+    ensure!(expired.contains("2000-01-01"), "{expired}");
 
     fs::write(
         package.join("gleam.toml"),
@@ -859,13 +829,10 @@ async fn structured_api_exception_requires_an_active_expiry_and_resolvable_basel
         &["commit", "-m", "test: missing exception baseline"],
     )?;
     let missing = planner.plan(&options).await.unwrap_err();
-    assert_eq!(
-        refusal_reason(&missing),
-        Some(RefusalReason::BaselineRefUnresolved)
-    );
+    ensure!(refusal_reason(&missing) == Some(RefusalReason::BaselineRefUnresolved));
     let missing = missing.to_string();
-    assert!(missing.contains("refs/tags/missing"), "{missing}");
-    assert!(missing.contains("cannot be resolved"), "{missing}");
+    ensure!(missing.contains("refs/tags/missing"), "{missing}");
+    ensure!(missing.contains("cannot be resolved"), "{missing}");
     Ok(())
 }
 
@@ -925,31 +892,31 @@ fn release_files_are_repository_relative_structured_and_idempotently_updated() -
     ];
 
     let files = prepare_release_files(&manifest, &repo, &plan, &plan.changes)?;
-    assert_eq!(
-        files.keys().map(String::as_str).collect::<Vec<_>>(),
-        ["packages/widget/CHANGELOG.md", "packages/widget/gleam.toml"]
+    ensure!(
+        files.keys().map(String::as_str).collect::<Vec<_>>()
+            == ["packages/widget/CHANGELOG.md", "packages/widget/gleam.toml"]
     );
-    assert!(
+    ensure!(
         String::from_utf8_lossy(&files["packages/widget/gleam.toml"])
             .contains("version = \"1.2.0\"")
     );
     let changelog = String::from_utf8_lossy(&files["packages/widget/CHANGELOG.md"]);
-    assert!(changelog.contains("## [1.2.0]"));
-    assert!(changelog.contains("### Added"));
-    assert!(changelog.contains("Add public API"));
-    assert!(changelog.contains("### Security"));
-    assert!(changelog.contains("Harden candidate checks"));
-    assert!(!changelog.contains("Duplicate PR note"));
-    assert!(!changelog.contains("Internal maintenance"));
-    assert!(!package.join("CHANGELOG.md").exists());
-    assert!(fs::read_to_string(package.join("gleam.toml"))?.contains("1.1.0"));
+    ensure!(changelog.contains("## [1.2.0]"));
+    ensure!(changelog.contains("### Added"));
+    ensure!(changelog.contains("Add public API"));
+    ensure!(changelog.contains("### Security"));
+    ensure!(changelog.contains("Harden candidate checks"));
+    ensure!(!changelog.contains("Duplicate PR note"));
+    ensure!(!changelog.contains("Internal maintenance"));
+    ensure!(!package.join("CHANGELOG.md").exists());
+    ensure!(fs::read_to_string(package.join("gleam.toml"))?.contains("1.1.0"));
 
     let written = update_local(&mut manifest, &plan)?;
-    assert_eq!(written.len(), 2);
-    assert_eq!(manifest.version, Version::new(1, 2, 0));
-    assert!(fs::read_to_string(package.join("gleam.toml"))?.contains("1.2.0"));
-    assert!(fs::read_to_string(package.join("CHANGELOG.md"))?.contains("Harden candidate checks"));
-    assert!(update_local(&mut manifest, &plan)?.is_empty());
+    ensure!(written.len() == 2);
+    ensure!(manifest.version == Version::new(1, 2, 0));
+    ensure!(fs::read_to_string(package.join("gleam.toml"))?.contains("1.2.0"));
+    ensure!(fs::read_to_string(package.join("CHANGELOG.md"))?.contains("Harden candidate checks"));
+    ensure!(update_local(&mut manifest, &plan)?.is_empty());
     Ok(())
 }
 
@@ -967,12 +934,9 @@ fn release_file_generation_rejects_a_manifest_outside_the_discovered_repository(
     let repo = GitRepo::discover(repository.path())?;
 
     let error = prepare_release_files(&manifest, &repo, &release_file_plan(), &[]).unwrap_err();
-    assert_eq!(
-        refusal_reason(&error),
-        Some(RefusalReason::ReleaseFileOutsideRepository)
-    );
+    ensure!(refusal_reason(&error) == Some(RefusalReason::ReleaseFileOutsideRepository));
     let error = error.to_string();
-    assert!(error.contains("outside git repository"), "{error}");
+    ensure!(error.contains("outside git repository"), "{error}");
     Ok(())
 }
 
@@ -995,9 +959,8 @@ fn a_release_commit_changes_only_the_files_that_differ_from_head() -> Result<()>
     let plan = release_file_plan();
 
     let changes = release_commit_changes(&manifest, &repo, &plan, &[])?;
-    assert_eq!(
-        changes.keys().map(String::as_str).collect::<Vec<_>>(),
-        ["packages/widget/CHANGELOG.md"]
+    ensure!(
+        changes.keys().map(String::as_str).collect::<Vec<_>>() == ["packages/widget/CHANGELOG.md"]
     );
 
     fs::write(
@@ -1005,9 +968,9 @@ fn a_release_commit_changes_only_the_files_that_differ_from_head() -> Result<()>
         &changes["packages/widget/CHANGELOG.md"],
     )?;
     let uncommitted = release_commit_changes(&manifest, &repo, &plan, &[])?;
-    assert_eq!(
-        uncommitted, changes,
-        "a working tree file counts only once HEAD holds it"
+    ensure!(
+        uncommitted == changes,
+        "a working tree file counts only once HEAD holds it: {uncommitted:?} vs {changes:?}"
     );
 
     git(root, &["add", "."])?;
@@ -1015,7 +978,7 @@ fn a_release_commit_changes_only_the_files_that_differ_from_head() -> Result<()>
         root,
         &["commit", "--quiet", "-m", "docs: write the changelog"],
     )?;
-    assert!(release_commit_changes(&manifest, &repo, &plan, &[])?.is_empty());
+    ensure!(release_commit_changes(&manifest, &repo, &plan, &[])?.is_empty());
     Ok(())
 }
 

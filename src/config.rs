@@ -336,6 +336,21 @@ pub struct ApiException {
     pub expires: String,
 }
 
+impl ApiException {
+    /// The `YYYY-MM-DD` date in `expires`, or a refusal when `expires` holds anything else.
+    pub fn expiry(&self) -> Result<chrono::NaiveDate> {
+        chrono::NaiveDate::parse_from_str(&self.expires, "%Y-%m-%d").with_context(|| {
+            Refusal::new(
+                RefusalReason::ApiExceptionExpiryInvalid,
+                format!(
+                    "API exception expiry `{}` must use YYYY-MM-DD",
+                    self.expires
+                ),
+            )
+        })
+    }
+}
+
 /// The `[tools.release-glz]` table, after validation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReleaseConfig {
@@ -587,13 +602,13 @@ notes_dir = \".release-glz/notes\"\n\n\
     /// Render the manifest with a different version, without mutating it.
     pub fn render_with_version(&self, version: &Version) -> String {
         let mut document = self.document.clone();
-        document["version"] = value(version.to_string());
+        set_document_version(&mut document, version);
         document.to_string()
     }
 
     /// Set the manifest version in memory.
     pub fn set_version(&mut self, version: Version) {
-        self.document["version"] = value(version.to_string());
+        set_document_version(&mut self.document, &version);
         self.version = version;
     }
 
@@ -605,8 +620,7 @@ notes_dir = \".release-glz/notes\"\n\n\
         channel: Option<PrereleaseChannel>,
     ) -> Result<(), MissingReleaseConfig> {
         let release = self.release.as_mut().ok_or(MissingReleaseConfig)?;
-        let table = release_table_mut(&mut self.document)
-            .expect("a configured manifest has a release-glz table");
+        let table = release_table_mut(&mut self.document).ok_or(MissingReleaseConfig)?;
         match channel {
             Some(channel) => {
                 table.insert("prerelease", value(channel.as_str()));
@@ -872,15 +886,7 @@ fn validate_release_config(config: &ReleaseConfig) -> Result<()> {
             );
         }
         validate_git_ref(&exception.baseline, "api_exceptions.baseline")?;
-        chrono::NaiveDate::parse_from_str(&exception.expires, "%Y-%m-%d").with_context(|| {
-            Refusal::new(
-                RefusalReason::ApiExceptionExpiryInvalid,
-                format!(
-                    "API exception expiry `{}` must use YYYY-MM-DD",
-                    exception.expires
-                ),
-            )
-        })?;
+        exception.expiry()?;
     }
     for git_ref in config.baseline_refs.values() {
         validate_git_ref(git_ref, "baseline_refs")?;
@@ -1143,6 +1149,10 @@ pub fn validate_git_ref(value: &str, field: &str) -> Result<()> {
         refuse!(GitRefUnsafe, "{field} contains an unsafe git ref");
     }
     Ok(())
+}
+
+fn set_document_version(document: &mut DocumentMut, version: &Version) {
+    *document.entry("version").or_insert(Item::None) = value(version.to_string());
 }
 
 fn release_table_mut(document: &mut DocumentMut) -> Option<&mut dyn TableLike> {

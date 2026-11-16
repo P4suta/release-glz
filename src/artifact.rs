@@ -13,7 +13,7 @@ use icu_normalizer::DecomposingNormalizerBorrowed;
 use release_glz_core::{ClaimedPaths, archive_path, claim_path};
 use sha2::{Digest, Sha256};
 use tar::Archive;
-use toml_edit::{DocumentMut, value};
+use toml_edit::{DocumentMut, Item, value};
 
 use crate::canonical::{finalize_sha256, sha256};
 use crate::failure::{Refusal, RefusalReason, refused};
@@ -201,6 +201,37 @@ pub fn validate_and_fingerprint_hex_tarball(
     Ok((validation, fingerprint))
 }
 
+/// The entries of a Hex package tarball, which holds these four and no other.
+#[derive(Debug)]
+struct HexEntries {
+    version: Vec<u8>,
+    metadata: Vec<u8>,
+    contents: Vec<u8>,
+    checksum: Vec<u8>,
+}
+
+impl HexEntries {
+    fn from_outer(mut outer: BTreeMap<String, Vec<u8>>) -> Result<Self> {
+        let version = outer.remove("VERSION");
+        let metadata = outer.remove("metadata.config");
+        let contents = outer.remove("contents.tar.gz");
+        let checksum = outer.remove("CHECKSUM");
+        match (version, metadata, contents, checksum) {
+            (Some(version), Some(metadata), Some(contents), Some(checksum)) if outer.is_empty() => {
+                Ok(Self {
+                    version,
+                    metadata,
+                    contents,
+                    checksum,
+                })
+            }
+            _ => bail!(
+                "Hex package entries must be exactly VERSION, metadata.config, contents.tar.gz, and CHECKSUM"
+            ),
+        }
+    }
+}
+
 fn expand_hex_tarball(
     bytes: &[u8],
     limits: ArchiveLimits,
@@ -211,36 +242,27 @@ fn expand_hex_tarball(
             "Hex package exceeds the archive byte limit"
         );
     }
-    let outer =
-        read_tar_files(Cursor::new(bytes), limits, false).context("unsafe Hex package tarball")?;
-    let expected: BTreeSet<_> = ["CHECKSUM", "VERSION", "contents.tar.gz", "metadata.config"]
-        .into_iter()
-        .map(str::to_owned)
-        .collect();
-    let actual: BTreeSet<_> = outer.keys().cloned().collect();
-    if actual != expected {
-        bail!(
-            "Hex package entries must be exactly VERSION, metadata.config, contents.tar.gz, and CHECKSUM"
-        );
-    }
-    if trim_ascii(&outer["VERSION"]) != b"3" {
+    let outer = HexEntries::from_outer(
+        read_tar_files(Cursor::new(bytes), limits, false).context("unsafe Hex package tarball")?,
+    )?;
+    if outer.version.trim_ascii() != b"3" {
         bail!("unsupported Hex package tarball VERSION");
     }
     let mut inner = Sha256::new();
-    inner.update(&outer["VERSION"]);
-    inner.update(&outer["metadata.config"]);
-    inner.update(&outer["contents.tar.gz"]);
+    inner.update(&outer.version);
+    inner.update(&outer.metadata);
+    inner.update(&outer.contents);
     let inner_checksum = finalize_sha256(inner);
     let recorded =
-        std::str::from_utf8(trim_ascii(&outer["CHECKSUM"])).context("Hex CHECKSUM is not ASCII")?;
+        std::str::from_utf8(outer.checksum.trim_ascii()).context("Hex CHECKSUM is not ASCII")?;
     if recorded != crate::hex::upper(&inner_checksum) {
         refuse!(
             HexInnerChecksumMismatch,
             "Hex package inner checksum mismatch"
         );
     }
-    let contents = read_tar_gz_files(&outer["contents.tar.gz"], limits)
-        .context("unsafe Hex contents archive")?;
+    let contents =
+        read_tar_gz_files(&outer.contents, limits).context("unsafe Hex contents archive")?;
     let expanded_bytes = contents
         .values()
         .map(|contents| contents.len() as u64)
@@ -336,7 +358,7 @@ pub fn normalize_package_dir(package_dir: &Path) -> Result<NormalizedArtifact> {
     if let Some(contents) = output.get_mut("gleam.toml") {
         let source = String::from_utf8(std::mem::take(contents))?;
         let mut document = source.parse::<DocumentMut>()?;
-        document["version"] = value("<release-glz-version>");
+        mask_version(&mut document);
         *contents = document.to_string().into_bytes();
     }
     Ok(output)
@@ -366,7 +388,7 @@ pub fn interface_from_docs_tarball(bytes: &[u8]) -> Result<Option<Vec<u8>>> {
 pub fn unpack_hex_source(bytes: &[u8], destination: &Path) -> Result<()> {
     fs::create_dir_all(destination)?;
     let outer = checked_outer_files(bytes, ArchiveLimits::default())?;
-    let files = read_tar_gz_files(&outer["contents.tar.gz"], ArchiveLimits::default())?;
+    let files = read_tar_gz_files(&outer.contents, ArchiveLimits::default())?;
     let generated_erlang = generated_erlang_paths(files.keys());
     for (relative, contents) in files {
         if generated_erlang.contains(&relative) {
@@ -383,20 +405,12 @@ pub fn unpack_hex_source(bytes: &[u8], destination: &Path) -> Result<()> {
 
 /// Take the `contents.tar.gz` entry out of a Hex package tarball.
 pub fn inner_contents(bytes: &[u8]) -> Result<Vec<u8>> {
-    let files = checked_outer_files(bytes, ArchiveLimits::default())?;
-    files
-        .get("contents.tar.gz")
-        .cloned()
-        .context("Hex package tarball has no `contents.tar.gz`")
+    Ok(checked_outer_files(bytes, ArchiveLimits::default())?.contents)
 }
 
 #[cfg(test)]
 pub(crate) fn hex_metadata(bytes: &[u8]) -> Result<Vec<u8>> {
-    let files = checked_outer_files(bytes, ArchiveLimits::default())?;
-    files
-        .get("metadata.config")
-        .cloned()
-        .context("Hex package tarball has no `metadata.config`")
+    Ok(checked_outer_files(bytes, ArchiveLimits::default())?.metadata)
 }
 
 /// Normalize Hex contents: drop generated files and mask the version.
@@ -418,7 +432,7 @@ fn normalize_expanded_contents(raw: BTreeMap<String, Vec<u8>>) -> Result<Normali
             let mut document = source
                 .parse::<DocumentMut>()
                 .context("invalid gleam.toml in Hex tarball")?;
-            document["version"] = value("<release-glz-version>");
+            mask_version(&mut document);
             contents = document.to_string().into_bytes();
         }
         normalized.insert(path, contents);
@@ -426,9 +440,13 @@ fn normalize_expanded_contents(raw: BTreeMap<String, Vec<u8>>) -> Result<Normali
     Ok(normalized)
 }
 
-fn checked_outer_files(bytes: &[u8], limits: ArchiveLimits) -> Result<BTreeMap<String, Vec<u8>>> {
+fn mask_version(document: &mut DocumentMut) {
+    *document.entry("version").or_insert(Item::None) = value("<release-glz-version>");
+}
+
+fn checked_outer_files(bytes: &[u8], limits: ArchiveLimits) -> Result<HexEntries> {
     validate_hex_tarball(bytes, limits)?;
-    read_tar_files(Cursor::new(bytes), limits, false)
+    HexEntries::from_outer(read_tar_files(Cursor::new(bytes), limits, false)?)
 }
 
 fn read_tar_gz_files(bytes: &[u8], limits: ArchiveLimits) -> Result<BTreeMap<String, Vec<u8>>> {
@@ -650,12 +668,13 @@ fn parse_gnu_long_path(contents: &[u8]) -> Result<&[u8]> {
 }
 
 fn parse_pax_path(contents: &[u8]) -> Result<&[u8]> {
-    let invalid = |message| refused(RefusalReason::ArchiveExtensionHeaderInvalid, message);
-    let space = contents
-        .iter()
-        .position(|byte| *byte == b' ')
-        .ok_or_else(|| invalid("PAX record has no length separator"))?;
-    let length_bytes = &contents[..space];
+    let mut fields = contents.splitn(2, |byte| *byte == b' ');
+    let (Some(length_bytes), Some(rest)) = (fields.next(), fields.next()) else {
+        refuse!(
+            ArchiveExtensionHeaderInvalid,
+            "PAX record has no length separator"
+        );
+    };
     if length_bytes.is_empty()
         || length_bytes.first() == Some(&b'0')
         || !length_bytes.iter().all(u8::is_ascii_digit)
@@ -673,27 +692,21 @@ fn parse_pax_path(contents: &[u8]) -> Result<&[u8]> {
                 "PAX record length is too large",
             )
         })?;
-    if length != contents.len() || contents.last() != Some(&b'\n') {
-        refuse!(
+    let record = match rest.strip_suffix(b"\n") {
+        Some(record) if length == contents.len() => record,
+        _ => refuse!(
             ArchiveExtensionHeaderInvalid,
             "PAX record length is inconsistent"
+        ),
+    };
+    let mut pair = record.splitn(2, |byte| *byte == b'=');
+    let (Some(key), Some(path)) = (pair.next(), pair.next()) else {
+        refuse!(
+            ArchiveExtensionHeaderInvalid,
+            "PAX record has no key/value separator"
         );
-    }
-    let record_start = space
-        .checked_add(1)
-        .ok_or_else(|| invalid("PAX record length is inconsistent"))?;
-    let record_end = contents
-        .len()
-        .checked_sub(1)
-        .ok_or_else(|| invalid("PAX record length is inconsistent"))?;
-    let record = contents
-        .get(record_start..record_end)
-        .ok_or_else(|| invalid("PAX record length is inconsistent"))?;
-    let equals = record
-        .iter()
-        .position(|byte| *byte == b'=')
-        .ok_or_else(|| invalid("PAX record has no key/value separator"))?;
-    let key = std::str::from_utf8(&record[..equals]).with_context(|| {
+    };
+    let key = std::str::from_utf8(key).with_context(|| {
         Refusal::new(
             RefusalReason::ArchiveExtensionHeaderInvalid,
             "PAX key is not UTF-8",
@@ -702,7 +715,7 @@ fn parse_pax_path(contents: &[u8]) -> Result<&[u8]> {
     if key != "path" {
         refuse!(ArchiveExtensionHeaderInvalid, "unsupported PAX key `{key}`");
     }
-    Ok(&record[equals + 1..])
+    Ok(path)
 }
 
 fn fingerprint_files(files: BTreeMap<String, Vec<u8>>) -> Result<String> {
@@ -714,18 +727,6 @@ fn fingerprint_files(files: BTreeMap<String, Vec<u8>>) -> Result<String> {
         digest.update(contents);
     }
     Ok(finalize_sha256(digest).into())
-}
-
-fn trim_ascii(bytes: &[u8]) -> &[u8] {
-    let start = bytes
-        .iter()
-        .position(|byte| !byte.is_ascii_whitespace())
-        .unwrap_or(bytes.len());
-    let end = bytes
-        .iter()
-        .rposition(|byte| !byte.is_ascii_whitespace())
-        .map_or(start, |index| index + 1);
-    &bytes[start..end]
 }
 
 struct LimitedReader<R> {
@@ -749,8 +750,7 @@ impl<R: Read> Read for LimitedReader<R> {
                 "archive decompression limit exceeded",
             ));
         }
-        let length = buffer.len().min(self.remaining as usize);
-        let read = self.inner.read(&mut buffer[..length])?;
+        let read = self.inner.by_ref().take(self.remaining).read(buffer)?;
         self.remaining -= read as u64;
         Ok(read)
     }
@@ -1021,5 +1021,58 @@ mod tests {
             inconsistent
         );
         assert_eq!(refusal(&parse_pax_path(b"0 ").unwrap_err()), invalid_length);
+    }
+
+    #[test]
+    fn pax_record_refuses_each_malformed_field_and_keeps_every_byte_of_the_path() {
+        for (record, message) in [
+            (b"path=a\n".as_slice(), "PAX record has no length separator"),
+            (
+                b"8 patha\n".as_slice(),
+                "PAX record has no key/value separator",
+            ),
+            (b"3 \n".as_slice(), "PAX record has no key/value separator"),
+            (b"2 ".as_slice(), "PAX record length is inconsistent"),
+            (b"7 \xff\xfe=a\n".as_slice(), "PAX key is not UTF-8"),
+            (b"10 name=a\n".as_slice(), "unsupported PAX key `name`"),
+        ] {
+            assert_eq!(
+                refusal(&parse_pax_path(record).unwrap_err()),
+                extension(message),
+                "{record:?}"
+            );
+        }
+        assert_eq!(parse_pax_path(b"12 path=a=b\n").unwrap(), b"a=b");
+        assert_eq!(parse_pax_path(b"12 path=a b\n").unwrap(), b"a b");
+    }
+
+    #[test]
+    fn a_hex_package_holds_exactly_its_four_entries() {
+        let names = ["VERSION", "metadata.config", "contents.tar.gz", "CHECKSUM"];
+        let outer = |names: &[&str]| {
+            names
+                .iter()
+                .map(|name| ((*name).to_owned(), name.as_bytes().to_vec()))
+                .collect::<BTreeMap<_, _>>()
+        };
+        let entries = HexEntries::from_outer(outer(&names)).unwrap();
+        assert_eq!(
+            [
+                entries.version,
+                entries.metadata,
+                entries.contents,
+                entries.checksum
+            ],
+            names.map(|name| name.as_bytes().to_vec())
+        );
+        for unexpected in [
+            outer(&names[1..]),
+            outer(&[&names[..], &["extra"]].concat()),
+        ] {
+            assert_eq!(
+                HexEntries::from_outer(unexpected).unwrap_err().to_string(),
+                "Hex package entries must be exactly VERSION, metadata.config, contents.tar.gz, and CHECKSUM"
+            );
+        }
     }
 }

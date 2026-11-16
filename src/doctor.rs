@@ -345,8 +345,9 @@ fn assess_approval(
         }
     }
 
-    if diagnostics[diagnostics_start..]
+    if diagnostics
         .iter()
+        .skip(diagnostics_start)
         .any(|diagnostic| diagnostic.level == DiagnosticLevel::Error)
     {
         action(

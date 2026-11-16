@@ -362,7 +362,7 @@ fn candidate_source_registry_branch_notes_and_approval_policy_are_independently_
                 input.approval.manual_refs =
                     vec!["refs/heads/main".into(), "refs/heads/main".into()];
             }
-            _ => unreachable!(),
+            _ => panic!("unknown case {case}"),
         }
         assert_eq!(
             seal_refusal(&temp.path().join(case), input),
@@ -594,7 +594,7 @@ fn candidate_verification_rejects_every_manifest_identity_and_digest_tamper() {
             }
             "intent-digest" => manifest["intent_digest"] = "0".repeat(64).into(),
             "candidate-digest" => manifest["candidate_digest"] = "0".repeat(64).into(),
-            _ => unreachable!(),
+            _ => panic!("unknown case {case}"),
         });
         let error = Candidate::verify(&directory).unwrap_err();
         assert_eq!(refusal_reason(&error), Some(reason), "tamper {case}");
@@ -1485,7 +1485,7 @@ fn candidate_hook_evidence_is_strictly_bound_to_ordered_definitions() {
                 input.hook_evidence.clear();
             }
             "invalid-definition" => input.verify_hook_definitions[0].argv.clear(),
-            _ => unreachable!(),
+            _ => panic!("unknown case {case}"),
         }
         assert_eq!(
             seal_refusal(&temp.path().join(case), input),
@@ -1538,7 +1538,7 @@ fn candidate_sidecars_require_safe_identity_declared_producer_and_signature_poli
             "missing-media-slash" => artifact.media_type = "json".into(),
             "quoted-media" => artifact.media_type = "application/\"json".into(),
             "undeclared-producer" => {}
-            _ => unreachable!(),
+            _ => panic!("unknown case {case}"),
         }
         input.sidecars.push(artifact);
         assert_eq!(
@@ -1610,7 +1610,7 @@ fn candidate_sidecars_require_safe_identity_declared_producer_and_signature_poli
             "path" => manifest["sidecars"][0]["path"] = "sidecars/other/file".into(),
             "checksum" => manifest["sidecars"][0]["sha256"] = "g".repeat(64).into(),
             "size" => manifest["sidecars"][0]["size"] = u64::MAX.into(),
-            _ => unreachable!(),
+            _ => panic!("unknown case {case}"),
         });
         assert_eq!(verify_refusal(&directory), Some(reason), "{case}");
     }
@@ -1697,7 +1697,7 @@ fn candidate_notify_hooks_are_an_ordered_idempotent_protocol() {
                 input.notify_hook_definitions.pop();
             }
             "wrong-order" => input.notify_hook_definitions.swap(0, 1),
-            _ => unreachable!(),
+            _ => panic!("unknown case {case}"),
         }
         assert_eq!(
             seal_refusal(&temp.path().join(case), input),

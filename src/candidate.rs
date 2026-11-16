@@ -1463,11 +1463,12 @@ fn validate_evidenced_hooks(
             "sealed hook evidence does not match the configured verify and sidecar hooks"
         );
     }
-    for (index, hook) in verify.iter().enumerate() {
-        validate_hook_evidence_binding(&evidence[index], hook, HookKind::Verify)?;
-    }
-    for (index, hook) in sidecar.iter().enumerate() {
-        validate_hook_evidence_binding(&evidence[verify.len() + index], hook, HookKind::Sidecar)?;
+    let configured = verify
+        .iter()
+        .map(|hook| (hook, HookKind::Verify))
+        .chain(sidecar.iter().map(|hook| (hook, HookKind::Sidecar)));
+    for (evidence, (hook, kind)) in evidence.iter().zip(configured) {
+        validate_hook_evidence_binding(evidence, hook, kind)?;
     }
     let sidecar_ids = sidecar
         .iter()
