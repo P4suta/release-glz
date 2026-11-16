@@ -15,14 +15,21 @@ pub const NOTIFICATION_DOMAIN: &[u8] = b"release-glz-notify-v1\0";
 /// The files digest hashes [`FILES_DOMAIN`] and then every file in path order.
 pub fn frame_file(path: &[u8], contents: &[u8], mut sink: impl FnMut(&[u8])) {
     #[cfg(feature = "negative-control-unframed-files")]
-    if let Some(()) = negative_control_unframed_files(path, contents, &mut sink) {
+    if negative_control_unframed_files(path, contents, &mut sink).is_break() {
         return;
     }
     for part in [path, contents] {
-        sink(&(part.len() as u64).to_be_bytes());
+        #[expect(
+            clippy::as_conversions,
+            reason = "`usize` has at most 64 bits, which the assertion after this function checks at compile time, so the cast keeps every length"
+        )]
+        let length = part.len() as u64;
+        sink(&length.to_be_bytes());
         sink(part);
     }
 }
+
+const _: () = assert!(usize::BITS <= u64::BITS);
 
 /// Frames each file without the lengths of its path and contents.
 #[cfg(feature = "negative-control-unframed-files")]
@@ -30,18 +37,24 @@ fn negative_control_unframed_files(
     path: &[u8],
     contents: &[u8],
     sink: &mut impl FnMut(&[u8]),
-) -> Option<()> {
+) -> core::ops::ControlFlow<()> {
     sink(path);
     sink(contents);
-    Some(())
+    core::ops::ControlFlow::Break(())
 }
 
 /// The parts that the idempotency key of one notification hashes, in order.
 ///
 /// A NUL byte ends the Candidate digest, so the framing is injective for every digest without one, which a lowercase hexadecimal digest never has.
-pub fn notification_frame<'a>(candidate_digest: &'a [u8], hook_id: &'a [u8]) -> [&'a [u8]; 4] {
+#[must_use]
+pub const fn notification_frame<'a>(
+    candidate_digest: &'a [u8],
+    hook_id: &'a [u8],
+) -> [&'a [u8]; 4] {
     #[cfg(feature = "negative-control-unframed-notification")]
-    if let Some(frame) = negative_control_unframed_notification(candidate_digest, hook_id) {
+    if let core::ops::ControlFlow::Break(frame) =
+        negative_control_unframed_notification(candidate_digest, hook_id)
+    {
         return frame;
     }
     [NOTIFICATION_DOMAIN, candidate_digest, b"\0", hook_id]
@@ -49,11 +62,11 @@ pub fn notification_frame<'a>(candidate_digest: &'a [u8], hook_id: &'a [u8]) -> 
 
 /// Frames a notification without the byte that ends its Candidate digest.
 #[cfg(feature = "negative-control-unframed-notification")]
-fn negative_control_unframed_notification<'a>(
+const fn negative_control_unframed_notification<'a>(
     candidate_digest: &'a [u8],
     hook_id: &'a [u8],
-) -> Option<[&'a [u8]; 4]> {
-    Some([NOTIFICATION_DOMAIN, candidate_digest, b"", hook_id])
+) -> core::ops::ControlFlow<[&'a [u8]; 4]> {
+    core::ops::ControlFlow::Break([NOTIFICATION_DOMAIN, candidate_digest, b"", hook_id])
 }
 
 #[cfg(kani)]

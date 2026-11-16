@@ -18,6 +18,7 @@ pub struct Computed {
 
 impl Computed {
     /// The version this computation names.
+    #[must_use]
     pub const fn version(self) -> Version<'static> {
         Version {
             core: self.core,
@@ -93,6 +94,10 @@ pub enum Refusal {
 ///
 /// A train moves through alpha, beta, and rc, or counts up within one channel.
 /// A move back to an earlier channel needs a core above the published one that the manifest named explicitly.
+///
+/// # Errors
+///
+/// Returns the [`Refusal`] that names why the train can't move to `channel` on `target`: a core behind the published one, a move back without an explicitly higher core, an exhausted train number, or a version that wouldn't follow the published one.
 pub fn next_prerelease(
     published: &Version<'_>,
     target: VersionCore,
@@ -132,9 +137,9 @@ pub fn next_prerelease(
 }
 
 /// Whether moving from a prerelease labeled `current` to `channel` goes back along the train.
-fn moves_back(current: Label, channel: Channel) -> bool {
+const fn moves_back(current: Label, channel: Channel) -> bool {
     #[cfg(feature = "negative-control-backward-train")]
-    if let Some(back) = negative_control_moves_forward(current, channel) {
+    if let core::ops::ControlFlow::Break(back) = negative_control_moves_forward(current, channel) {
         return back;
     }
     Label::Channel(channel).rank() < current.rank()
@@ -142,8 +147,11 @@ fn moves_back(current: Label, channel: Channel) -> bool {
 
 /// Takes a move forward along the train for the move back.
 #[cfg(feature = "negative-control-backward-train")]
-fn negative_control_moves_forward(current: Label, channel: Channel) -> Option<bool> {
-    Some(Label::Channel(channel).rank() > current.rank())
+const fn negative_control_moves_forward(
+    current: Label,
+    channel: Channel,
+) -> core::ops::ControlFlow<bool> {
+    core::ops::ControlFlow::Break(Label::Channel(channel).rank() > current.rank())
 }
 
 /// Select the version of a release that follows `published`.
@@ -151,6 +159,14 @@ fn negative_control_moves_forward(current: Label, channel: Channel) -> Option<bo
 /// The step starts from `latest_stable`, or from the published core when nothing stable is published.
 /// An explicit version counts only when it follows the published one, so an unchanged manifest is no explicit request.
 /// It overrides the computed version only when it isn't lower, and with a train it has to belong to that train.
+///
+/// # Errors
+///
+/// Returns the [`Refusal`] that names why no version can follow `published`: a step past the largest number, a train that can't move, an explicit version off the train or below the required one, or a selection that wouldn't follow the published version.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the five parameters are the planner's inputs, the published and latest stable versions, the required step, the explicit version, and the train, and a_selected_version_follows_the_published_one proves the selection over them"
+)]
 pub fn select_version(
     published: &Version<'_>,
     latest_stable: Option<VersionCore>,
@@ -173,8 +189,7 @@ pub fn select_version(
             train: None,
         },
     };
-    let mut selected = Selection::Computed(computed);
-    if let Some(explicit) = explicit {
+    let selected = if let Some(explicit) = explicit {
         let (candidate, version) = match channel {
             Some(channel) if starts_train_at_its_core(explicit) => {
                 let train =
@@ -195,8 +210,10 @@ pub fn select_version(
                 required: computed,
             });
         }
-        selected = candidate;
-    }
+        candidate
+    } else {
+        Selection::Computed(computed)
+    };
     if let Selection::Computed(selected) = selected
         && !after_published(&selected.version(), published)
     {
@@ -208,7 +225,7 @@ pub fn select_version(
 /// The core of a stable selection, which never falls below the published core.
 fn stable_core(published: VersionCore, required: VersionCore) -> VersionCore {
     #[cfg(feature = "negative-control-understep")]
-    if let Some(core) = negative_control_published_core(published) {
+    if let core::ops::ControlFlow::Break(core) = negative_control_published_core(published) {
         return core;
     }
     max(published, required)
@@ -216,14 +233,16 @@ fn stable_core(published: VersionCore, required: VersionCore) -> VersionCore {
 
 /// Takes the published core without the required step.
 #[cfg(feature = "negative-control-understep")]
-fn negative_control_published_core(published: VersionCore) -> Option<VersionCore> {
-    Some(published)
+const fn negative_control_published_core(
+    published: VersionCore,
+) -> core::ops::ControlFlow<VersionCore> {
+    core::ops::ControlFlow::Break(published)
 }
 
 /// Whether an explicit version names only the core at which the configured train starts, which a stable version does.
-fn starts_train_at_its_core(explicit: &Version<'_>) -> bool {
+const fn starts_train_at_its_core(explicit: &Version<'_>) -> bool {
     #[cfg(feature = "negative-control-explicit-retrain")]
-    if let Some(starts) = negative_control_explicit_retrain() {
+    if let core::ops::ControlFlow::Break(starts) = negative_control_explicit_retrain() {
         return starts;
     }
     matches!(explicit.pre, Pre::Stable)
@@ -231,14 +250,16 @@ fn starts_train_at_its_core(explicit: &Version<'_>) -> bool {
 
 /// Takes every explicit version as only a core, so an explicit version on the train starts the train again.
 #[cfg(feature = "negative-control-explicit-retrain")]
-fn negative_control_explicit_retrain() -> Option<bool> {
-    Some(true)
+const fn negative_control_explicit_retrain() -> core::ops::ControlFlow<bool> {
+    core::ops::ControlFlow::Break(true)
 }
 
 /// Whether an explicit version is lower than the version the release requires.
 fn below_required(explicit: &Version<'_>, required: &Version<'_>) -> bool {
     #[cfg(feature = "negative-control-override-floor")]
-    if let Some(below) = negative_control_above_required(explicit, required) {
+    if let core::ops::ControlFlow::Break(below) =
+        negative_control_above_required(explicit, required)
+    {
         return below;
     }
     compare(explicit, required) == Ordering::Less
@@ -246,14 +267,17 @@ fn below_required(explicit: &Version<'_>, required: &Version<'_>) -> bool {
 
 /// Refuses only an explicit version above the required one.
 #[cfg(feature = "negative-control-override-floor")]
-fn negative_control_above_required(explicit: &Version<'_>, required: &Version<'_>) -> Option<bool> {
-    Some(compare(explicit, required) == Ordering::Greater)
+fn negative_control_above_required(
+    explicit: &Version<'_>,
+    required: &Version<'_>,
+) -> core::ops::ControlFlow<bool> {
+    core::ops::ControlFlow::Break(compare(explicit, required) == Ordering::Greater)
 }
 
 /// Whether a computed selection follows the published version, which is the last guard before a version leaves the planner.
 fn after_published(selected: &Version<'_>, published: &Version<'_>) -> bool {
     #[cfg(feature = "negative-control-reselect")]
-    if let Some(after) = negative_control_not_before(selected, published) {
+    if let core::ops::ControlFlow::Break(after) = negative_control_not_before(selected, published) {
         return after;
     }
     selected.follows(published)
@@ -261,8 +285,11 @@ fn after_published(selected: &Version<'_>, published: &Version<'_>) -> bool {
 
 /// Lets a selection equal the published version.
 #[cfg(feature = "negative-control-reselect")]
-fn negative_control_not_before(selected: &Version<'_>, published: &Version<'_>) -> Option<bool> {
-    Some(!published.follows(selected))
+fn negative_control_not_before(
+    selected: &Version<'_>,
+    published: &Version<'_>,
+) -> core::ops::ControlFlow<bool> {
+    core::ops::ControlFlow::Break(!published.follows(selected))
 }
 
 /// How the version of a first release relates to the manifest's version.
@@ -278,6 +305,10 @@ pub enum Initial {
 ///
 /// A configured train puts a stable version on its first prerelease and refuses a prerelease of another train.
 /// Without a train, `stable` drops the prerelease of a version that the caller asked to release as stable.
+///
+/// # Errors
+///
+/// Returns [`Refusal::ExplicitOffTrain`] when a configured train meets a prerelease of another train.
 pub fn initial_version(
     version: &Version<'_>,
     channel: Option<Channel>,
@@ -291,19 +322,18 @@ pub fn initial_version(
         Some(channel) if !joins_train(version.pre, channel) => {
             Err(Refusal::ExplicitOffTrain { channel })
         }
-        Some(_) => Ok(Initial::Unchanged),
         None if stable && !matches!(version.pre, Pre::Stable) => Ok(Initial::Computed(Computed {
             core: version.core,
             train: None,
         })),
-        None => Ok(Initial::Unchanged),
+        Some(_) | None => Ok(Initial::Unchanged),
     }
 }
 
 /// Whether a prerelease belongs to `channel`'s train.
 fn joins_train(pre: Pre<'_>, channel: Channel) -> bool {
     #[cfg(feature = "negative-control-initial-train")]
-    if let Some(joins) = negative_control_any_train() {
+    if let core::ops::ControlFlow::Break(joins) = negative_control_any_train() {
         return joins;
     }
     pre.starts_with(channel)
@@ -311,13 +341,14 @@ fn joins_train(pre: Pre<'_>, channel: Channel) -> bool {
 
 /// Lets a prerelease of any train join the configured one.
 #[cfg(feature = "negative-control-initial-train")]
-fn negative_control_any_train() -> Option<bool> {
-    Some(true)
+const fn negative_control_any_train() -> core::ops::ControlFlow<bool> {
+    core::ops::ControlFlow::Break(true)
 }
 
 /// The step a release needs once Hex's rule for versions below 1.0 applies.
 ///
 /// While the published major version is zero, a breaking change is a minor release.
+#[must_use]
 pub fn effective_bump(major: u64, required: Bump) -> Bump {
     if below_one(major) && required == Bump::Major {
         Bump::Minor
@@ -326,9 +357,9 @@ pub fn effective_bump(major: u64, required: Bump) -> Bump {
     }
 }
 
-fn below_one(major: u64) -> bool {
+const fn below_one(major: u64) -> bool {
     #[cfg(feature = "negative-control-zero-major")]
-    if let Some(below) = negative_control_never_below_one() {
+    if let core::ops::ControlFlow::Break(below) = negative_control_never_below_one() {
         return below;
     }
     major == 0
@@ -336,13 +367,14 @@ fn below_one(major: u64) -> bool {
 
 /// Never applies the rule for versions below 1.0.
 #[cfg(feature = "negative-control-zero-major")]
-fn negative_control_never_below_one() -> Option<bool> {
-    Some(false)
+const fn negative_control_never_below_one() -> core::ops::ControlFlow<bool> {
+    core::ops::ControlFlow::Break(false)
 }
 
 /// The step that separates two versions, named by the highest component that changed.
 ///
 /// A change in the prerelease alone is a patch step.
+#[must_use]
 pub fn bump_between(from: &Version<'_>, to: &Version<'_>) -> Bump {
     if to.core.major != from.core.major {
         Bump::Major
@@ -358,7 +390,7 @@ pub fn bump_between(from: &Version<'_>, to: &Version<'_>) -> Bump {
 /// Whether two versions with the same major and minor numbers differ in their patch number or prerelease.
 fn differ_below_minor(from: &Version<'_>, to: &Version<'_>) -> bool {
     #[cfg(feature = "negative-control-bump-between")]
-    if let Some(differ) = negative_control_patch_differs(from, to) {
+    if let core::ops::ControlFlow::Break(differ) = negative_control_patch_differs(from, to) {
         return differ;
     }
     compare(to, from) != Ordering::Equal
@@ -366,16 +398,20 @@ fn differ_below_minor(from: &Version<'_>, to: &Version<'_>) -> bool {
 
 /// Looks at the patch number alone, so a change of the prerelease is no step.
 #[cfg(feature = "negative-control-bump-between")]
-fn negative_control_patch_differs(from: &Version<'_>, to: &Version<'_>) -> Option<bool> {
-    Some(to.core.patch != from.core.patch)
+const fn negative_control_patch_differs(
+    from: &Version<'_>,
+    to: &Version<'_>,
+) -> core::ops::ControlFlow<bool> {
+    core::ops::ControlFlow::Break(to.core.patch != from.core.patch)
 }
 
 /// Whether a release of a version with `major` needs an acknowledgement that the owner hasn't given.
 ///
 /// Gleam warns against versions below 1.0, so a 0.x release needs `allow_version_zero`.
-pub fn version_zero_refused(major: u64, acknowledged: bool) -> bool {
+#[must_use]
+pub const fn version_zero_refused(major: u64, acknowledged: bool) -> bool {
     #[cfg(feature = "negative-control-version-zero")]
-    if let Some(refused) = negative_control_never_refused() {
+    if let core::ops::ControlFlow::Break(refused) = negative_control_never_refused() {
         return refused;
     }
     major == 0 && !acknowledged
@@ -383,8 +419,8 @@ pub fn version_zero_refused(major: u64, acknowledged: bool) -> bool {
 
 /// Releases a version below 1.0 without its acknowledgement.
 #[cfg(feature = "negative-control-version-zero")]
-fn negative_control_never_refused() -> Option<bool> {
-    Some(false)
+const fn negative_control_never_refused() -> core::ops::ControlFlow<bool> {
+    core::ops::ControlFlow::Break(false)
 }
 
 #[cfg(kani)]
