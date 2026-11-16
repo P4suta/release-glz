@@ -1,25 +1,22 @@
 #![cfg(unix)]
 
-use std::collections::VecDeque;
 use std::ffi::{OsStr, OsString};
 use std::io::Write;
-use std::net::{TcpListener, TcpStream};
 use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
-use std::sync::mpsc;
-use std::thread;
 
 use base64::Engine as _;
 use flate2::{Compression, write::GzEncoder};
+use release_glz_test_support::http::{FakeServer, Request, Response};
 use release_glz_test_support::schema::{assert_matches, assert_published_envelope};
-use release_glz_test_support::{isolated_command, path_searching_first, read_some};
+use release_glz_test_support::{isolated_command, path_searching_first};
 use sha2::{Digest, Sha256};
 
 #[test]
 fn sealed_candidate_cli_lifecycle_reuses_one_candidate_without_rebuilding() {
     let temp = tempfile::tempdir().unwrap();
-    let (registry_listener, registry_url) = bound_listener();
-    let (github_listener, github_url) = bound_listener();
+    let (mut registry, registry_url) = listening();
+    let (mut github, github_url) = listening();
     let gleam = initialize_initial_package(temp.path(), &registry_url);
     let source_sha = git_output(temp.path(), &["rev-parse", "HEAD"]);
     let candidate = temp.path().join("candidate");
@@ -91,15 +88,9 @@ fn sealed_candidate_cli_lifecycle_reuses_one_candidate_without_rebuilding() {
     assert_eq!(status["result"]["candidate_digest"], candidate_digest);
 
     // No package release, asked once for the package and once for docs.
-    let (registry_requests, registry_server) = serve_recording(
-        registry_listener,
-        vec![http_response(404, b""), http_response(404, b"")],
-    );
+    registry.script([http_response(404, b""), http_response(404, b"")]);
     // No tag, and a release list without the Candidate's Release.
-    let (github_requests, github_server) = serve_recording(
-        github_listener,
-        vec![http_response(404, b""), http_response(200, b"[]")],
-    );
+    github.script([http_response(404, b""), http_response(200, b"[]")]);
     let release = candidate_command(temp.path(), &gleam)
         .args([
             "--output",
@@ -113,9 +104,9 @@ fn sealed_candidate_cli_lifecycle_reuses_one_candidate_without_rebuilding() {
         .env("GITHUB_GRAPHQL_URL", format!("{github_url}/graphql"))
         .output()
         .unwrap();
-    registry_server.join().unwrap();
-    github_server.join().unwrap();
     assert_success(&release, "release --dry-run");
+    let registry_requests = registry.finish();
+    let github_requests = github.finish();
     let release = json(&release);
     assert_published_envelope(&release);
     assert_eq!(release["result"]["state"], "candidate_ready");
@@ -134,14 +125,14 @@ fn sealed_candidate_cli_lifecycle_reuses_one_candidate_without_rebuilding() {
         std::fs::read(candidate.join("artifacts/package.tar")).unwrap(),
         sealed_package
     );
-    assert_eq!(registry_requests.try_iter().count(), 2);
-    assert_eq!(github_requests.try_iter().count(), 2);
+    assert_eq!(registry_requests.len(), 2);
+    assert_eq!(github_requests.len(), 2);
 }
 
 #[test]
 fn a_version_below_the_automatic_minimum_is_a_policy_exit_not_an_internal_failure() {
     let temp = tempfile::tempdir().unwrap();
-    let (registry_url, _request, server) = not_found_server();
+    let (registry_url, mut server) = not_found_server();
     let manifest = manifest(&registry_url).replace("docs = true", "docs = false");
     std::fs::create_dir(temp.path().join("src")).unwrap();
     std::fs::write(temp.path().join("gleam.toml"), &manifest).unwrap();
@@ -174,7 +165,6 @@ fn a_version_below_the_automatic_minimum_is_a_policy_exit_not_an_internal_failur
         .args(["--output", "json", "set-version", "0.9.0"])
         .output()
         .unwrap();
-    server.join().unwrap();
 
     assert_eq!(
         output.status.code(),
@@ -183,6 +173,7 @@ fn a_version_below_the_automatic_minimum_is_a_policy_exit_not_an_internal_failur
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+    server.finish();
     let envelope = json(&output);
     assert_published_envelope(&envelope);
     assert_eq!(envelope["schema"], "command/v1");
@@ -197,12 +188,9 @@ fn a_version_below_the_automatic_minimum_is_a_policy_exit_not_an_internal_failur
 #[test]
 fn set_version_dry_run_and_apply_only_raise_the_manifest_version() {
     let temp = tempfile::tempdir().unwrap();
-    let (listener, registry_url) = bound_listener();
+    let (mut server, registry_url) = listening();
     let gleam = initialize_initial_package(temp.path(), &registry_url);
-    let (_requests, server) = serve_recording(
-        listener,
-        vec![http_response(404, b""), http_response(404, b"")],
-    );
+    server.script([http_response(404, b""), http_response(404, b"")]);
     let before = std::fs::read_to_string(temp.path().join("gleam.toml")).unwrap();
 
     let dry_run = candidate_command(temp.path(), &gleam)
@@ -223,8 +211,8 @@ fn set_version_dry_run_and_apply_only_raise_the_manifest_version() {
         .args(["--output", "json", "set-version", "2.0.0"])
         .output()
         .unwrap();
-    server.join().unwrap();
     assert_success(&apply, "set-version");
+    server.finish();
     let apply = json(&apply);
     assert_published_envelope(&apply);
     assert_eq!(apply["result"]["version"], "2.0.0");
@@ -237,16 +225,16 @@ fn set_version_dry_run_and_apply_only_raise_the_manifest_version() {
 #[test]
 fn prerelease_command_starts_the_alpha_train_and_persists_channel_and_version() {
     let temp = tempfile::tempdir().unwrap();
-    let (listener, registry_url) = bound_listener();
+    let (mut server, registry_url) = listening();
     let gleam = initialize_initial_package(temp.path(), &registry_url);
-    let (_requests, server) = serve_recording(listener, vec![http_response(404, b"")]);
+    server.script([http_response(404, b"")]);
 
     let output = candidate_command(temp.path(), &gleam)
         .args(["--output", "json", "prerelease", "alpha"])
         .output()
         .unwrap();
-    server.join().unwrap();
     assert_success(&output, "prerelease alpha");
+    server.finish();
     let output = json(&output);
     assert_published_envelope(&output);
     assert_eq!(output["result"]["version"], "1.0.0-alpha.1");
@@ -259,7 +247,7 @@ fn prerelease_command_starts_the_alpha_train_and_persists_channel_and_version() 
 #[test]
 fn plan_uses_the_strict_manifest_registry_adapter_and_private_read_credential() {
     let temp = tempfile::tempdir().unwrap();
-    let (registry_url, request, server) = not_found_server();
+    let (registry_url, mut server) = not_found_server();
     std::fs::create_dir(temp.path().join("src")).unwrap();
     std::fs::write(temp.path().join("gleam.toml"), manifest(&registry_url)).unwrap();
     std::fs::write(temp.path().join("README.md"), "# Widget\n").unwrap();
@@ -296,15 +284,15 @@ fn plan_uses_the_strict_manifest_registry_adapter_and_private_read_credential() 
         .output()
         .unwrap();
 
-    let observed = request
-        .recv_timeout(std::time::Duration::from_secs(3))
-        .unwrap_or_else(|_| "no request reached the configured registry".into());
-    server.join().unwrap();
     assert!(
         output.status.success(),
         "stdout={} stderr={}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
+    );
+    let observed = server.finish().first().map_or_else(
+        || "no request reached the configured registry".into(),
+        |request| request.text().to_ascii_lowercase(),
     );
     assert!(observed.starts_with("get /api/packages/widget http/1.1"));
     assert!(observed.contains("authorization: bearer private-read-value"));
@@ -317,7 +305,7 @@ fn plan_uses_the_strict_manifest_registry_adapter_and_private_read_credential() 
 #[test]
 fn release_pr_closes_a_stale_verified_managed_pr_when_no_release_is_required() {
     let temp = tempfile::tempdir().unwrap();
-    let (registry_listener, registry_url) = bound_listener();
+    let (mut registry, registry_url) = listening();
     let manifest = manifest(&registry_url);
     let readme = b"# Widget\n";
     let source = b"pub fn widget() -> Int { 1 }\n";
@@ -353,8 +341,7 @@ fn release_pr_closes_a_stale_verified_managed_pr_when_no_release_is_required() {
         http_response(200, &package),
         http_response(200, &docs),
     ];
-    let (registry_requests, registry_server) =
-        serve_recording(registry_listener, registry_responses);
+    registry.script(registry_responses);
 
     let package_path = temp.path().join("fixture.tar");
     std::fs::write(&package_path, &package).unwrap();
@@ -362,7 +349,7 @@ fn release_pr_closes_a_stale_verified_managed_pr_when_no_release_is_required() {
     std::fs::write(&interface_path, interface_bytes).unwrap();
     let gleam = fake_gleam(temp.path());
 
-    let (github_listener, github_url) = bound_listener();
+    let (mut github, github_url) = listening();
     let (digest, [commit, blob]) = generated_changelog_commit(&head);
     let pull = format!(
         r#"[{{"number":7,"title":"chore(release): widget 1.0.0","body":"<!-- release-glz:managed package=widget branch=release-glz/widget head={head} digest={digest} version=1.0.0 intent=pending -->","html_url":"https://github.test/acme/widget/pull/7","merge_commit_sha":null,"merged_at":null,"user":{{"login":"bot"}},"labels":[],"head":{{"ref":"release-glz/widget","sha":"{head}","repo":{{"full_name":"acme/widget","default_branch":"main"}}}},"base":{{"ref":"main","repo":{{"full_name":"acme/widget","default_branch":"main"}}}}}}]"#,
@@ -386,7 +373,7 @@ fn release_pr_closes_a_stale_verified_managed_pr_when_no_release_is_required() {
         ),
         http_response(200, b"{}"),
     ];
-    let (github_requests, github_server) = serve_recording(github_listener, github_responses);
+    github.script(github_responses);
 
     let output = isolated_command(env!("CARGO_BIN_EXE_release-glz"))
         .current_dir(temp.path())
@@ -401,17 +388,15 @@ fn release_pr_closes_a_stale_verified_managed_pr_when_no_release_is_required() {
         .output()
         .unwrap();
 
-    registry_server.join().unwrap();
-    github_server.join().unwrap();
     assert!(
         output.status.success(),
         "stdout={} stderr={}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    let registry_requests: Vec<_> = registry_requests.try_iter().collect();
+    let registry_requests = registry.finish();
+    let github_requests = texts(&github.finish());
     assert_eq!(registry_requests.len(), 3);
-    let github_requests: Vec<_> = github_requests.try_iter().collect();
     assert_eq!(github_requests.len(), 8, "{github_requests:#?}");
     assert!(github_requests[0].starts_with("GET /repos/acme/widget "));
     assert!(github_requests[1].starts_with("GET /repos/acme/widget/git/ref/heads/main "));
@@ -432,11 +417,10 @@ fn release_pr_closes_a_stale_verified_managed_pr_when_no_release_is_required() {
 #[test]
 fn a_handed_off_plan_writes_the_release_pr_without_the_compiler() {
     let temp = tempfile::tempdir().unwrap();
-    let (registry_listener, registry_url) = bound_listener();
+    let (mut registry, registry_url) = listening();
     let gleam = initialize_initial_package(temp.path(), &registry_url);
     let source_sha = git_output(temp.path(), &["rev-parse", "HEAD"]);
-    let (_registry_requests, registry_server) =
-        serve_recording(registry_listener, vec![http_response(404, b"")]);
+    registry.script([http_response(404, b"")]);
     let plan_path = temp.path().join("plan.json");
 
     let planned = candidate_command(temp.path(), &gleam)
@@ -444,8 +428,8 @@ fn a_handed_off_plan_writes_the_release_pr_without_the_compiler() {
         .arg(&plan_path)
         .output()
         .unwrap();
-    registry_server.join().unwrap();
     assert_success(&planned, "plan --out");
+    registry.finish();
     let plan_bytes = std::fs::read(&plan_path).unwrap();
     let handed_off: serde_json::Value = serde_json::from_slice(&plan_bytes).unwrap();
     assert_published_envelope(&json(&planned));
@@ -468,7 +452,7 @@ fn a_handed_off_plan_writes_the_release_pr_without_the_compiler() {
     );
     assert_eq!(std::fs::read(&plan_path).unwrap(), plan_bytes);
 
-    let (github_listener, github_url) = bound_listener();
+    let (mut github, github_url) = listening();
     let release_pr_head = "b".repeat(40);
     let graph = format!(
         r#"{{"data":{{"createCommitOnBranch":{{"commit":{{"oid":"{release_pr_head}"}}}}}},"errors":[]}}"#
@@ -476,29 +460,26 @@ fn a_handed_off_plan_writes_the_release_pr_without_the_compiler() {
     let created = format!(
         r#"{{"number":9,"title":"chore(release): widget 1.0.0","body":"managed","html_url":"https://github.test/acme/widget/pull/9","merge_commit_sha":null,"merged_at":null,"user":{{"login":"bot"}},"labels":[],"head":{{"ref":"release-glz/widget","sha":"{release_pr_head}"}}}}"#
     );
-    let (github_requests, github_server) = serve_recording(
-        github_listener,
-        vec![
-            http_response(200, REPOSITORY.as_bytes()),
-            http_response(
-                200,
-                format!(r#"{{"object":{{"sha":"{source_sha}"}}}}"#).as_bytes(),
-            ),
-            http_response(200, b"[]"),
-            http_response(200, b"[]"),
-            http_response(200, b"[]"),
-            http_response(404, b"{}"),
-            http_response(201, b"{}"),
-            http_response(200, graph.as_bytes()),
-            http_response(201, created.as_bytes()),
-        ],
-    );
+    github.script([
+        http_response(200, REPOSITORY.as_bytes()),
+        http_response(
+            200,
+            format!(r#"{{"object":{{"sha":"{source_sha}"}}}}"#).as_bytes(),
+        ),
+        http_response(200, b"[]"),
+        http_response(200, b"[]"),
+        http_response(200, b"[]"),
+        http_response(404, b"{}"),
+        http_response(201, b"{}"),
+        http_response(200, graph.as_bytes()),
+        http_response(201, created.as_bytes()),
+    ]);
 
     let written = release_pr_from_plan(temp.path(), &plan_path, &refusing, &github_url)
         .output()
         .unwrap();
-    github_server.join().unwrap();
     assert_success(&written, "release-pr --plan");
+    let github_requests = texts(&github.finish());
     assert!(
         !compiler_runs.exists(),
         "release-pr --plan ran the compiler: {}",
@@ -509,7 +490,6 @@ fn a_handed_off_plan_writes_the_release_pr_without_the_compiler() {
     assert_eq!(result["pr_url"], "https://github.test/acme/widget/pull/9");
     assert_eq!(result["release_pr_head"], release_pr_head.as_str());
 
-    let github_requests: Vec<_> = github_requests.try_iter().collect();
     assert_eq!(github_requests.len(), 9, "{github_requests:#?}");
     assert!(github_requests[0].starts_with("GET /repos/acme/widget "));
     assert!(github_requests[1].starts_with("GET /repos/acme/widget/git/ref/heads/main "));
@@ -550,23 +530,20 @@ fn a_handed_off_plan_writes_the_release_pr_without_the_compiler() {
     );
 
     // Once the default branch moves past this checkout, the same plan writes and closes nothing.
-    let (github_listener, github_url) = bound_listener();
+    let (mut github, github_url) = listening();
     let newer_tip = "f".repeat(40);
-    let (github_requests, github_server) = serve_recording(
-        github_listener,
-        vec![
-            http_response(200, REPOSITORY.as_bytes()),
-            http_response(
-                200,
-                format!(r#"{{"object":{{"sha":"{newer_tip}"}}}}"#).as_bytes(),
-            ),
-        ],
-    );
+    github.script([
+        http_response(200, REPOSITORY.as_bytes()),
+        http_response(
+            200,
+            format!(r#"{{"object":{{"sha":"{newer_tip}"}}}}"#).as_bytes(),
+        ),
+    ]);
     let superseded = release_pr_from_plan(temp.path(), &plan_path, &refusing, &github_url)
         .output()
         .unwrap();
-    github_server.join().unwrap();
     assert_success(&superseded, "release-pr --plan behind the tip");
+    let github_requests = github.finish();
     let envelope = json(&superseded);
     assert_published_envelope(&envelope);
     assert_eq!(
@@ -575,25 +552,24 @@ fn a_handed_off_plan_writes_the_release_pr_without_the_compiler() {
     );
     assert_eq!(envelope["result"]["pr_url"], serde_json::Value::Null);
     assert_eq!(envelope["diagnostics"][0]["code"], "release_pr_superseded");
-    assert_eq!(github_requests.try_iter().count(), 2);
+    assert_eq!(github_requests.len(), 2);
 }
 
 #[test]
 fn release_pr_at_the_merge_of_its_release_pr_writes_nothing() {
     let temp = tempfile::tempdir().unwrap();
-    let (registry_listener, registry_url) = bound_listener();
+    let (mut registry, registry_url) = listening();
     let gleam = initialize_initial_package(temp.path(), &registry_url);
     let merge_commit = git_output(temp.path(), &["rev-parse", "HEAD"]);
-    let (_registry_requests, registry_server) =
-        serve_recording(registry_listener, vec![http_response(404, b"")]);
+    registry.script([http_response(404, b"")]);
     let plan_path = temp.path().join("plan.json");
     let planned = candidate_command(temp.path(), &gleam)
         .args(["--output", "json", "plan", "--out"])
         .arg(&plan_path)
         .output()
         .unwrap();
-    registry_server.join().unwrap();
     assert_success(&planned, "plan --out");
+    registry.finish();
 
     let release_head = "e".repeat(40);
     let (digest, [commit, blob]) = generated_changelog_commit(&"0".repeat(40));
@@ -601,28 +577,25 @@ fn release_pr_at_the_merge_of_its_release_pr_writes_nothing() {
         r#"[{{"number":7,"title":"chore(release): widget 1.0.0","body":"<!-- release-glz:managed package=widget branch=release-glz/widget head={release_head} digest={digest} version=1.0.0 intent={} -->","html_url":"https://github.test/acme/widget/pull/7","merge_commit_sha":"{merge_commit}","merged_at":"2026-01-01T00:00:00Z","user":{{"login":"bot"}},"labels":[],"head":{{"ref":"release-glz/widget","sha":"{release_head}","repo":{{"full_name":"acme/widget","default_branch":"main"}}}},"base":{{"ref":"main","repo":{{"full_name":"acme/widget","default_branch":"main"}}}}}}]"#,
         "1".repeat(64)
     );
-    let (github_listener, github_url) = bound_listener();
-    let (github_requests, github_server) = serve_recording(
-        github_listener,
-        vec![
-            http_response(200, REPOSITORY.as_bytes()),
-            http_response(
-                200,
-                format!(r#"{{"object":{{"sha":"{merge_commit}"}}}}"#).as_bytes(),
-            ),
-            http_response(200, merged.as_bytes()),
-            commit,
-            blob,
-        ],
-    );
+    let (mut github, github_url) = listening();
+    github.script([
+        http_response(200, REPOSITORY.as_bytes()),
+        http_response(
+            200,
+            format!(r#"{{"object":{{"sha":"{merge_commit}"}}}}"#).as_bytes(),
+        ),
+        http_response(200, merged.as_bytes()),
+        commit,
+        blob,
+    ]);
     let (refusing, _compiler_runs) = refusing_gleam(temp.path());
 
     let output = release_pr_from_plan(temp.path(), &plan_path, &refusing, &github_url)
         .output()
         .unwrap();
-    github_server.join().unwrap();
 
     assert_success(&output, "release-pr --plan at the merge commit");
+    let github_requests = texts(&github.finish());
     let envelope = json(&output);
     assert_published_envelope(&envelope);
     assert_eq!(envelope["diagnostics"][0]["code"], "release_pr_merged");
@@ -634,7 +607,6 @@ fn release_pr_at_the_merge_of_its_release_pr_writes_nothing() {
         envelope["result"]["release_pr_head"],
         serde_json::Value::Null
     );
-    let github_requests: Vec<_> = github_requests.try_iter().collect();
     assert_eq!(github_requests.len(), 5, "{github_requests:#?}");
     assert!(
         github_requests
@@ -652,13 +624,10 @@ fn release_pr_at_the_merge_of_its_release_pr_writes_nothing() {
 #[test]
 fn a_tip_that_already_holds_the_release_files_gets_no_release_pr_commit() {
     let temp = tempfile::tempdir().unwrap();
-    let (registry_listener, registry_url) = bound_listener();
+    let (mut registry, registry_url) = listening();
     let gleam = initialize_initial_package(temp.path(), &registry_url);
     // Neither plan finds a release of the package.
-    let (_registry_requests, registry_server) = serve_recording(
-        registry_listener,
-        vec![http_response(404, b""), http_response(404, b"")],
-    );
+    registry.script([http_response(404, b""), http_response(404, b"")]);
     let plan = |name: &str| {
         let plan_path = temp.path().join(name);
         let planned = candidate_command(temp.path(), &gleam)
@@ -682,30 +651,27 @@ fn a_tip_that_already_holds_the_release_files_gets_no_release_pr_commit() {
         r#"{{"number":9,"title":"chore(release): widget 1.0.0","body":"managed","html_url":"https://github.test/acme/widget/pull/9","merge_commit_sha":null,"merged_at":null,"user":{{"login":"bot"}},"labels":[],"head":{{"ref":"release-glz/widget","sha":"{}"}}}}"#,
         "b".repeat(40)
     );
-    let (github_listener, github_url) = bound_listener();
-    let (github_requests, github_server) = serve_recording(
-        github_listener,
-        vec![
-            http_response(200, REPOSITORY.as_bytes()),
-            http_response(
-                200,
-                format!(r#"{{"object":{{"sha":"{source_sha}"}}}}"#).as_bytes(),
-            ),
-            http_response(200, b"[]"),
-            http_response(200, b"[]"),
-            http_response(200, b"[]"),
-            http_response(404, b"{}"),
-            http_response(201, b"{}"),
-            http_response(200, graph.as_bytes()),
-            http_response(201, created.as_bytes()),
-        ],
-    );
+    let (mut github, github_url) = listening();
+    github.script([
+        http_response(200, REPOSITORY.as_bytes()),
+        http_response(
+            200,
+            format!(r#"{{"object":{{"sha":"{source_sha}"}}}}"#).as_bytes(),
+        ),
+        http_response(200, b"[]"),
+        http_response(200, b"[]"),
+        http_response(200, b"[]"),
+        http_response(404, b"{}"),
+        http_response(201, b"{}"),
+        http_response(200, graph.as_bytes()),
+        http_response(201, created.as_bytes()),
+    ]);
     let written = release_pr_from_plan(temp.path(), &first_plan, &refusing, &github_url)
         .output()
         .unwrap();
-    github_server.join().unwrap();
     assert_success(&written, "release-pr --plan");
-    let commit = request_json(&github_requests.try_iter().nth(7).unwrap());
+    let github_requests = github.finish();
+    let commit = request_json(&github_requests[7].text());
     let additions = commit["variables"]["input"]["fileChanges"]["additions"]
         .as_array()
         .unwrap()
@@ -727,23 +693,20 @@ fn a_tip_that_already_holds_the_release_files_gets_no_release_pr_commit() {
     git(temp.path(), &["commit", "--quiet", "--amend", "--no-edit"]);
     let tip = git_output(temp.path(), &["rev-parse", "HEAD"]);
     let second_plan = plan("second.json");
-    registry_server.join().unwrap();
-    let (github_listener, github_url) = bound_listener();
-    let (github_requests, github_server) = serve_recording(
-        github_listener,
-        vec![
-            http_response(200, REPOSITORY.as_bytes()),
-            http_response(200, format!(r#"{{"object":{{"sha":"{tip}"}}}}"#).as_bytes()),
-            http_response(200, b"[]"),
-            http_response(200, b"[]"),
-        ],
-    );
+    registry.finish();
+    let (mut github, github_url) = listening();
+    github.script([
+        http_response(200, REPOSITORY.as_bytes()),
+        http_response(200, format!(r#"{{"object":{{"sha":"{tip}"}}}}"#).as_bytes()),
+        http_response(200, b"[]"),
+        http_response(200, b"[]"),
+    ]);
     let output = release_pr_from_plan(temp.path(), &second_plan, &refusing, &github_url)
         .output()
         .unwrap();
-    github_server.join().unwrap();
 
     assert_success(&output, "release-pr --plan on a tip with the release files");
+    let github_requests = texts(&github.finish());
     let envelope = json(&output);
     assert_published_envelope(&envelope);
     assert_eq!(envelope["diagnostics"][0]["code"], "release_files_current");
@@ -752,7 +715,6 @@ fn a_tip_that_already_holds_the_release_files_gets_no_release_pr_commit() {
         envelope["result"]["release_pr_head"],
         serde_json::Value::Null
     );
-    let github_requests: Vec<_> = github_requests.try_iter().collect();
     assert_eq!(github_requests.len(), 4, "{github_requests:#?}");
     assert!(
         github_requests
@@ -764,19 +726,18 @@ fn a_tip_that_already_holds_the_release_files_gets_no_release_pr_commit() {
 #[test]
 fn a_handed_off_plan_that_does_not_describe_the_checkout_is_refused_before_any_request() {
     let temp = tempfile::tempdir().unwrap();
-    let (registry_listener, registry_url) = bound_listener();
+    let (mut registry, registry_url) = listening();
     let gleam = initialize_initial_package(temp.path(), &registry_url);
     let first = git_output(temp.path(), &["rev-parse", "HEAD"]);
-    let (_registry_requests, registry_server) =
-        serve_recording(registry_listener, vec![http_response(404, b"")]);
+    registry.script([http_response(404, b"")]);
     let plan_path = temp.path().join("plan.json");
     let planned = candidate_command(temp.path(), &gleam)
         .args(["--output", "json", "plan", "--out"])
         .arg(&plan_path)
         .output()
         .unwrap();
-    registry_server.join().unwrap();
     assert_success(&planned, "plan --out");
+    registry.finish();
     let plan: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&plan_path).unwrap()).unwrap();
     git(temp.path(), &["switch", "--quiet", "--create", "side"]);
@@ -797,17 +758,15 @@ fn a_handed_off_plan_that_does_not_describe_the_checkout_is_refused_before_any_r
     accepted["baseline"]["sha"] = first.clone().into();
     let accepted_path = temp.path().join("accepted.json");
     std::fs::write(&accepted_path, serde_json::to_vec(&accepted).unwrap()).unwrap();
-    let (github_listener, github_url) = bound_listener();
-    let (github_requests, github_server) =
-        serve_recording(github_listener, vec![http_response(200, b"[]")]);
+    let (mut github, github_url) = listening();
+    github.script([http_response(200, b"[]")]);
     let dry_run = release_pr_from_plan(temp.path(), &accepted_path, &refusing, &github_url)
         .arg("--dry-run")
         .output()
         .unwrap();
-    github_server.join().unwrap();
     assert_success(&dry_run, "release-pr --plan --dry-run");
+    let github_requests = texts(&github.finish());
     assert_published_envelope(&json(&dry_run));
-    let github_requests: Vec<_> = github_requests.try_iter().collect();
     assert_eq!(github_requests.len(), 1, "{github_requests:#?}");
     assert!(
         github_requests[0].starts_with(&format!("GET /repos/acme/widget/commits/{second}/pulls "))
@@ -871,11 +830,13 @@ fn a_handed_off_plan_that_does_not_describe_the_checkout_is_refused_before_any_r
         ("bytes that are not JSON", b"plan".to_vec()),
         ("a file above the size limit", oversized),
     ];
-    let (silent_listener, silent_url) = bound_listener();
     for (case, bytes) in cases {
+        // This server counts each connection and closes it unread.
+        let mut silent = FakeServer::start();
+        silent.hang_up();
         let path = temp.path().join("refused.json");
         std::fs::write(&path, bytes).unwrap();
-        let refused = release_pr_from_plan(temp.path(), &path, &refusing, &silent_url)
+        let refused = release_pr_from_plan(temp.path(), &path, &refusing, &silent.base_url())
             .output()
             .unwrap();
         assert_eq!(refused.status.code(), Some(2), "{case}: {refused:?}");
@@ -884,8 +845,10 @@ fn a_handed_off_plan_that_does_not_describe_the_checkout_is_refused_before_any_r
             "usage_or_config",
             "{case}"
         );
-        assert!(
-            matches!(silent_listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
+        silent.finish();
+        assert_eq!(
+            silent.connections(),
+            0,
             "{case}: release-pr contacted GitHub"
         );
     }
@@ -894,7 +857,7 @@ fn a_handed_off_plan_that_does_not_describe_the_checkout_is_refused_before_any_r
         "release-pr --plan ran the compiler"
     );
 
-    let both = release_pr_from_plan(temp.path(), &plan_path, &refusing, &silent_url)
+    let both = release_pr_from_plan(temp.path(), &plan_path, &refusing, NOTHING_LISTENS)
         .arg("--candidate")
         .arg(temp.path().join("candidate"))
         .output()
@@ -911,8 +874,7 @@ fn a_handed_off_plan_that_does_not_describe_the_checkout_is_refused_before_any_r
 #[test]
 fn a_candidate_whose_head_the_release_pr_left_binds_nothing_and_succeeds() {
     let temp = tempfile::tempdir().unwrap();
-    let (_registry_listener, registry_url) = bound_listener();
-    let gleam = initialize_initial_package(temp.path(), &registry_url);
+    let gleam = initialize_initial_package(temp.path(), NOTHING_LISTENS);
     let source_sha = git_output(temp.path(), &["rev-parse", "HEAD"]);
     let candidate = temp.path().join("candidate");
     let rehearse = candidate_command(temp.path(), &gleam)
@@ -930,19 +892,16 @@ fn a_candidate_whose_head_the_release_pr_left_binds_nothing_and_succeeds() {
     assert_success(&rehearse, "rehearse");
     assert_published_envelope(&json(&rehearse));
 
-    let (github_listener, github_url) = bound_listener();
+    let (mut github, github_url) = listening();
     let moved_head = "e".repeat(40);
     let moved = format!(
         r#"[{{"number":7,"title":"chore(release): widget 1.0.0","body":"<!-- release-glz:managed package=widget branch=release-glz/widget head={moved_head} digest={} version=1.0.0 intent=pending -->","html_url":"https://github.test/acme/widget/pull/7","merge_commit_sha":null,"merged_at":null,"user":{{"login":"bot"}},"labels":[],"head":{{"ref":"release-glz/widget","sha":"{moved_head}","repo":{{"full_name":"acme/widget","default_branch":"main"}}}},"base":{{"ref":"main","repo":{{"full_name":"acme/widget","default_branch":"main"}}}}}}]"#,
         "d".repeat(64)
     );
-    let (github_requests, github_server) = serve_recording(
-        github_listener,
-        vec![
-            http_response(200, b"[]"),
-            http_response(200, moved.as_bytes()),
-        ],
-    );
+    github.script([
+        http_response(200, b"[]"),
+        http_response(200, moved.as_bytes()),
+    ]);
     let (refusing, compiler_runs) = refusing_gleam(temp.path());
 
     let bound = isolated_command(env!("CARGO_BIN_EXE_release-glz"))
@@ -955,16 +914,15 @@ fn a_candidate_whose_head_the_release_pr_left_binds_nothing_and_succeeds() {
         .env("GITHUB_GRAPHQL_URL", format!("{github_url}/graphql"))
         .output()
         .unwrap();
-    github_server.join().unwrap();
 
     assert_success(&bound, "release-pr --candidate");
+    let github_requests = texts(&github.finish());
     assert_published_envelope(&json(&bound));
     let result = &json(&bound)["result"];
     assert_eq!(result["schema"], "release-pr-intent/v1");
     assert_eq!(result["intent_binding"], "superseded");
     assert_eq!(result["state"], "planned");
     assert_eq!(result["pr_url"], serde_json::Value::Null);
-    let github_requests: Vec<_> = github_requests.try_iter().collect();
     assert_eq!(github_requests.len(), 2, "{github_requests:#?}");
     assert!(github_requests[0].starts_with(&format!(
         "GET /repos/acme/widget/commits/{source_sha}/pulls "
@@ -981,8 +939,7 @@ fn a_candidate_whose_head_the_release_pr_left_binds_nothing_and_succeeds() {
 #[test]
 fn a_merged_release_pr_authorizes_a_candidate_only_with_the_intent_it_recorded() {
     let temp = tempfile::tempdir().unwrap();
-    let (_registry_listener, registry_url) = bound_listener();
-    let gleam = initialize_initial_package(temp.path(), &registry_url);
+    let gleam = initialize_initial_package(temp.path(), NOTHING_LISTENS);
     let source_sha = git_output(temp.path(), &["rev-parse", "HEAD"]);
     let candidate = temp.path().join("candidate");
     let rehearse = candidate_command(temp.path(), &gleam)
@@ -1008,16 +965,13 @@ fn a_merged_release_pr_authorizes_a_candidate_only_with_the_intent_it_recorded()
         ("e".repeat(64), "blocked", "unbound"),
         (candidate_intent, "awaiting_approval", "merged"),
     ] {
-        let (github_listener, github_url) = bound_listener();
+        let (mut github, github_url) = listening();
         let head = "c".repeat(40);
         let (digest, [commit, blob]) = generated_changelog_commit(&"0".repeat(40));
         let merged = format!(
             r#"[{{"number":7,"title":"chore(release): widget 1.0.0","body":"<!-- release-glz:managed package=widget branch=release-glz/widget head={head} digest={digest} version=1.0.0 intent={recorded_intent} -->","html_url":"https://github.test/acme/widget/pull/7","merge_commit_sha":"{source_sha}","merged_at":"2026-01-01T00:00:00Z","user":{{"login":"bot"}},"labels":[],"head":{{"ref":"release-glz/widget","sha":"{head}","repo":{{"full_name":"acme/widget","default_branch":"main"}}}},"base":{{"ref":"main","repo":{{"full_name":"acme/widget","default_branch":"main"}}}}}}]"#
         );
-        let (github_requests, github_server) = serve_recording(
-            github_listener,
-            vec![http_response(200, merged.as_bytes()), commit, blob],
-        );
+        github.script([http_response(200, merged.as_bytes()), commit, blob]);
 
         let authorized = isolated_command(env!("CARGO_BIN_EXE_release-glz"))
             .current_dir(temp.path())
@@ -1029,15 +983,15 @@ fn a_merged_release_pr_authorizes_a_candidate_only_with_the_intent_it_recorded()
             .env("GITHUB_GRAPHQL_URL", format!("{github_url}/graphql"))
             .output()
             .unwrap();
-        github_server.join().unwrap();
 
         assert_success(&authorized, "release-pr --dry-run --candidate");
+        let github_requests = github.finish();
         let envelope = json(&authorized);
         assert_published_envelope(&envelope);
         let result = &envelope["result"];
         assert_eq!(result["state"], state, "{result}");
         assert_eq!(result["intent_binding"], binding, "{result}");
-        assert_eq!(github_requests.try_iter().count(), 3);
+        assert_eq!(github_requests.len(), 3);
     }
     assert!(
         !compiler_runs.exists(),
@@ -1048,12 +1002,10 @@ fn a_merged_release_pr_authorizes_a_candidate_only_with_the_intent_it_recorded()
 #[test]
 fn a_release_without_a_verifiable_approval_stops_before_it_asks_github_for_anything() {
     let temp = tempfile::tempdir().unwrap();
-    let (_registry_listener, registry_url) = bound_listener();
-    let gleam = initialize_initial_package(temp.path(), &registry_url);
+    let gleam = initialize_initial_package(temp.path(), NOTHING_LISTENS);
     let candidate = rehearsed_candidate(temp.path(), &gleam);
     // Nothing listens here, so a run that reached GitHub would fail differently.
-    let (github_listener, github_url) = bound_listener();
-    drop(github_listener);
+    let github_url = NOTHING_LISTENS;
     // The verifier trusts no token endpoint on this host, so a run that got this far would refuse it without a request.
     let actions_job = [
         (
@@ -1084,7 +1036,7 @@ fn a_release_without_a_verifiable_approval_stops_before_it_asks_github_for_anyth
             .args(["--output", "json", "release", "--candidate"])
             .arg(&candidate)
             .env("GITHUB_TOKEN", "github-value")
-            .env("GITHUB_API_URL", &github_url)
+            .env("GITHUB_API_URL", github_url)
             .env("GITHUB_GRAPHQL_URL", format!("{github_url}/graphql"));
         for (name, value) in actions_job {
             command.env(name, value);
@@ -1112,8 +1064,8 @@ fn a_release_without_a_verifiable_approval_stops_before_it_asks_github_for_anyth
 #[test]
 fn an_inspection_of_a_world_that_contradicts_the_candidate_is_an_immutable_conflict() {
     let temp = tempfile::tempdir().unwrap();
-    let (registry_listener, registry_url) = bound_listener();
-    let (github_listener, github_url) = bound_listener();
+    let (mut registry, registry_url) = listening();
+    let (mut github, github_url) = listening();
     let gleam = initialize_initial_package(temp.path(), &registry_url);
     let candidate = rehearsed_candidate(temp.path(), &gleam);
     let published = serde_json::json!({
@@ -1122,18 +1074,12 @@ fn an_inspection_of_a_world_that_contradicts_the_candidate_is_an_immutable_confl
         "has_docs": false
     });
     // The published release, asked once for the package and once for docs.
-    let (_registry_requests, registry_server) = serve_recording(
-        registry_listener,
-        vec![
-            http_response(200, published.to_string().as_bytes()),
-            http_response(200, published.to_string().as_bytes()),
-        ],
-    );
+    registry.script([
+        http_response(200, published.to_string().as_bytes()),
+        http_response(200, published.to_string().as_bytes()),
+    ]);
     // No tag, and a release list without the Candidate's Release.
-    let (_github_requests, github_server) = serve_recording(
-        github_listener,
-        vec![http_response(404, b""), http_response(200, b"[]")],
-    );
+    github.script([http_response(404, b""), http_response(200, b"[]")]);
 
     let release = candidate_command(temp.path(), &gleam)
         .args(["--output", "json", "release", "--dry-run", "--candidate"])
@@ -1142,10 +1088,10 @@ fn an_inspection_of_a_world_that_contradicts_the_candidate_is_an_immutable_confl
         .env("GITHUB_GRAPHQL_URL", format!("{github_url}/graphql"))
         .output()
         .unwrap();
-    registry_server.join().unwrap();
-    github_server.join().unwrap();
 
     assert_eq!(release.status.code(), Some(4), "{release:?}");
+    registry.finish();
+    github.finish();
     let envelope = json(&release);
     assert_published_envelope(&envelope);
     assert_eq!(envelope["ok"], false);
@@ -1180,11 +1126,9 @@ fn rehearsed_candidate(directory: &std::path::Path, gleam: &OsStr) -> std::path:
 #[test]
 fn a_refused_approval_names_the_check_that_refused_it() {
     let temp = tempfile::tempdir().unwrap();
-    let (_registry_listener, registry_url) = bound_listener();
-    let gleam = initialize_initial_package(temp.path(), &registry_url);
+    let gleam = initialize_initial_package(temp.path(), NOTHING_LISTENS);
     let candidate = rehearsed_candidate(temp.path(), &gleam);
-    let (github_listener, github_url) = bound_listener();
-    drop(github_listener);
+    let github_url = NOTHING_LISTENS;
 
     let release = candidate_command(temp.path(), &gleam)
         .args(["--output", "json", "release", "--candidate"])
@@ -1196,7 +1140,7 @@ fn a_refused_approval_names_the_check_that_refused_it() {
         .env("RELEASE_GLZ_ACTIONS_ARTIFACT_DIGEST", "3".repeat(64))
         .env("RELEASE_GLZ_ACTIONS_RUN_ID", "42")
         .env("GITHUB_TOKEN", "github-value")
-        .env("GITHUB_API_URL", &github_url)
+        .env("GITHUB_API_URL", github_url)
         .env("GITHUB_GRAPHQL_URL", format!("{github_url}/graphql"))
         .output()
         .unwrap();
@@ -1284,37 +1228,26 @@ notes_dir = ".release-glz/notes"
     .replace("__BASE__", base)
 }
 
-fn not_found_server() -> (String, mpsc::Receiver<String>, thread::JoinHandle<()>) {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    listener.set_nonblocking(true).unwrap();
-    let address = listener.local_addr().unwrap();
-    let (sender, receiver) = mpsc::channel();
-    let handle = thread::spawn(move || {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        let mut stream = loop {
-            match listener.accept() {
-                Ok((stream, _)) => break stream,
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    if std::time::Instant::now() >= deadline {
-                        return;
-                    }
-                    thread::sleep(std::time::Duration::from_millis(5));
-                }
-                Err(error) => panic!("registry accept failed: {error}"),
-            }
-        };
-        let request = read_http_request(&mut stream);
-        sender.send(request.to_ascii_lowercase()).unwrap();
-        stream
-            .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
-            .unwrap();
-    });
-    (format!("http://{address}"), receiver, handle)
+/// A registry that answers its one expected request with 404, and its origin.
+fn not_found_server() -> (String, FakeServer) {
+    let (server, origin) = listening();
+    server.script([Response::new(404)]);
+    (origin, server)
 }
 
-struct HttpResponse {
-    status: u16,
-    body: Vec<u8>,
+/// A server with an empty script, and its origin.
+fn listening() -> (FakeServer, String) {
+    let server = FakeServer::start();
+    let origin = server.base_url();
+    (server, origin)
+}
+
+/// An origin where nothing listens, because port 9 lies below every ephemeral range and so no test's listener can take it.
+const NOTHING_LISTENS: &str = "http://127.0.0.1:9";
+
+/// Each request as it arrived.
+fn texts(requests: &[Request]) -> Vec<String> {
+    requests.iter().map(Request::text).collect()
 }
 
 /// The GitHub repository of the fixture package, whose default branch is `main`.
@@ -1322,7 +1255,7 @@ const REPOSITORY: &str =
     r#"{"node_id":"R_widget","full_name":"acme/widget","default_branch":"main","private":false}"#;
 
 /// The files digest of a server-verified commit on `parent` that modified only `CHANGELOG.md`, and the responses that reading the commit and its blob take.
-fn generated_changelog_commit(parent: &str) -> (String, [HttpResponse; 2]) {
+fn generated_changelog_commit(parent: &str) -> (String, [Response; 2]) {
     let contents = b"# Changelog\n\n## [1.0.0]\n";
     let digest = release_glz::forge::files_digest(&std::collections::BTreeMap::from([(
         "CHANGELOG.md".to_owned(),
@@ -1350,114 +1283,10 @@ fn generated_changelog_commit(parent: &str) -> (String, [HttpResponse; 2]) {
     )
 }
 
-fn http_response(status: u16, body: &[u8]) -> HttpResponse {
-    HttpResponse {
-        status,
-        body: body.to_vec(),
-    }
-}
-
-fn bound_listener() -> (TcpListener, String) {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    listener.set_nonblocking(true).unwrap();
-    let base = format!("http://{}", listener.local_addr().unwrap());
-    (listener, base)
-}
-
-#[test]
-fn http_request_reader_normalizes_an_inherited_nonblocking_stream() {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let address = listener.local_addr().unwrap();
-    let client = thread::spawn(move || {
-        let mut stream = TcpStream::connect(address).unwrap();
-        thread::sleep(std::time::Duration::from_millis(25));
-        stream
-            .write_all(b"POST /fixture HTTP/1.1\r\nContent-Length: 2\r\n\r\n{}")
-            .unwrap();
-    });
-    let (mut stream, _) = listener.accept().unwrap();
-    stream.set_nonblocking(true).unwrap();
-
-    let request = read_http_request(&mut stream);
-
-    client.join().unwrap();
-    assert_eq!(
-        request,
-        "POST /fixture HTTP/1.1\r\nContent-Length: 2\r\n\r\n{}"
-    );
-}
-
-fn serve_recording(
-    listener: TcpListener,
-    responses: Vec<HttpResponse>,
-) -> (mpsc::Receiver<String>, thread::JoinHandle<()>) {
-    let (sender, receiver) = mpsc::channel();
-    let handle = thread::spawn(move || {
-        let mut responses = VecDeque::from(responses);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        while let Some(response) = responses.pop_front() {
-            let mut stream = loop {
-                match listener.accept() {
-                    Ok((stream, _)) => break stream,
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        if std::time::Instant::now() >= deadline {
-                            return;
-                        }
-                        thread::sleep(std::time::Duration::from_millis(5));
-                    }
-                    Err(error) => panic!("server accept failed: {error}"),
-                }
-            };
-            let request = read_http_request(&mut stream);
-            sender.send(request).unwrap();
-            let reason = match response.status {
-                200 => "OK",
-                204 => "No Content",
-                404 => "Not Found",
-                _ => "Response",
-            };
-            write!(
-                stream,
-                "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                response.status,
-                reason,
-                response.body.len()
-            )
-            .unwrap();
-            stream.write_all(&response.body).unwrap();
-        }
-    });
-    (receiver, handle)
-}
-
-fn read_http_request(stream: &mut std::net::TcpStream) -> String {
-    stream.set_nonblocking(false).unwrap();
-    stream
-        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
-        .unwrap();
-    let mut bytes = Vec::new();
-    let mut buffer = [0_u8; 4096];
-    let header_end = loop {
-        let count = read_some(stream, &mut buffer);
-        assert!(count > 0);
-        bytes.extend_from_slice(&buffer[..count]);
-        if let Some(index) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
-            break index + 4;
-        }
-    };
-    let headers = String::from_utf8_lossy(&bytes[..header_end]);
-    let length = headers
-        .lines()
-        .filter_map(|line| line.split_once(':'))
-        .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
-        .map(|(_, value)| value.trim().parse::<usize>().unwrap())
-        .unwrap_or(0);
-    while bytes.len() < header_end + length {
-        let count = read_some(stream, &mut buffer);
-        assert!(count > 0);
-        bytes.extend_from_slice(&buffer[..count]);
-    }
-    String::from_utf8_lossy(&bytes[..header_end + length]).into_owned()
+fn http_response(status: u16, body: &[u8]) -> Response {
+    Response::new(status)
+        .header("Content-Type", "application/json")
+        .body(body)
 }
 
 fn git(directory: &std::path::Path, args: &[&str]) {

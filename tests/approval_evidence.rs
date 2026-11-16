@@ -1,7 +1,6 @@
 //! Each value in the approval evidence comes from a check that GitHub answered, never from the publishing job's own outputs.
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex};
 
 use base64::Engine as _;
 use release_glz::approval::{ApprovalRequest, verify_approval};
@@ -13,10 +12,9 @@ use release_glz::config::{ApprovalConfig, AuthKind, OutputConfig, RegistryProvid
 use release_glz::forge::{GitHubClient, GitHubRepository, files_digest};
 use release_glz::model::ReleaseState;
 use release_glz::reconciler::{ApprovalEvidence, ExternalReleaseState, ReleaseIntent, reconcile};
+use release_glz_test_support::http::{FakeServer, Response};
 use release_glz_test_support::oidc;
 use semver::Version;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpListener;
 
 const NOW: i64 = 1_800_000_000;
 const REPOSITORY: &str = "owner/widget";
@@ -47,7 +45,7 @@ fn artifact_digest() -> String {
 #[tokio::test]
 async fn a_push_release_takes_its_intent_from_the_merged_release_pr() {
     let intent_digest = candidate_intent();
-    let github = FakeGithub::start(Event::Push, ReleasePr::Merged(Some(&intent_digest))).await;
+    let github = FakeGithub::start(Event::Push, ReleasePr::Merged(Some(&intent_digest)));
     let evidence = github.verify(push_variables(&github)).await.unwrap();
 
     assert_eq!(evidence.approved_intent_digest, Some(candidate_intent()));
@@ -61,7 +59,7 @@ async fn a_push_release_takes_its_intent_from_the_merged_release_pr() {
 #[tokio::test]
 async fn a_job_value_that_disagrees_with_the_merged_release_pr_never_approves_a_push() {
     let merged_intent = "e".repeat(64);
-    let github = FakeGithub::start(Event::Push, ReleasePr::Merged(Some(&merged_intent))).await;
+    let github = FakeGithub::start(Event::Push, ReleasePr::Merged(Some(&merged_intent)));
     let mut variables = push_variables(&github);
     // A job could set these from its own outputs, and here they agree with the Candidate.
     variables.insert(
@@ -79,7 +77,7 @@ async fn a_job_value_that_disagrees_with_the_merged_release_pr_never_approves_a_
 
 #[tokio::test]
 async fn a_merged_release_pr_without_a_bound_intent_never_approves_a_push() {
-    let github = FakeGithub::start(Event::Push, ReleasePr::Merged(None)).await;
+    let github = FakeGithub::start(Event::Push, ReleasePr::Merged(None));
     let evidence = github.verify(push_variables(&github)).await.unwrap();
 
     assert_eq!(evidence.approved_intent_digest, None);
@@ -88,7 +86,7 @@ async fn a_merged_release_pr_without_a_bound_intent_never_approves_a_push() {
 
 #[tokio::test]
 async fn a_push_without_a_merged_release_pr_has_no_approval() {
-    let github = FakeGithub::start(Event::Push, ReleasePr::Absent).await;
+    let github = FakeGithub::start(Event::Push, ReleasePr::Absent);
     let error = github.verify(push_variables(&github)).await.unwrap_err();
     assert!(
         format!("{error:#}").contains("merged managed Release PR"),
@@ -99,7 +97,7 @@ async fn a_push_without_a_merged_release_pr_has_no_approval() {
 #[tokio::test]
 async fn the_environment_of_an_approval_is_the_one_github_signed() {
     let intent_digest = candidate_intent();
-    let github = FakeGithub::start(Event::Push, ReleasePr::Merged(Some(&intent_digest))).await;
+    let github = FakeGithub::start(Event::Push, ReleasePr::Merged(Some(&intent_digest)));
     let mut variables = push_variables(&github);
     variables.insert("RELEASE_GLZ_ENVIRONMENT".into(), "staging".into());
     let evidence = github.verify(variables).await.unwrap();
@@ -114,8 +112,7 @@ async fn the_environment_of_an_approval_is_the_one_github_signed() {
         Event::Push,
         ReleasePr::Merged(Some(&intent_digest)),
         "staging",
-    )
-    .await;
+    );
     let error = staging.verify(push_variables(&staging)).await.unwrap_err();
     assert!(
         format!("{error:#}").contains("OIDC verification failed"),
@@ -125,7 +122,7 @@ async fn the_environment_of_an_approval_is_the_one_github_signed() {
 
 #[tokio::test]
 async fn a_manual_release_takes_its_intent_from_the_verified_candidate() {
-    let github = FakeGithub::start(Event::WorkflowDispatch, ReleasePr::Absent).await;
+    let github = FakeGithub::start(Event::WorkflowDispatch, ReleasePr::Absent);
     let mut variables = base_variables(&github, EARLIER_RUN);
     variables.insert(
         "RELEASE_GLZ_APPROVED_CANDIDATE_DIGEST".into(),
@@ -356,60 +353,41 @@ fn release_files() -> BTreeMap<String, Vec<u8>> {
 ///
 /// It answers each path from a fixed table, so the order of the requests doesn't matter.
 struct FakeGithub {
-    address: std::net::SocketAddr,
-    requests: Arc<Mutex<Vec<String>>>,
+    server: FakeServer,
 }
 
 impl FakeGithub {
-    async fn start(event: Event, release_pr: ReleasePr<'_>) -> Self {
-        Self::start_with(event, release_pr, "release").await
+    fn start(event: Event, release_pr: ReleasePr<'_>) -> Self {
+        Self::start_with(event, release_pr, "release")
     }
 
     /// A server whose OIDC token names `environment`.
-    async fn start_with(event: Event, release_pr: ReleasePr<'_>, environment: &str) -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let routes = routes(address, event, release_pr, environment);
-        let requests = Arc::new(Mutex::new(Vec::new()));
-        let captured = Arc::clone(&requests);
-        tokio::spawn(async move {
-            while let Ok((mut stream, _)) = listener.accept().await {
-                let mut request = Vec::new();
-                let mut buffer = [0_u8; 4096];
-                while !request.windows(4).any(|window| window == b"\r\n\r\n") {
-                    let read = stream.read(&mut buffer).await.unwrap();
-                    if read == 0 {
-                        break;
-                    }
-                    request.extend_from_slice(&buffer[..read]);
-                }
-                let request = String::from_utf8_lossy(&request).into_owned();
-                let target = request.split_whitespace().nth(1).unwrap_or_default();
-                let path = target.split('?').next().unwrap_or_default().to_owned();
-                let response = match routes.get(&path) {
-                    Some(body) => format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                        body.len()
-                    ),
-                    None => {
-                        "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-                            .to_owned()
-                    }
-                };
-                captured.lock().unwrap().push(path);
-                stream.write_all(response.as_bytes()).await.unwrap();
+    fn start_with(event: Event, release_pr: ReleasePr<'_>, environment: &str) -> Self {
+        let server = FakeServer::start();
+        let routes = routes(server.address(), event, release_pr, environment);
+        server.route(move |request| {
+            match routes.get(request.path()) {
+                Some(body) => Response::new(200)
+                    .header("Content-Type", "application/json")
+                    .body(body.as_str()),
+                None => Response::new(404),
             }
+            .into()
         });
-        Self { address, requests }
+        Self { server }
     }
 
     fn base_url(&self) -> String {
-        format!("http://{}", self.address)
+        self.server.base_url()
     }
 
     /// The paths requested so far.
     fn requests(&self) -> Vec<String> {
-        self.requests.lock().unwrap().clone()
+        self.server
+            .requests()
+            .iter()
+            .map(|request| request.path().to_owned())
+            .collect()
     }
 
     /// The evidence that approval gathers for the job that `variables` describe.

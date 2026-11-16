@@ -2,10 +2,8 @@ use release_glz::authorization::{
     GithubOidcClaims, GithubOidcVerifier, JwkSet, OidcAudience, OidcExpectation, RsaJwk,
     VerifiedGithubOidc, verify_github_oidc_token,
 };
+use release_glz_test_support::http::{FakeServer, Response};
 use release_glz_test_support::oidc;
-use std::sync::{Arc, Mutex};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpListener;
 
 const NOW: i64 = 1_800_000_000;
 type ClaimsMutation = Box<dyn Fn(&mut GithubOidcClaims)>;
@@ -216,7 +214,7 @@ fn signed_compact_token_is_verified_before_github_claims_are_returned() {
 #[tokio::test]
 async fn actions_token_discovery_and_jwks_are_fetched_under_fixed_policy() {
     let (token, key) = sign_claims(&claims());
-    let server = OidcServer::start(token, key).await;
+    let server = OidcServer::start(token, key);
     let verifier =
         GithubOidcVerifier::new(&format!("{}/discovery", server.base_url()), true).unwrap();
     let verified = verifier
@@ -241,69 +239,55 @@ async fn actions_token_discovery_and_jwks_are_fetched_under_fixed_policy() {
 }
 
 struct OidcServer {
-    address: std::net::SocketAddr,
-    requests: Arc<Mutex<Vec<String>>>,
+    server: FakeServer,
 }
 
 impl OidcServer {
-    async fn start(token: String, key: RsaJwk) -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let requests = Arc::new(Mutex::new(Vec::new()));
-        let captured = Arc::clone(&requests);
-        tokio::spawn(async move {
-            for _ in 0..3 {
-                let (mut stream, _) = listener.accept().await.unwrap();
-                let mut request = Vec::new();
-                let mut buffer = [0_u8; 4096];
-                loop {
-                    let read = stream.read(&mut buffer).await.unwrap();
-                    request.extend_from_slice(&buffer[..read]);
-                    if read == 0 || request.windows(4).any(|window| window == b"\r\n\r\n") {
-                        break;
-                    }
-                }
-                let request = String::from_utf8_lossy(&request).into_owned();
-                let request_lower = request.to_ascii_lowercase();
-                captured.lock().unwrap().push(request_lower);
-                let path = request.split_whitespace().nth(1).unwrap();
-                let body = if path.starts_with("/token?") {
-                    serde_json::json!({"value": token}).to_string()
-                } else if path == "/discovery" {
-                    serde_json::json!({
-                        "issuer": "https://token.actions.githubusercontent.com",
-                        "jwks_uri": format!("http://{address}/jwks")
-                    })
-                    .to_string()
-                } else {
-                    serde_json::json!({
-                        "keys": [{
-                            "kty": key.key_type,
-                            "kid": key.key_id,
-                            "alg": key.algorithm,
-                            "use": key.usage,
-                            "n": key.modulus,
-                            "e": key.exponent
-                        }]
-                    })
-                    .to_string()
-                };
-                let response = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                    body.len()
-                );
-                stream.write_all(response.as_bytes()).await.unwrap();
-            }
+    fn start(token: String, key: RsaJwk) -> Self {
+        let server = FakeServer::start();
+        let address = server.address();
+        server.route(move |request| {
+            let path = request.target.as_str();
+            let body = if path.starts_with("/token?") {
+                serde_json::json!({"value": token}).to_string()
+            } else if path == "/discovery" {
+                serde_json::json!({
+                    "issuer": "https://token.actions.githubusercontent.com",
+                    "jwks_uri": format!("http://{address}/jwks")
+                })
+                .to_string()
+            } else {
+                serde_json::json!({
+                    "keys": [{
+                        "kty": key.key_type,
+                        "kid": key.key_id,
+                        "alg": key.algorithm,
+                        "use": key.usage,
+                        "n": key.modulus,
+                        "e": key.exponent
+                    }]
+                })
+                .to_string()
+            };
+            Response::new(200)
+                .header("Content-Type", "application/json")
+                .body(body)
+                .into()
         });
-        Self { address, requests }
+        Self { server }
     }
 
     fn base_url(&self) -> String {
-        format!("http://{}", self.address)
+        self.server.base_url()
     }
 
+    /// Each request as it arrived, in lowercase.
     fn requests(&self) -> Vec<String> {
-        self.requests.lock().unwrap().clone()
+        self.server
+            .requests()
+            .iter()
+            .map(|request| request.text().to_ascii_lowercase())
+            .collect()
     }
 }
 

@@ -1,5 +1,4 @@
-use std::collections::{BTreeMap, VecDeque};
-use std::sync::{Arc, Mutex};
+use std::collections::BTreeMap;
 
 use base64::Engine as _;
 use release_glz::forge::{
@@ -8,10 +7,9 @@ use release_glz::forge::{
 };
 use release_glz::git::Commit;
 use release_glz::model::{ApiDiff, Baseline, BaselineSource, Bump, ReleasePlan, ReleaseState};
+use release_glz_test_support::http::{self, Reply, Response};
 use semver::Version;
 use sha2::Digest;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpListener;
 
 #[test]
 fn github_repository_identity_cannot_change_api_paths_or_origins() {
@@ -105,7 +103,7 @@ async fn github_release_is_observed_as_immutable_candidate_state_and_finalized_b
             r#"{"id":42,"html_url":"https://github.test/o/r/releases/42","tag_name":"v1.2.3","target_commitish":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","body":"release-glz-candidate-digest: dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","draft":false}"#,
         ),
     ];
-    let server = FakeServer::start(responses).await;
+    let server = FakeServer::start(responses);
     let client = GitHubClient::new(
         GitHubRepository::parse("o/r").unwrap(),
         server.base_url(),
@@ -140,8 +138,7 @@ async fn draft_creation_binds_target_and_candidate_digest() {
     let server = FakeServer::start(vec![response(
         201,
         r#"{"id":9,"html_url":"https://github.test/o/r/releases/9","tag_name":"v2.0.0","target_commitish":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","body":"release-glz-candidate-digest: cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","draft":true}"#,
-    )])
-    .await;
+    )]);
     let client = GitHubClient::new(
         GitHubRepository::parse("o/r").unwrap(),
         server.base_url(),
@@ -168,7 +165,7 @@ async fn release_asset_upload_is_content_addressed_and_never_uses_clobber() {
         r#"{{"id":77,"name":"sbom.cdx.json","state":"uploaded","content_type":"application/vnd.cyclonedx+json","size":{},"digest":"sha256:{digest}"}}"#,
         bytes.len()
     );
-    let server = FakeServer::start(vec![response(201, &response_body)]).await;
+    let server = FakeServer::start(vec![response(201, &response_body)]);
     let client = GitHubClient::new(
         GitHubRepository::parse("o/r").unwrap(),
         server.base_url(),
@@ -222,8 +219,7 @@ async fn annotated_tag_is_observed_by_peeling_the_github_tag_object() {
             200,
             r#"{"tag":"v1.2.3","object":{"type":"commit","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}"#,
         ),
-    ])
-    .await;
+    ]);
     let client = GitHubClient::new(
         GitHubRepository::parse("o/r").unwrap(),
         server.base_url(),
@@ -251,8 +247,7 @@ async fn annotated_tag_creation_uses_git_data_api_without_remote_credentials() {
             201,
             r#"{"ref":"refs/tags/v2.0.0","object":{"type":"tag","sha":"tag-object"}}"#,
         ),
-    ])
-    .await;
+    ]);
     let client = GitHubClient::new(
         GitHubRepository::parse("o/r").unwrap(),
         server.base_url(),
@@ -287,7 +282,7 @@ async fn merged_release_pr_evidence_is_bound_to_the_candidate_merge_commit() {
     responses.push(response(200, &pull(&merged, &"e".repeat(64))));
     responses.extend(generated_commit_on(&release_files(), &"0".repeat(40)));
     responses.push(response(200, &pull(&"b".repeat(40), &"1".repeat(64))));
-    let server = FakeServer::start(responses).await;
+    let server = FakeServer::start(responses);
     let client = GitHubClient::new(
         GitHubRepository::parse("o/r").unwrap(),
         server.base_url(),
@@ -338,16 +333,12 @@ fn managed_pull(head: &str, merge_sha: Option<&str>, intent: &str) -> serde_json
 }
 
 /// The responses that show `files` as a server-verified commit on `parent` that records their digest, in the order the client reads them.
-fn generated_commit_on(files: &BTreeMap<String, Vec<u8>>, parent: &str) -> Vec<Vec<u8>> {
+fn generated_commit_on(files: &BTreeMap<String, Vec<u8>>, parent: &str) -> Vec<Reply> {
     recorded_commit_on(files, &files_digest(files), parent)
 }
 
 /// The responses for a server-verified commit on `parent` that modified `files` and whose message records `digest`, then one blob response for each file.
-fn recorded_commit_on(
-    files: &BTreeMap<String, Vec<u8>>,
-    digest: &str,
-    parent: &str,
-) -> Vec<Vec<u8>> {
+fn recorded_commit_on(files: &BTreeMap<String, Vec<u8>>, digest: &str, parent: &str) -> Vec<Reply> {
     let changed = files
         .keys()
         .enumerate()
@@ -444,7 +435,7 @@ async fn a_merged_release_pr_counts_only_from_this_repository_into_its_default_b
         list(&valid),
     ];
     responses.extend(generated_commit_on(&release_files(), &"0".repeat(40)));
-    let server = FakeServer::start(responses).await;
+    let server = FakeServer::start(responses);
     let client = test_client(&server, Some("token"));
     let lookup = || client.merged_release_pr(&merged, "widget", "1.2.3", "release-glz/");
 
@@ -477,7 +468,7 @@ async fn only_the_merged_release_pr_for_the_planned_version_marks_a_commit_as_pe
     let list = |pull: &serde_json::Value| response(200, &serde_json::json!([pull]).to_string());
     let mut responses = vec![list(&other_version), list(&fork), list(&unbound)];
     responses.extend(generated_commit_on(&release_files(), &"0".repeat(40)));
-    let server = FakeServer::start(responses).await;
+    let server = FakeServer::start(responses);
     let client = test_client(&server, Some("token"));
     let lookup = || client.merged_release_pr(&merged, "widget", "1.2.3", "release-glz/");
 
@@ -497,8 +488,7 @@ async fn intent_never_binds_to_a_release_pr_from_a_fork() {
     let head = "c".repeat(40);
     let mut fork = managed_pull(&head, None, "pending");
     fork["head"]["repo"]["full_name"] = "fork/r".into();
-    let server =
-        FakeServer::start(vec![response(200, &serde_json::json!([fork]).to_string())]).await;
+    let server = FakeServer::start(vec![response(200, &serde_json::json!([fork]).to_string())]);
     let client = test_client(&server, Some("token"));
 
     let binding = client
@@ -513,8 +503,7 @@ async fn intent_never_binds_to_a_release_pr_from_a_fork() {
 async fn a_candidate_whose_head_the_release_pr_left_binds_nothing() {
     let candidate_head = "c".repeat(40);
     let moved = managed_pull(&"e".repeat(40), None, "pending");
-    let server =
-        FakeServer::start(vec![response(200, &serde_json::json!([moved]).to_string())]).await;
+    let server = FakeServer::start(vec![response(200, &serde_json::json!([moved]).to_string())]);
     let client = test_client(&server, Some("token"));
 
     let binding = client
@@ -557,8 +546,7 @@ async fn a_release_pr_at_the_candidate_head_must_describe_the_candidate_release(
             marker_field("branch", "release-glz/gadget"),
         ),
     ] {
-        let server =
-            FakeServer::start(vec![response(200, &serde_json::json!([pull]).to_string())]).await;
+        let server = FakeServer::start(vec![response(200, &serde_json::json!([pull]).to_string())]);
         let client = test_client(&server, Some("token"));
         let error = client
             .bind_release_pr_intent(&head, "widget", "1.2.3", "release-glz/", &"1".repeat(64))
@@ -597,7 +585,7 @@ async fn an_intent_binds_only_to_a_verified_head_that_carries_no_other_intent() 
     responses.extend(generated_commit_on(&release_files(), &"0".repeat(40)));
     responses.push(list(&intent));
     responses.extend(generated_commit_on(&release_files(), &"0".repeat(40)));
-    let server = FakeServer::start(responses).await;
+    let server = FakeServer::start(responses);
     let client = test_client(&server, Some("token"));
     let bind = || client.bind_release_pr_intent(&head, "widget", "1.2.3", "release-glz/", &intent);
 
@@ -638,7 +626,7 @@ async fn a_binding_writes_nothing_over_a_release_pr_that_changed_after_it_was_re
         let mut responses = vec![response(200, &serde_json::json!([listed]).to_string())];
         responses.extend(generated_commit_on(&release_files(), &"0".repeat(40)));
         responses.push(response(200, &current.to_string()));
-        let server = FakeServer::start(responses).await;
+        let server = FakeServer::start(responses);
         let result = test_client(&server, Some("token"))
             .bind_release_pr_intent(&head, "widget", "1.2.3", "release-glz/", &intent)
             .await;
@@ -717,7 +705,7 @@ async fn candidate_intent_binds_only_to_the_verified_managed_pr_head() {
     responses.extend(generated_commit_on(&release_files(), &"0".repeat(40)));
     responses.push(response(200, current));
     responses.push(response(200, &bound));
-    let server = FakeServer::start(responses).await;
+    let server = FakeServer::start(responses);
     let client = GitHubClient::new(
         GitHubRepository::parse("o/r").unwrap(),
         server.base_url(),
@@ -786,7 +774,7 @@ async fn managed_release_pr_searches_every_bounded_open_pr_page() {
         200,
         &pull_value(101, &bound_body, "release-glz/widget", &head).to_string(),
     ));
-    let server = FakeServer::start(responses).await;
+    let server = FakeServer::start(responses);
     let client = test_client(&server, Some("token"));
 
     let binding = client
@@ -823,8 +811,7 @@ async fn rolling_release_pr_is_created_from_a_server_side_verified_commit() {
         response(201, "{}"),
         response(200, &graph),
         response(201, &pull),
-    ])
-    .await;
+    ]);
     let client = GitHubClient::new(
         GitHubRepository::parse("o/r").unwrap(),
         server.base_url(),
@@ -917,7 +904,7 @@ async fn rolling_release_pr_is_a_no_op_when_it_already_shows_the_plan_on_the_tip
         response(200, &format!(r#"{{"object":{{"sha":"{head}"}}}}"#)),
     ];
     responses.extend(generated_commit_on(&files, &tip));
-    let server = FakeServer::start(responses).await;
+    let server = FakeServer::start(responses);
     let client = test_client(&server, Some("token"));
 
     let update = client
@@ -981,7 +968,7 @@ async fn rolling_release_pr_ignores_pull_requests_that_only_copy_its_marker() {
         response(200, &format!(r#"{{"object":{{"sha":"{head}"}}}}"#)),
     ];
     responses.extend(generated_commit_on(&files, &tip));
-    let server = FakeServer::start(responses).await;
+    let server = FakeServer::start(responses);
     let client = test_client(&server, Some("token"));
 
     let update = client
@@ -1043,7 +1030,7 @@ async fn rolling_release_pr_is_rebuilt_on_the_tip_when_the_tip_or_the_plan_moved
             200,
             &pull_value(7, &body, "release-glz/widget", &rebuilt).to_string(),
         ));
-        let server = FakeServer::start(responses).await;
+        let server = FakeServer::start(responses);
         let client = test_client(&server, Some("token"));
 
         let update = client
@@ -1119,7 +1106,7 @@ async fn a_failed_compare_and_swap_leaves_the_release_branch_and_pr_alone() {
         200,
         r#"{"data":null,"errors":[{"message":"Expected branch to point to another commit"}]}"#,
     ));
-    let server = FakeServer::start(responses).await;
+    let server = FakeServer::start(responses);
     let client = test_client(&server, Some("token"));
 
     let error = client
@@ -1167,7 +1154,7 @@ async fn a_repaired_marker_keeps_an_intent_only_for_the_same_head() {
             200,
             &pull_value(7, &body, "release-glz/widget", &actual_head).to_string(),
         ));
-        let server = FakeServer::start(responses).await;
+        let server = FakeServer::start(responses);
         test_client(&server, Some("token"))
             .upsert_release_pr(
                 &release_plan(),
@@ -1227,7 +1214,7 @@ async fn rolling_release_pr_repairs_a_marker_after_a_verified_commit_race() {
         200,
         &pull_value(7, &repaired_body, "release-glz/widget", &actual_head).to_string(),
     ));
-    let server = FakeServer::start(responses).await;
+    let server = FakeServer::start(responses);
     let client = test_client(&server, Some("token"));
 
     let update = client
@@ -1301,8 +1288,7 @@ async fn human_modified_rolling_branch_is_closed_without_overwrite_and_recreated
         response(201, "{}"),
         response(200, &graph),
         response(201, &created),
-    ])
-    .await;
+    ]);
     let client = test_client(&server, Some("token"));
 
     let update = client
@@ -1336,7 +1322,7 @@ async fn human_modified_rolling_branch_is_closed_without_overwrite_and_recreated
 }
 
 /// Verified single-parent commits on `parent` that record the digest of [`release_files`] but changed something else, with the responses that reading each one takes.
-fn impostor_commits(parent: &str) -> Vec<(&'static str, Vec<Vec<u8>>)> {
+fn impostor_commits(parent: &str) -> Vec<(&'static str, Vec<Reply>)> {
     let files = release_files();
     let digest = files_digest(&files);
     let mut amended = files.clone();
@@ -1409,7 +1395,7 @@ async fn a_verified_commit_with_the_digest_line_counts_only_when_its_changes_mat
         let mut responses = vec![response(200, &serde_json::json!([pull]).to_string())];
         let reads = commit.len();
         responses.extend(commit);
-        let server = FakeServer::start(responses).await;
+        let server = FakeServer::start(responses);
 
         let found = test_client(&server, Some("token"))
             .merged_release_pr(&merged, "widget", "1.2.3", "release-glz/")
@@ -1471,7 +1457,7 @@ async fn an_amended_commit_that_keeps_the_digest_line_is_closed_as_human_work() 
             &pull_value(8, "new managed pull", "release-glz/widget-2", &generated).to_string(),
         ),
     ]);
-    let server = FakeServer::start(responses).await;
+    let server = FakeServer::start(responses);
 
     let update = test_client(&server, Some("token"))
         .upsert_release_pr(
@@ -1506,7 +1492,7 @@ async fn an_amended_commit_neither_binds_an_intent_nor_loses_its_branch() {
         &serde_json::json!([managed_pull(&head, None, "pending")]).to_string(),
     )];
     responses.extend(commit.clone());
-    let server = FakeServer::start(responses).await;
+    let server = FakeServer::start(responses);
     let error = test_client(&server, Some("token"))
         .bind_release_pr_intent(&head, "widget", "1.2.3", "release-glz/", &"1".repeat(64))
         .await
@@ -1527,7 +1513,7 @@ async fn an_amended_commit_neither_binds_an_intent_nor_loses_its_branch() {
         response(200, &format!(r#"{{"object":{{"sha":"{head}"}}}}"#)),
     ];
     responses.extend(commit);
-    let server = FakeServer::start(responses).await;
+    let server = FakeServer::start(responses);
     let closed = test_client(&server, Some("token"))
         .close_managed_release_pr("widget", "release-glz/", &default_branch(&"a".repeat(40)))
         .await
@@ -1584,8 +1570,7 @@ async fn a_blob_that_cannot_be_read_fails_the_check_instead_of_closing_the_relea
             response(200, &format!(r#"{{"object":{{"sha":"{head}"}}}}"#)),
             commit.clone(),
             blob,
-        ])
-        .await;
+        ]);
 
         let result = test_client(&server, Some("token"))
             .upsert_release_pr(
@@ -1629,7 +1614,7 @@ async fn a_release_commit_stays_within_the_bounds_that_recognize_it_on_the_next_
             "Release PR file `CHANGELOG.md` exceeds 2 MiB",
         ),
     ] {
-        let server = FakeServer::start(vec![]).await;
+        let server = FakeServer::start(vec![]);
         let error = test_client(&server, Some("token"))
             .upsert_release_pr(
                 &release_plan(),
@@ -1663,8 +1648,7 @@ async fn a_release_commit_may_write_a_file_of_exactly_2_mib() {
             201,
             &pull_value(7, "managed", "release-glz/widget", &head).to_string(),
         ),
-    ])
-    .await;
+    ]);
 
     let update = test_client(&server, Some("token"))
         .upsert_release_pr(
@@ -1697,7 +1681,7 @@ async fn a_generated_file_counts_up_to_exactly_2_mib() {
             .into();
         let mut responses = vec![response(200, &serde_json::json!([pull]).to_string())];
         responses.extend(generated_commit_on(&files, &"0".repeat(40)));
-        let server = FakeServer::start(responses).await;
+        let server = FakeServer::start(responses);
 
         let found = test_client(&server, Some("token"))
             .merged_release_pr(&merged, "widget", "1.2.3", "release-glz/")
@@ -1731,7 +1715,7 @@ async fn a_release_commit_that_writes_one_file_is_recognized_on_the_next_run() {
         response(200, &format!(r#"{{"object":{{"sha":"{head}"}}}}"#)),
     ];
     responses.extend(generated_commit_on(&files, &tip));
-    let server = FakeServer::start(responses).await;
+    let server = FakeServer::start(responses);
 
     let update = test_client(&server, Some("token"))
         .upsert_release_pr(
@@ -1780,8 +1764,7 @@ async fn commit_changes_prefer_merged_pr_metadata_and_deduplicate_pr_numbers() {
         response(200, &merged),
         response(200, &unmerged),
         response(200, "[]"),
-    ])
-    .await;
+    ]);
     let client = test_client(&server, Some("token"));
     let commits = [
         commit("a", "feat: fallback one"),
@@ -1806,7 +1789,7 @@ async fn change_attribution_looks_up_at_most_a_fixed_number_of_commits() {
         .map(|index| commit(&format!("{index:040x}"), &format!("fix: change {index}")))
         .collect();
 
-    let silent = FakeServer::start(vec![]).await;
+    let silent = FakeServer::start(vec![]);
     let changes = test_client(&silent, Some("token"))
         .changes_for_commits(&commits)
         .await
@@ -1821,8 +1804,7 @@ async fn change_attribution_looks_up_at_most_a_fixed_number_of_commits() {
         (0..MAX_ATTRIBUTED_COMMITS)
             .map(|_| response(200, "[]"))
             .collect(),
-    )
-    .await;
+    );
     let changes = test_client(&server, Some("token"))
         .changes_for_commits(at_bound)
         .await
@@ -1842,8 +1824,7 @@ async fn a_repository_spelled_differently_from_github_fails_before_any_write() {
                 "default_branch": "main"
             })
             .to_string(),
-        )])
-        .await;
+        )]);
         let error = test_client(&server, Some("token"))
             .default_branch()
             .await
@@ -1858,8 +1839,7 @@ async fn a_repository_spelled_differently_from_github_fails_before_any_write() {
 async fn commit_change_lookup_errors_are_not_reported_as_commit_fallbacks() {
     let unavailable =
         response_with_headers(503, r#"{"message":"unavailable"}"#, &["Retry-After: 0"]);
-    let server =
-        FakeServer::start(vec![unavailable.clone(), unavailable.clone(), unavailable]).await;
+    let server = FakeServer::start(vec![unavailable.clone(), unavailable.clone(), unavailable]);
     let client = test_client(&server, Some("token"));
 
     let error = client
@@ -1893,7 +1873,7 @@ async fn no_release_deletes_only_the_unchanged_verified_branch_and_then_closes_i
         r#"{"data":{"updateRefs":{"clientMutationId":null}},"errors":[]}"#,
     ));
     responses.push(response(200, "{}"));
-    let server = FakeServer::start(responses).await;
+    let server = FakeServer::start(responses);
     let client = test_client(&server, Some("token"));
 
     assert!(
@@ -1932,8 +1912,7 @@ async fn no_release_leaves_a_managed_branch_that_moved_before_or_during_the_clos
             200,
             &format!(r#"{{"object":{{"sha":"{}"}}}}"#, "e".repeat(40)),
         ),
-    ])
-    .await;
+    ]);
     assert!(
         !test_client(&moved, Some("token"))
             .close_managed_release_pr("widget", "release-glz/", &default_branch(&"a".repeat(40)))
@@ -1951,7 +1930,7 @@ async fn no_release_leaves_a_managed_branch_that_moved_before_or_during_the_clos
         200,
         r#"{"data":null,"errors":[{"message":"Expected branch to point to another commit"}]}"#,
     ));
-    let raced = FakeServer::start(responses).await;
+    let raced = FakeServer::start(responses);
     let error = test_client(&raced, Some("token"))
         .close_managed_release_pr("widget", "release-glz/", &default_branch(&"a".repeat(40)))
         .await
@@ -1979,8 +1958,7 @@ async fn doctor_observes_environment_reviewers_plan_and_branch_protection() {
             r#"{"protection_rules":[{"type":"required_reviewers","prevent_self_review":true,"reviewers":[{"type":"User","reviewer":{"login":"reviewer"}}]},{"type":"branch_policy"}],"deployment_branch_policy":{"protected_branches":true,"custom_branch_policies":false}}"#,
         ),
         response(200, r#"{"name":"main","protected":true}"#),
-    ])
-    .await;
+    ]);
     let client = GitHubClient::new(
         GitHubRepository::parse("o/r").unwrap(),
         server.base_url(),
@@ -2018,8 +1996,7 @@ async fn actions_artifact_is_bound_to_the_oidc_run_source_and_server_digest() {
         "completed",
         Some("success"),
     );
-    let server =
-        FakeServer::start(vec![response(200, &body), response(200, &run.to_string())]).await;
+    let server = FakeServer::start(vec![response(200, &body), response(200, &run.to_string())]);
     let client = GitHubClient::new(
         GitHubRepository::parse("o/r").unwrap(),
         server.base_url(),
@@ -2106,8 +2083,7 @@ async fn actions_artifact_run_requires_the_managed_successful_repository_source(
         let server = FakeServer::start(vec![
             response(200, &artifact.to_string()),
             response(200, &invalid.to_string()),
-        ])
-        .await;
+        ]);
         let client = test_client(&server, Some("token"));
         let error = client
             .verify_actions_artifact(91, &digest, "42", &source, CandidateRun::Completed)
@@ -2129,8 +2105,7 @@ async fn a_candidate_from_the_current_run_requires_that_run_to_be_in_progress() 
     let server = FakeServer::start(vec![
         response(200, &artifact.to_string()),
         response(200, &running.to_string()),
-    ])
-    .await;
+    ]);
     let evidence = test_client(&server, Some("token"))
         .verify_actions_artifact(91, &digest, "42", &source, CandidateRun::Current)
         .await
@@ -2156,8 +2131,7 @@ async fn a_candidate_from_the_current_run_requires_that_run_to_be_in_progress() 
         let server = FakeServer::start(vec![
             response(200, &artifact.to_string()),
             response(200, &invalid.to_string()),
-        ])
-        .await;
+        ]);
         let error = test_client(&server, Some("token"))
             .verify_actions_artifact(91, &digest, "42", &source, CandidateRun::Current)
             .await
@@ -2203,8 +2177,7 @@ async fn expired_or_mismatched_actions_artifact_is_not_approval_evidence() {
             r#"{{"id":91,"name":"release-glz-candidate-42","size_in_bytes":4096,"expired":true,"digest":"sha256:{}","workflow_run":{{"id":42,"head_sha":"{source}"}}}}"#,
             "d".repeat(64)
         ),
-    )])
-    .await;
+    )]);
     let client = GitHubClient::new(
         GitHubRepository::parse("o/r").unwrap(),
         server.base_url(),
@@ -2224,7 +2197,7 @@ async fn expired_or_mismatched_actions_artifact_is_not_approval_evidence() {
 async fn actions_artifact_validation_checks_every_local_and_server_identity_field() {
     let source = "a".repeat(40);
     let digest = "d".repeat(64);
-    let empty_server = FakeServer::start(vec![]).await;
+    let empty_server = FakeServer::start(vec![]);
     let without_token = test_client(&empty_server, None);
     let error = without_token
         .verify_actions_artifact(91, &digest, "42", &source, CandidateRun::Completed)
@@ -2289,8 +2262,7 @@ async fn actions_artifact_validation_checks_every_local_and_server_identity_fiel
             .iter()
             .map(|body| response(200, &body.to_string()))
             .collect(),
-    )
-    .await;
+    );
     let client = test_client(&server, Some("token"));
     for index in 0..mismatches.len() {
         let error = client
@@ -2304,7 +2276,7 @@ async fn actions_artifact_validation_checks_every_local_and_server_identity_fiel
 
 #[tokio::test]
 async fn environment_audit_reports_empty_and_unprotected_configurations_exactly() {
-    let empty_server = FakeServer::start(vec![]).await;
+    let empty_server = FakeServer::start(vec![]);
     let client = test_client(&empty_server, Some("token"));
     let error = client.environment_audit("").await.unwrap_err().to_string();
     assert!(error.contains("must not be empty"), "{error}");
@@ -2312,8 +2284,7 @@ async fn environment_audit_reports_empty_and_unprotected_configurations_exactly(
     let missing_default = FakeServer::start(vec![response(
         200,
         r#"{"private":false,"default_branch":"","plan":null}"#,
-    )])
-    .await;
+    )]);
     let error = test_client(&missing_default, Some("token"))
         .environment_audit("release")
         .await
@@ -2331,8 +2302,7 @@ async fn environment_audit_reports_empty_and_unprotected_configurations_exactly(
             r#"{"protection_rules":[{"type":"wait_timer"}],"deployment_branch_policy":{"protected_branches":false,"custom_branch_policies":true}}"#,
         ),
         response(200, r#"{"name":"develop","protected":false}"#),
-    ])
-    .await;
+    ]);
     let audit = test_client(&unprotected, Some("token"))
         .environment_audit("release candidate")
         .await
@@ -2369,8 +2339,7 @@ async fn tag_observation_distinguishes_missing_lightweight_and_invalid_objects()
             200,
             r#"{"ref":"refs/tags/v3","object":{"type":"tree","sha":"tree-object"}}"#,
         ),
-    ])
-    .await;
+    ]);
     let client = test_client(&server, Some("token"));
     assert!(client.tag_state("missing").await.unwrap().is_none());
     let lightweight = client.tag_state("v1").await.unwrap().unwrap();
@@ -2402,7 +2371,7 @@ async fn annotated_tag_creation_rejects_every_unexpected_server_identity() {
             serde_json::json!({"sha":"tag", "object":{"type":"commit", "sha":"b".repeat(40)}}),
         ),
     ] {
-        let server = FakeServer::start(vec![response(201, &body.to_string())]).await;
+        let server = FakeServer::start(vec![response(201, &body.to_string())]);
         let error = test_client(&server, Some("token"))
             .create_annotated_tag("v1.2.3", &expected, "release")
             .await
@@ -2551,7 +2520,7 @@ async fn release_asset_response_must_match_every_uploaded_byte_identity() {
         body[field] = value;
         bodies.push(response(201, &body.to_string()));
     }
-    let server = FakeServer::start(bodies).await;
+    let server = FakeServer::start(bodies);
     let client = test_client(&server, Some("token"));
     let release = upload_release(
         &format!(
@@ -2597,8 +2566,7 @@ async fn only_an_unfinished_asset_of_a_draft_is_deleted() {
     let server = FakeServer::start(vec![
         response(204, ""),
         response(404, r#"{"message":"Not Found"}"#),
-    ])
-    .await;
+    ]);
     let client = test_client(&server, Some("token"));
     client
         .delete_unfinished_release_asset(&unfinished, "evidence.json")
@@ -2619,7 +2587,7 @@ async fn only_an_unfinished_asset_of_a_draft_is_deleted() {
         "{requests:?}"
     );
 
-    let untouched = FakeServer::start(vec![response(204, "")]).await;
+    let untouched = FakeServer::start(vec![]);
     let client = test_client(&untouched, Some("token"));
     for (case, refused, name, expected) in [
         (
@@ -2683,8 +2651,7 @@ async fn github_get_retries_retry_after_without_reposting_and_bounds_json_bodies
             200,
             r#"[{"id":42,"html_url":"https://github.test/o/r/releases/42","tag_name":"v1.2.3","target_commitish":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","draft":true}]"#,
         ),
-    ])
-    .await;
+    ]);
     let client = GitHubClient::new(
         GitHubRepository::parse("o/r").unwrap(),
         server.base_url(),
@@ -2712,7 +2679,7 @@ async fn github_get_retries_retry_after_without_reposting_and_bounds_json_bodies
         "a".repeat(40),
         "x".repeat(5 * 1024 * 1024)
     );
-    let oversized_server = FakeServer::start(vec![response(200, &oversized)]).await;
+    let oversized_server = FakeServer::start(vec![response(200, &oversized)]);
     let client = GitHubClient::new(
         GitHubRepository::parse("o/r").unwrap(),
         oversized_server.base_url(),
@@ -2749,7 +2716,7 @@ fn github_reads_double_their_wait_and_stop_after_three_attempts() {
 async fn a_github_error_body_reaches_the_message_up_to_64_kib() {
     for (length, kept) in [(64 * 1024, true), (64 * 1024 + 1, false)] {
         let body = "x".repeat(length);
-        let server = FakeServer::start(vec![response(403, &body)]).await;
+        let server = FakeServer::start(vec![response(403, &body)]);
         let error = test_client(&server, Some("token"))
             .release_details_for_tag("v1.2.3")
             .await
@@ -2767,13 +2734,12 @@ async fn a_github_error_body_reaches_the_message_up_to_64_kib() {
 #[tokio::test]
 async fn github_get_retries_a_transport_failure_without_reposting() {
     let server = FakeServer::start(vec![
-        Vec::new(),
+        Reply::Close,
         response(
             200,
             r#"[{"id":42,"html_url":"https://github.test/o/r/releases/42","tag_name":"v1.2.3","target_commitish":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","draft":true}]"#,
         ),
-    ])
-    .await;
+    ]);
     let client = test_client(&server, Some("token"));
 
     assert!(
@@ -2811,8 +2777,7 @@ async fn a_release_lookup_pages_through_the_list_and_refuses_an_ambiguous_tag() 
     )
     .to_string();
     let last_page = serde_json::json!([release(42, "v1.2.3", true)]).to_string();
-    let server =
-        FakeServer::start(vec![response(200, &full_page), response(200, &last_page)]).await;
+    let server = FakeServer::start(vec![response(200, &full_page), response(200, &last_page)]);
     let found = test_client(&server, Some("token"))
         .release_details_for_tag("v1.2.3")
         .await
@@ -2825,7 +2790,7 @@ async fn a_release_lookup_pages_through_the_list_and_refuses_an_ambiguous_tag() 
     assert!(requests[1].starts_with("GET /repos/o/r/releases?per_page=100&page=2 "));
 
     let other_tags = serde_json::json!([release(41, "v1.2.2", false)]).to_string();
-    let server = FakeServer::start(vec![response(200, &other_tags)]).await;
+    let server = FakeServer::start(vec![response(200, &other_tags)]);
     assert!(
         test_client(&server, Some("token"))
             .release_details_for_tag("v1.2.3")
@@ -2836,7 +2801,7 @@ async fn a_release_lookup_pages_through_the_list_and_refuses_an_ambiguous_tag() 
 
     let two_drafts =
         serde_json::json!([release(42, "v1.2.3", true), release(43, "v1.2.3", true)]).to_string();
-    let server = FakeServer::start(vec![response(200, &two_drafts)]).await;
+    let server = FakeServer::start(vec![response(200, &two_drafts)]);
     let error = test_client(&server, Some("token"))
         .release_details_for_tag("v1.2.3")
         .await
@@ -3025,87 +2990,47 @@ fn commit(sha: &str, subject: &str) -> Commit {
 }
 
 struct FakeServer {
-    address: std::net::SocketAddr,
-    requests: Arc<Mutex<Vec<String>>>,
+    server: http::FakeServer,
 }
 
 impl FakeServer {
-    async fn start(responses: Vec<Vec<u8>>) -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let requests = Arc::new(Mutex::new(Vec::new()));
-        let captured = Arc::clone(&requests);
-        tokio::spawn(async move {
-            let mut responses: VecDeque<_> = responses.into();
-            while let Some(response) = responses.pop_front() {
-                let (mut stream, _) = listener.accept().await.unwrap();
-                let mut bytes = Vec::new();
-                let mut buffer = [0_u8; 4096];
-                loop {
-                    let count = stream.read(&mut buffer).await.unwrap();
-                    if count == 0 {
-                        break;
-                    }
-                    bytes.extend_from_slice(&buffer[..count]);
-                    if let Some(header_end) =
-                        bytes.windows(4).position(|window| window == b"\r\n\r\n")
-                    {
-                        let headers = String::from_utf8_lossy(&bytes[..header_end + 4]);
-                        let length = headers
-                            .lines()
-                            .find_map(|line| {
-                                line.to_ascii_lowercase()
-                                    .strip_prefix("content-length: ")
-                                    .and_then(|value| value.parse::<usize>().ok())
-                            })
-                            .unwrap_or(0);
-                        if bytes.len() >= header_end + 4 + length {
-                            break;
-                        }
-                    }
-                }
-                captured
-                    .lock()
-                    .unwrap()
-                    .push(String::from_utf8_lossy(&bytes).into_owned());
-                stream.write_all(&response).await.unwrap();
-            }
-        });
-        Self { address, requests }
+    fn start(replies: Vec<Reply>) -> Self {
+        let server = http::FakeServer::start();
+        server.script(replies);
+        Self { server }
     }
 
     fn base_url(&self) -> String {
-        format!("http://{}", self.address)
+        self.server.base_url()
     }
 
+    /// Each request as it arrived.
     fn requests(&self) -> Vec<String> {
-        self.requests.lock().unwrap().clone()
+        self.server
+            .requests()
+            .iter()
+            .map(http::Request::text)
+            .collect()
     }
 }
 
-fn response(status: u16, body: &str) -> Vec<u8> {
+fn response(status: u16, body: &str) -> Reply {
     response_with_headers(status, body, &[])
 }
 
-fn response_with_headers(status: u16, body: &str, headers: &[&str]) -> Vec<u8> {
-    let reason = match status {
-        200 => "OK",
-        201 => "Created",
-        204 => "No Content",
-        404 => "Not Found",
-        503 => "Service Unavailable",
-        _ => "Error",
-    };
-    let extra_headers = if headers.is_empty() {
-        String::new()
-    } else {
-        format!("{}\r\n", headers.join("\r\n"))
-    };
-    format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\n{extra_headers}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
-        body.len()
-    )
-    .into_bytes()
+/// A JSON response that also carries each `Name: value` line of `headers`.
+fn response_with_headers(status: u16, body: &str, headers: &[&str]) -> Reply {
+    headers
+        .iter()
+        .fold(
+            Response::new(status).header("Content-Type", "application/json"),
+            |response, line| {
+                let (name, value) = line.split_once(": ").unwrap();
+                response.header(name, value)
+            },
+        )
+        .body(body)
+        .into()
 }
 
 fn request_json(request: &str) -> serde_json::Value {
