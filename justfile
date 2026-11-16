@@ -20,6 +20,10 @@ check-staged: trust
 check-platform: trust
     mise x -- cargo xtask check --platform
 
+# The boundary of the proved core and the edges between the crates, outside the findings that `DEBT` holds.
+structure: trust
+    mise x -- cargo xtask structure
+
 # The platform checks on the Linux host over the current files, uncommitted edits included.
 check-linux:
     domyjob run linux --wait -- /bin/bash -lc 'export MISE_TRUSTED_CONFIG_PATHS="$PWD"; mise x -- cargo xtask check --platform'

@@ -115,6 +115,60 @@ pub fn remove_file(path: impl AsRef<Path>) -> Result<(), Failure> {
     raw::remove_file(path).map_err(|error| failed("deleting", path, &error))
 }
 
+/// Whether a symbolic link sits at `path`, which a path that names nothing never is.
+///
+/// # Errors
+///
+/// Returns a failure naming the path when it names something that can't be inspected.
+pub fn is_symlink(path: &Path) -> Result<bool, Failure> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) => Ok(metadata.file_type().is_symlink()),
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+            ) =>
+        {
+            Ok(false)
+        }
+        Err(error) => Err(failed("inspecting", path, &error)),
+    }
+}
+
+/// The files under `directory` and its subdirectories whose names end with `suffix`, in sorted order.
+///
+/// # Errors
+///
+/// Returns a failure naming the directory when it or a subdirectory can't be listed.
+pub fn files_with_suffix(directory: &Path, suffix: &str) -> Result<Vec<PathBuf>, Failure> {
+    let mut pending = vec![directory.to_path_buf()];
+    let mut files = Vec::new();
+    while let Some(listed) = pending.pop() {
+        let entries =
+            std::fs::read_dir(&listed).map_err(|error| failed("listing", &listed, &error))?;
+        for entry in entries {
+            let path = entry
+                .map_err(|error| failed("listing", &listed, &error))?
+                .path();
+            let kind = std::fs::symlink_metadata(&path)
+                .map_err(|error| failed("inspecting", &path, &error))?
+                .file_type();
+            if kind.is_dir() {
+                pending.push(path);
+            } else if kind.is_file()
+                && path
+                    .file_name()
+                    .and_then(std::ffi::OsStr::to_str)
+                    .is_some_and(|name| name.ends_with(suffix))
+            {
+                files.push(path);
+            }
+        }
+    }
+    files.sort();
+    Ok(files)
+}
+
 /// A new directory under `target/assurance` for the evidence of one `kind` of run.
 ///
 /// # Errors
@@ -145,7 +199,39 @@ fn run_stamp() -> Result<u128, Failure> {
 
 #[cfg(test)]
 mod tests {
-    use super::{create_dir, read_if_present, read_to_string, write};
+    use super::{
+        create_dir, create_dir_all, files_with_suffix, is_symlink, read_if_present, read_to_string,
+        write,
+    };
+
+    #[cfg(unix)]
+    #[test]
+    fn only_a_symbolic_link_reads_as_one() {
+        let root = tempfile::tempdir().unwrap();
+        write(root.path().join("file"), "").unwrap();
+        std::os::unix::fs::symlink(root.path().join("file"), root.path().join("link")).unwrap();
+        assert!(is_symlink(&root.path().join("link")).unwrap());
+        assert!(!is_symlink(&root.path().join("file")).unwrap());
+        assert!(!is_symlink(&root.path().join("missing")).unwrap());
+        assert!(!is_symlink(&root.path().join("file/below")).unwrap());
+    }
+
+    #[test]
+    fn a_listing_holds_every_matching_file_below_the_directory_in_order() {
+        let root = tempfile::tempdir().unwrap();
+        create_dir_all(root.path().join("b/c")).unwrap();
+        for name in ["b/c/deep.rs", "b/top.rs", "a.rs", "notes.md"] {
+            write(root.path().join(name), "").unwrap();
+        }
+        assert_eq!(
+            files_with_suffix(root.path(), ".rs").unwrap(),
+            ["a.rs", "b/c/deep.rs", "b/top.rs"].map(|name| root.path().join(name))
+        );
+        assert!(
+            files_with_suffix(&root.path().join("missing"), ".rs")
+                .is_err_and(|failure| failure.to_string().starts_with("listing "))
+        );
+    }
 
     #[test]
     fn a_failure_names_the_operation_and_the_path() {
