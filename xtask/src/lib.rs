@@ -12,5 +12,6 @@ pub mod proofs;
 pub mod quint;
 pub mod report;
 pub mod source_snapshot;
+pub mod structure;
 pub mod tool;
 pub mod trace;

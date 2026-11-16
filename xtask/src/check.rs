@@ -1,7 +1,8 @@
-//! The fast gate: formatting, lints, the tests, the documentation, the dependency policy, the Action, and the workflows.
+//! The fast gate: formatting, the crate structure, lints, the tests, the documentation, the dependency policy, the Action, and the workflows.
 
 use crate::container::Failure;
 use crate::report::Report;
+use crate::structure;
 use crate::tool::{Tool, capture, succeed};
 use std::io::ErrorKind;
 use std::path::Path;
@@ -305,6 +306,7 @@ fn everything(root: &Path) -> Result<(), Failure> {
     report.stage("rustfmt", || rustfmt(root, None));
     report.stage("taplo", || taplo(root, None));
     report.stage("typos", || typos(root, None));
+    report.stage("structure", || structure::run(root));
     report.stage("fuzz lockfile", || fuzz_lockfile(root));
     report.stage("clippy", || clippy(root));
     report.stage("tests", || tests(root));
@@ -328,6 +330,7 @@ fn staged(root: &Path) -> Result<(), Failure> {
         let all = paths.iter().map(String::as_str).collect::<Vec<_>>();
         typos(root, Some(&all))
     });
+    report.stage("structure", || structure::run(root));
     if paths.iter().any(|path| path.starts_with(WORKFLOWS)) {
         report.stage("workflows", || workflows(root));
     }

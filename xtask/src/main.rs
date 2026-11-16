@@ -7,13 +7,14 @@
 //! `cargo xtask lean` proves the Lean model of publication and its refinement of the core crate.
 //! `cargo xtask quint` model-checks the release protocol and writes the traces that the replay test reads.
 //! `cargo xtask trace` checks that `docs/assurance.md` maps every property to evidence that exists, and every check to a property.
+//! `cargo xtask structure` refuses a change that breaks the boundary of the proved core or a crate edge, outside the findings its `DEBT` list holds.
 
 use std::path::Path;
 use std::process::ExitCode;
 use xtask::container::Failure;
-use xtask::{check, commit_msg, lean, proof_mutants, proofs, quint, trace};
+use xtask::{check, commit_msg, lean, proof_mutants, proofs, quint, structure, trace};
 
-const USAGE: &str = "usage: cargo xtask check [--staged | --platform]|commit-msg MESSAGE|proofs|proof-mutants [--shard K --of N | merge RECEIPT... | check]|lean|quint|trace";
+const USAGE: &str = "usage: cargo xtask check [--staged | --platform]|commit-msg MESSAGE|proofs|proof-mutants [--shard K --of N | merge RECEIPT... | check]|lean|quint|trace|structure";
 
 fn run(root: &Path, arguments: &[&str]) -> Option<Result<(), Failure>> {
     Some(match *arguments {
@@ -37,6 +38,7 @@ fn run(root: &Path, arguments: &[&str]) -> Option<Result<(), Failure>> {
         ["lean"] => lean::run(root),
         ["quint"] => quint::run(root),
         ["trace"] => trace::run(root),
+        ["structure"] => structure::run(root),
         _ => return None,
     })
 }
