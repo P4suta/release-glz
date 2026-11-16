@@ -1,4 +1,4 @@
-//! The Candidate: the sealed publication unit of the v1 model.
+//! The Candidate: the sealed publication unit.
 //!
 //! A Candidate binds one committed source SHA, the exact package and documentation bytes built from it, the policy that applies, and the hook evidence collected along the way.
 //! `release` publishes these bytes; it never rebuilds them from a checkout.
@@ -128,7 +128,7 @@ pub struct SealedArtifact {
     pub sha256: String,
     /// Digest of the normalized contents.
     ///
-    /// Two archives that differ only in compression or timestamps share this digest, which is what makes republication detectable.
+    /// Two archives that differ only in compression or timestamps share this digest, so a republication is detectable.
     pub semantic_sha256: String,
     /// Size in bytes.
     pub size: u64,
@@ -483,7 +483,6 @@ impl Candidate {
     /// Build the evidence and hand back the archives it was validated from.
     ///
     /// One rehearsal needs evidence, an intent digest, and a sealed Candidate for the same bytes.
-    /// Passing the validated archives along means those archives are expanded once instead of once per step.
     pub(crate) fn built_in_evidence_and_artifacts(
         input: &CandidateInput,
     ) -> Result<(Vec<SidecarArtifact>, CandidateArtifacts)> {

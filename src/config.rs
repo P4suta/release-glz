@@ -573,8 +573,7 @@ notes_dir = \".release-glz/notes\"\n\n\
 
     /// Atomically replace the manifest on disk with rendered bytes.
     ///
-    /// The file is re-read first and the write is refused when it changed,
-    /// so a concurrent edit is never silently overwritten.
+    /// The file is re-read first and the write is refused when it changed, so a concurrent edit is never silently overwritten.
     pub fn replace_source(&mut self, rendered: String) -> Result<()> {
         let current = fs::read_to_string(&self.path)
             .with_context(|| format!("failed to re-read `{}`", self.path.display()))?;
@@ -1062,8 +1061,7 @@ pub fn validate_hook_config(hook: &HookConfig) -> Result<()> {
 
 /// Whether an environment name is one a hook may never receive.
 ///
-/// Covers registry and GitHub credentials plus the GitHub control files,
-/// which a hook could otherwise use to rewrite job outputs.
+/// Covers registry and GitHub credentials plus the GitHub control files, which a hook could otherwise use to rewrite job outputs.
 pub fn protected_hook_environment(name: &str, registry_credential_env: &str) -> bool {
     (!registry_credential_env.is_empty() && name == registry_credential_env)
         || matches!(

@@ -1,4 +1,4 @@
-//! The stable v1 vocabulary: the plan, its reasons, and the lifecycle states.
+//! The vocabulary of the plan, its reasons, and the lifecycle states.
 //!
 //! Types here are the wire format of `plan/v3` and of the `command/v2` envelope, so a rename is a compatibility break rather than a refactor.
 
@@ -17,7 +17,7 @@ pub fn bump_name(bump: Bump) -> &'static str {
     }
 }
 
-/// Monotonic effects in the order in which v1 permits them.
+/// Monotonic effects in publication order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReleaseStage {

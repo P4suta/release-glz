@@ -179,7 +179,7 @@ impl Default for ExternalReleaseState {
     }
 }
 
-/// One remaining effect, in the order v1 permits them.
+/// One remaining effect, in publication order.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ReconcileEffect {
@@ -238,7 +238,7 @@ pub struct ReconcilePlan {
 
 /// An observation that contradicts the Candidate.
 ///
-/// Reported rather than resolved: v1 never replaces a published object.
+/// A published object is never replaced, so a contradiction is reported rather than resolved.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReconcileError {
     message: String,
@@ -261,7 +261,7 @@ impl std::error::Error for ReconcileError {}
 
 /// Decide what is left to do, given intent, observation, and approval.
 ///
-/// The function is pure, and every effect it returns is one that has not been observed yet, which is what makes a resumed release monotonic rather than repeated.
+/// Every effect it returns is one that has not been observed yet, so a resumed release continues rather than repeats.
 pub fn reconcile(
     intent: &ReleaseIntent,
     observed: &ExternalReleaseState,

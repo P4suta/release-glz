@@ -5,8 +5,7 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
-/// Seconds the fake registry waits for an expected request before it stops,
-/// which fails a test whose client sends fewer requests than it should.
+/// Seconds the fake registry waits for an expected request before it stops, which fails a test whose client sends fewer requests than it should.
 const SERVER_LIFETIME_SECONDS: u64 = 120;
 
 /// Milliseconds between checks for a pending connection.

@@ -63,7 +63,7 @@ async fn a_job_value_that_disagrees_with_the_merged_release_pr_never_approves_a_
     let merged_intent = "e".repeat(64);
     let github = FakeGithub::start(Event::Push, ReleasePr::Merged(Some(&merged_intent))).await;
     let mut variables = push_variables(&github);
-    // The generated workflow used to pass these from the job's own outputs, and they agree with the Candidate.
+    // A job could set these from its own outputs, and here they agree with the Candidate.
     variables.insert(
         "RELEASE_GLZ_APPROVED_INTENT_DIGEST".into(),
         candidate_intent(),

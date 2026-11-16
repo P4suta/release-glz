@@ -7,8 +7,7 @@ use serde::{Deserialize, Serialize};
 
 /// Stable classes shared by the CLI exit status and machine-readable error code.
 ///
-/// Classification is deliberately carried by the error type.
-/// Error message text is presentation only and can never change the exit status.
+/// The error type carries the class, so message text can never change the exit status.
 /// Each discriminant is the class's exit status, a public contract documented in the README; callers branch on it, so a code can never be reused for another class.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

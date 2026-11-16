@@ -1,8 +1,6 @@
 //! Hexadecimal rendering for digests.
 //!
-//! Every digest that crosses the public boundary is written here rather than
-//! through a formatting trait, so the rendering is one function rather than a
-//! trait implementation a dependency may withdraw.
+//! Every digest that crosses the public boundary is written here rather than through a formatting trait, which a dependency could withdraw.
 
 /// Nibbles in one byte.
 const NIBBLES_PER_BYTE: usize = 2;

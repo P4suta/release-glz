@@ -1,6 +1,4 @@
 //! Release engine for `release-glz`.
-//!
-//! The crate keeps release decisions separate from the CLI so the same stable [`ReleasePlan`] can eventually be consumed by other front ends.
 
 #![warn(missing_docs)]
 

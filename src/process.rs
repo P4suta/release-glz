@@ -1,8 +1,7 @@
 //! Spawning child processes that tolerate a concurrent `fork`.
 //!
 //! A file that one thread has just written stays open for writing in a process another thread forks until that process execs, and running the file in that window fails with `ETXTBSY`.
-//! The condition clears on its own,
-//! so a spawn retries it a bounded number of times instead of failing.
+//! The condition clears on its own, so a spawn retries it a bounded number of times instead of failing.
 
 use std::io::{self, ErrorKind};
 use std::process::{Command, Output};
