@@ -1823,6 +1823,7 @@ async fn commit_changes_prefer_merged_pr_metadata_and_deduplicate_pr_numbers() {
         response(200, &merged),
         response(200, &unmerged),
         response(200, "[]"),
+        response(200, "[]"),
     ]);
     let client = test_client(&server, Some("token"));
     let commits = [
@@ -1830,16 +1831,59 @@ async fn commit_changes_prefer_merged_pr_metadata_and_deduplicate_pr_numbers() {
         commit("b", "fix: duplicate fallback must not appear"),
         commit("c", "fix: unmerged fallback"),
         commit("d", "docs: no PR fallback"),
+        Commit {
+            body: "BREAKING CHANGE: drop the old API".into(),
+            ..commit("e", "feat: breaking fallback")
+        },
     ];
 
     let changes = client.changes_for_commits(&commits).await.unwrap();
-    assert_eq!(changes.len(), 3);
+    assert_eq!(changes.len(), 4);
     assert_eq!(changes[0].pull_request, Some(7));
     assert_eq!(changes[0].author.as_deref(), Some("contributor"));
     assert_eq!(changes[0].labels, ["feature"]);
     assert_eq!(changes[1].title, "fix: unmerged fallback");
     assert_eq!(changes[1].pull_request, None);
     assert_eq!(changes[2].title, "docs: no PR fallback");
+    assert_eq!(changes[3].title, "feat: breaking fallback");
+    assert_eq!(
+        changes
+            .iter()
+            .map(|change| change.category.as_str())
+            .collect::<Vec<_>>(),
+        ["Added", "Fixed", "Changed", "Removed"]
+    );
+}
+
+#[tokio::test]
+async fn a_pull_request_entry_takes_the_highest_release_step_of_its_commits() {
+    let merged = serde_json::json!([{
+        "number": 7,
+        "title": "fix: tidy the parser",
+        "body": null,
+        "html_url": "https://github.test/o/r/pull/7",
+        "merge_commit_sha": "b",
+        "merged_at": "2026-01-01T00:00:00Z",
+        "user": {"login": "contributor"},
+        "labels": [],
+        "head": {"ref": "parser", "sha": "b"}
+    }])
+    .to_string();
+    let server = FakeServer::start(vec![response(200, &merged), response(200, &merged)]);
+    let client = test_client(&server, Some("token"));
+    let commits = [
+        commit("a", "fix: tidy the parser"),
+        Commit {
+            body: "BREAKING CHANGE: the parser refuses tabs".into(),
+            ..commit("b", "refactor: drop tab support")
+        },
+    ];
+
+    let changes = client.changes_for_commits(&commits).await.unwrap();
+
+    assert_eq!(changes.len(), 1);
+    assert_eq!(changes[0].title, "fix: tidy the parser");
+    assert_eq!(changes[0].category, "Removed");
 }
 
 #[tokio::test]

@@ -973,7 +973,9 @@ fn commit_entries(commits: &[Commit]) -> Vec<ChangeEntry> {
             author: Some(commit.author_name.clone()),
             url: None,
             labels: vec![],
-            category: changelog::default_category(&commit.subject),
+            category: changelog::default_category(&commit.subject, &commit.body)
+                .title()
+                .into(),
         })
         .collect()
 }
@@ -1159,16 +1161,20 @@ manual_refs = ["refs/heads/main"]
             commit("987654321", "perf: faster"),
             commit("short", "feat!: remove API"),
             commit("7654321", "docs: explain"),
+            Commit {
+                body: "BREAKING CHANGE: drop the old API".into(),
+                ..commit("1234567", "feat: replace API")
+            },
             commit("0000000", "chore(release): widget 1.2.3"),
         ];
         let entries = commit_entries(&commits);
-        assert_eq!(entries.len(), 5);
+        assert_eq!(entries.len(), 6);
         assert_eq!(
             entries
                 .iter()
                 .map(|entry| entry.category.as_str())
                 .collect::<Vec<_>>(),
-            ["Added", "Fixed", "Fixed", "Removed", "Changed"]
+            ["Added", "Fixed", "Fixed", "Removed", "Changed", "Removed"]
         );
         assert!(
             entries

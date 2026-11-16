@@ -2,7 +2,8 @@
 //!
 //! Everything observable is read before anything is written, so a resumed release recognizes what it already created instead of duplicating it.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
+use std::collections::btree_map::Entry;
 
 use anyhow::{Context, Result, bail};
 use base64::Engine;
@@ -17,11 +18,11 @@ use semver::Version;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 
-use crate::changelog::default_category;
+use crate::changelog::{category_of, default_category};
 use crate::config::{url_is_http_loopback, uses_trusted_transport};
 use crate::failure::{Refusal, RefusalReason, refused};
 use crate::git::Commit;
-use crate::model::{ChangeEntry, ReleasePlan, bump_name};
+use crate::model::{Bump, ChangeEntry, ReleasePlan, bump_name};
 use crate::refuse;
 use crate::units::GIB;
 
@@ -754,27 +755,45 @@ impl GitHubClient {
         if commits.len() > MAX_ATTRIBUTED_COMMITS {
             return Ok(commits.iter().map(commit_change).collect());
         }
-        let mut seen = BTreeSet::new();
-        let mut output = Vec::new();
+        let mut entry_of_pull: BTreeMap<u64, usize> = BTreeMap::new();
+        let mut output: Vec<(ChangeEntry, Bump)> = Vec::new();
         for commit in commits {
             let path = format!("commits/{}/pulls", commit.sha);
             let pulls: Vec<PullRequest> = self.get(&path).await?;
-            if let Some(pull) = pulls.into_iter().find(|pull| pull.merged_at.is_some()) {
-                if seen.insert(pull.number) {
-                    output.push(ChangeEntry {
-                        category: default_category(&pull.title),
-                        title: pull.title,
-                        pull_request: Some(pull.number),
-                        author: Some(pull.user.login),
-                        url: Some(pull.html_url),
-                        labels: pull.labels.into_iter().map(|label| label.name).collect(),
-                    });
+            let step = commit.conventional_bump();
+            let Some(pull) = pulls.into_iter().find(|pull| pull.merged_at.is_some()) else {
+                output.push((commit_change(commit), step));
+                continue;
+            };
+            match entry_of_pull.entry(pull.number) {
+                Entry::Occupied(index) => {
+                    if let Some((_, highest)) = output.get_mut(*index.get()) {
+                        *highest = Bump::max(*highest, step);
+                    }
                 }
-            } else {
-                output.push(commit_change(commit));
+                Entry::Vacant(slot) => {
+                    slot.insert(output.len());
+                    output.push((
+                        ChangeEntry {
+                            category: String::new(),
+                            title: pull.title,
+                            pull_request: Some(pull.number),
+                            author: Some(pull.user.login),
+                            url: Some(pull.html_url),
+                            labels: pull.labels.into_iter().map(|label| label.name).collect(),
+                        },
+                        step,
+                    ));
+                }
             }
         }
-        Ok(output)
+        Ok(output
+            .into_iter()
+            .map(|(entry, step)| ChangeEntry {
+                category: category_of(step).title().into(),
+                ..entry
+            })
+            .collect())
     }
 
     /// Observe the protections around a publish environment.
@@ -2050,7 +2069,9 @@ fn retryable_status(status: StatusCode) -> bool {
 /// The change entry of a commit that no merged pull request describes.
 fn commit_change(commit: &Commit) -> ChangeEntry {
     ChangeEntry {
-        category: default_category(&commit.subject),
+        category: default_category(&commit.subject, &commit.body)
+            .title()
+            .into(),
         title: commit.subject.clone(),
         pull_request: None,
         author: Some(commit.author_name.clone()),

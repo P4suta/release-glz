@@ -11,7 +11,8 @@ use anyhow::{Context, Result};
 use chrono::{NaiveDate, Utc};
 use serde::Deserialize;
 
-use crate::model::ChangeEntry;
+use crate::git::conventional_bump;
+use crate::model::{Bump, ChangeEntry};
 use crate::refuse;
 use crate::units::KIB;
 
@@ -69,19 +70,27 @@ pub struct Category {
     pub labels: BTreeSet<String>,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize)]
+/// A Keep a Changelog section, which a structured note names in lowercase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
-enum NoteCategory {
+pub enum NoteCategory {
+    /// New features.
     Added,
+    /// Changes in existing behavior.
     Changed,
+    /// Features that a later release removes.
     Deprecated,
+    /// Bug fixes.
     Fixed,
+    /// Removed features.
     Removed,
+    /// Fixed vulnerabilities.
     Security,
 }
 
 impl NoteCategory {
-    fn title(self) -> &'static str {
+    /// The section heading.
+    pub fn title(self) -> &'static str {
         match self {
             Self::Added => "Added",
             Self::Changed => "Changed",
@@ -421,23 +430,19 @@ fn release_section_range(changelog: &str, version: &str) -> Option<Range<usize>>
     Some(start..end)
 }
 
-/// The section a Conventional Commit title belongs in by default.
-pub fn default_category(title: &str) -> String {
-    let kind = title
-        .split(':')
-        .next()
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    if kind.contains('!') {
-        "Removed"
-    } else if kind.starts_with("feat") {
-        "Added"
-    } else if kind.starts_with("fix") || kind.starts_with("perf") {
-        "Fixed"
-    } else {
-        "Changed"
+/// The section a Conventional Commit message belongs in by default, from the release step that the core assigns to its subject and body.
+pub fn default_category(subject: &str, body: &str) -> NoteCategory {
+    category_of(conventional_bump(subject, body))
+}
+
+/// The section for a change that asks for the release step `bump`.
+pub const fn category_of(bump: Bump) -> NoteCategory {
+    match bump {
+        Bump::Major => NoteCategory::Removed,
+        Bump::Minor => NoteCategory::Added,
+        Bump::Patch => NoteCategory::Fixed,
+        Bump::None => NoteCategory::Changed,
     }
-    .to_owned()
 }
 
 #[cfg(test)]
@@ -832,19 +837,34 @@ mod tests {
             without_unreleased
         );
         assert!(!without_release_section(&without_unreleased, "2.0.0").contains("with number"));
+    }
 
-        for (title, category) in [
-            ("feat!: remove", "Removed"),
-            ("feat: add", "Added"),
-            ("fix: bug", "Fixed"),
-            ("perf: fast", "Fixed"),
-            ("docs: words", "Changed"),
-            ("", "Changed"),
-            ("Feat: add", "Added"),
-            ("FIX: bug", "Fixed"),
-            ("Perf(core): fast", "Fixed"),
-        ] {
-            assert_eq!(default_category(title), category, "{title}");
-        }
+    #[test]
+    fn the_default_category_follows_the_release_step_of_the_core() {
+        let footer = "details\n\nBREAKING CHANGE: y";
+        let disagreements = [
+            ("feat: x", "", Bump::Minor, NoteCategory::Added),
+            ("Feat: add", "", Bump::Minor, NoteCategory::Added),
+            ("FEAT: x", "", Bump::Minor, NoteCategory::Added),
+            ("feat(a!b): x", "", Bump::Minor, NoteCategory::Added),
+            ("fix: x", "", Bump::Patch, NoteCategory::Fixed),
+            ("FIX: bug", "", Bump::Patch, NoteCategory::Fixed),
+            ("perf: x", "", Bump::Patch, NoteCategory::Fixed),
+            ("Perf(core): fast", "", Bump::Patch, NoteCategory::Fixed),
+            ("feat!: x", "", Bump::Major, NoteCategory::Removed),
+            ("feat(scope)!: x", "", Bump::Major, NoteCategory::Removed),
+            ("feat: x", footer, Bump::Major, NoteCategory::Removed),
+            ("feature: x", "", Bump::None, NoteCategory::Changed),
+            ("chore: x", "", Bump::None, NoteCategory::Changed),
+            ("update the docs", "", Bump::None, NoteCategory::Changed),
+            ("", "", Bump::None, NoteCategory::Changed),
+        ]
+        .into_iter()
+        .filter(|&(subject, body, bump, category)| {
+            conventional_bump(subject, body) != bump || default_category(subject, body) != category
+        })
+        .map(|(subject, body, ..)| (subject, body, default_category(subject, body)))
+        .collect::<Vec<_>>();
+        assert_eq!(disagreements, []);
     }
 }
