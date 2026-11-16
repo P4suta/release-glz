@@ -1,4 +1,4 @@
-//! Failure classes shared by the CLI exit status and the `command/v2` error code.
+//! Failure classes shared by the CLI exit status and the `command/v1` error code.
 
 use std::fmt;
 
@@ -37,7 +37,7 @@ impl FailureClass {
         self as i32
     }
 
-    /// The stable diagnostic code emitted in `command/v2` output.
+    /// The stable diagnostic code emitted in `command/v1` output.
     pub const fn diagnostic_code(self) -> &'static str {
         match self {
             Self::Internal => "internal_failure",

@@ -212,8 +212,8 @@ A new run starts from a fresh observation, so `blocked` ends a run but not a rel
 - Kani: `lifecycle::proofs::normal_states_form_one_forward_chain`
 - Kani: `lifecycle::proofs::advancing_is_transitive`
 - Kani: `lifecycle::proofs::an_unfinished_release_can_always_end_in_conflict_or_blocked`
-- Test: `tests/v1_domain.rs::release_state_is_monotonic_except_terminal_diagnostics`
-- Test: `tests/v1_domain.rs::release_state_property_covers_every_pair_in_the_monotonic_lattice`
+- Test: `tests/release_model.rs::release_state_is_monotonic_except_terminal_diagnostics`
+- Test: `tests/release_model.rs::release_state_property_covers_every_pair_in_the_monotonic_lattice`
 
 ### Version arithmetic never wraps, and the larger bump wins
 
@@ -223,8 +223,8 @@ Kani proves these rules for every bump and every version core, with each compone
 - Kani: `version::proofs::the_join_of_two_bumps_is_the_larger_one`
 - Kani: `version::proofs::an_increment_adds_one_or_reports_the_largest_value`
 - Kani: `version::proofs::a_bump_raises_the_core_or_reports_an_overflow`
-- Test: `tests/v1_domain.rs::zero_major_breaking_changes_require_a_minor_release`
-- Test: `tests/v1_domain.rs::prerelease_channels_only_move_forward_on_the_same_core`
+- Test: `tests/release_model.rs::zero_major_breaking_changes_require_a_minor_release`
+- Test: `tests/release_model.rs::prerelease_channels_only_move_forward_on_the_same_core`
 
 ### A selected version always follows the published one
 
@@ -297,7 +297,7 @@ It proves the step between versions for every core and train number over version
 - Kani: `selection::proofs::a_zero_major_release_needs_its_acknowledgement`
 - Kani: `selection::proofs::the_step_between_versions_names_the_highest_changed_component`
 - Test: `src/git.rs::commit_types_match_in_any_letter_case_but_breaking_change_only_in_uppercase`
-- Test: `tests/v1_domain.rs::zero_major_breaking_changes_require_a_minor_release`
+- Test: `tests/release_model.rs::zero_major_breaking_changes_require_a_minor_release`
 
 ### A Candidate publishes exactly the bytes it sealed
 
@@ -308,9 +308,9 @@ It proves the refusal of every other length for values of up to three bytes, and
 - Kani: `hex::proofs::a_hex_digit_is_exactly_a_lowercase_hexadecimal_digit`
 - Kani: `hex::proofs::hex_identities_check_every_byte`
 - Kani: `hex::proofs::hex_identities_refuse_every_other_length`
-- Test: `tests/v1_candidate.rs::candidate_seals_and_verifies_the_exact_publish_bytes`
-- Test: `tests/v1_candidate.rs::candidate_verification_detects_any_raw_artifact_change`
-- Test: `tests/v1_candidate.rs::candidate_verification_rejects_every_manifest_identity_and_digest_tamper`
+- Test: `tests/candidate_contract.rs::candidate_seals_and_verifies_the_exact_publish_bytes`
+- Test: `tests/candidate_contract.rs::candidate_verification_detects_any_raw_artifact_change`
+- Test: `tests/candidate_contract.rs::candidate_verification_rejects_every_manifest_identity_and_digest_tamper`
 - Test: `tests/registry_contract.rs::organization_registry_uses_repos_prefix_and_publishes_exact_bytes`
 
 ### Two different file sets or notifications never feed SHA-256 the same bytes
@@ -327,7 +327,7 @@ Kani proves the framing of one file and of one notification for parts of a few b
 - Lean: `ReleaseGlz.Refinement.notification_framing_refines_rust`
 - Test: `tests/github_release_contract.rs::different_file_sets_never_share_a_files_digest`
 - Test: `tests/github_release_contract.rs::the_files_digest_format_is_pinned`
-- Test: `tests/v1_reconciler.rs::notification_key_is_a_domain_separated_binding_of_candidate_and_hook`
+- Test: `tests/reconciler_contract.rs::notification_key_is_a_domain_separated_binding_of_candidate_and_hook`
 
 ### Canonical JSON sorts member names by their 16-bit code units
 
@@ -336,8 +336,8 @@ Kani proves it for names of at most one character, and longer names compare by t
 
 - Kani: `key_order::proofs::member_names_sort_by_utf16_code_units`
 - Kani: `key_order::proofs::member_names_have_a_strict_total_order`
-- Test: `tests/v1_canonical.rs::canonical_json_follows_utf16_property_order`
-- Test: `tests/v1_canonical.rs::canonical_digest_is_independent_of_object_insertion_order`
+- Test: `tests/canonical_json.rs::canonical_json_follows_utf16_property_order`
+- Test: `tests/canonical_json.rs::canonical_digest_is_independent_of_object_insertion_order`
 
 ### Unpacking an archive writes only portable relative paths
 

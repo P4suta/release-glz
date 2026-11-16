@@ -323,7 +323,7 @@ mod tests {
                 "::archive_paths_reject_every_ambiguous_or_traversing_form`",
                 "::archive_paths_accept_everything`",
             ),
-            ("`tests/v1_domain.rs::", "`tests/v1_domains.rs::"),
+            ("`tests/release_model.rs::", "`tests/release_models.rs::"),
         ] {
             let error = verify_edited(|map| map.replacen(from, to, 1))
                 .unwrap_err()

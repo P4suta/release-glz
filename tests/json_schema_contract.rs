@@ -20,7 +20,7 @@ use serde_json::{Value, json};
 
 /// Published formats that no command prints as its result: the envelope around every result, the evidence a hook reports, and the external state the reconciler compares.
 const DOMAIN_SCHEMAS: [(&str, &str); 3] = [
-    ("command/v2", "command-envelope.schema.json"),
+    ("command/v1", "command-envelope.schema.json"),
     ("hook/v1", "hook.schema.json"),
     ("state/v1", "release-state.schema.json"),
 ];
@@ -118,8 +118,8 @@ fn every_published_schema_is_a_closed_draft_2020_document_bound_to_the_v1_tag() 
 fn checked_in_plan_schema_exactly_covers_the_serialized_surface() {
     assert_schema_surface(
         "docs/release-plan.schema.json",
-        "release-glz ReleasePlan v3",
-        "plan/v3",
+        "release-glz ReleasePlan v1",
+        "plan/v1",
         serde_json::to_value(plan()).unwrap(),
     );
 }
@@ -146,11 +146,11 @@ fn every_public_domain_schema_exactly_covers_its_serialized_surface() {
     );
     assert_schema_surface(
         "docs/command-envelope.schema.json",
-        "release-glz Command Envelope v2",
-        "command/v2",
+        "release-glz Command Envelope v1",
+        "command/v1",
         serde_json::to_value(CommandEnvelope::success(
             "plan",
-            serde_json::json!({"schema": "plan/v3"}),
+            serde_json::json!({"schema": "plan/v1"}),
             vec![],
             vec![],
         ))
@@ -244,7 +244,7 @@ fn every_result_schema_refuses_what_its_command_never_prints() {
         "candidate": serde_json::to_value(candidate()).unwrap(),
     });
     let envelope = json!({
-        "schema": "command/v2",
+        "schema": "command/v1",
         "ok": false,
         "command": "release",
         "result": null,

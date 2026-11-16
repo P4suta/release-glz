@@ -1,12 +1,12 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/P4suta/release-glz/v1.0.0/docs/command-envelope.schema.json",
-  "title": "release-glz Command Envelope v2",
+  "title": "release-glz Command Envelope v1",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema", "ok", "command", "result", "diagnostics", "next_actions"],
   "properties": {
-    "schema": { "const": "command/v2" },
+    "schema": { "const": "command/v1" },
     "ok": { "type": "boolean" },
     "command": { "type": "string", "minLength": 1 },
     "result": { "type": ["object", "array", "string", "number", "boolean", "null"] },
