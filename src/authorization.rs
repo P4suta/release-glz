@@ -167,11 +167,7 @@ impl GithubOidcVerifier {
             request_token,
         )
         .await?;
-        let token_response: ActionsTokenResponse = serde_json::from_slice(&token_response)
-            .map_err(|_| anyhow::anyhow!("GitHub Actions OIDC token response is invalid"))?;
-        if token_response.value.len() > MAX_COMPACT_JWT_BYTES {
-            bail!("GitHub Actions OIDC token exceeds the size limit");
-        }
+        let token = parse_token_response(&token_response)?;
 
         let discovery = self
             .client
@@ -186,16 +182,7 @@ impl GithubOidcVerifier {
             request_token,
         )
         .await?;
-        let discovery: OpenIdConfiguration = serde_json::from_slice(&discovery)
-            .map_err(|_| anyhow::anyhow!("GitHub OIDC discovery document is invalid"))?;
-        if discovery.issuer != GITHUB_OIDC_ISSUER {
-            bail!("GitHub OIDC discovery issuer is not trusted");
-        }
-        let jwks_url = validate_oidc_url(
-            &discovery.jwks_uri,
-            self.allow_http_loopback,
-            OidcUrlKind::Jwks,
-        )?;
+        let jwks_url = parse_discovery(&discovery, self.allow_http_loopback)?;
         if self.allow_http_loopback
             && self.discovery_url.scheme() == "http"
             && jwks_url.origin() != self.discovery_url.origin()
@@ -209,10 +196,40 @@ impl GithubOidcVerifier {
             .await
             .map_err(|_| anyhow::anyhow!("GitHub OIDC JWKS request failed"))?;
         let keys = checked_body(keys, MAX_JWKS_BYTES, "GitHub OIDC JWKS", request_token).await?;
-        let keys: JwkSet = serde_json::from_slice(&keys)
-            .map_err(|_| anyhow::anyhow!("GitHub OIDC JWKS is invalid"))?;
-        verify_github_oidc_token(&token_response.value, &keys, expected, now_unix_seconds)
+        verify_github_oidc_token(&token, &parse_jwks(&keys)?, expected, now_unix_seconds)
     }
+}
+
+/// The token in the body of the runner's GitHub Actions OIDC token response.
+///
+/// A body that isn't the token JSON, or a token larger than a compact JWT may be, is refused.
+pub fn parse_token_response(body: &[u8]) -> Result<String> {
+    let response: ActionsTokenResponse = serde_json::from_slice(body)
+        .map_err(|_| anyhow::anyhow!("GitHub Actions OIDC token response is invalid"))?;
+    if response.value.len() > MAX_COMPACT_JWT_BYTES {
+        bail!("GitHub Actions OIDC token exceeds the size limit");
+    }
+    Ok(response.value)
+}
+
+/// The key set URL that the body of the issuer's OIDC discovery document names.
+///
+/// A body that isn't a discovery document, or that names another issuer, is refused.
+/// A key set URL that isn't GitHub's is refused with [`RefusalReason::OidcUrlUntrusted`], and `allow_http_loopback` admits HTTP to a numeric loopback address for tests.
+pub fn parse_discovery(body: &[u8], allow_http_loopback: bool) -> Result<Url> {
+    let discovery: OpenIdConfiguration = serde_json::from_slice(body)
+        .map_err(|_| anyhow::anyhow!("GitHub OIDC discovery document is invalid"))?;
+    if discovery.issuer != GITHUB_OIDC_ISSUER {
+        bail!("GitHub OIDC discovery issuer is not trusted");
+    }
+    validate_oidc_url(&discovery.jwks_uri, allow_http_loopback, OidcUrlKind::Jwks)
+}
+
+/// The key set in the body of the issuer's JWKS response.
+///
+/// A body that isn't a key set is refused.
+pub fn parse_jwks(body: &[u8]) -> Result<JwkSet> {
+    serde_json::from_slice(body).map_err(|_| anyhow::anyhow!("GitHub OIDC JWKS is invalid"))
 }
 
 fn validate_oidc_url(raw: &str, allow_http_loopback: bool, kind: OidcUrlKind) -> Result<Url> {

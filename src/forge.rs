@@ -1315,10 +1315,8 @@ impl GitHubClient {
             } else {
                 format!("pulls?state=open&per_page={OPEN_PULL_REQUEST_PAGE_SIZE}&page={page}")
             };
-            let page_pulls: Vec<PullRequest> = self.get(&path).await?;
-            if page_pulls.len() > OPEN_PULL_REQUEST_PAGE_SIZE {
-                bail!("GitHub returned an oversized open pull-request page");
-            }
+            let url = self.url(&path);
+            let page_pulls = parse_pull_request_page(&self.get_body(&url).await?, &url)?;
             let complete = page_pulls.len() < OPEN_PULL_REQUEST_PAGE_SIZE;
             pulls.extend(page_pulls);
             if complete {
@@ -1403,14 +1401,10 @@ impl GitHubClient {
     pub async fn release_details_for_tag(&self, tag: &str) -> Result<Option<GitHubRelease>> {
         let mut found = Vec::new();
         for page in 1..=MAX_RELEASE_PAGES {
-            let releases: Vec<ReleaseResponse> = self
-                .get(&format!(
-                    "releases?per_page={RELEASE_PAGE_SIZE}&page={page}"
-                ))
-                .await?;
-            if releases.len() > RELEASE_PAGE_SIZE {
-                bail!("GitHub returned an oversized release page");
-            }
+            let url = self.url(&format!(
+                "releases?per_page={RELEASE_PAGE_SIZE}&page={page}"
+            ));
+            let releases = parse_release_page(&self.get_body(&url).await?, &url)?;
             let complete = releases.len() < RELEASE_PAGE_SIZE;
             found.extend(
                 releases
@@ -1419,7 +1413,7 @@ impl GitHubClient {
             );
             if complete {
                 return match found.len() {
-                    0 | 1 => Ok(found.pop().map(Into::into)),
+                    0 | 1 => Ok(found.pop()),
                     count => Err(refused(
                         RefusalReason::GithubReleaseTagAmbiguous,
                         format_args!(
@@ -1814,8 +1808,13 @@ impl GitHubClient {
 
     async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
         let url = self.url(path);
-        let response = checked(self.get_response(&url).await?, &url, self.token.as_deref()).await?;
-        json_response(response, &url).await
+        decode_json(&self.get_body(&url).await?, &url)
+    }
+
+    /// The body of a successful response to a read of `url`.
+    async fn get_body(&self, url: &str) -> Result<Vec<u8>> {
+        let response = checked(self.get_response(url).await?, url, self.token.as_deref()).await?;
+        json_body(response, url).await
     }
 
     async fn get_optional<T: DeserializeOwned>(&self, path: &str) -> Result<Option<T>> {
@@ -2054,10 +2053,41 @@ async fn checked(
 }
 
 async fn json_response<T: DeserializeOwned>(response: reqwest::Response, url: &str) -> Result<T> {
-    let bytes = read_limited(response, MAX_GITHUB_JSON_BYTES)
+    decode_json(&json_body(response, url).await?, url)
+}
+
+/// The body of a JSON response from `url`, within the size limit of a GitHub JSON response.
+async fn json_body(response: reqwest::Response, url: &str) -> Result<Vec<u8>> {
+    read_limited(response, MAX_GITHUB_JSON_BYTES)
         .await
-        .with_context(|| format!("GitHub response from {url} exceeded its size limit"))?;
-    serde_json::from_slice(&bytes).with_context(|| format!("invalid GitHub response from {url}"))
+        .with_context(|| format!("GitHub response from {url} exceeded its size limit"))
+}
+
+/// The value that the JSON body of a GitHub response from `url` holds.
+fn decode_json<T: DeserializeOwned>(body: &[u8], url: &str) -> Result<T> {
+    serde_json::from_slice(body).with_context(|| format!("invalid GitHub response from {url}"))
+}
+
+/// The Releases on one page of a GitHub release list, from the body that `url` served.
+///
+/// A body that isn't a list of Releases, or that holds more Releases than a page, is refused.
+pub fn parse_release_page(body: &[u8], url: &str) -> Result<Vec<GitHubRelease>> {
+    let releases: Vec<ReleaseResponse> = decode_json(body, url)?;
+    if releases.len() > RELEASE_PAGE_SIZE {
+        bail!("GitHub returned an oversized release page");
+    }
+    Ok(releases.into_iter().map(Into::into).collect())
+}
+
+/// The pull requests on one page of a GitHub pull request list, from the body that `url` served.
+///
+/// A body that isn't a list of pull requests, or that holds more pull requests than a page, is refused.
+pub fn parse_pull_request_page(body: &[u8], url: &str) -> Result<Vec<PullRequest>> {
+    let pulls: Vec<PullRequest> = decode_json(body, url)?;
+    if pulls.len() > OPEN_PULL_REQUEST_PAGE_SIZE {
+        bail!("GitHub returned an oversized open pull-request page");
+    }
+    Ok(pulls)
 }
 
 async fn read_limited(mut response: reqwest::Response, limit: usize) -> Result<Vec<u8>> {

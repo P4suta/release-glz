@@ -1,0 +1,1 @@
+{"schema":"hook/v1","success":true,"summary":"SBOM generated","evidence":{"artifacts":[["sbom.json","application/json","e30=",true]]}}
