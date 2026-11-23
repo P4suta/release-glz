@@ -44,7 +44,7 @@ jobs:
           rustup default 1.100.0
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
         with:
-          otp-version: "28.5"
+          otp-version: "29.1.2"
           gleam-version: ${{ matrix.gleam }}
       - run: cargo test --workspace --all-targets --locked
       - run: cargo run --locked -- --help
@@ -129,7 +129,7 @@ jobs:
           rustup default nightly-2026-08-22
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
         with:
-          otp-version: "28.5"
+          otp-version: "29.1.2"
           gleam-version: "1.19.2"
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -164,7 +164,7 @@ jobs:
           rustup default 1.100.0
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
         with:
-          otp-version: "28.5"
+          otp-version: "29.1.2"
           gleam-version: "1.19.2"
       - name: Install fixed mutation tools
         env:
