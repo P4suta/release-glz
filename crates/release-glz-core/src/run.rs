@@ -95,7 +95,7 @@ impl<'a> Run<'a> {
             }
         }
         #[cfg(feature = "negative-control-stall")]
-        if let Some(step) = negative_control_stall(self.budget, state) {
+        if let core::ops::ControlFlow::Break(step) = negative_control_stall(self.budget, state) {
             return step;
         }
         let Some(index) = self.next(objects) else {
@@ -115,7 +115,7 @@ impl<'a> Run<'a> {
     }
 
     /// Record how the call of the last [`Step::Apply`] ended.
-    pub fn applied(&mut self, succeeded: bool) {
+    pub const fn applied(&mut self, succeeded: bool) {
         let applying = self.applying.take();
         if succeeded {
             self.started |= applying.is_some();
@@ -125,7 +125,8 @@ impl<'a> Run<'a> {
     }
 
     /// The effect whose call failed but which the newest observation no longer lists, so it counts as applied.
-    pub fn landed(&self) -> Option<usize> {
+    #[must_use]
+    pub const fn landed(&self) -> Option<usize> {
         self.landed
     }
 
@@ -133,39 +134,50 @@ impl<'a> Run<'a> {
     ///
     /// The run reports the state of the plan that chose its last effect, or blocked before its first effect, since a failed effect may have landed.
     /// Once the run knows the release started, it never reports less than partially released.
-    pub fn unobserved(&self) -> ReleaseState {
+    #[must_use]
+    pub const fn unobserved(&self) -> ReleaseState {
         #[cfg(feature = "negative-control-forget-failure")]
-        if let Some(state) = negative_control_forget_failure() {
+        if let core::ops::ControlFlow::Break(state) = negative_control_forget_failure() {
             return state;
         }
         #[cfg(feature = "negative-control-forget-success")]
-        if let Some(state) = negative_control_forget_success(self) {
+        if let core::ops::ControlFlow::Break(state) = negative_control_forget_success(self) {
             return state;
         }
         self.vouched(self.planned)
     }
 
     /// The state to report instead of `state`: never before partially released once the run knows the release started, since the world then holds something of it even when an observation lags behind.
-    fn vouched(&self, state: ReleaseState) -> ReleaseState {
+    const fn vouched(&self, state: ReleaseState) -> ReleaseState {
         #[cfg(feature = "negative-control-unfloored")]
-        if let Some(state) = negative_control_unfloored(state) {
+        if let core::ops::ControlFlow::Break(state) = negative_control_unfloored(state) {
             return state;
         }
         #[cfg(feature = "negative-control-lower-released")]
-        if let Some(state) = negative_control_lower_released(self, state) {
+        if let core::ops::ControlFlow::Break(state) = negative_control_lower_released(self, state) {
             return state;
         }
         match state {
             ReleaseState::Released | ReleaseState::Conflict => state,
-            _ if self.started => ReleaseState::PartiallyReleased,
-            _ => state,
+            ReleaseState::UpToDate
+            | ReleaseState::Planned
+            | ReleaseState::CandidateReady
+            | ReleaseState::AwaitingApproval
+            | ReleaseState::PartiallyReleased
+            | ReleaseState::Blocked => {
+                if self.started {
+                    ReleaseState::PartiallyReleased
+                } else {
+                    state
+                }
+            }
         }
     }
 
     /// The first effect of the plan that the run doesn't pass over.
     fn next(&self, objects: &[Object]) -> Option<usize> {
         #[cfg(feature = "negative-control-skip-ahead")]
-        if let Some(next) = negative_control_skip_ahead(self, objects) {
+        if let core::ops::ControlFlow::Break(next) = negative_control_skip_ahead(self, objects) {
             return next;
         }
         (0..objects.len()).find(|&index| self.chooses(objects, index))
@@ -179,7 +191,7 @@ impl<'a> Run<'a> {
     /// Whether the run passes over the effect of the object at `index`, which is an optional effect it already attempted.
     fn passes_over(&self, objects: &[Object], index: usize) -> bool {
         #[cfg(feature = "negative-control-retry-optional")]
-        if let Some(passes) = negative_control_retry_optional() {
+        if let core::ops::ControlFlow::Break(passes) = negative_control_retry_optional() {
             return passes;
         }
         !blocks(objects, index) && self.attempted.get(index).copied().unwrap_or(false)
@@ -209,7 +221,7 @@ fn planned(objects: &[Object]) -> usize {
 /// The stop in `state` for an observation of `observed` objects in a run that recorded `recorded`, if the counts differ.
 fn reshaped(observed: usize, recorded: usize, state: ReleaseState) -> Option<Step> {
     #[cfg(feature = "negative-control-reshape")]
-    if let Some(step) = negative_control_reshape() {
+    if let core::ops::ControlFlow::Break(step) = negative_control_reshape() {
         return step;
     }
     (observed != recorded).then_some(Step::Reshaped(state))
@@ -218,16 +230,16 @@ fn reshaped(observed: usize, recorded: usize, state: ReleaseState) -> Option<Ste
 /// The stop for a failed effect of the object at `index` that the world still lacks, which only a blocking effect causes.
 fn stop_after_failure(objects: &[Object], index: usize, state: ReleaseState) -> Option<Step> {
     #[cfg(feature = "negative-control-trust-failure")]
-    if let Some(step) = negative_control_trust_failure() {
+    if let core::ops::ControlFlow::Break(step) = negative_control_trust_failure() {
         return step;
     }
     blocks(objects, index).then_some(Step::Failed { index, state })
 }
 
 /// The attempts left after one more, or `None` once the budget is spent.
-fn spend(budget: usize) -> Option<usize> {
+const fn spend(budget: usize) -> Option<usize> {
     #[cfg(feature = "negative-control-unbudgeted")]
-    if let Some(left) = negative_control_unbudgeted(budget) {
+    if let core::ops::ControlFlow::Break(left) = negative_control_unbudgeted(budget) {
         return left;
     }
     budget.checked_sub(1)
@@ -235,20 +247,23 @@ fn spend(budget: usize) -> Option<usize> {
 
 /// Keeps every attempt free, so a run never spends its budget.
 #[cfg(feature = "negative-control-unbudgeted")]
-fn negative_control_unbudgeted(budget: usize) -> Option<Option<usize>> {
-    Some(Some(budget))
+const fn negative_control_unbudgeted(budget: usize) -> core::ops::ControlFlow<Option<usize>> {
+    core::ops::ControlFlow::Break(Some(budget))
 }
 
 /// Never passes over an optional effect, so a run retries one that failed.
 #[cfg(feature = "negative-control-retry-optional")]
-fn negative_control_retry_optional() -> Option<bool> {
-    Some(false)
+const fn negative_control_retry_optional() -> core::ops::ControlFlow<bool> {
+    core::ops::ControlFlow::Break(false)
 }
 
 /// Chooses the last effect that a run may apply instead of the first.
 #[cfg(feature = "negative-control-skip-ahead")]
-fn negative_control_skip_ahead(run: &Run<'_>, objects: &[Object]) -> Option<Option<usize>> {
-    Some(
+fn negative_control_skip_ahead(
+    run: &Run<'_>,
+    objects: &[Object],
+) -> core::ops::ControlFlow<Option<usize>> {
+    core::ops::ControlFlow::Break(
         (0..objects.len())
             .rev()
             .find(|&index| run.chooses(objects, index)),
@@ -257,44 +272,60 @@ fn negative_control_skip_ahead(run: &Run<'_>, objects: &[Object]) -> Option<Opti
 
 /// Goes on after a failed blocking effect that the world still lacks.
 #[cfg(feature = "negative-control-trust-failure")]
-fn negative_control_trust_failure() -> Option<Option<Step>> {
-    Some(None)
+const fn negative_control_trust_failure() -> core::ops::ControlFlow<Option<Step>> {
+    core::ops::ControlFlow::Break(None)
 }
 
 /// Stops a run once it has attempted anything, whatever remains.
 #[cfg(feature = "negative-control-stall")]
-fn negative_control_stall(budget: Option<usize>, state: ReleaseState) -> Option<Step> {
-    budget.map(|_| Step::Finish(state))
+fn negative_control_stall(
+    budget: Option<usize>,
+    state: ReleaseState,
+) -> core::ops::ControlFlow<Step> {
+    budget.map_or(core::ops::ControlFlow::Continue(()), |_| {
+        core::ops::ControlFlow::Break(Step::Finish(state))
+    })
 }
 
 /// Reports blocked after a failed effect too.
 #[cfg(feature = "negative-control-forget-failure")]
-fn negative_control_forget_failure() -> Option<ReleaseState> {
-    Some(ReleaseState::Blocked)
+const fn negative_control_forget_failure() -> core::ops::ControlFlow<ReleaseState> {
+    core::ops::ControlFlow::Break(ReleaseState::Blocked)
 }
 
 /// Reports blocked after an effect whose call succeeded, as runs did before the floor.
 #[cfg(feature = "negative-control-forget-success")]
-fn negative_control_forget_success(run: &Run<'_>) -> Option<ReleaseState> {
-    run.failed.is_none().then_some(ReleaseState::Blocked)
+const fn negative_control_forget_success(run: &Run<'_>) -> core::ops::ControlFlow<ReleaseState> {
+    if run.failed.is_none() {
+        core::ops::ControlFlow::Break(ReleaseState::Blocked)
+    } else {
+        core::ops::ControlFlow::Continue(())
+    }
 }
 
 /// Reports the state that the newest plan shows, even below what the run already published.
 #[cfg(feature = "negative-control-unfloored")]
-fn negative_control_unfloored(state: ReleaseState) -> Option<ReleaseState> {
-    Some(state)
+const fn negative_control_unfloored(state: ReleaseState) -> core::ops::ControlFlow<ReleaseState> {
+    core::ops::ControlFlow::Break(state)
 }
 
 /// Lowers released to partially released once the run started, as a floor that forgot the states above it would.
 #[cfg(feature = "negative-control-lower-released")]
-fn negative_control_lower_released(run: &Run<'_>, state: ReleaseState) -> Option<ReleaseState> {
-    (run.started && state == ReleaseState::Released).then_some(ReleaseState::PartiallyReleased)
+const fn negative_control_lower_released(
+    run: &Run<'_>,
+    state: ReleaseState,
+) -> core::ops::ControlFlow<ReleaseState> {
+    if run.started && matches!(state, ReleaseState::Released) {
+        core::ops::ControlFlow::Break(ReleaseState::PartiallyReleased)
+    } else {
+        core::ops::ControlFlow::Continue(())
+    }
 }
 
 /// Goes on with an observation of another number of objects.
 #[cfg(feature = "negative-control-reshape")]
-fn negative_control_reshape() -> Option<Option<Step>> {
-    Some(None)
+const fn negative_control_reshape() -> core::ops::ControlFlow<Option<Step>> {
+    core::ops::ControlFlow::Break(None)
 }
 
 #[cfg(kani)]

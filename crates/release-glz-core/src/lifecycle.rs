@@ -34,17 +34,18 @@ impl ReleaseState {
     /// Whether `next` is a legal successor of this state.
     ///
     /// A state may always repeat itself, which is what makes resuming a partial release safe.
+    #[must_use]
     pub fn can_advance_to(self, next: Self) -> bool {
         #[cfg(feature = "negative-control-no-repeat")]
-        if let Some(advances) = negative_control_no_repeat(self, next) {
+        if let core::ops::ControlFlow::Break(advances) = negative_control_no_repeat(self, next) {
             return advances;
         }
         #[cfg(feature = "negative-control-reopen")]
-        if let Some(advances) = negative_control_reopen(self, next) {
+        if let core::ops::ControlFlow::Break(advances) = negative_control_reopen(self, next) {
             return advances;
         }
         #[cfg(feature = "negative-control-unstoppable")]
-        if let Some(advances) = negative_control_unstoppable(self, next) {
+        if let core::ops::ControlFlow::Break(advances) = negative_control_unstoppable(self, next) {
             return advances;
         }
         if self == next {
@@ -60,7 +61,8 @@ impl ReleaseState {
     }
 
     /// Whether the state never changes again.
-    pub fn is_terminal(self) -> bool {
+    #[must_use]
+    pub const fn is_terminal(self) -> bool {
         matches!(self, Self::Released | Self::Conflict | Self::Blocked)
     }
 }
@@ -81,13 +83,13 @@ fn position(state: ReleaseState) -> Option<usize> {
 }
 
 /// Whether moving from the normal state at `from` to the one at `to` goes forward.
-fn forward(from: usize, to: usize) -> bool {
+const fn forward(from: usize, to: usize) -> bool {
     #[cfg(feature = "negative-control-backward")]
-    if let Some(forward) = negative_control_backward(from, to) {
+    if let core::ops::ControlFlow::Break(forward) = negative_control_backward(from, to) {
         return forward;
     }
     #[cfg(feature = "negative-control-no-skip")]
-    if let Some(forward) = negative_control_no_skip(from, to) {
+    if let core::ops::ControlFlow::Break(forward) = negative_control_no_skip(from, to) {
         return forward;
     }
     to > from
@@ -95,33 +97,54 @@ fn forward(from: usize, to: usize) -> bool {
 
 /// Refuses to let a state repeat itself.
 #[cfg(feature = "negative-control-no-repeat")]
-fn negative_control_no_repeat(state: ReleaseState, next: ReleaseState) -> Option<bool> {
-    (state == next).then_some(false)
+fn negative_control_no_repeat(
+    state: ReleaseState,
+    next: ReleaseState,
+) -> core::ops::ControlFlow<bool> {
+    if state == next {
+        core::ops::ControlFlow::Break(false)
+    } else {
+        core::ops::ControlFlow::Continue(())
+    }
 }
 
 /// Lets a terminal state change again.
 #[cfg(feature = "negative-control-reopen")]
-fn negative_control_reopen(state: ReleaseState, next: ReleaseState) -> Option<bool> {
-    (state.is_terminal() && state != next).then_some(true)
+fn negative_control_reopen(
+    state: ReleaseState,
+    next: ReleaseState,
+) -> core::ops::ControlFlow<bool> {
+    if state.is_terminal() && state != next {
+        core::ops::ControlFlow::Break(true)
+    } else {
+        core::ops::ControlFlow::Continue(())
+    }
 }
 
 /// Refuses to let an unfinished release stop in conflict or blocked.
 #[cfg(feature = "negative-control-unstoppable")]
-fn negative_control_unstoppable(state: ReleaseState, next: ReleaseState) -> Option<bool> {
+fn negative_control_unstoppable(
+    state: ReleaseState,
+    next: ReleaseState,
+) -> core::ops::ControlFlow<bool> {
     let stops = matches!(next, ReleaseState::Conflict | ReleaseState::Blocked);
-    (!state.is_terminal() && state != next && stops).then_some(false)
+    if !state.is_terminal() && state != next && stops {
+        core::ops::ControlFlow::Break(false)
+    } else {
+        core::ops::ControlFlow::Continue(())
+    }
 }
 
 /// Lets a normal state move backward.
 #[cfg(feature = "negative-control-backward")]
-fn negative_control_backward(from: usize, to: usize) -> Option<bool> {
-    Some(to != from)
+const fn negative_control_backward(from: usize, to: usize) -> core::ops::ControlFlow<bool> {
+    core::ops::ControlFlow::Break(to != from)
 }
 
 /// Moves only to the next normal state, never past it.
 #[cfg(feature = "negative-control-no-skip")]
-fn negative_control_no_skip(from: usize, to: usize) -> Option<bool> {
-    Some(from.checked_add(1) == Some(to))
+const fn negative_control_no_skip(from: usize, to: usize) -> core::ops::ControlFlow<bool> {
+    core::ops::ControlFlow::Break(matches!(from.checked_add(1), Some(next) if next == to))
 }
 
 #[cfg(kani)]

@@ -46,13 +46,14 @@ impl Object {
     /// What the reconciler does about this object.
     ///
     /// The release creates or completes only an object it wants that is missing or pending, and any object that exists outside the Candidate's description is a conflict.
-    pub fn decision(self) -> Decision {
+    #[must_use]
+    pub const fn decision(self) -> Decision {
         #[cfg(feature = "negative-control-overwrite")]
-        if let Some(decision) = negative_control_overwrite(self) {
+        if let core::ops::ControlFlow::Break(decision) = negative_control_overwrite(self) {
             return decision;
         }
         #[cfg(feature = "negative-control-republish")]
-        if let Some(decision) = negative_control_republish(self) {
+        if let core::ops::ControlFlow::Break(decision) = negative_control_republish(self) {
             return decision;
         }
         match (self.wanted, self.presence) {
@@ -65,9 +66,9 @@ impl Object {
     }
 
     /// Whether its effect has to finish before the release counts as released.
-    pub(crate) fn blocks(self) -> bool {
+    pub(crate) const fn blocks(self) -> bool {
         #[cfg(feature = "negative-control-optional-blocks")]
-        if let Some(blocks) = negative_control_optional_blocks() {
+        if let core::ops::ControlFlow::Break(blocks) = negative_control_optional_blocks() {
             return blocks;
         }
         self.blocking
@@ -76,31 +77,31 @@ impl Object {
 
 /// Keeps a wanted object that differs instead of reporting a conflict.
 #[cfg(feature = "negative-control-overwrite")]
-fn negative_control_overwrite(object: Object) -> Option<Decision> {
+const fn negative_control_overwrite(object: Object) -> core::ops::ControlFlow<Decision> {
     match (object.wanted, object.presence) {
-        (true, Presence::Differs) => Some(Decision::Keep),
-        _ => None,
+        (true, Presence::Differs) => core::ops::ControlFlow::Break(Decision::Keep),
+        _ => core::ops::ControlFlow::Continue(()),
     }
 }
 
 /// Publishes a wanted object again although it already matches.
 #[cfg(feature = "negative-control-republish")]
-fn negative_control_republish(object: Object) -> Option<Decision> {
+const fn negative_control_republish(object: Object) -> core::ops::ControlFlow<Decision> {
     match (object.wanted, object.presence) {
-        (true, Presence::Matches) => Some(Decision::Create),
-        _ => None,
+        (true, Presence::Matches) => core::ops::ControlFlow::Break(Decision::Create),
+        _ => core::ops::ControlFlow::Continue(()),
     }
 }
 
 /// Lets every effect block completion, optional ones included.
 #[cfg(feature = "negative-control-optional-blocks")]
-fn negative_control_optional_blocks() -> Option<bool> {
-    Some(true)
+const fn negative_control_optional_blocks() -> core::ops::ControlFlow<bool> {
+    core::ops::ControlFlow::Break(true)
 }
 
 /// Treats every run as approved.
 #[cfg(feature = "negative-control-unapproved")]
-fn negative_control_unapproved(_approved: bool) -> bool {
+const fn negative_control_unapproved(_approved: bool) -> bool {
     true
 }
 
@@ -123,6 +124,7 @@ pub enum Outcome<'a> {
 /// Reconcile `objects`, given in publication order, under `approved`.
 ///
 /// A conflict outranks approval, so an unapproved run still reports a world that contradicts the Candidate.
+#[must_use]
 pub fn reconcile(objects: &[Object], approved: bool) -> Outcome<'_> {
     if let Some(index) = objects
         .iter()

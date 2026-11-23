@@ -31,9 +31,9 @@ pub fn write_marker(values: [&[u8]; 6], mut sink: impl FnMut(&[u8])) {
 }
 
 /// The bytes between two fields of a marker.
-fn field_separator() -> &'static [u8] {
+const fn field_separator() -> &'static [u8] {
     #[cfg(feature = "negative-control-fields-run-together")]
-    if let Some(separator) = negative_control_fields_run_together() {
+    if let core::ops::ControlFlow::Break(separator) = negative_control_fields_run_together() {
         return separator;
     }
     b" "
@@ -41,38 +41,39 @@ fn field_separator() -> &'static [u8] {
 
 /// Writes the fields of a marker with nothing between them.
 #[cfg(feature = "negative-control-fields-run-together")]
-fn negative_control_fields_run_together() -> Option<&'static [u8]> {
-    Some(b"")
+const fn negative_control_fields_run_together() -> core::ops::ControlFlow<&'static [u8]> {
+    core::ops::ControlFlow::Break(b"")
 }
 
 /// Feed `sink` `text` with every `<` written as `&lt;`, so the text can't open an HTML comment, a tag, or a marker.
 pub fn write_inert(text: &[u8], mut sink: impl FnMut(&[u8])) {
     #[cfg(feature = "negative-control-inert-less-than")]
-    if let Some(()) = negative_control_inert_less_than(text, &mut sink) {
+    if negative_control_inert_less_than(text, &mut sink).is_break() {
         return;
     }
-    let mut start = 0;
-    for (index, byte) in text.iter().enumerate() {
-        if *byte == b'<' {
-            sink(&text[start..index]);
+    for (index, piece) in text.split(|byte| *byte == b'<').enumerate() {
+        if index > 0 {
             sink(b"&lt;");
-            start = index + 1;
         }
+        sink(piece);
     }
-    sink(&text[start..]);
 }
 
 /// Writes the text as it is, `<` included.
 #[cfg(feature = "negative-control-inert-less-than")]
-fn negative_control_inert_less_than(text: &[u8], sink: &mut impl FnMut(&[u8])) -> Option<()> {
+fn negative_control_inert_less_than(
+    text: &[u8],
+    sink: &mut impl FnMut(&[u8]),
+) -> core::ops::ControlFlow<()> {
     sink(text);
-    Some(())
+    core::ops::ControlFlow::Break(())
 }
 
 /// The offset of the marker that ends `body`, whose trailing whitespace the caller removed, when no other marker starts before it.
+#[must_use]
 pub fn marker_start(body: &[u8]) -> Option<usize> {
     #[cfg(feature = "negative-control-marker-at-start")]
-    if let Some(start) = negative_control_marker_at_start() {
+    if let core::ops::ControlFlow::Break(start) = negative_control_marker_at_start() {
         return start;
     }
     block_at_end(body, MARKER_PREFIX.as_bytes(), MARKER_SUFFIX.as_bytes())
@@ -80,17 +81,18 @@ pub fn marker_start(body: &[u8]) -> Option<usize> {
 
 /// Finds a marker at the start of every body, an empty one too.
 #[cfg(feature = "negative-control-marker-at-start")]
-fn negative_control_marker_at_start() -> Option<Option<usize>> {
-    Some(Some(0))
+const fn negative_control_marker_at_start() -> core::ops::ControlFlow<Option<usize>> {
+    core::ops::ControlFlow::Break(Some(0))
 }
 
 /// The offset of the block that `open` starts and `close` ends at the end of `body`, when no other `open` starts before it.
 fn block_at_end(body: &[u8], open: &[u8], close: &[u8]) -> Option<usize> {
     let start = last_occurrence(body, open)?;
-    let block_end = first_occurrence(&body[start..], close)?
+    let (before, block) = body.split_at_checked(start)?;
+    let block_end = first_occurrence(block, close)?
         .checked_add(start)?
         .checked_add(close.len())?;
-    let alone = first_occurrence(&body[..start], open).is_none();
+    let alone = first_occurrence(before, open).is_none();
     (alone && block_end == body.len()).then_some(start)
 }
 
@@ -103,7 +105,7 @@ pub fn marker_values<'a>(fields: impl Iterator<Item = &'a [u8]>) -> Option<[&'a 
         record(&mut values, field)?;
     }
     #[cfg(feature = "negative-control-missing-key")]
-    if let Some(values) = negative_control_missing_key(values) {
+    if let core::ops::ControlFlow::Break(values) = negative_control_missing_key(values) {
         return values;
     }
     let [package, branch, head, digest, version, intent] = values;
@@ -112,22 +114,25 @@ pub fn marker_values<'a>(fields: impl Iterator<Item = &'a [u8]>) -> Option<[&'a 
 
 /// Gives back an empty value for a key that no field named.
 #[cfg(feature = "negative-control-missing-key")]
-fn negative_control_missing_key(values: [Option<&[u8]>; 6]) -> Option<Option<[&[u8]; 6]>> {
-    Some(Some(values.map(|value| value.unwrap_or(b""))))
+fn negative_control_missing_key(
+    values: [Option<&[u8]>; 6],
+) -> core::ops::ControlFlow<Option<[&[u8]; 6]>> {
+    core::ops::ControlFlow::Break(Some(values.map(|value| value.unwrap_or(b""))))
 }
 
 /// Record the value of `field` under its key, refusing a field without `=`, an unknown key, and a key seen before.
 fn record<'a>(values: &mut [Option<&'a [u8]>; 6], field: &'a [u8]) -> Option<()> {
-    let separator = field.iter().position(|byte| *byte == b'=')?;
-    let (key, value) = (&field[..separator], &field[separator + 1..]);
+    let mut parts = field.splitn(2, |byte| *byte == b'=');
+    let (key, value) = (parts.next()?, parts.next()?);
     let slot = MARKER_KEYS
         .iter()
-        .position(|known| known.as_bytes() == key)?;
+        .zip(values.iter_mut())
+        .find_map(|(known, slot)| (known.as_bytes() == key).then_some(slot))?;
     #[cfg(feature = "negative-control-duplicate-keys")]
-    if let Some(recorded) = negative_control_duplicate_keys(&mut values[slot], value) {
+    if let core::ops::ControlFlow::Break(recorded) = negative_control_duplicate_keys(slot, value) {
         return recorded;
     }
-    match values[slot].replace(value) {
+    match slot.replace(value) {
         None => Some(()),
         Some(_) => None,
     }
@@ -135,52 +140,67 @@ fn record<'a>(values: &mut [Option<&'a [u8]>; 6], field: &'a [u8]) -> Option<()>
 
 /// Lets a later field replace an earlier one with the same key.
 #[cfg(feature = "negative-control-duplicate-keys")]
-fn negative_control_duplicate_keys<'a>(
+const fn negative_control_duplicate_keys<'a>(
     slot: &mut Option<&'a [u8]>,
     value: &'a [u8],
-) -> Option<Option<()>> {
+) -> core::ops::ControlFlow<Option<()>> {
     *slot = Some(value);
-    Some(Some(()))
+    core::ops::ControlFlow::Break(Some(()))
+}
+
+/// Whether `needle` occurs in `haystack` at `at`.
+fn occurs_at(haystack: &[u8], needle: &[u8], at: usize) -> bool {
+    haystack
+        .get(at..)
+        .is_some_and(|rest| rest.starts_with(needle))
 }
 
 /// The first offset at which `needle` occurs in `haystack`.
 fn first_occurrence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     #[cfg(feature = "negative-control-search-skips-start")]
-    if let Some(found) = negative_control_search_skips_start(haystack, needle) {
+    if let core::ops::ControlFlow::Break(found) =
+        negative_control_search_skips_start(haystack, needle)
+    {
         return found;
     }
     let last = haystack.len().checked_sub(needle.len())?;
-    (0..=last).find(|&at| haystack[at..at + needle.len()] == *needle)
+    (0..=last).find(|&at| occurs_at(haystack, needle, at))
 }
 
 /// Starts the search for a first occurrence one byte late.
 #[cfg(feature = "negative-control-search-skips-start")]
-fn negative_control_search_skips_start(haystack: &[u8], needle: &[u8]) -> Option<Option<usize>> {
+fn negative_control_search_skips_start(
+    haystack: &[u8],
+    needle: &[u8],
+) -> core::ops::ControlFlow<Option<usize>> {
     let last = haystack.len().checked_sub(needle.len());
-    Some(last.and_then(|last| (1..=last).find(|&at| haystack[at..at + needle.len()] == *needle)))
+    core::ops::ControlFlow::Break(
+        last.and_then(|last| (1..=last).find(|&at| occurs_at(haystack, needle, at))),
+    )
 }
 
 /// The last offset at which `needle` occurs in `haystack`.
 fn last_occurrence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     #[cfg(feature = "negative-control-search-stops-short")]
-    if let Some(found) = negative_control_search_stops_short(haystack, needle) {
+    if let core::ops::ControlFlow::Break(found) =
+        negative_control_search_stops_short(haystack, needle)
+    {
         return found;
     }
     let last = haystack.len().checked_sub(needle.len())?;
-    (0..=last)
-        .rev()
-        .find(|&at| haystack[at..at + needle.len()] == *needle)
+    (0..=last).rev().find(|&at| occurs_at(haystack, needle, at))
 }
 
 /// Stops the search for a last occurrence before the last offset.
 #[cfg(feature = "negative-control-search-stops-short")]
-fn negative_control_search_stops_short(haystack: &[u8], needle: &[u8]) -> Option<Option<usize>> {
+fn negative_control_search_stops_short(
+    haystack: &[u8],
+    needle: &[u8],
+) -> core::ops::ControlFlow<Option<usize>> {
     let last = haystack.len().checked_sub(needle.len());
-    Some(last.and_then(|last| {
-        (0..last)
-            .rev()
-            .find(|&at| haystack[at..at + needle.len()] == *needle)
-    }))
+    core::ops::ControlFlow::Break(
+        last.and_then(|last| (0..last).rev().find(|&at| occurs_at(haystack, needle, at))),
+    )
 }
 
 #[cfg(kani)]

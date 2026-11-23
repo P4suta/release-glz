@@ -15,6 +15,10 @@ pub enum Trigger {
 /// The verified OIDC claims of the publishing run, compared with the Candidate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(kani, derive(kani::Arbitrary))]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag is one verified OIDC claim compared with the Candidate, and an_approval_needs_every_conjunct_of_its_path ranges over every combination"
+)]
 pub struct RunIdentity {
     /// The claims name the Candidate's repository.
     pub repository: bool,
@@ -33,6 +37,10 @@ pub struct RunIdentity {
 /// The approval evidence of a publication, compared with the Candidate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(kani, derive(kani::Arbitrary))]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag is one piece of approval evidence compared with the Candidate, and an_approval_needs_every_conjunct_of_its_path ranges over every combination"
+)]
 pub struct Approval {
     /// The approved Candidate digest is the Candidate's.
     pub candidate: bool,
@@ -51,16 +59,17 @@ impl Approval {
     ///
     /// Every publication needs the Candidate digest and a verified run of the managed workflow in the Candidate's repository, Environment, and commit.
     /// A push also needs the approved intent, and a manual dispatch needs the intent, its own source commit and reason, and an allowed ref.
-    pub fn approves(self) -> bool {
+    #[must_use]
+    pub const fn approves(self) -> bool {
         #[cfg(feature = "negative-control-approval")]
-        if let Some(approves) = negative_control_approval(self) {
+        if let core::ops::ControlFlow::Break(approves) = negative_control_approval(self) {
             return approves;
         }
         self.candidate && self.authorizes()
     }
 
     /// Whether a verified run of the managed workflow took the approved path, whatever the Candidate digest.
-    fn authorizes(self) -> bool {
+    const fn authorizes(self) -> bool {
         let Some(identity) = self.identity else {
             return false;
         };
@@ -70,9 +79,9 @@ impl Approval {
     }
 
     /// Whether the path that started the run carries its own approval.
-    fn path(self, identity: RunIdentity) -> bool {
+    const fn path(self, identity: RunIdentity) -> bool {
         #[cfg(feature = "negative-control-substitution")]
-        if let Some(path) = negative_control_substitution(self, identity) {
+        if let core::ops::ControlFlow::Break(path) = negative_control_substitution(self, identity) {
             return path;
         }
         match identity.trigger {
@@ -87,18 +96,21 @@ impl Approval {
 
 /// Approves without the Candidate digest.
 #[cfg(feature = "negative-control-approval")]
-fn negative_control_approval(approval: Approval) -> Option<bool> {
-    Some(approval.authorizes())
+const fn negative_control_approval(approval: Approval) -> core::ops::ControlFlow<bool> {
+    core::ops::ControlFlow::Break(approval.authorizes())
 }
 
 /// Lets the inputs of a manual release approve a push.
 #[cfg(feature = "negative-control-substitution")]
-fn negative_control_substitution(approval: Approval, identity: RunIdentity) -> Option<bool> {
+const fn negative_control_substitution(
+    approval: Approval,
+    identity: RunIdentity,
+) -> core::ops::ControlFlow<bool> {
     match identity.trigger {
-        Trigger::Push => {
-            Some(approval.intent || (approval.manual_source && approval.manual_reason))
-        }
-        _ => None,
+        Trigger::Push => core::ops::ControlFlow::Break(
+            approval.intent || (approval.manual_source && approval.manual_reason),
+        ),
+        Trigger::ManualDispatch | Trigger::Other => core::ops::ControlFlow::Continue(()),
     }
 }
 

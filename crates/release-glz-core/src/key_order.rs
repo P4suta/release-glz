@@ -5,13 +5,15 @@ use core::cmp::Ordering;
 /// Compare two member names by their UTF-16 code units, the order in which RFC 8785 sorts object members.
 ///
 /// The order differs from Rust's order of strings, which compares UTF-8 bytes: a character above U+FFFF sorts before U+E000 through U+FFFF here.
+#[must_use]
 pub fn utf16_cmp(left: &str, right: &str) -> Ordering {
     #[cfg(feature = "negative-control-utf8-key-order")]
-    if let Some(order) = negative_control_utf8_key_order(left, right) {
+    if let core::ops::ControlFlow::Break(order) = negative_control_utf8_key_order(left, right) {
         return order;
     }
     #[cfg(feature = "negative-control-first-unit-key-order")]
-    if let Some(order) = negative_control_first_unit_key_order(left, right) {
+    if let core::ops::ControlFlow::Break(order) = negative_control_first_unit_key_order(left, right)
+    {
         return order;
     }
     left.encode_utf16().cmp(right.encode_utf16())
@@ -19,14 +21,17 @@ pub fn utf16_cmp(left: &str, right: &str) -> Ordering {
 
 /// Sorts member names by their UTF-8 bytes instead.
 #[cfg(feature = "negative-control-utf8-key-order")]
-fn negative_control_utf8_key_order(left: &str, right: &str) -> Option<Ordering> {
-    Some(left.cmp(right))
+fn negative_control_utf8_key_order(left: &str, right: &str) -> core::ops::ControlFlow<Ordering> {
+    core::ops::ControlFlow::Break(left.cmp(right))
 }
 
 /// Compares member names by their first UTF-16 code unit only.
 #[cfg(feature = "negative-control-first-unit-key-order")]
-fn negative_control_first_unit_key_order(left: &str, right: &str) -> Option<Ordering> {
-    Some(
+fn negative_control_first_unit_key_order(
+    left: &str,
+    right: &str,
+) -> core::ops::ControlFlow<Ordering> {
+    core::ops::ControlFlow::Break(
         left.encode_utf16()
             .take(1)
             .cmp(right.encode_utf16().take(1)),

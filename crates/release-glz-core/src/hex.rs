@@ -7,36 +7,40 @@ pub const SHA256_HEX_LEN: usize = 64;
 pub const OBJECT_HEX_LEN: usize = 40;
 
 /// Whether `value` is exactly `length` lowercase hexadecimal digits.
+#[must_use]
 pub fn lowercase_hex(value: &[u8], length: usize) -> bool {
     has_length(value, length) && every_byte_is_a_digit(value)
 }
 
-fn has_length(value: &[u8], length: usize) -> bool {
+const fn has_length(value: &[u8], length: usize) -> bool {
     #[cfg(feature = "negative-control-hex-length")]
-    if let Some(has) = negative_control_hex_length(value, length) {
+    if let core::ops::ControlFlow::Break(has) = negative_control_hex_length(value, length) {
         return has;
     }
     value.len() == length
 }
 
 /// Whether `value` is a SHA-256 digest in lowercase hexadecimal.
+#[must_use]
 pub fn is_sha256_hex(value: &[u8]) -> bool {
     lowercase_hex(value, SHA256_HEX_LEN)
 }
 
 /// Whether `value` is a full SHA-1 git object id in lowercase hexadecimal.
+#[must_use]
 pub fn is_object_id(value: &[u8]) -> bool {
     lowercase_hex(value, OBJECT_HEX_LEN)
 }
 
 /// Whether `value` is a full commit id of a SHA-1 or a SHA-256 git repository, in lowercase hexadecimal.
+#[must_use]
 pub fn is_commit_id(value: &[u8]) -> bool {
     is_object_id(value) || is_sha256_hex(value)
 }
 
 fn every_byte_is_a_digit(value: &[u8]) -> bool {
     #[cfg(feature = "negative-control-hex-any-byte")]
-    if let Some(digits) = negative_control_hex_any_byte(value) {
+    if let core::ops::ControlFlow::Break(digits) = negative_control_hex_any_byte(value) {
         return digits;
     }
     let mut digits = true;
@@ -46,9 +50,9 @@ fn every_byte_is_a_digit(value: &[u8]) -> bool {
     digits
 }
 
-fn lowercase_hex_digit(byte: u8) -> bool {
+const fn lowercase_hex_digit(byte: u8) -> bool {
     #[cfg(feature = "negative-control-hex-case")]
-    if let Some(digit) = negative_control_hex_case(byte) {
+    if let core::ops::ControlFlow::Break(digit) = negative_control_hex_case(byte) {
         return digit;
     }
     byte.is_ascii_digit() || matches!(byte, b'a'..=b'f')
@@ -56,20 +60,24 @@ fn lowercase_hex_digit(byte: u8) -> bool {
 
 /// Accepts a value longer than its length.
 #[cfg(feature = "negative-control-hex-length")]
-fn negative_control_hex_length(value: &[u8], length: usize) -> Option<bool> {
-    Some(value.len() >= length)
+const fn negative_control_hex_length(value: &[u8], length: usize) -> core::ops::ControlFlow<bool> {
+    core::ops::ControlFlow::Break(value.len() >= length)
 }
 
 /// Accepts a value when any one byte is a digit.
 #[cfg(feature = "negative-control-hex-any-byte")]
-fn negative_control_hex_any_byte(value: &[u8]) -> Option<bool> {
-    Some(value.iter().any(|byte| lowercase_hex_digit(*byte)))
+fn negative_control_hex_any_byte(value: &[u8]) -> core::ops::ControlFlow<bool> {
+    core::ops::ControlFlow::Break(value.iter().any(|byte| lowercase_hex_digit(*byte)))
 }
 
 /// Accepts an uppercase hexadecimal digit.
 #[cfg(feature = "negative-control-hex-case")]
-fn negative_control_hex_case(byte: u8) -> Option<bool> {
-    byte.is_ascii_hexdigit().then_some(true)
+const fn negative_control_hex_case(byte: u8) -> core::ops::ControlFlow<bool> {
+    if byte.is_ascii_hexdigit() {
+        core::ops::ControlFlow::Break(true)
+    } else {
+        core::ops::ControlFlow::Continue(())
+    }
 }
 
 #[cfg(kani)]

@@ -8,26 +8,29 @@ use core::ops::RangeInclusive;
 /// The path that an archive entry names, without its trailing slashes, when every component is portable.
 ///
 /// The shell decodes the entry's path as UTF-8 first, and a slash is ASCII, so the path without its trailing slashes is UTF-8 too.
+#[must_use]
 pub fn archive_path(value: &str) -> Option<&str> {
     let path = value.get(..without_trailing_slashes(value.as_bytes()))?;
     portable_path(path.as_bytes()).then_some(path)
 }
 
 /// The length of `path` without its trailing slashes.
-fn without_trailing_slashes(path: &[u8]) -> usize {
+const fn without_trailing_slashes(path: &[u8]) -> usize {
     #[cfg(feature = "negative-control-keep-trailing-slashes")]
-    if let Some(length) = negative_control_keep_trailing_slashes(path) {
+    if let core::ops::ControlFlow::Break(length) = negative_control_keep_trailing_slashes(path) {
         return length;
     }
-    path.iter()
-        .rposition(|byte| *byte != b'/')
-        .map_or(0, |last| last + 1)
+    let mut kept = path;
+    while let [rest @ .., b'/'] = kept {
+        kept = rest;
+    }
+    kept.len()
 }
 
 /// Whether every `/`-separated component of `path` is portable.
-pub fn portable_path(path: &[u8]) -> bool {
+fn portable_path(path: &[u8]) -> bool {
     #[cfg(feature = "negative-control-first-component")]
-    if let Some(portable) = negative_control_first_component(path) {
+    if let core::ops::ControlFlow::Break(portable) = negative_control_first_component(path) {
         return portable;
     }
     path.split(|byte| *byte == b'/').all(portable_component)
@@ -35,14 +38,14 @@ pub fn portable_path(path: &[u8]) -> bool {
 
 /// Keeps the trailing slashes of a path, so a directory entry reads as a path with an empty last component.
 #[cfg(feature = "negative-control-keep-trailing-slashes")]
-fn negative_control_keep_trailing_slashes(path: &[u8]) -> Option<usize> {
-    Some(path.len())
+const fn negative_control_keep_trailing_slashes(path: &[u8]) -> core::ops::ControlFlow<usize> {
+    core::ops::ControlFlow::Break(path.len())
 }
 
 /// Checks only the first component of a path, so a later `..` passes.
 #[cfg(feature = "negative-control-first-component")]
-fn negative_control_first_component(path: &[u8]) -> Option<bool> {
-    Some(
+fn negative_control_first_component(path: &[u8]) -> core::ops::ControlFlow<bool> {
+    core::ops::ControlFlow::Break(
         path.split(|byte| *byte == b'/')
             .next()
             .is_some_and(portable_component),
@@ -53,7 +56,7 @@ fn negative_control_first_component(path: &[u8]) -> Option<bool> {
 ///
 /// Windows forbids some characters, reads a colon as a stream separator, drops a trailing dot or space, and reserves device names in every directory.
 /// Refusing those names on every host keeps a verdict from depending on where release-glz runs.
-pub fn portable_component(component: &[u8]) -> bool {
+fn portable_component(component: &[u8]) -> bool {
     let mut portable = !component.is_empty() && !dropped_suffix(component);
     let mut previous = None;
     for &byte in component {
@@ -64,18 +67,18 @@ pub fn portable_component(component: &[u8]) -> bool {
 }
 
 /// Whether Windows would drop the last character of a component, which also refuses `.` and `..`.
-fn dropped_suffix(component: &[u8]) -> bool {
+const fn dropped_suffix(component: &[u8]) -> bool {
     #[cfg(feature = "negative-control-path-traversal")]
-    if let Some(dropped) = negative_control_path_traversal(component) {
+    if let core::ops::ControlFlow::Break(dropped) = negative_control_path_traversal(component) {
         return dropped;
     }
     matches!(component.last(), Some(b'.' | b' '))
 }
 
 /// Whether `byte` is an ASCII control character or one that Windows forbids in a name.
-fn forbidden_byte(byte: u8) -> bool {
+const fn forbidden_byte(byte: u8) -> bool {
     #[cfg(feature = "negative-control-path-colon")]
-    if let Some(forbidden) = negative_control_path_colon(byte) {
+    if let core::ops::ControlFlow::Break(forbidden) = negative_control_path_colon(byte) {
         return forbidden;
     }
     byte.is_ascii_control()
@@ -101,17 +104,17 @@ fn c1_control(lead: u8, trail: u8) -> bool {
 /// The stem of a component: its bytes before the first dot, without trailing spaces.
 fn stem(component: &[u8]) -> &[u8] {
     #[cfg(feature = "negative-control-device-stem")]
-    if let Some(stem) = negative_control_device_stem(component) {
+    if let core::ops::ControlFlow::Break(stem) = negative_control_device_stem(component) {
         return stem;
     }
-    let end = component
-        .iter()
-        .position(|byte| *byte == b'.')
-        .unwrap_or(component.len());
-    without_trailing_spaces(&component[..end])
+    let before_dot = component
+        .split(|byte| *byte == b'.')
+        .next()
+        .unwrap_or(component);
+    without_trailing_spaces(before_dot)
 }
 
-fn without_trailing_spaces(mut name: &[u8]) -> &[u8] {
+const fn without_trailing_spaces(mut name: &[u8]) -> &[u8] {
     while let [rest @ .., b' '] = name {
         name = rest;
     }
@@ -123,36 +126,42 @@ fn without_trailing_spaces(mut name: &[u8]) -> &[u8] {
 /// A port is `COM` or `LPT` followed by a digit or by the superscript one, two, or three.
 fn device_stem(stem: &[u8]) -> bool {
     match *stem {
-        [a, b, c] => {
-            let name = [a, b, c];
-            same_name(&name, b"CON")
-                || same_name(&name, b"PRN")
-                || same_name(&name, b"AUX")
-                || same_name(&name, b"NUL")
+        [_, _, _] => {
+            same_name(stem, b"CON")
+                || same_name(stem, b"PRN")
+                || same_name(stem, b"AUX")
+                || same_name(stem, b"NUL")
         }
-        [a, b, c, number] => port(&[a, b, c]) && number.is_ascii_digit(),
+        [first, second, third, number] => port([first, second, third]) && number.is_ascii_digit(),
         [
-            a,
-            b,
-            c,
+            first,
+            second,
+            third,
             LATIN_1_LEAD,
             SUPERSCRIPT_ONE | SUPERSCRIPT_TWO | SUPERSCRIPT_THREE,
-        ] => port(&[a, b, c]),
-        [a, b, c, d, e, f] => same_name(&[a, b, c, d, e, f], b"CONIN$"),
-        [a, b, c, d, e, f, g] => same_name(&[a, b, c, d, e, f, g], b"CONOUT$"),
+        ] => port([first, second, third]),
+        [_, _, _, _, _, _] => same_name(stem, b"CONIN$"),
+        [_, _, _, _, _, _, _] => same_name(stem, b"CONOUT$"),
         _ => false,
     }
 }
 
 /// Whether three bytes are the name of a serial or parallel port.
-fn port(name: &[u8; 3]) -> bool {
-    same_name(name, b"COM") || same_name(name, b"LPT")
+fn port(name: [u8; 3]) -> bool {
+    same_name(&name, b"COM") || same_name(&name, b"LPT")
 }
 
 /// Whether a stem is a device name once ASCII letter case no longer counts.
+#[cfg_attr(
+    not(feature = "negative-control-device-case"),
+    expect(
+        clippy::missing_const_for_fn,
+        reason = "the device-case negative control compares the bytes with `==`, which no const fn may call"
+    )
+)]
 fn same_name(stem: &[u8], name: &[u8]) -> bool {
     #[cfg(feature = "negative-control-device-case")]
-    if let Some(same) = negative_control_device_case(stem, name) {
+    if let core::ops::ControlFlow::Break(same) = negative_control_device_case(stem, name) {
         return same;
     }
     stem.eq_ignore_ascii_case(name)
@@ -186,7 +195,7 @@ pub struct Collision<E> {
 
 impl<E> Collision<E> {
     /// The earlier entry.
-    pub fn earlier(&self) -> &E {
+    pub const fn earlier(&self) -> &E {
         &self.earlier
     }
 }
@@ -194,6 +203,10 @@ impl<E> Collision<E> {
 /// Record `entry` under the folded path `folded`, or refuse it with the earlier entry whose folded path names the same file or directory.
 ///
 /// A directory keeps the first entry that claimed it.
+///
+/// # Errors
+///
+/// Returns the [`Collision`] with the earlier entry when one claimed the same folded file or directory, a file that the path lies inside, or a directory at the path.
 pub fn claim_path<P: ClaimedPaths>(
     paths: &mut P,
     folded: &[u8],
@@ -205,7 +218,7 @@ pub fn claim_path<P: ClaimedPaths>(
         return Err(Collision { earlier });
     }
     #[cfg(feature = "negative-control-forget-files")]
-    if let Some(claimed) = negative_control_forget_files() {
+    if let core::ops::ControlFlow::Break(claimed) = negative_control_forget_files() {
         return claimed;
     }
     for directory in directories_above(folded) {
@@ -219,14 +232,14 @@ pub fn claim_path<P: ClaimedPaths>(
 
 /// Accepts an entry without recording it, so a later entry of the same path passes.
 #[cfg(feature = "negative-control-forget-files")]
-fn negative_control_forget_files<E>() -> Option<Result<(), Collision<E>>> {
-    Some(Ok(()))
+const fn negative_control_forget_files<E>() -> core::ops::ControlFlow<Result<(), Collision<E>>> {
+    core::ops::ControlFlow::Break(Ok(()))
 }
 
 /// Whether no earlier entry claimed the directory `folded`, so a claim records it.
 fn unclaimed<P: ClaimedPaths>(paths: &P, folded: &[u8]) -> bool {
     #[cfg(feature = "negative-control-overwrite-directory")]
-    if let Some(unclaimed) = negative_control_overwrite_directory() {
+    if let core::ops::ControlFlow::Break(unclaimed) = negative_control_overwrite_directory() {
         return unclaimed;
     }
     paths.directory(folded).is_none()
@@ -234,21 +247,21 @@ fn unclaimed<P: ClaimedPaths>(paths: &P, folded: &[u8]) -> bool {
 
 /// Records a later entry for a directory that an earlier entry claimed.
 #[cfg(feature = "negative-control-overwrite-directory")]
-fn negative_control_overwrite_directory() -> Option<bool> {
-    Some(true)
+const fn negative_control_overwrite_directory() -> core::ops::ControlFlow<bool> {
+    core::ops::ControlFlow::Break(true)
 }
 
 /// The folded paths of the directories that hold `folded`: its prefixes before each `/`.
 fn directories_above(folded: &[u8]) -> impl Iterator<Item = &[u8]> {
     (0..folded.len())
         .filter(move |&end| ends_directory(folded, end))
-        .map(move |end| &folded[..end])
+        .filter_map(move |end| folded.get(..end))
 }
 
 /// Whether the prefix of `folded` before `end` names a directory, which it does when a `/` follows it.
 fn ends_directory(folded: &[u8], end: usize) -> bool {
     #[cfg(feature = "negative-control-directory-at-every-byte")]
-    if let Some(ends) = negative_control_directory_at_every_byte() {
+    if let core::ops::ControlFlow::Break(ends) = negative_control_directory_at_every_byte() {
         return ends;
     }
     folded.get(end) == Some(&b'/')
@@ -256,8 +269,8 @@ fn ends_directory(folded: &[u8], end: usize) -> bool {
 
 /// Takes the prefix before every byte for a directory.
 #[cfg(feature = "negative-control-directory-at-every-byte")]
-fn negative_control_directory_at_every_byte() -> Option<bool> {
-    Some(true)
+const fn negative_control_directory_at_every_byte() -> core::ops::ControlFlow<bool> {
+    core::ops::ControlFlow::Break(true)
 }
 
 /// The earlier entry that a folded path collides with: a file or a directory of the same folded path, or a file that the path lies inside.
@@ -269,15 +282,17 @@ fn collision<'a, T: ?Sized>(
     directory: impl Fn(&[u8]) -> Option<&'a T>,
 ) -> Option<&'a T> {
     #[cfg(feature = "negative-control-case-collision")]
-    if let Some(other) = negative_control_case_collision(folded, &file, &directory) {
+    if let core::ops::ControlFlow::Break(other) =
+        negative_control_case_collision(folded, &file, &directory)
+    {
         return other;
     }
     if let Some(other) = file(folded).or_else(|| directory(folded)) {
         return Some(other);
     }
-    for end in 0..folded.len() {
-        if folded[end] == b'/'
-            && let Some(other) = file(&folded[..end])
+    for (end, byte) in folded.iter().enumerate() {
+        if *byte == b'/'
+            && let Some(other) = folded.get(..end).and_then(&file)
         {
             return Some(other);
         }
@@ -287,27 +302,40 @@ fn collision<'a, T: ?Sized>(
 
 /// Accepts a `..` component.
 #[cfg(feature = "negative-control-path-traversal")]
-fn negative_control_path_traversal(component: &[u8]) -> Option<bool> {
-    (component == b"..").then_some(false)
+const fn negative_control_path_traversal(component: &[u8]) -> core::ops::ControlFlow<bool> {
+    if matches!(component, b"..") {
+        core::ops::ControlFlow::Break(false)
+    } else {
+        core::ops::ControlFlow::Continue(())
+    }
 }
 
 /// Accepts a colon in a component.
 #[cfg(feature = "negative-control-path-colon")]
-fn negative_control_path_colon(byte: u8) -> Option<bool> {
-    (byte == b':').then_some(false)
+const fn negative_control_path_colon(byte: u8) -> core::ops::ControlFlow<bool> {
+    if byte == b':' {
+        core::ops::ControlFlow::Break(false)
+    } else {
+        core::ops::ControlFlow::Continue(())
+    }
 }
 
 /// Ends the stem of a component at its last dot instead of its first.
 #[cfg(feature = "negative-control-device-stem")]
-fn negative_control_device_stem(component: &[u8]) -> Option<&[u8]> {
-    let end = component.iter().rposition(|byte| *byte == b'.')?;
-    Some(without_trailing_spaces(&component[..end]))
+fn negative_control_device_stem(component: &[u8]) -> core::ops::ControlFlow<&[u8]> {
+    component
+        .iter()
+        .rposition(|byte| *byte == b'.')
+        .and_then(|end| component.get(..end))
+        .map_or(core::ops::ControlFlow::Continue(()), |before| {
+            core::ops::ControlFlow::Break(without_trailing_spaces(before))
+        })
 }
 
 /// Recognizes a device name only in uppercase.
 #[cfg(feature = "negative-control-device-case")]
-fn negative_control_device_case(stem: &[u8], name: &[u8]) -> Option<bool> {
-    Some(stem == name)
+fn negative_control_device_case(stem: &[u8], name: &[u8]) -> core::ops::ControlFlow<bool> {
+    core::ops::ControlFlow::Break(stem == name)
 }
 
 /// Lets an entry stand inside an earlier file.
@@ -316,8 +344,8 @@ fn negative_control_case_collision<'a, T: ?Sized>(
     folded: &[u8],
     file: impl Fn(&[u8]) -> Option<&'a T>,
     directory: impl Fn(&[u8]) -> Option<&'a T>,
-) -> Option<Option<&'a T>> {
-    Some(file(folded).or_else(|| directory(folded)))
+) -> core::ops::ControlFlow<Option<&'a T>> {
+    core::ops::ControlFlow::Break(file(folded).or_else(|| directory(folded)))
 }
 
 #[cfg(kani)]

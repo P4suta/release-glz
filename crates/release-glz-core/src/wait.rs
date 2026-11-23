@@ -4,7 +4,7 @@
 const MILLISECONDS_PER_SECOND: u64 = 1000;
 
 /// The base of the decimal digits that a delay is written in.
-const DECIMAL_BASE: u64 = 10;
+const DECIMAL_BASE: u32 = 10;
 
 /// What an attempt of a request got that may let the request repeat.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,7 +66,8 @@ pub enum Next {
 }
 
 /// Whether another attempt follows the attempt with index `attempt`, counted from zero, of a request that makes at most `attempts`.
-pub fn another_attempt_follows(attempt: usize, attempts: usize) -> bool {
+#[must_use]
+pub const fn another_attempt_follows(attempt: usize, attempts: usize) -> bool {
     attempt < attempts.saturating_sub(1)
 }
 
@@ -74,9 +75,12 @@ impl RetryPolicy {
     /// What a request does after its attempt with index `attempt`, counted from zero, got `answer`.
     ///
     /// It waits only when another attempt follows.
+    #[must_use]
     pub fn after(&self, attempt: usize, answer: Answer) -> Next {
         #[cfg(feature = "negative-control-retry-after-last-attempt")]
-        if let Some(next) = negative_control_retry_after_last_attempt(self, attempt, answer) {
+        if let core::ops::ControlFlow::Break(next) =
+            negative_control_retry_after_last_attempt(self, attempt, answer)
+        {
             return next;
         }
         if !another_attempt_follows(attempt, self.attempts) {
@@ -93,6 +97,7 @@ impl RetryPolicy {
     }
 
     /// The milliseconds to wait after a busy response to the attempt with index `attempt` that asked for `asked` seconds, which never exceed the cap.
+    #[must_use]
     pub fn busy_wait(&self, attempt: usize, asked: Option<u64>) -> u64 {
         let wait = match (asked, self.busy_default) {
             (Some(seconds), _) => seconds.saturating_mul(MILLISECONDS_PER_SECOND),
@@ -105,6 +110,7 @@ impl RetryPolicy {
     }
 
     /// The milliseconds to wait after the attempt with index `attempt` failed in transport: one step for each attempt so far.
+    #[must_use]
     pub fn transport_wait(&self, attempt: usize) -> u64 {
         u64::try_from(attempt)
             .map_or(u64::MAX, |attempt| attempt.saturating_add(1))
@@ -114,7 +120,7 @@ impl RetryPolicy {
 
 fn capped(wait: u64, cap: u64) -> u64 {
     #[cfg(feature = "negative-control-uncapped-busy-wait")]
-    if let Some(wait) = negative_control_uncapped_busy_wait(wait) {
+    if let core::ops::ControlFlow::Break(wait) = negative_control_uncapped_busy_wait(wait) {
         return wait;
     }
     wait.min(cap)
@@ -122,10 +128,9 @@ fn capped(wait: u64, cap: u64) -> u64 {
 
 /// Two to the power of `attempt`, or the largest number when that doesn't fit.
 fn doubled(attempt: usize) -> u64 {
-    u32::try_from(attempt)
-        .ok()
-        .and_then(|shift| 1_u64.checked_shl(shift))
-        .unwrap_or(u64::MAX)
+    u32::try_from(attempt).map_or(u64::MAX, |shift| {
+        1_u64.checked_shl(shift).unwrap_or(u64::MAX)
+    })
 }
 
 /// What a wait for a release to become visible does after a poll.
@@ -140,9 +145,10 @@ pub enum AfterPoll {
 }
 
 /// What a wait that polls at most `attempts` times does after its poll with index `poll`, counted from zero, which showed the release when `visible` holds.
-pub fn after_poll(poll: usize, attempts: usize, visible: bool) -> AfterPoll {
+#[must_use]
+pub const fn after_poll(poll: usize, attempts: usize, visible: bool) -> AfterPoll {
     #[cfg(feature = "negative-control-sleep-after-last-poll")]
-    if let Some(after) = negative_control_sleep_after_last_poll(visible) {
+    if let core::ops::ControlFlow::Break(after) = negative_control_sleep_after_last_poll(visible) {
         return after;
     }
     if visible {
@@ -157,29 +163,34 @@ pub fn after_poll(poll: usize, attempts: usize, visible: bool) -> AfterPoll {
 /// The seconds that a `Retry-After` header names in its delay form, which is one or more ASCII digits for a number that fits in 64 bits.
 ///
 /// A date, a sign, or any other text names no delay, so the request waits as its policy's default says.
+#[must_use]
 pub fn delay_seconds(text: &[u8]) -> Option<u64> {
     #[cfg(feature = "negative-control-signed-delay")]
-    if let Some(seconds) = negative_control_signed_delay(text) {
+    if let core::ops::ControlFlow::Break(seconds) = negative_control_signed_delay(text) {
         return seconds;
     }
-    if text.is_empty() || !text.iter().all(u8::is_ascii_digit) {
-        return None;
+    decimal(text)
+}
+
+/// The number that one or more ASCII digits spell, when it fits in 64 bits.
+fn decimal(digits: &[u8]) -> Option<u64> {
+    let mut value: u64 = 0;
+    for &byte in digits {
+        let digit = char::from(byte).to_digit(DECIMAL_BASE)?;
+        value = value
+            .checked_mul(u64::from(DECIMAL_BASE))?
+            .checked_add(u64::from(digit))?;
     }
-    let mut seconds: u64 = 0;
-    for &byte in text {
-        seconds = seconds
-            .checked_mul(DECIMAL_BASE)?
-            .checked_add(u64::from(byte - b'0'))?;
-    }
-    Some(seconds)
+    (!digits.is_empty()).then_some(value)
 }
 
 /// Whether a poll shows a release as visible: the registry lists its version, with docs when `require_docs` asks for them.
 ///
 /// `listed` holds whether the registry has docs for the version, when it lists the version at all.
+#[must_use]
 pub fn release_ready(listed: Option<bool>, require_docs: bool) -> bool {
     #[cfg(feature = "negative-control-ready-without-docs")]
-    if let Some(ready) = negative_control_ready_without_docs(listed) {
+    if let core::ops::ControlFlow::Break(ready) = negative_control_ready_without_docs(listed) {
         return ready;
     }
     listed.is_some_and(|has_docs| has_docs || !require_docs)
@@ -191,43 +202,41 @@ fn negative_control_retry_after_last_attempt(
     policy: &RetryPolicy,
     attempt: usize,
     answer: Answer,
-) -> Option<Next> {
-    Some(Next::Retry(policy.wait(attempt, answer)))
+) -> core::ops::ControlFlow<Next> {
+    core::ops::ControlFlow::Break(Next::Retry(policy.wait(attempt, answer)))
 }
 
 /// Waits as long as a busy response asks, however long that is.
 #[cfg(feature = "negative-control-uncapped-busy-wait")]
-fn negative_control_uncapped_busy_wait(wait: u64) -> Option<u64> {
-    Some(wait)
+const fn negative_control_uncapped_busy_wait(wait: u64) -> core::ops::ControlFlow<u64> {
+    core::ops::ControlFlow::Break(wait)
 }
 
 /// Polls again after every poll that doesn't show the release, so a wait sleeps after its last poll too.
 #[cfg(feature = "negative-control-sleep-after-last-poll")]
-fn negative_control_sleep_after_last_poll(visible: bool) -> Option<AfterPoll> {
-    (!visible).then_some(AfterPoll::PollAgain)
+const fn negative_control_sleep_after_last_poll(
+    visible: bool,
+) -> core::ops::ControlFlow<AfterPoll> {
+    if visible {
+        core::ops::ControlFlow::Continue(())
+    } else {
+        core::ops::ControlFlow::Break(AfterPoll::PollAgain)
+    }
 }
 
 /// Counts a listed version as visible even when the docs it needs are missing.
 #[cfg(feature = "negative-control-ready-without-docs")]
-fn negative_control_ready_without_docs(listed: Option<bool>) -> Option<bool> {
-    Some(listed.is_some())
+const fn negative_control_ready_without_docs(listed: Option<bool>) -> core::ops::ControlFlow<bool> {
+    core::ops::ControlFlow::Break(listed.is_some())
 }
 
 /// Reads a leading `+` as part of the delay, as `u64::from_str` does.
 #[cfg(feature = "negative-control-signed-delay")]
-fn negative_control_signed_delay(text: &[u8]) -> Option<Option<u64>> {
-    let digits = text.strip_prefix(b"+")?;
-    Some(
-        if digits.is_empty() || !digits.iter().all(u8::is_ascii_digit) {
-            None
-        } else {
-            digits.iter().try_fold(0_u64, |seconds, &byte| {
-                seconds
-                    .checked_mul(DECIMAL_BASE)?
-                    .checked_add(u64::from(byte - b'0'))
-            })
-        },
-    )
+fn negative_control_signed_delay(text: &[u8]) -> core::ops::ControlFlow<Option<u64>> {
+    text.strip_prefix(b"+")
+        .map_or(core::ops::ControlFlow::Continue(()), |digits| {
+            core::ops::ControlFlow::Break(decimal(digits))
+        })
 }
 
 #[cfg(kani)]

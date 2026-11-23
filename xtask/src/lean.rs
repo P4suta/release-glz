@@ -324,7 +324,7 @@ fn unframed_notification(digest: &[u8], hook: &[u8]) -> Vec<u8> {
 }
 
 /// The republish defect: a decision table that publishes a wanted object again although the world already holds it.
-fn republish(object: Object) -> Decision {
+const fn republish(object: Object) -> Decision {
     match (object.wanted, object.presence) {
         (true, Presence::Matches) => Decision::Create,
         _ => object.decision(),

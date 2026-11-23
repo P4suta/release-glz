@@ -7,8 +7,6 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
-extern crate alloc;
-
 mod approval;
 mod archive_path;
 mod candidate_choice;
