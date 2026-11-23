@@ -6,6 +6,7 @@ use std::path::Path;
 
 use release_glz::approval::ApprovalRequest;
 use release_glz::workflow::{CANDIDATE_ARTIFACT_PREFIX, render_configured};
+use release_glz_test_support::fs;
 use serde_norway::Value;
 
 const ACTION: &str = "P4suta/release-glz@abcdef0123456789abcdef0123456789abcdef01";
@@ -30,7 +31,7 @@ fn workflow_for(manifest: &Path) -> Value {
 
 /// The commands the Action accepts, read from its source so a new one needs a classification here.
 fn action_commands() -> BTreeSet<String> {
-    let source = std::fs::read_to_string("action/index.js").unwrap();
+    let source = fs::read_to_string("action/index.js");
     let list = source
         .split_once("const SUPPORTED_COMMANDS = new Set([")
         .unwrap()

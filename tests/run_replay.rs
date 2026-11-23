@@ -3,11 +3,11 @@
 //! `cargo xtask quint` writes the traces again and requires them to equal the committed ones, so these tests replay what the model checker's model does.
 
 use std::collections::BTreeSet;
-use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail, ensure};
 use release_glz_core::{Object, Presence, ReleaseState, Run, Step};
+use release_glz_test_support::fs;
 use serde_json::Value;
 
 /// The committed traces.
@@ -287,7 +287,7 @@ fn replay(text: &str, coverage: &mut Coverage) -> Result<()> {
 }
 
 fn traces() -> Vec<PathBuf> {
-    let mut traces = fs::read_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join(TRACES))
+    let mut traces = std::fs::read_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join(TRACES))
         .expect("the committed traces")
         .map(|entry| entry.unwrap().path())
         .filter(|path| {
@@ -305,7 +305,7 @@ fn every_committed_trace_replays_through_the_run_machine() {
     let traces = traces();
     assert!(!traces.is_empty(), "no committed traces");
     for trace in &traces {
-        replay(&fs::read_to_string(trace).unwrap(), &mut coverage)
+        replay(&fs::read_to_string(trace), &mut coverage)
             .unwrap_or_else(|error| panic!("{}: {error:#}", trace.display()));
     }
     for decision in [
@@ -338,7 +338,7 @@ fn a_trace_that_decides_otherwise_fails_the_replay() {
         .into_iter()
         .find(|path| path.ends_with("release_run_publishesInOrderTest.itf.json"))
         .expect("the trace of the in-order test");
-    let mut document: Value = serde_json::from_str(&fs::read_to_string(trace).unwrap()).unwrap();
+    let mut document: Value = serde_json::from_str(&fs::read_to_string(trace)).unwrap();
     let states = document["states"].as_array_mut().unwrap();
     let applied = states
         .iter_mut()

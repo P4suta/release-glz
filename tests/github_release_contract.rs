@@ -3210,7 +3210,7 @@ async fn each_github_request_refuses_each_redirect_and_sends_nothing_to_its_loca
     }
 }
 
-/// A redirect without a usable `Location` is refused for the same reason, and its message says so.
+/// A redirect without a `Location` is refused for the same reason, and its message says so.
 #[tokio::test]
 async fn a_github_redirect_without_a_location_is_refused_as_a_redirect() {
     let mut server = http::FakeServer::start();
@@ -3233,7 +3233,7 @@ async fn a_github_redirect_without_a_location_is_refused_as_a_redirect() {
         (
             Some(RefusalReason::GithubRedirectRefused),
             format!(
-                "refusing GitHub redirect 302 Found from {base}/repos/o/r/releases?per_page=100&page=1 to a missing or invalid Location"
+                "refusing GitHub redirect 302 Found from {base}/repos/o/r/releases?per_page=100&page=1 to a missing Location"
             )
         )
     );

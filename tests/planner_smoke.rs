@@ -1,4 +1,3 @@
-use std::fs;
 use std::path::Path;
 
 use anyhow::{Result, bail, ensure};
@@ -16,6 +15,7 @@ use release_glz::planner::{
     PlanOptions, Planner, prepare_release_files, release_commit_changes, update_local,
 };
 use release_glz::registry::{HexRelease, PackageState, Registry};
+use release_glz_test_support::fs;
 use release_glz_test_support::require_gleam;
 use release_glz_test_support::schema::assert_published_result;
 use semver::Version;
@@ -406,7 +406,7 @@ async fn planning_refuses_a_manifest_without_release_configuration() -> Result<(
     let package = temp.path();
     init_gleam_fixture(package, "unconfigured_fixture", "1.0.0")?;
     let source = "name = \"unconfigured_fixture\"\nversion = \"1.0.0\"\n";
-    fs::write(package.join("gleam.toml"), source)?;
+    fs::write(package.join("gleam.toml"), source);
     git(
         package,
         &["commit", "--quiet", "-am", "chore: drop configuration"],
@@ -426,7 +426,7 @@ async fn planning_refuses_a_manifest_without_release_configuration() -> Result<(
     .unwrap_err();
     ensure!(refusal_reason(&error) == Some(RefusalReason::ConfigMissing));
     ensure!(error.to_string().contains("release-glz init"), "{error}");
-    ensure!(fs::read_to_string(package.join("gleam.toml"))? == source);
+    ensure!(fs::read_to_string(package.join("gleam.toml")) == source);
     Ok(())
 }
 
@@ -439,7 +439,7 @@ async fn planning_refuses_a_compiler_other_than_the_configured_one() -> Result<(
     fs::write(
         package.join("gleam.toml"),
         configured_manifest("compiler_fixture", "1.0.0", "99.0.0", ""),
-    )?;
+    );
     git(
         package,
         &[
@@ -478,7 +478,7 @@ async fn explicit_baseline_ref_precedes_search_and_an_api_exception_covers_its_v
     let gleam_version = require_gleam();
     let temp = tempfile::tempdir()?;
     let package = temp.path();
-    fs::create_dir_all(package.join("src"))?;
+    fs::create_dir_all(package.join("src"));
     fs::write(
         package.join("gleam.toml"),
         configured_manifest(
@@ -496,11 +496,11 @@ reason = "The baseline documentation has no package interface"
 expires = "2999-12-31"
 "#,
         ),
-    )?;
+    );
     fs::write(
         package.join("src/baseline_fixture.gleam"),
         "pub fn value() -> Int { 1 }\n",
-    )?;
+    );
     git(package, &["init", "--initial-branch=main"])?;
     git(package, &["config", "core.hooksPath", ".git/no-hooks"])?;
     git(package, &["config", "user.email", "fixture@example.test"])?;
@@ -563,16 +563,16 @@ async fn plan_uses_hex_api_and_tag_without_dirtying_the_package() -> Result<()> 
     let gleam_version = require_gleam();
     let temp = tempfile::tempdir()?;
     let package = temp.path();
-    fs::create_dir(package.join("src"))?;
+    fs::create_dir(package.join("src"));
     fs::write(
         package.join("gleam.toml"),
         configured_manifest("planner_fixture", "1.0.0", &gleam_version, ""),
-    )?;
-    fs::write(package.join("README.md"), "# Planner fixture\n")?;
+    );
+    fs::write(package.join("README.md"), "# Planner fixture\n");
     fs::write(
         package.join("src/planner_fixture.gleam"),
         "pub fn one() -> Int { 1 }\n",
-    )?;
+    );
     git(package, &["init", "--initial-branch=main"])?;
     git(package, &["config", "core.hooksPath", ".git/no-hooks"])?;
     git(package, &["config", "user.email", "fixture@example.test"])?;
@@ -592,7 +592,7 @@ async fn plan_uses_hex_api_and_tag_without_dirtying_the_package() -> Result<()> 
     fs::write(
         package.join("src/planner_fixture.gleam"),
         "pub fn one() -> Int { 1 }\n\npub fn two() -> Int { 2 }\n",
-    )?;
+    );
     git(package, &["add", "."])?;
     git(package, &["commit", "-m", "feat: add two"])?;
     let registry = MockRegistry {
@@ -616,13 +616,16 @@ async fn plan_uses_hex_api_and_tag_without_dirtying_the_package() -> Result<()> 
     ensure!(plan.baseline.source == BaselineSource::Tag);
     ensure!(!plan.api.changes.is_empty() && !plan.changes.is_empty());
     assert_published_result(&serde_json::to_value(&plan)?);
-    ensure!(!package.join("build").exists(), "plan dirtied the package");
+    ensure!(
+        !fs::exists(package.join("build")),
+        "plan dirtied the package"
+    );
 
     git(package, &["tag", "--delete", "v1.0.0"])?;
     let recovered = planner.plan(&options).await?;
     ensure!(recovered.baseline.source == BaselineSource::ArtifactFingerprint);
     ensure!(
-        cache.join("release-glz/baselines").is_dir(),
+        fs::is_dir(cache.join("release-glz/baselines")),
         "successful bounded fingerprint search was not cached"
     );
     let cached = uncached_planner(registry.clone(), gleam.clone())
@@ -633,14 +636,14 @@ async fn plan_uses_hex_api_and_tag_without_dirtying_the_package() -> Result<()> 
     ensure!(cached.baseline.source == BaselineSource::ArtifactFingerprint);
 
     let cache_directory = cache.join("release-glz/baselines");
-    let cache_file = fs::read_dir(&cache_directory)?
+    let cache_file = std::fs::read_dir(&cache_directory)?
         .next()
         .transpose()?
         .unwrap()
         .path();
-    let mut poisoned: serde_json::Value = serde_json::from_slice(&fs::read(&cache_file)?)?;
+    let mut poisoned: serde_json::Value = serde_json::from_slice(&fs::read(&cache_file))?;
     poisoned["sha"] = serde_json::Value::String("f".repeat(40));
-    fs::write(&cache_file, serde_json::to_vec(&poisoned)?)?;
+    fs::write(&cache_file, serde_json::to_vec(&poisoned)?);
     let poisoned = uncached_planner(registry.clone(), gleam.clone())
         .with_baseline_cache_dir(Some(cache))
         .with_baseline_search_limit(1)
@@ -662,7 +665,7 @@ async fn plan_uses_hex_api_and_tag_without_dirtying_the_package() -> Result<()> 
     ensure!(bounded.contains("bounded"), "{bounded}");
     ensure!(bounded.contains("1 commit"), "{bounded}");
     ensure!(
-        !package.join("build").exists(),
+        !fs::exists(package.join("build")),
         "fingerprint recovery dirtied the package"
     );
 
@@ -670,7 +673,7 @@ async fn plan_uses_hex_api_and_tag_without_dirtying_the_package() -> Result<()> 
     fs::write(
         package.join("src/planner_fixture.gleam"),
         "fn private_only() -> Int { 99 }\n",
-    )?;
+    );
     let committed = planner.plan(&options).await?;
     ensure!(committed.version == Version::new(1, 1, 0));
     ensure!(committed.api.impact == Bump::Minor);
@@ -693,7 +696,7 @@ async fn breaking_zero_major_release_stays_on_the_zero_major_line() -> Result<()
     let gleam_version = require_gleam();
     let temp = tempfile::tempdir()?;
     let package = temp.path();
-    fs::create_dir(package.join("src"))?;
+    fs::create_dir(package.join("src"));
     fs::write(
         package.join("gleam.toml"),
         configured_manifest(
@@ -702,12 +705,12 @@ async fn breaking_zero_major_release_stays_on_the_zero_major_line() -> Result<()
             &gleam_version,
             "allow_version_zero = true\n",
         ),
-    )?;
-    fs::write(package.join("README.md"), "# Zero fixture\n")?;
+    );
+    fs::write(package.join("README.md"), "# Zero fixture\n");
     fs::write(
         package.join("src/zero_fixture.gleam"),
         "pub fn public() -> Int { 1 }\n",
-    )?;
+    );
     git(package, &["init", "--initial-branch=main"])?;
     git(package, &["config", "core.hooksPath", ".git/no-hooks"])?;
     git(package, &["config", "user.email", "fixture@example.test"])?;
@@ -725,7 +728,7 @@ async fn breaking_zero_major_release_stays_on_the_zero_major_line() -> Result<()
     fs::write(
         package.join("src/zero_fixture.gleam"),
         "pub fn replacement() -> String { \"breaking\" }\n",
-    )?;
+    );
     git(package, &["add", "."])?;
     git(package, &["commit", "-m", "feat!: replace API"])?;
 
@@ -756,16 +759,16 @@ async fn structured_api_exception_requires_an_active_expiry_and_resolvable_basel
     let gleam_version = require_gleam();
     let temp = tempfile::tempdir()?;
     let package = temp.path();
-    fs::create_dir(package.join("src"))?;
+    fs::create_dir(package.join("src"));
     fs::write(
         package.join("gleam.toml"),
         exception_manifest(&gleam_version, "v1.0.0", "2999-12-31"),
-    )?;
-    fs::write(package.join("README.md"), "# API exception fixture\n")?;
+    );
+    fs::write(package.join("README.md"), "# API exception fixture\n");
     fs::write(
         package.join("src/exception_fixture.gleam"),
         "pub fn original() -> Int { 1 }\n",
-    )?;
+    );
     git(package, &["init", "--initial-branch=main"])?;
     git(package, &["config", "core.hooksPath", ".git/no-hooks"])?;
     git(package, &["config", "user.email", "fixture@example.test"])?;
@@ -782,7 +785,7 @@ async fn structured_api_exception_requires_an_active_expiry_and_resolvable_basel
     fs::write(
         package.join("src/exception_fixture.gleam"),
         "pub fn replacement() -> String { \"changed\" }\n",
-    )?;
+    );
     git(package, &["add", "."])?;
     git(package, &["commit", "-m", "feat!: replace API"])?;
 
@@ -810,7 +813,7 @@ async fn structured_api_exception_requires_an_active_expiry_and_resolvable_basel
     fs::write(
         package.join("gleam.toml"),
         exception_manifest(&gleam_version, "v1.0.0", "2000-01-01"),
-    )?;
+    );
     git(package, &["add", "gleam.toml"])?;
     git(package, &["commit", "-m", "test: expire exception"])?;
     let expired = planner.plan(&options).await.unwrap_err();
@@ -822,7 +825,7 @@ async fn structured_api_exception_requires_an_active_expiry_and_resolvable_basel
     fs::write(
         package.join("gleam.toml"),
         exception_manifest(&gleam_version, "refs/tags/missing", "2999-12-31"),
-    )?;
+    );
     git(package, &["add", "gleam.toml"])?;
     git(
         package,
@@ -841,12 +844,12 @@ fn release_files_are_repository_relative_structured_and_idempotently_updated() -
     let temp = tempfile::tempdir()?;
     let root = temp.path();
     let package = root.join("packages/widget");
-    fs::create_dir_all(package.join(".release-glz/notes"))?;
-    fs::create_dir_all(root.join(".github"))?;
+    fs::create_dir_all(package.join(".release-glz/notes"));
+    fs::create_dir_all(root.join(".github"));
     fs::write(
         package.join("gleam.toml"),
         configured_manifest("widget", "1.1.0", "1.18.1", ""),
-    )?;
+    );
     fs::write(
         root.join(".github/release.yml"),
         r#"changelog:
@@ -858,15 +861,15 @@ fn release_files_are_repository_relative_structured_and_idempotently_updated() -
     - title: Other
       labels: ["*"]
 "#,
-    )?;
+    );
     fs::write(
         package.join(".release-glz/notes/duplicate.toml"),
         "id = \"duplicate\"\ncategory = \"fixed\"\ntext = \"Duplicate PR note\"\npull_request = 7\n",
-    )?;
+    );
     fs::write(
         package.join(".release-glz/notes/manual.toml"),
         "id = \"manual\"\ncategory = \"security\"\ntext = \"Harden candidate checks\"\n",
-    )?;
+    );
     git(root, &["init", "--initial-branch=main"])?;
 
     let mut manifest = Manifest::load(package.join("gleam.toml"))?;
@@ -908,14 +911,14 @@ fn release_files_are_repository_relative_structured_and_idempotently_updated() -
     ensure!(changelog.contains("Harden candidate checks"));
     ensure!(!changelog.contains("Duplicate PR note"));
     ensure!(!changelog.contains("Internal maintenance"));
-    ensure!(!package.join("CHANGELOG.md").exists());
-    ensure!(fs::read_to_string(package.join("gleam.toml"))?.contains("1.1.0"));
+    ensure!(!fs::exists(package.join("CHANGELOG.md")));
+    ensure!(fs::read_to_string(package.join("gleam.toml")).contains("1.1.0"));
 
     let written = update_local(&mut manifest, &plan)?;
     ensure!(written.len() == 2);
     ensure!(manifest.version == Version::new(1, 2, 0));
-    ensure!(fs::read_to_string(package.join("gleam.toml"))?.contains("1.2.0"));
-    ensure!(fs::read_to_string(package.join("CHANGELOG.md"))?.contains("Harden candidate checks"));
+    ensure!(fs::read_to_string(package.join("gleam.toml")).contains("1.2.0"));
+    ensure!(fs::read_to_string(package.join("CHANGELOG.md")).contains("Harden candidate checks"));
     ensure!(update_local(&mut manifest, &plan)?.is_empty());
     Ok(())
 }
@@ -929,7 +932,7 @@ fn release_file_generation_rejects_a_manifest_outside_the_discovered_repository(
     fs::write(
         &manifest_path,
         configured_manifest("outside", "1.0.0", "1.18.1", ""),
-    )?;
+    );
     let manifest = Manifest::load(&manifest_path)?;
     let repo = GitRepo::discover(repository.path())?;
 
@@ -945,12 +948,12 @@ fn a_release_commit_changes_only_the_files_that_differ_from_head() -> Result<()>
     let temp = tempfile::tempdir()?;
     let root = temp.path();
     let package = root.join("packages/widget");
-    fs::create_dir_all(&package)?;
+    fs::create_dir_all(&package);
     // The manifest already names the planned version, as `set-version` leaves it.
     fs::write(
         package.join("gleam.toml"),
         configured_manifest("widget", "1.2.0", "1.18.1", ""),
-    )?;
+    );
     git(root, &["init", "--initial-branch=main"])?;
     git(root, &["add", "."])?;
     git(root, &["commit", "--quiet", "-m", "chore: set the version"])?;
@@ -966,7 +969,7 @@ fn a_release_commit_changes_only_the_files_that_differ_from_head() -> Result<()>
     fs::write(
         package.join("CHANGELOG.md"),
         &changes["packages/widget/CHANGELOG.md"],
-    )?;
+    );
     let uncommitted = release_commit_changes(&manifest, &repo, &plan, &[])?;
     ensure!(
         uncommitted == changes,
@@ -1106,16 +1109,16 @@ manual_refs = ["refs/heads/main"]
 }
 
 fn init_gleam_fixture(package: &Path, name: &str, version: &str) -> Result<()> {
-    fs::create_dir_all(package.join("src"))?;
+    fs::create_dir_all(package.join("src"));
     fs::write(
         package.join("gleam.toml"),
         configured_manifest(name, version, &require_gleam(), ""),
-    )?;
-    fs::write(package.join("README.md"), "# Planner fixture\n")?;
+    );
+    fs::write(package.join("README.md"), "# Planner fixture\n");
     fs::write(
         package.join(format!("src/{name}.gleam")),
         "pub fn value() -> Int { 1 }\n",
-    )?;
+    );
     git(package, &["init", "--initial-branch=main"])?;
     git(package, &["config", "core.hooksPath", ".git/no-hooks"])?;
     git(package, &["config", "user.email", "fixture@example.test"])?;

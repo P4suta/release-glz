@@ -2,7 +2,6 @@
 //!
 //! The rendered file records its own digest, and an update is refused once a maintainer has edited it by hand.
 
-use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -13,7 +12,8 @@ use serde::{Deserialize, Serialize};
 use crate::canonical::sha256;
 use crate::config::{validate_git_ref, validate_relative_path, validate_release_branch_prefix};
 use crate::diff::unified_diff;
-use crate::failure::{RefusalReason, refused};
+use crate::failure::{Refusal, RefusalReason, refused};
+use crate::fs;
 use crate::refuse;
 
 /// Repository-relative path of the managed release workflow.
@@ -586,7 +586,7 @@ pub fn init(
     dry_run: bool,
 ) -> Result<PathBuf> {
     let path = repo_root.join(WORKFLOW_PATH);
-    if path.exists() {
+    if fs::kind(&path)? != fs::Kind::Absent {
         bail!(
             "`{}` already exists; release-glz will not overwrite it",
             path.display()
@@ -618,7 +618,15 @@ pub fn sync(
         &settings.release_branch_prefix,
         &settings.action_sha,
     )?;
-    let current = fs::read_to_string(&path).ok();
+    let current = fs::read_to_string_if_present(&path).with_context(|| {
+        Refusal::new(
+            RefusalReason::WorkflowModified,
+            format!(
+                "`{}` can't be read; refusing to treat it as missing and overwrite it",
+                path.display()
+            ),
+        )
+    })?;
     let changed = current.as_deref() != Some(rendered.as_str());
     let diff = (mode == WorkflowMode::Diff && changed)
         .then(|| unified_diff(WORKFLOW_PATH, current.as_deref().unwrap_or(""), &rendered));
@@ -626,19 +634,20 @@ pub fn sync(
 
     if mode == WorkflowMode::Update && changed {
         if let Some(current) = &current {
-            let state_path = repo_root.join(WORKFLOW_STATE_PATH);
-            let state: WorkflowStateFile = fs::read(&state_path)
-                .ok()
-                .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-                .ok_or_else(|| {
-                    refused(
-                        RefusalReason::WorkflowModified,
-                        format_args!(
-                            "`{}` exists without a valid managed-state record; refusing to overwrite a modified workflow",
-                            path.display()
-                        ),
-                    )
-                })?;
+            let invalid_record = || {
+                Refusal::new(
+                    RefusalReason::WorkflowModified,
+                    format!(
+                        "`{}` exists without a valid managed-state record; refusing to overwrite a modified workflow",
+                        path.display()
+                    ),
+                )
+            };
+            let state: WorkflowStateFile =
+                match fs::read_if_present(repo_root.join(WORKFLOW_STATE_PATH))? {
+                    Some(bytes) => serde_json::from_slice(&bytes).with_context(invalid_record)?,
+                    None => return Err(invalid_record().into()),
+                };
             if state.schema != "workflow-state/v1"
                 || state.path != WORKFLOW_PATH
                 || state.sha256 != sha256(current).as_str()
@@ -689,6 +698,7 @@ fn atomic_write(path: &Path, contents: &[u8]) -> Result<()> {
 mod tests {
     use super::*;
     use crate::failure::{RefusalReason, refusal_reason};
+    use release_glz_test_support::fs;
 
     /// The reason and message of `error`.
     fn refusal(error: &anyhow::Error) -> (Option<RefusalReason>, String) {
@@ -950,11 +960,7 @@ mod tests {
         assert!(!unchanged.changed);
 
         let path = temp.path().join(WORKFLOW_PATH);
-        fs::write(
-            &path,
-            format!("{}# user edit\n", fs::read_to_string(&path).unwrap()),
-        )
-        .unwrap();
+        fs::write(&path, format!("{}# user edit\n", fs::read_to_string(&path)));
         let mut newer = settings.clone();
         newer.compiler = "1.18.2".into();
         let error = sync(temp.path(), &newer, WorkflowMode::Update).unwrap_err();
@@ -968,7 +974,7 @@ mod tests {
                 )
             )
         );
-        assert!(fs::read_to_string(path).unwrap().contains("# user edit"));
+        assert!(fs::read_to_string(path).contains("# user edit"));
     }
 
     #[test]
@@ -1092,11 +1098,11 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let path = init(temp.path(), Path::new("gleam.toml"), "main", true).unwrap();
         assert_eq!(path, temp.path().join(WORKFLOW_PATH));
-        assert!(!path.exists());
+        assert!(!fs::exists(&path));
 
         init(temp.path(), Path::new("gleam.toml"), "main", false).unwrap();
-        assert!(path.exists());
-        let original = fs::read(&path).unwrap();
+        assert!(fs::exists(&path));
+        let original = fs::read(&path);
         let error = init(temp.path(), Path::new("gleam.toml"), "main", false).unwrap_err();
         assert_eq!(
             refusal(&error),
@@ -1108,7 +1114,7 @@ mod tests {
                 )
             )
         );
-        assert_eq!(fs::read(path).unwrap(), original);
+        assert_eq!(fs::read(path), original);
     }
 
     #[test]
@@ -1143,7 +1149,6 @@ mod tests {
         assert!(outcome.written);
         assert!(
             fs::read_to_string(temp.path().join(WORKFLOW_PATH))
-                .unwrap()
                 .contains("gleam-version: \"1.18.2\"")
         );
     }
@@ -1156,18 +1161,18 @@ mod tests {
             sync(temp.path(), &settings, WorkflowMode::Update).unwrap();
             let state_path = temp.path().join(WORKFLOW_STATE_PATH);
             match case {
-                "missing" => fs::remove_file(&state_path).unwrap(),
-                "malformed" => fs::write(&state_path, b"not json").unwrap(),
+                "missing" => fs::remove_file(&state_path),
+                "malformed" => fs::write(&state_path, b"not json"),
                 "schema" | "path" | "digest" => {
                     let mut state: WorkflowStateFile =
-                        serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+                        serde_json::from_slice(&fs::read(&state_path)).unwrap();
                     match case {
                         "schema" => state.schema = "workflow-state/v2".into(),
                         "path" => state.path = ".github/workflows/other.yml".into(),
                         "digest" => state.sha256 = "0".repeat(64),
                         _ => panic!("unknown state case {case}"),
                     }
-                    fs::write(&state_path, serde_json::to_vec(&state).unwrap()).unwrap();
+                    fs::write(&state_path, serde_json::to_vec(&state).unwrap());
                 }
                 _ => panic!("unknown case {case}"),
             }
@@ -1187,7 +1192,45 @@ mod tests {
                 refused_with(RefusalReason::WorkflowModified, &message),
                 "{case}"
             );
+            if case == "malformed" {
+                assert!(
+                    format!("{error:#}").starts_with(&format!("{message}: expected ident")),
+                    "{error:#}"
+                );
+            }
         }
+    }
+
+    /// A workflow that can't be read is never taken for a missing one and overwritten.
+    #[test]
+    fn an_unreadable_workflow_is_reported_and_kept() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join(WORKFLOW_PATH);
+        fs::create_dir_all(path.parent().unwrap());
+        fs::write(&path, [0xff, 0xfe]);
+        for mode in [
+            WorkflowMode::Check,
+            WorkflowMode::Diff,
+            WorkflowMode::Update,
+        ] {
+            let error = sync(temp.path(), &test_settings(), mode).unwrap_err();
+            assert_eq!(
+                refusal(&error),
+                refused_with(
+                    RefusalReason::WorkflowModified,
+                    &format!(
+                        "`{}` can't be read; refusing to treat it as missing and overwrite it",
+                        path.display()
+                    )
+                ),
+                "{mode:?}"
+            );
+            assert!(
+                format!("{error:#}").contains(&format!("failed to read `{}`", path.display())),
+                "{error:#}"
+            );
+        }
+        assert_eq!(fs::read(&path), [0xff, 0xfe]);
     }
 
     fn test_settings() -> WorkflowSettings {

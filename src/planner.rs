@@ -4,11 +4,10 @@
 //! Its output is a `plan/v1`, which later stages seal and publish, so a decision can be reviewed before anything is built.
 
 use std::collections::BTreeMap;
-use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -20,6 +19,7 @@ use crate::config::{ApprovalMode, Manifest, ReleaseConfig};
 use crate::failure::{
     FailureClass, Refusal, RefusalReason, classified, refused, with_default_class,
 };
+use crate::fs;
 use crate::git::{Commit, GitRepo};
 use crate::gleam::Gleam;
 use crate::model::{
@@ -164,18 +164,16 @@ impl<R: Registry> Planner<R> {
     pub async fn plan(&self, options: &PlanOptions) -> Result<ReleasePlan> {
         let compiler = self.gleam.ensure_supported()?;
         let requested_manifest = if options.manifest_path.is_absolute() {
-            options.manifest_path.canonicalize()?
+            fs::canonicalize(&options.manifest_path)?
         } else {
-            std::env::current_dir()?
-                .join(&options.manifest_path)
-                .canonicalize()?
+            fs::canonicalize(std::env::current_dir()?.join(&options.manifest_path))?
         };
         let requested_package_dir = requested_manifest
             .parent()
             .context("manifest path has no package directory")?;
         let repo = GitRepo::discover(requested_package_dir)?;
         let relative_manifest = requested_manifest
-            .strip_prefix(repo.root().canonicalize()?)
+            .strip_prefix(fs::canonicalize(repo.root())?)
             .context("manifest is outside the git repository")?
             .to_path_buf();
         let package_relative = relative_manifest
@@ -554,15 +552,21 @@ impl<R: Registry> Planner<R> {
             });
         }
         let cache_path = self.baseline_cache_path(&search);
-        if let Some(sha) = self.validated_cached_baseline(cache_path.as_deref(), &search) {
-            eprintln!("release-glz: using validated artifact baseline cache");
-            return Ok(Baseline {
-                version: Some(version.clone()),
-                git_ref: None,
-                sha: Some(sha),
-                source: BaselineSource::ArtifactFingerprint,
-                retired,
-            });
+        match self.validated_cached_baseline(cache_path.as_deref(), &search) {
+            Ok(Some(sha)) => {
+                eprintln!("release-glz: using validated artifact baseline cache");
+                return Ok(Baseline {
+                    version: Some(version.clone()),
+                    git_ref: None,
+                    sha: Some(sha),
+                    source: BaselineSource::ArtifactFingerprint,
+                    retired,
+                });
+            }
+            Ok(None) => {}
+            Err(error) => {
+                eprintln!("release-glz: could not use the artifact baseline cache: {error:#}");
+            }
         }
 
         let (commits, truncated) = repo.rev_list_bounded(self.baseline_search_limit)?;
@@ -631,11 +635,15 @@ impl<R: Registry> Planner<R> {
         )))
     }
 
+    /// The baseline that the cache at `path` records, once its commit still builds the published artifact.
+    ///
+    /// `None` means no cache, or one recorded for other inputs or a commit that is gone, so the history search runs.
+    /// An error means the cache can't be used, which the caller reports before the history search runs.
     fn validated_cached_baseline(
         &self,
         path: Option<&std::path::Path>,
         search: &BaselineSearch<'_>,
-    ) -> Option<String> {
+    ) -> Result<Option<String>> {
         let BaselineSearch {
             manifest,
             repo,
@@ -645,29 +653,33 @@ impl<R: Registry> Planner<R> {
             published_fingerprint,
             ..
         } = *search;
-        let path = path?;
-        let metadata = fs::symlink_metadata(path).ok()?;
+        let Some(path) = path else {
+            return Ok(None);
+        };
+        let Some(metadata) = fs::if_present(fs::symlink_metadata(path))? else {
+            return Ok(None);
+        };
         if !metadata.file_type().is_file() || metadata.len() > MAX_BASELINE_CACHE_BYTES {
-            return None;
+            bail!(
+                "`{}` isn't a regular file of at most {MAX_BASELINE_CACHE_BYTES} bytes",
+                path.display()
+            );
         }
-        let bytes = fs::read(path).ok()?;
-        let cached: BaselineCacheEntry = serde_json::from_slice(&bytes).ok()?;
+        let cached: BaselineCacheEntry = serde_json::from_slice(&fs::read(path)?)
+            .with_context(|| format!("`{}` isn't a baseline cache entry", path.display()))?;
         if cached.schema != "baseline-cache/v1"
             || cached.package != manifest.package
             || cached.version != *version
             || cached.artifact_fingerprint != published_fingerprint
+            || repo.resolve(&cached.sha)?.as_deref() != Some(cached.sha.as_str())
         {
-            return None;
-        }
-        if repo.resolve(&cached.sha).ok().flatten().as_deref() != Some(cached.sha.as_str()) {
-            return None;
+            return Ok(None);
         }
         let snapshot = self
             .gleam
-            .snapshot_from_git(repo, &cached.sha, package_relative)
-            .ok()?;
-        let candidate = artifact::normalize_package_dir(snapshot.package_dir()).ok()?;
-        (candidate == *published).then_some(cached.sha)
+            .snapshot_from_git(repo, &cached.sha, package_relative)?;
+        let candidate = artifact::normalize_package_dir(snapshot.package_dir())?;
+        Ok((candidate == *published).then_some(cached.sha))
     }
 
     /// Record a found baseline so the next plan skips the history search.
@@ -819,7 +831,7 @@ pub fn prepare_release_files(
     let changelog_config = &manifest.release()?.changelog;
     let release_config = ReleaseNotesConfig::load(&repo.root().join(".github/release.yml"))?;
     let changelog_path = manifest.package_dir().join(&changelog_config.path);
-    let existing = fs::read_to_string(&changelog_path).ok();
+    let existing = changelog::read_if_present(&changelog_path)?;
     let entries = release_config.apply(entries.iter().cloned());
     let historical_changelog = existing
         .as_deref()
@@ -831,11 +843,9 @@ pub fn prepare_release_files(
     )?;
     let entries = changelog::merge_supplemental_notes(entries, notes);
     let changelog = changelog::render(existing.as_deref(), &plan.version.to_string(), &entries);
-    let manifest_relative = manifest
-        .path()
-        .canonicalize()
-        .or_else(|_| Ok::<_, std::io::Error>(manifest.path().to_path_buf()))?
-        .strip_prefix(repo.root().canonicalize()?)
+    let repository_root = fs::canonicalize(repo.root())?;
+    let manifest_relative = fs::canonicalize(manifest.path())?
+        .strip_prefix(&repository_root)
         .with_context(|| {
             Refusal::new(
                 RefusalReason::ReleaseFileOutsideRepository,
@@ -844,15 +854,11 @@ pub fn prepare_release_files(
         })?
         .to_string_lossy()
         .replace('\\', "/");
-    let changelog_relative = if changelog_path.exists() {
-        changelog_path.canonicalize()?
-    } else {
-        manifest
-            .package_dir()
-            .canonicalize()?
-            .join(&changelog_config.path)
+    let changelog_relative = match fs::if_present(fs::canonicalize(&changelog_path))? {
+        Some(changelog) => changelog,
+        None => fs::canonicalize(manifest.package_dir())?.join(&changelog_config.path),
     }
-    .strip_prefix(repo.root().canonicalize()?)
+    .strip_prefix(&repository_root)
     .with_context(|| {
         Refusal::new(
             RefusalReason::ReleaseFileOutsideRepository,
@@ -895,7 +901,7 @@ pub fn update_local(manifest: &mut Manifest, plan: &ReleasePlan) -> Result<Vec<P
     let mut written = Vec::new();
     for (relative, contents) in files {
         let path = repo.root().join(relative);
-        if fs::read(&path).ok().as_deref() != Some(&contents) {
+        if fs::read_if_present(&path)?.as_deref() != Some(&contents) {
             if let Some(parent) = path.parent() {
                 fs::create_dir_all(parent)?;
             }

@@ -2,8 +2,6 @@
 //!
 //! The test runs itself again as a child with those variables set, because changing this process's environment would race the other tests.
 
-use std::process::Command;
-
 use release_glz::secrets::{redact, redact_with};
 
 /// Set only in the child run, whose environment carries the credentials.
@@ -33,7 +31,7 @@ fn every_standard_credential_in_the_environment_is_redacted() {
         }
         return;
     }
-    let mut child = Command::new(std::env::current_exe().unwrap());
+    let mut child = release_glz_test_support::new_command(std::env::current_exe().unwrap());
     child
         .args([
             "--exact",

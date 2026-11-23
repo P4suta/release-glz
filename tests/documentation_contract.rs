@@ -1,10 +1,10 @@
-use std::fs;
+use release_glz_test_support::fs;
 
 #[test]
 fn project_guide_documents_the_candidate_first_contract() {
-    let overview = fs::read_to_string("README.md").unwrap();
+    let overview = fs::read_to_string("README.md");
     assert!(overview.contains("](docs/README.md)"));
-    let readme = fs::read_to_string("docs/README.md").unwrap();
+    let readme = fs::read_to_string("docs/README.md");
     for required in [
         "ReleasePlan",
         "Candidate",
@@ -47,7 +47,7 @@ fn project_guide_documents_the_candidate_first_contract() {
 
 #[test]
 fn registry_guides_and_release_checklist_preserve_the_operational_boundary() {
-    let organization = fs::read_to_string("docs/quickstart-organization.md").unwrap();
+    let organization = fs::read_to_string("docs/quickstart-organization.md");
     for required in [
         "--profile organization",
         "api_url = \"https://hex.pm/api\"",
@@ -60,7 +60,7 @@ fn registry_guides_and_release_checklist_preserve_the_operational_boundary() {
         );
     }
 
-    let private = fs::read_to_string("docs/quickstart-private.md").unwrap();
+    let private = fs::read_to_string("docs/quickstart-private.md");
     for required in [
         "--profile private",
         "doctor --candidate-build",
@@ -76,7 +76,7 @@ fn registry_guides_and_release_checklist_preserve_the_operational_boundary() {
         );
     }
 
-    let readiness = fs::read_to_string("docs/release-readiness.md").unwrap();
+    let readiness = fs::read_to_string("docs/release-readiness.md");
     for required in [
         "all six",
         "checksum-only commit",
@@ -102,12 +102,11 @@ fn operations_guides_cover_every_supported_registry_path() {
         "docs/recovery.md",
         "docs/threat-model.md",
     ] {
-        let source = fs::read_to_string(path)
-            .unwrap_or_else(|error| panic!("missing required guide {path}: {error}"));
+        let source = fs::read_to_string(path);
         assert!(source.starts_with('#'), "{path} has no title");
     }
 
-    let recovery = fs::read_to_string("docs/recovery.md").unwrap();
+    let recovery = fs::read_to_string("docs/recovery.md");
     for stage in [
         "verify_hooks",
         "prepare_git_tag",
@@ -122,7 +121,7 @@ fn operations_guides_cover_every_supported_registry_path() {
     assert!(recovery.contains("same Candidate"));
     assert!(recovery.contains("never re-POST"));
 
-    let threat = fs::read_to_string("docs/threat-model.md").unwrap();
+    let threat = fs::read_to_string("docs/threat-model.md");
     for required in [
         "working tree",
         "cross-origin",
@@ -156,7 +155,7 @@ fn archive_limit(threat: &str, label: &str) -> u64 {
 
 #[test]
 fn threat_model_states_the_default_archive_limits_the_code_enforces() {
-    let threat = fs::read_to_string("docs/threat-model.md").unwrap();
+    let threat = fs::read_to_string("docs/threat-model.md");
     let limits = release_glz::artifact::ArchiveLimits::default();
     assert_eq!(
         archive_limit(&threat, "Entries in one archive"),
@@ -178,7 +177,7 @@ fn threat_model_states_the_default_archive_limits_the_code_enforces() {
 
 #[test]
 fn the_guide_states_the_plan_file_limit_the_reader_enforces() {
-    let guide = fs::read_to_string("docs/README.md").unwrap();
+    let guide = fs::read_to_string("docs/README.md");
     let statement = guide
         .lines()
         .find(|line| line.contains("`plan/v1` document of at most"))
@@ -199,7 +198,7 @@ fn the_guide_states_the_plan_file_limit_the_reader_enforces() {
 /// The guide lists every refusal reason once, in declaration order, with the exit code its class decides.
 #[test]
 fn the_guide_lists_every_refusal_reason_with_the_exit_code_of_its_class() {
-    let guide = fs::read_to_string("docs/README.md").unwrap();
+    let guide = fs::read_to_string("docs/README.md");
     let rows = guide
         .lines()
         .skip_while(|line| *line != "| Reason code | Exit code | Meaning |")
@@ -231,7 +230,7 @@ fn the_guide_lists_every_refusal_reason_with_the_exit_code_of_its_class() {
 
 #[test]
 fn threat_model_documents_the_narrow_gleam_windows_packaging_fallback() {
-    let threat = fs::read_to_string("docs/threat-model.md").unwrap();
+    let threat = fs::read_to_string("docs/threat-model.md");
     for required in [
         "Gleam 1.18.1",
         "gleam-lang/gleam/issues/6184",

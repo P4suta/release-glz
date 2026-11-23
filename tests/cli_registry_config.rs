@@ -6,8 +6,8 @@ use base64::Engine as _;
 use flate2::{Compression, write::GzEncoder};
 use release_glz_test_support::fake_tool::{self, Action, Behavior, Condition, Destination, Rule};
 use release_glz_test_support::http::{FakeServer, Request, Response};
-use release_glz_test_support::isolated_command;
 use release_glz_test_support::schema::{assert_matches, assert_published_envelope};
+use release_glz_test_support::{fs, isolated_command};
 use sha2::{Digest, Sha256};
 
 #[test]
@@ -20,11 +20,10 @@ fn sealed_candidate_cli_lifecycle_reuses_one_candidate_without_rebuilding() {
     let candidate = temp.path().join("candidate");
 
     // These uncommitted bytes must never become the Candidate source.
-    std::fs::write(
+    fs::write(
         temp.path().join("src/widget.gleam"),
         "pub fn dirty() -> Int { 999 }\n",
-    )
-    .unwrap();
+    );
 
     let rehearse = candidate_command(temp.path(), &gleam)
         .args([
@@ -48,7 +47,7 @@ fn sealed_candidate_cli_lifecycle_reuses_one_candidate_without_rebuilding() {
         .as_str()
         .unwrap()
         .to_owned();
-    let sealed_package = std::fs::read(candidate.join("artifacts/package.tar")).unwrap();
+    let sealed_package = fs::read(candidate.join("artifacts/package.tar"));
 
     let verify = candidate_command(temp.path(), &gleam)
         .args([
@@ -120,7 +119,7 @@ fn sealed_candidate_cli_lifecycle_reuses_one_candidate_without_rebuilding() {
         ])
     );
     assert_eq!(
-        std::fs::read(candidate.join("artifacts/package.tar")).unwrap(),
+        fs::read(candidate.join("artifacts/package.tar")),
         sealed_package
     );
     assert_eq!(registry_requests.len(), 2);
@@ -132,14 +131,13 @@ fn a_version_below_the_automatic_minimum_is_a_policy_exit_not_an_internal_failur
     let temp = tempfile::tempdir().unwrap();
     let (registry_url, mut server) = not_found_server();
     let manifest = manifest(&registry_url).replace("docs = true", "docs = false");
-    std::fs::create_dir(temp.path().join("src")).unwrap();
-    std::fs::write(temp.path().join("gleam.toml"), &manifest).unwrap();
-    std::fs::write(temp.path().join("README.md"), "# Widget\n").unwrap();
-    std::fs::write(
+    fs::create_dir(temp.path().join("src"));
+    fs::write(temp.path().join("gleam.toml"), &manifest);
+    fs::write(temp.path().join("README.md"), "# Widget\n");
+    fs::write(
         temp.path().join("src/widget.gleam"),
         "pub fn widget() -> Int { 1 }\n",
-    )
-    .unwrap();
+    );
     git(temp.path(), &["init", "--initial-branch=main"]);
     git(temp.path(), &["config", "core.hooksPath", ".git/no-hooks"]);
     git(
@@ -153,11 +151,11 @@ fn a_version_below_the_automatic_minimum_is_a_policy_exit_not_an_internal_failur
     git(temp.path(), &["commit", "-m", "feat: initial package"]);
 
     let package_path = temp.path().join("fixture.tar");
-    std::fs::write(&package_path, hex_package()).unwrap();
+    fs::write(&package_path, hex_package());
     let interface_path = temp.path().join("interface.json");
-    std::fs::write(&interface_path, br#"{"modules":{}}"#).unwrap();
+    fs::write(&interface_path, br#"{"modules":{}}"#);
     let gleam = fake_gleam(temp.path());
-    let before = std::fs::read(temp.path().join("gleam.toml")).unwrap();
+    let before = fs::read(temp.path().join("gleam.toml"));
 
     let output = candidate_command(temp.path(), &gleam)
         .args(["--output", "json", "set-version", "0.9.0"])
@@ -180,10 +178,7 @@ fn a_version_below_the_automatic_minimum_is_a_policy_exit_not_an_internal_failur
         envelope["diagnostics"][0]["code"],
         "version_lowering_forbidden"
     );
-    assert_eq!(
-        std::fs::read(temp.path().join("gleam.toml")).unwrap(),
-        before
-    );
+    assert_eq!(fs::read(temp.path().join("gleam.toml")), before);
 }
 
 #[test]
@@ -192,7 +187,7 @@ fn set_version_dry_run_and_apply_only_raise_the_manifest_version() {
     let (mut server, registry_url) = listening();
     let gleam = initialize_initial_package(temp.path(), &registry_url);
     server.script([http_response(404, b""), http_response(404, b"")]);
-    let before = std::fs::read_to_string(temp.path().join("gleam.toml")).unwrap();
+    let before = fs::read_to_string(temp.path().join("gleam.toml"));
 
     let dry_run = candidate_command(temp.path(), &gleam)
         .args(["--output", "json", "set-version", "2.0.0", "--dry-run"])
@@ -203,10 +198,7 @@ fn set_version_dry_run_and_apply_only_raise_the_manifest_version() {
     assert_published_envelope(&dry_run);
     assert_eq!(dry_run["result"]["version"], "2.0.0");
     assert_eq!(dry_run["result"]["manifest_version"], "2.0.0");
-    assert_eq!(
-        std::fs::read_to_string(temp.path().join("gleam.toml")).unwrap(),
-        before
-    );
+    assert_eq!(fs::read_to_string(temp.path().join("gleam.toml")), before);
 
     let apply = candidate_command(temp.path(), &gleam)
         .args(["--output", "json", "set-version", "2.0.0"])
@@ -217,7 +209,7 @@ fn set_version_dry_run_and_apply_only_raise_the_manifest_version() {
     let apply = json(&apply);
     assert_published_envelope(&apply);
     assert_eq!(apply["result"]["version"], "2.0.0");
-    let written = std::fs::read_to_string(temp.path().join("gleam.toml")).unwrap();
+    let written = fs::read_to_string(temp.path().join("gleam.toml"));
     assert!(written.contains("version = \"2.0.0\""));
     assert!(written.contains("description = \"fixture\""));
     assert!(written.contains("credential_env = \"TEST_REGISTRY_TOKEN\""));
@@ -240,7 +232,7 @@ fn prerelease_command_starts_the_alpha_train_and_persists_channel_and_version() 
     assert_published_envelope(&output);
     assert_eq!(output["result"]["version"], "1.0.0-alpha.1");
     assert_eq!(output["result"]["prerelease"], "alpha");
-    let written = std::fs::read_to_string(temp.path().join("gleam.toml")).unwrap();
+    let written = fs::read_to_string(temp.path().join("gleam.toml"));
     assert!(written.contains("version = \"1.0.0-alpha.1\""));
     assert!(written.contains("prerelease = \"alpha\""));
 }
@@ -249,14 +241,13 @@ fn prerelease_command_starts_the_alpha_train_and_persists_channel_and_version() 
 fn plan_uses_the_strict_manifest_registry_adapter_and_private_read_credential() {
     let temp = tempfile::tempdir().unwrap();
     let (registry_url, mut server) = not_found_server();
-    std::fs::create_dir(temp.path().join("src")).unwrap();
-    std::fs::write(temp.path().join("gleam.toml"), manifest(&registry_url)).unwrap();
-    std::fs::write(temp.path().join("README.md"), "# Widget\n").unwrap();
-    std::fs::write(
+    fs::create_dir(temp.path().join("src"));
+    fs::write(temp.path().join("gleam.toml"), manifest(&registry_url));
+    fs::write(temp.path().join("README.md"), "# Widget\n");
+    fs::write(
         temp.path().join("src/widget.gleam"),
         "pub fn widget() -> Int { 1 }\n",
-    )
-    .unwrap();
+    );
     git(temp.path(), &["init", "--initial-branch=main"]);
     git(
         temp.path(),
@@ -269,9 +260,9 @@ fn plan_uses_the_strict_manifest_registry_adapter_and_private_read_credential() 
     git(temp.path(), &["commit", "-m", "feat: initial package"]);
 
     let package = temp.path().join("fixture.tar");
-    std::fs::write(&package, hex_package()).unwrap();
+    fs::write(&package, hex_package());
     let interface = temp.path().join("interface.json");
-    std::fs::write(&interface, br#"{"modules":{}}"#).unwrap();
+    fs::write(&interface, br#"{"modules":{}}"#);
     let gleam = fake_gleam(temp.path());
 
     let output = isolated_command(env!("CARGO_BIN_EXE_release-glz"))
@@ -310,10 +301,10 @@ fn release_pr_closes_a_stale_verified_managed_pr_when_no_release_is_required() {
     let manifest = manifest(&registry_url);
     let readme = b"# Widget\n";
     let source = b"pub fn widget() -> Int { 1 }\n";
-    std::fs::create_dir(temp.path().join("src")).unwrap();
-    std::fs::write(temp.path().join("gleam.toml"), &manifest).unwrap();
-    std::fs::write(temp.path().join("README.md"), readme).unwrap();
-    std::fs::write(temp.path().join("src/widget.gleam"), source).unwrap();
+    fs::create_dir(temp.path().join("src"));
+    fs::write(temp.path().join("gleam.toml"), &manifest);
+    fs::write(temp.path().join("README.md"), readme);
+    fs::write(temp.path().join("src/widget.gleam"), source);
     git(temp.path(), &["init", "--initial-branch=main"]);
     git(
         temp.path(),
@@ -345,9 +336,9 @@ fn release_pr_closes_a_stale_verified_managed_pr_when_no_release_is_required() {
     registry.script(registry_responses);
 
     let package_path = temp.path().join("fixture.tar");
-    std::fs::write(&package_path, &package).unwrap();
+    fs::write(&package_path, &package);
     let interface_path = temp.path().join("interface.json");
-    std::fs::write(&interface_path, interface_bytes).unwrap();
+    fs::write(&interface_path, interface_bytes);
     let gleam = fake_gleam(temp.path());
 
     let (mut github, github_url) = listening();
@@ -431,7 +422,7 @@ fn a_handed_off_plan_writes_the_release_pr_without_the_compiler() {
         .unwrap();
     assert_success(&planned, "plan --out");
     registry.finish();
-    let plan_bytes = std::fs::read(&plan_path).unwrap();
+    let plan_bytes = fs::read(&plan_path);
     let handed_off: serde_json::Value = serde_json::from_slice(&plan_bytes).unwrap();
     assert_published_envelope(&json(&planned));
     assert_eq!(json(&planned)["result"], handed_off);
@@ -448,10 +439,10 @@ fn a_handed_off_plan_writes_the_release_pr_without_the_compiler() {
         .unwrap();
     assert_eq!(replanned.status.code(), Some(2), "{replanned:?}");
     assert!(
-        !compiler_runs.exists(),
+        !fs::exists(&compiler_runs),
         "plan --out started planning before it refused the existing file"
     );
-    assert_eq!(std::fs::read(&plan_path).unwrap(), plan_bytes);
+    assert_eq!(fs::read(&plan_path), plan_bytes);
 
     let (mut github, github_url) = listening();
     let release_pr_head = "b".repeat(40);
@@ -482,9 +473,9 @@ fn a_handed_off_plan_writes_the_release_pr_without_the_compiler() {
     assert_success(&written, "release-pr --plan");
     let github_requests = texts(&github.finish());
     assert!(
-        !compiler_runs.exists(),
+        !fs::exists(&compiler_runs),
         "release-pr --plan ran the compiler: {}",
-        std::fs::read_to_string(&compiler_runs).unwrap()
+        fs::read_to_string(&compiler_runs)
     );
     assert_published_envelope(&json(&written));
     let result = &json(&written)["result"];
@@ -683,13 +674,12 @@ fn a_tip_that_already_holds_the_release_files_gets_no_release_pr_commit() {
     assert_eq!(changelog["path"], "CHANGELOG.md");
 
     // Once the tip's commit holds that changelog too, the plan for it writes nothing.
-    std::fs::write(
+    fs::write(
         temp.path().join("CHANGELOG.md"),
         base64::engine::general_purpose::STANDARD
             .decode(changelog["contents"].as_str().unwrap())
             .unwrap(),
-    )
-    .unwrap();
+    );
     git(temp.path(), &["add", "CHANGELOG.md"]);
     git(temp.path(), &["commit", "--quiet", "--amend", "--no-edit"]);
     let tip = git_output(temp.path(), &["rev-parse", "HEAD"]);
@@ -739,8 +729,7 @@ fn a_handed_off_plan_that_does_not_describe_the_checkout_is_refused_before_any_r
         .unwrap();
     assert_success(&planned, "plan --out");
     registry.finish();
-    let plan: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&plan_path).unwrap()).unwrap();
+    let plan: serde_json::Value = serde_json::from_slice(&fs::read(&plan_path)).unwrap();
     git(temp.path(), &["switch", "--quiet", "--create", "side"]);
     git(
         temp.path(),
@@ -758,7 +747,7 @@ fn a_handed_off_plan_that_does_not_describe_the_checkout_is_refused_before_any_r
     let mut accepted = plan.clone();
     accepted["baseline"]["sha"] = first.clone().into();
     let accepted_path = temp.path().join("accepted.json");
-    std::fs::write(&accepted_path, serde_json::to_vec(&accepted).unwrap()).unwrap();
+    fs::write(&accepted_path, serde_json::to_vec(&accepted).unwrap());
     let (mut github, github_url) = listening();
     github.script([http_response(200, b"[]")]);
     let dry_run = release_pr_from_plan(temp.path(), &accepted_path, &refusing, &github_url)
@@ -838,7 +827,7 @@ fn a_handed_off_plan_that_does_not_describe_the_checkout_is_refused_before_any_r
         let mut silent = FakeServer::start();
         silent.hang_up();
         let path = temp.path().join("refused.json");
-        std::fs::write(&path, bytes).unwrap();
+        fs::write(&path, bytes);
         let refused = release_pr_from_plan(temp.path(), &path, &refusing, &silent.base_url())
             .output()
             .unwrap();
@@ -856,7 +845,7 @@ fn a_handed_off_plan_that_does_not_describe_the_checkout_is_refused_before_any_r
         );
     }
     assert!(
-        !compiler_runs.exists(),
+        !fs::exists(&compiler_runs),
         "release-pr --plan ran the compiler"
     );
 
@@ -934,7 +923,7 @@ fn a_candidate_whose_head_the_release_pr_left_binds_nothing_and_succeeds() {
         github_requests[1].starts_with("GET /repos/acme/widget/pulls?state=open&per_page=100 ")
     );
     assert!(
-        !compiler_runs.exists(),
+        !fs::exists(&compiler_runs),
         "release-pr --candidate ran the compiler"
     );
 }
@@ -997,7 +986,7 @@ fn a_merged_release_pr_authorizes_a_candidate_only_with_the_intent_it_recorded()
         assert_eq!(github_requests.len(), 3);
     }
     assert!(
-        !compiler_runs.exists(),
+        !fs::exists(&compiler_runs),
         "release-pr --candidate ran the compiler"
     );
 }
@@ -1073,10 +1062,10 @@ fn a_candidate_whose_package_changed_names_its_checksum_mismatch() {
     let gleam = initialize_initial_package(temp.path(), &registry_url);
     let candidate = rehearsed_candidate(temp.path(), &gleam);
     let package = candidate.join("artifacts/package.tar");
-    let mut bytes = std::fs::read(&package).unwrap();
+    let mut bytes = fs::read(&package);
     let last = bytes.last_mut().unwrap();
     *last ^= 1;
-    std::fs::write(&package, bytes).unwrap();
+    fs::write(&package, bytes);
 
     let release = candidate_command(temp.path(), &gleam)
         .args(["--output", "json", "release", "--dry-run", "--candidate"])
@@ -1193,7 +1182,7 @@ fn top_level_diagnostics_redact_the_configured_registry_credential() {
     let secret = "custom-registry-value-that-must-never-escape";
     let source = manifest("https://registry.example.test")
         .replace("TEST_REGISTRY_TOKEN", "CUSTOM_REGISTRY_CREDENTIAL");
-    std::fs::write(temp.path().join("gleam.toml"), source).unwrap();
+    fs::write(temp.path().join("gleam.toml"), source);
     let gleam = fake_tool::gleam_on_path(
         &temp.path().join("failing-compiler"),
         &Behavior::always(vec![Action::Stderr(secret.into()), Action::Exit(9)]),
@@ -1323,7 +1312,7 @@ fn http_response(status: u16, body: &[u8]) -> Response {
 }
 
 fn git(directory: &std::path::Path, args: &[&str]) {
-    let output = Command::new("git")
+    let output = release_glz_test_support::new_command("git")
         .arg("-C")
         .arg(directory)
         .args(args)
@@ -1337,7 +1326,7 @@ fn git(directory: &std::path::Path, args: &[&str]) {
 }
 
 fn git_output(directory: &std::path::Path, args: &[&str]) -> String {
-    let output = Command::new("git")
+    let output = release_glz_test_support::new_command("git")
         .arg("-C")
         .arg(directory)
         .args(args)
@@ -1352,10 +1341,10 @@ fn initialize_initial_package(directory: &std::path::Path, registry_url: &str) -
     let manifest = manifest(registry_url).replace("docs = true", "docs = false");
     let readme = b"# Widget\n";
     let source = b"pub fn widget() -> Int { 1 }\n";
-    std::fs::create_dir(directory.join("src")).unwrap();
-    std::fs::write(directory.join("gleam.toml"), &manifest).unwrap();
-    std::fs::write(directory.join("README.md"), readme).unwrap();
-    std::fs::write(directory.join("src/widget.gleam"), source).unwrap();
+    fs::create_dir(directory.join("src"));
+    fs::write(directory.join("gleam.toml"), &manifest);
+    fs::write(directory.join("README.md"), readme);
+    fs::write(directory.join("src/widget.gleam"), source);
     git(directory, &["init", "--initial-branch=main"]);
     git(directory, &["config", "core.hooksPath", ".git/no-hooks"]);
     git(directory, &["config", "user.email", "fixture@example.test"]);
@@ -1370,8 +1359,8 @@ fn initialize_initial_package(directory: &std::path::Path, registry_url: &str) -
         ("README.md", readme),
         ("src/widget.gleam", source),
     ]);
-    std::fs::write(directory.join("fixture.tar"), package).unwrap();
-    std::fs::write(directory.join("interface.json"), br#"{"modules":{}}"#).unwrap();
+    fs::write(directory.join("fixture.tar"), package);
+    fs::write(directory.join("interface.json"), br#"{"modules":{}}"#);
     fake_gleam(directory)
 }
 

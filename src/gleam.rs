@@ -4,7 +4,6 @@
 
 #[cfg(any(windows, test))]
 use std::collections::BTreeMap;
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -16,6 +15,7 @@ use serde::Deserialize;
 use tempfile::TempDir;
 
 use crate::config::Manifest;
+use crate::fs;
 use crate::process;
 #[cfg(any(windows, test))]
 use crate::units::MIB;
@@ -127,10 +127,12 @@ impl Gleam {
         let output = process::output(self.command(Path::new("."))?.arg("--version"))?;
         check_output(&output, "gleam --version", None)?;
         let stdout = String::from_utf8_lossy(&output.stdout);
-        stdout
+        let word = stdout
             .split_whitespace()
-            .find_map(|word| word.parse::<Version>().ok())
-            .context("could not parse Gleam version")
+            .find(|word| word.starts_with(|first: char| first.is_ascii_digit()))
+            .context("could not parse Gleam version")?;
+        word.parse::<Version>()
+            .with_context(|| format!("could not parse Gleam version `{word}`"))
     }
 
     /// The installed version, once it is known to be supported.
@@ -166,7 +168,7 @@ impl Gleam {
         let temp = tempfile::tempdir().context("failed to create git snapshot")?;
         repo.archive(sha, temp.path())?;
         let package_dir = temp.path().join(package_relative);
-        if !package_dir.join("gleam.toml").is_file() {
+        if fs::kind(package_dir.join("gleam.toml"))? != fs::Kind::File {
             bail!(
                 "git snapshot {sha} does not contain `{}`",
                 package_dir.join("gleam.toml").display()
@@ -261,20 +263,20 @@ impl Gleam {
         let manifest = Manifest::load(package_dir.join("gleam.toml"))?;
         self.build_docs_with(package_dir, &manifest)?;
         let docs = package_dir.join("build/dev/docs").join(&manifest.package);
-        if !docs.is_dir() {
+        if fs::kind(&docs)? != fs::Kind::Directory {
             bail!("Gleam did not create documentation at `{}`", docs.display());
         }
         deterministic_tar_gz(&docs)
     }
 
     fn command(&self, directory: &Path) -> Result<Command> {
-        let directory = directory.canonicalize().with_context(|| {
+        let directory = fs::canonicalize(directory).with_context(|| {
             format!(
                 "failed to canonicalize Gleam project root `{}`",
                 directory.display()
             )
         })?;
-        let mut command = Command::new(&self.executable);
+        let mut command = process::command(&self.executable);
         command.current_dir(directory).env_clear();
         for name in COMPILER_ENVIRONMENT {
             if let Some(value) = std::env::var_os(name) {
@@ -332,20 +334,18 @@ fn collect_regular_files(
     directory: &Path,
     output: &mut Vec<(String, PathBuf)>,
 ) -> Result<()> {
-    let mut entries: Vec<_> = fs::read_dir(directory)?.collect::<std::io::Result<_>>()?;
-    entries.sort_by_key(|entry| entry.file_name());
-    for entry in entries {
+    for entry in fs::read_dir(directory)? {
         let path = entry.path();
-        let file_type = entry.file_type()?;
+        let file_type = entry.file_type();
         if file_type.is_dir() {
-            collect_regular_files(root, &path, output)?;
+            collect_regular_files(root, path, output)?;
         } else if file_type.is_file() {
             let relative = path
                 .strip_prefix(root)?
                 .to_string_lossy()
                 .replace('\\', "/");
             crate::config::validate_relative_path(Path::new(&relative), "documentation path")?;
-            output.push((relative, path));
+            output.push((relative, path.to_path_buf()));
         } else {
             bail!(
                 "documentation contains non-regular entry `{}`",
@@ -361,7 +361,7 @@ fn collect_regular_files(
 /// An unconfigured manifest names none, and redaction covers the standard credentials anyway.
 fn configured_registry_secret(manifest: &Manifest) -> Option<String> {
     let release = manifest.configured_release()?;
-    std::env::var(&release.registry.credential_env).ok()
+    crate::secrets::redacted_value(&release.registry.credential_env)
 }
 
 fn check_output(output: &Output, action: &str, configured_secret: Option<&str>) -> Result<()> {
@@ -501,7 +501,7 @@ fn add_compiler_generated_files(
     }
 
     let include = build.join("include");
-    if include.exists() {
+    if fs::kind(&include)? != fs::Kind::Absent {
         let mut headers = Vec::new();
         collect_generated_erlang_files(&include, &mut headers)?;
         headers.sort();
@@ -524,19 +524,17 @@ fn add_compiler_generated_files(
 
 #[cfg(any(windows, test))]
 fn collect_generated_erlang_files(directory: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
-    let mut entries: Vec<_> = fs::read_dir(directory)?.collect::<std::io::Result<_>>()?;
-    entries.sort_by_key(|entry| entry.file_name());
-    for entry in entries {
-        let file_type = entry.file_type()?;
+    for entry in fs::read_dir(directory)? {
+        let file_type = entry.file_type();
         if file_type.is_dir() {
-            collect_generated_erlang_files(&entry.path(), files)?;
+            collect_generated_erlang_files(entry.path(), files)?;
         } else if file_type.is_file()
             && matches!(
                 entry.path().extension().and_then(|value| value.to_str()),
                 Some("erl" | "hrl")
             )
         {
-            files.push(entry.path());
+            files.push(entry.path().to_path_buf());
         } else if !file_type.is_file() {
             bail!(
                 "generated compiler output `{}` is not a regular file",
@@ -779,15 +777,14 @@ fn erlang_binary(value: &str) -> String {
 fn copy_tree(source: &Path, destination: &Path) -> Result<()> {
     fs::create_dir_all(destination)?;
     for entry in fs::read_dir(source)? {
-        let entry = entry?;
         let name = entry.file_name();
         if matches!(name.to_str(), Some("build" | ".git" | "node_modules")) {
             continue;
         }
-        let file_type = entry.file_type()?;
-        let target = destination.join(&name);
+        let file_type = entry.file_type();
+        let target = destination.join(name);
         if file_type.is_dir() {
-            copy_tree(&entry.path(), &target)?;
+            copy_tree(entry.path(), &target)?;
         } else if file_type.is_file() {
             fs::copy(entry.path(), target)?;
         } else if file_type.is_symlink() {
@@ -809,6 +806,7 @@ fn copy_tree(source: &Path, destination: &Path) -> Result<()> {
 mod tests {
     use super::*;
     use crate::failure::{RefusalReason, refusal_reason};
+    use release_glz_test_support::fs;
 
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
@@ -821,7 +819,7 @@ mod tests {
 
         let gleam = Gleam::default();
         let linked = tempfile::tempdir().unwrap();
-        fs::write(linked.path().join("target"), "secret").unwrap();
+        fs::write(linked.path().join("target"), "secret");
         symlink("target", linked.path().join("linked")).unwrap();
         let error = gleam.snapshot(linked.path()).unwrap_err().to_string();
         assert!(error.contains("symlink"), "{error}");
@@ -867,6 +865,13 @@ mod tests {
             (None, "could not parse Gleam version".to_owned())
         );
 
+        write_executable(&executable, "printf 'gleam 1.18\\n'\n");
+        let error = gleam.installed_version().unwrap_err();
+        assert_eq!(
+            (refusal_reason(&error), error.to_string()),
+            (None, "could not parse Gleam version `1.18`".to_owned())
+        );
+
         write_executable(
             &executable,
             "printf 'failed output'\nprintf 'failed error' >&2\nexit 7\n",
@@ -881,7 +886,7 @@ mod tests {
     fn compiler_process_uses_the_canonical_project_root() {
         let temp = tempfile::tempdir().unwrap();
         let package = temp.path().join("package");
-        fs::create_dir(&package).unwrap();
+        fs::create_dir(&package);
 
         #[cfg(unix)]
         let directory = {
@@ -898,7 +903,7 @@ mod tests {
 
         assert_eq!(
             command.get_current_dir(),
-            Some(fs::canonicalize(directory).unwrap().as_path())
+            Some(std::fs::canonicalize(directory).unwrap().as_path())
         );
     }
 
@@ -929,36 +934,31 @@ mod tests {
             "build/prod/erlang/widget/include",
             "build/prod/erlang/widget/ebin",
         ] {
-            fs::create_dir_all(package.join(directory)).unwrap();
+            fs::create_dir_all(package.join(directory));
         }
         fs::write(
             package.join("gleam.toml"),
             "name = \"widget\"\nversion = \"1.2.3\"\ndescription = \"Fixture\"\nlicences = [\"MIT\"]\n",
-        )
-        .unwrap();
-        fs::write(package.join("src/widget.gleam"), "pub fn value() { 1 }\n").unwrap();
-        fs::write(package.join("src/widget_ffi.erl"), "% authored FFI\n").unwrap();
-        fs::write(package.join("priv/data.bin"), b"private data").unwrap();
+        );
+        fs::write(package.join("src/widget.gleam"), "pub fn value() { 1 }\n");
+        fs::write(package.join("src/widget_ffi.erl"), "% authored FFI\n");
+        fs::write(package.join("priv/data.bin"), b"private data");
         fs::write(
             package.join("build/prod/erlang/widget/_gleam_artefacts/widget.erl"),
             "% generated Erlang\n",
-        )
-        .unwrap();
+        );
         fs::write(
             package.join("build/prod/erlang/widget/include/widget_Type.hrl"),
             "% generated header\n",
-        )
-        .unwrap();
+        );
         fs::write(
             package.join("build/prod/erlang/widget/ebin/widget.app"),
             "{application, widget, []}.\n",
-        )
-        .unwrap();
+        );
         fs::write(
             package.join("manifest.toml"),
             "packages = [\n  { name = \"dep_package\", version = \"1.0.0\", build_tools = [\"rebar3\"], requirements = [], otp_app = \"dep_app\", source = \"hex\", outer_checksum = \"00\" },\n]\n\n[requirements]\ndep_package = { version = \">= 1.0.0 and < 2.0.0\" }\n",
-        )
-        .unwrap();
+        );
         let package_information = br#"{
           "gleam.toml": {
             "name": "widget",
@@ -991,14 +991,14 @@ mod tests {
         let unpacked = temp.path().join("unpacked");
         crate::artifact::unpack_hex_source(&first, &unpacked).unwrap();
         assert_eq!(
-            fs::read(unpacked.join("src/widget.gleam")).unwrap(),
+            fs::read(unpacked.join("src/widget.gleam")),
             b"pub fn value() { 1 }\n"
         );
         assert_eq!(
-            fs::read(unpacked.join("src/widget_ffi.erl")).unwrap(),
+            fs::read(unpacked.join("src/widget_ffi.erl")),
             b"% authored FFI\n"
         );
-        assert!(!unpacked.join("src/widget.erl").exists());
+        assert!(!fs::exists(unpacked.join("src/widget.erl")));
 
         let metadata = crate::artifact::hex_metadata(&first).unwrap();
         let metadata = String::from_utf8(metadata).unwrap();
@@ -1006,15 +1006,14 @@ mod tests {
         assert!(metadata.contains(&erlang_binary("dep_app")));
         assert!(metadata.contains(&erlang_binary("https://github.com/example/widget")));
 
-        fs::write(package.join("src/widget.erl"), "% colliding source\n").unwrap();
+        fs::write(package.join("src/widget.erl"), "% colliding source\n");
         let error = build_hex_tarball_from_compiler_outputs(package, package_information)
             .unwrap_err()
             .to_string();
         assert!(error.contains("collides with publish input"), "{error}");
-        fs::remove_file(package.join("src/widget.erl")).unwrap();
+        fs::remove_file(package.join("src/widget.erl"));
 
-        fs::remove_file(package.join("build/prod/erlang/widget/_gleam_artefacts/widget.erl"))
-            .unwrap();
+        fs::remove_file(package.join("build/prod/erlang/widget/_gleam_artefacts/widget.erl"));
         let error = build_hex_tarball_from_compiler_outputs(package, package_information)
             .unwrap_err()
             .to_string();
@@ -1053,17 +1052,15 @@ mod tests {
     #[test]
     fn compiler_output_fallback_supports_javascript_without_erlang_outputs() {
         let temp = tempfile::tempdir().unwrap();
-        fs::create_dir(temp.path().join("src")).unwrap();
+        fs::create_dir(temp.path().join("src"));
         fs::write(
             temp.path().join("gleam.toml"),
             "name = \"browser_widget\"\nversion = \"1.0.0\"\ndescription = \"Fixture\"\nlicences = [\"MIT\"]\ntarget = \"javascript\"\n",
-        )
-        .unwrap();
+        );
         fs::write(
             temp.path().join("src/browser_widget.gleam"),
             "pub fn value() { 1 }\n",
-        )
-        .unwrap();
+        );
         let package_information = br#"{
           "gleam.toml": {
             "name": "browser_widget",
@@ -1144,12 +1141,11 @@ mod tests {
     fn successful_compiler_without_promised_outputs_is_an_error() {
         let temp = tempfile::tempdir().unwrap();
         let package = temp.path().join("package");
-        fs::create_dir(&package).unwrap();
+        fs::create_dir(&package);
         fs::write(
             package.join("gleam.toml"),
             "name = \"widget\"\nversion = \"1.2.3\"\n",
-        )
-        .unwrap();
+        );
         let executable = temp.path().join("gleam");
         write_executable(&executable, "exit 0\n");
         let gleam = Gleam { executable };
@@ -1170,8 +1166,8 @@ mod tests {
             );
             assert_eq!(
                 error
-                    .downcast_ref::<std::io::Error>()
-                    .map(std::io::Error::kind),
+                    .downcast_ref::<crate::fs::Error>()
+                    .map(crate::fs::Error::kind),
                 Some(std::io::ErrorKind::NotFound),
                 "{error:#}"
             );
@@ -1193,33 +1189,28 @@ mod tests {
     fn snapshot_excludes_build_vcs_and_node_modules_but_keeps_nested_sources() {
         let source = tempfile::tempdir().unwrap();
         for directory in ["src/nested", "build", ".git", "node_modules"] {
-            fs::create_dir_all(source.path().join(directory)).unwrap();
+            fs::create_dir_all(source.path().join(directory));
         }
         fs::write(
             source.path().join("src/nested/widget.gleam"),
             "pub fn x() { 1 }",
-        )
-        .unwrap();
+        );
         fs::write(
             source.path().join("gleam.toml"),
             "name = \"widget\"\nversion = \"1.0.0\"\n",
-        )
-        .unwrap();
-        fs::write(source.path().join("build/ignored"), "build").unwrap();
-        fs::write(source.path().join(".git/ignored"), "git").unwrap();
-        fs::write(source.path().join("node_modules/ignored"), "node").unwrap();
+        );
+        fs::write(source.path().join("build/ignored"), "build");
+        fs::write(source.path().join(".git/ignored"), "git");
+        fs::write(source.path().join("node_modules/ignored"), "node");
 
         let snapshot = Gleam::default().snapshot(source.path()).unwrap();
-        assert!(
-            snapshot
-                .package_dir()
-                .join("src/nested/widget.gleam")
-                .is_file()
-        );
-        assert!(snapshot.package_dir().join("gleam.toml").is_file());
-        assert!(!snapshot.package_dir().join("build").exists());
-        assert!(!snapshot.package_dir().join(".git").exists());
-        assert!(!snapshot.package_dir().join("node_modules").exists());
+        assert!(fs::is_file(
+            snapshot.package_dir().join("src/nested/widget.gleam")
+        ));
+        assert!(fs::is_file(snapshot.package_dir().join("gleam.toml")));
+        assert!(!fs::exists(snapshot.package_dir().join("build")));
+        assert!(!fs::exists(snapshot.package_dir().join(".git")));
+        assert!(!fs::exists(snapshot.package_dir().join("node_modules")));
     }
 
     #[cfg(unix)]
@@ -1228,9 +1219,9 @@ mod tests {
         use std::os::unix::fs::symlink;
 
         let docs = tempfile::tempdir().unwrap();
-        fs::create_dir(docs.path().join("nested")).unwrap();
-        fs::write(docs.path().join("z.html"), "z").unwrap();
-        fs::write(docs.path().join("nested/a.html"), "a").unwrap();
+        fs::create_dir(docs.path().join("nested"));
+        fs::write(docs.path().join("z.html"), "z");
+        fs::write(docs.path().join("nested/a.html"), "a");
         let first = deterministic_tar_gz(docs.path()).unwrap();
         let second = deterministic_tar_gz(docs.path()).unwrap();
         assert_eq!(first, second);
@@ -1244,9 +1235,9 @@ mod tests {
 
     #[cfg(unix)]
     fn write_executable(path: &Path, body: &str) {
-        fs::write(path, format!("#!/bin/sh\n{body}")).unwrap();
-        let mut permissions = fs::metadata(path).unwrap().permissions();
+        fs::write(path, format!("#!/bin/sh\n{body}"));
+        let mut permissions = std::fs::metadata(path).unwrap().permissions();
         permissions.set_mode(0o755);
-        fs::set_permissions(path, permissions).unwrap();
+        std::fs::set_permissions(path, permissions).unwrap();
     }
 }

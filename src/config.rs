@@ -4,7 +4,6 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -13,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use toml_edit::{DocumentMut, Item, TableLike, value};
 
 use crate::failure::{Refusal, RefusalReason, refused};
+use crate::fs;
 use crate::model::PrereleaseChannel;
 use crate::refuse;
 
@@ -1170,6 +1170,7 @@ fn release_table_mut(document: &mut DocumentMut) -> Option<&mut dyn TableLike> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use release_glz_test_support::fs;
 
     /// The release table of a configured manifest, with `extra` after its first keys.
     fn release_table(extra: &str) -> String {
@@ -1414,21 +1415,21 @@ prerelease = ""
         let temporary = tempfile::tempdir().unwrap();
         let path = temporary.path().join("gleam.toml");
         let source = "name = \"x\"\nversion = \"1.0.0\"\n";
-        fs::write(&path, source).unwrap();
+        fs::write(&path, source);
         let mut manifest = Manifest::load(&path).unwrap();
         manifest.set_version(Version::new(1, 1, 0));
 
         let concurrent = "name = \"x\"\nversion = \"1.0.0\"\n# concurrent edit\n";
-        fs::write(&path, concurrent).unwrap();
+        fs::write(&path, concurrent);
         assert_eq!(
             crate::failure::refusal_reason(&manifest.write().unwrap_err()),
             Some(crate::failure::RefusalReason::ManifestChanged)
         );
-        assert_eq!(fs::read_to_string(&path).unwrap(), concurrent);
+        assert_eq!(fs::read_to_string(&path), concurrent);
 
         let mut current = Manifest::load(&path).unwrap();
         current.set_version(Version::new(1, 1, 0));
         current.write().unwrap();
-        assert!(fs::read_to_string(&path).unwrap().contains("1.1.0"));
+        assert!(fs::read_to_string(&path).contains("1.1.0"));
     }
 }

@@ -39,13 +39,17 @@ pub struct ApprovalRequest {
 impl ApprovalRequest {
     /// The request that the generated publish job passes through its environment.
     pub fn from_environment() -> Result<Self> {
-        Self::from_variables(|name| std::env::var(name).ok())
+        Self::from_lookup(crate::environment::variable)
     }
 
     /// The request that `variable` describes, using the names of the generated publish job.
     pub fn from_variables(variable: impl Fn(&str) -> Option<String>) -> Result<Self> {
+        Self::from_lookup(|name| Ok(variable(name)))
+    }
+
+    fn from_lookup(variable: impl Fn(&str) -> Result<Option<String>>) -> Result<Self> {
         let required = |name: &str, purpose: &str| {
-            variable(name).ok_or_else(|| {
+            variable(name)?.ok_or_else(|| {
                 refused(
                     RefusalReason::ApprovalRequestIncomplete,
                     format_args!("release approval requires {purpose}"),
@@ -81,9 +85,9 @@ impl ApprovalRequest {
                 "RELEASE_GLZ_ACTIONS_RUN_ID",
                 "the Candidate-generating Actions run ID",
             )?,
-            approved_candidate_digest: variable("RELEASE_GLZ_APPROVED_CANDIDATE_DIGEST"),
-            manual_source_sha: variable("RELEASE_GLZ_MANUAL_SOURCE_SHA"),
-            manual_reason: variable("RELEASE_GLZ_MANUAL_REASON"),
+            approved_candidate_digest: variable("RELEASE_GLZ_APPROVED_CANDIDATE_DIGEST")?,
+            manual_source_sha: variable("RELEASE_GLZ_MANUAL_SOURCE_SHA")?,
+            manual_reason: variable("RELEASE_GLZ_MANUAL_REASON")?,
         })
     }
 }

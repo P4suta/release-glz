@@ -1,7 +1,5 @@
-use std::fs;
-use std::process::Command;
-
 use release_glz::git::GitRepo;
+use release_glz_test_support::fs;
 
 #[test]
 fn release_tags_are_annotated_and_observable_after_push() {
@@ -15,7 +13,7 @@ fn release_tags_are_annotated_and_observable_after_push() {
     git(&work, &["config", "user.email", "test@example.invalid"]);
     git(&work, &["config", "commit.gpgsign", "false"]);
     git(&work, &["config", "tag.gpgsign", "false"]);
-    fs::write(work.join("README.md"), "fixture").unwrap();
+    fs::write(work.join("README.md"), "fixture");
     git(&work, &["add", "README.md"]);
     let tree = git_output(&work, &["write-tree"]);
     let commit = git_output(&work, &["commit-tree", &tree, "-m", "initial"]);
@@ -42,7 +40,7 @@ fn release_tags_are_annotated_and_observable_after_push() {
     assert_eq!(local.target_sha, head);
     assert!(local.annotated);
 
-    let pushed = Command::new("git")
+    let pushed = release_glz_test_support::new_command("git")
         .arg("-C")
         .arg(&work)
         .args(["push", "origin", "refs/tags/v1.2.3"])
@@ -63,7 +61,7 @@ fn git(directory: &std::path::Path, args: &[&str]) {
 }
 
 fn git_output(directory: &std::path::Path, args: &[&str]) -> String {
-    let output = Command::new("git")
+    let output = release_glz_test_support::new_command("git")
         .arg("-C")
         .arg(directory)
         .args(args)

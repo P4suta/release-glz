@@ -1,5 +1,4 @@
 use std::path::Path;
-use std::process::Command;
 
 use release_glz_test_support::{git, isolated_command};
 
@@ -32,7 +31,7 @@ fn tests_read_git_configuration_only_from_the_isolated_fixture() {
             "tag.gpgsign=false",
         ]
     );
-    let hooks = Command::new("git")
+    let hooks = release_glz_test_support::new_command("git")
         .arg("-C")
         .arg(temp.path())
         .args(["config", "--get", "core.hooksPath"])

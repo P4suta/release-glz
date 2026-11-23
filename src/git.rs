@@ -18,7 +18,7 @@ const COMMIT_LOG_FORMAT: &str = "--format=%H%x00%an%x00%ae%x00%s%x00%b%x00";
 
 /// A git command for one repository that fails instead of waiting for a credential prompt.
 fn git_command(directory: &Path) -> Command {
-    let mut command = Command::new("git");
+    let mut command = crate::process::command("git");
     command
         .arg("-C")
         .arg(directory)
