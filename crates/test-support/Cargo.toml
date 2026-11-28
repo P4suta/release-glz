@@ -9,7 +9,7 @@ rust-version = "1.100"
 
 [dependencies]
 base64 = "0.23.1"
-jsonschema = { version = "0.56.0", default-features = false }
+jsonschema = { version = "0.63.0", default-features = false }
 proptest = { version = "1.12.0", default-features = false, features = ["std"] }
 ring = "0.17.14"
 serde = { version = "1.0.228", features = ["derive"] }

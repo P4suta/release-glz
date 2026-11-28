@@ -22,7 +22,7 @@ flate2 = "1.1.10"
 icu_normalizer = { version = "2.4.0", default-features = false, features = ["compiled_data"] }
 release-glz-core = { path = "crates/release-glz-core", version = "0.0.0", features = ["serde"] }
 release-glz-domain = { path = "crates/release-glz-domain", version = "0.0.0" }
-reqwest = { version = "0.12.28", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.13.0", default-features = false, features = ["json", "rustls-tls"] }
 ring = "0.17.14"
 ryu-js = "1.0"
 semver = { version = "1.0.28", features = ["serde"] }
